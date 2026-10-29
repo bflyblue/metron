@@ -289,15 +289,28 @@ renderNested showElem dims xs = case dims of
   [] -> case xs of
     x : _ -> showElem x
     [] -> "[]"
-  [_] -> brackets (map showElem xs)
+  -- Rows with ;, planes with ;; (§2.4). A tensor whose outermost axis has
+  -- length one would read back with a lower rank, so it stays nested.
+  d : _
+    | d /= 1 || length dims == 1 -> "[" <> separated dims xs <> "]"
   d : rest ->
     let stride = product rest
-     in brackets
-          [ renderNested showElem rest (take stride (drop (i * stride) xs))
-          | i <- [0 .. d - 1]
-          ]
+     in "["
+          <> T.intercalate
+            ", "
+            [ renderNested showElem rest (take stride (drop (i * stride) xs))
+            | i <- [0 .. d - 1]
+            ]
+          <> "]"
  where
-  brackets ts = "[" <> T.intercalate ", " ts <> "]"
+  separated ds es = case ds of
+    [_] -> T.intercalate ", " (map showElem es)
+    d : rest ->
+      let stride = product rest
+       in T.intercalate
+            (T.replicate (length rest) ";" <> " ")
+            [separated rest (take stride (drop (i * stride) es)) | i <- [0 .. d - 1]]
+    [] -> T.intercalate ", " (map showElem es)
 
 -- Terms --------------------------------------------------------------------------
 

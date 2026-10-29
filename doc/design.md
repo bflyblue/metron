@@ -187,7 +187,9 @@ separates rows, `;;` separates planes, and so on; the rank is one more than the
 highest separator used, and a level that never appears is a length-one axis
 (so `[1; 2]` is a 2×1 matrix, not a vector). The separator forms are sugar for
 nesting: `[1, 2; 3, 4]` is `[[1, 2], [3, 4]]`, and Core sees only the nested
-form. Elements are separated by commas, never by spaces: in a language where
+form. Values and `:view` print in the separator form too, except a tensor whose
+outermost axis has length one (`[[1, 2, 3]]`, a 1×3 matrix), which would read
+back with a lower rank and so stays nested. Elements are separated by commas, never by spaces: in a language where
 juxtaposition is application and the quantity rule, `[sin x]` and `[2 pi]`
 must keep meaning what they mean outside brackets. Components may be any
 expression; every element must have the same shape and dimension, which the

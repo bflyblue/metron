@@ -122,3 +122,7 @@
   `:budget`. **Hash-affecting**: every definition containing declared
   uncertainty changes hash (its name is now part of it), and the encoding of
   `Noise` and `Uncertain` gains a label field.
+- Tensors print with the same separators they are written with: `5 * a` is
+  `[5, 10, 15; 20, 25, 30; 35, 40, 45]`, rank three uses `;;`. A tensor whose
+  outermost axis has length one stays nested so that it reads back at the
+  same rank.

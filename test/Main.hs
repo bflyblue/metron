@@ -750,13 +750,13 @@ endToEndTests =
         $ evalText "[1, 2, 3].1 + [[1, 2], [3, 4]].1.0" @?= Right ["5"]
     , testCase "elementwise arithmetic on tensors" $ do
         evalText "[1, 2] + [3, 4]" @?= Right ["[4, 6]"]
-        evalText "-[[1, 2], [3, 4]]" @?= Right ["[[-1, -2], [-3, -4]]"]
+        evalText "-[[1, 2], [3, 4]]" @?= Right ["[-1, -2; -3, -4]"]
         evalText "[[1, 2], [3, 4]] == [[1, 2], [3, 4]]" @?= Right ["true"]
     , testCase "tensor primitives" $ do
         evalText "dot [1, 2, 3] [4, 5, 6]" @?= Right ["32"]
         evalP "cross [1, 0, 0] [0, 1, 0]" @?= Right ["[0, 0, 1]"]
-        evalText "transpose [[1, 2], [3, 4]]" @?= Right ["[[1, 3], [2, 4]]"]
-        evalText "vmap (\\x -> x * 2) [[1, 2], [3, 4]]" @?= Right ["[[2, 4], [6, 8]]"]
+        evalText "transpose [[1, 2], [3, 4]]" @?= Right ["[1, 3; 2, 4]"]
+        evalText "vmap (\\x -> x * 2) [[1, 2], [3, 4]]" @?= Right ["[2, 4; 6, 8]"]
     , testCase "a rank-three tensor"
         $ evalText "[[[1, 2], [3, 4]], [[5, 6], [7, 8]]].1.0.1" @?= Right ["6"]
     , testCase "constant literals fold into one node, constructions do not"
@@ -1165,13 +1165,13 @@ productTests =
         evalText "2 * 3" @?= Right ["6"]
         evalText "2 * [1, 2]" @?= Right ["[2, 4]"]
         evalText "[1, 2] * 2" @?= Right ["[2, 4]"]
-        evalText "[1, 2] ⊗ [3, 4]" @?= Right ["[[3, 4], [6, 8]]"]
+        evalText "[1, 2] ⊗ [3, 4]" @?= Right ["[3, 4; 6, 8]"]
     , testCase "contracting product is dot, matrix-vector and matrix-matrix" $ do
         evalText "[1, 2, 3] · [4, 5, 6]" @?= Right ["32"]
         evalText "[[1, 2], [3, 4]] @ [1, 1]" @?= Right ["[3, 7]"]
-        evalText "[[1, 2], [3, 4]] @ [[0, 1], [1, 0]]" @?= Right ["[[2, 1], [4, 3]]"]
+        evalText "[[1, 2], [3, 4]] @ [[0, 1], [1, 0]]" @?= Right ["[2, 1; 4, 3]"]
         evalText "[[[1, 2], [3, 4]], [[5, 6], [7, 8]]] @ [1, 0]"
-          @?= Right ["[[1, 3], [5, 7]]"]
+          @?= Right ["[1, 3; 5, 7]"]
     , testCase "cross product, both spellings" $ do
         evalP "[1, 0, 0] × [0, 1, 0]" @?= Right ["[0, 0, 1]"]
         evalP "[1, 0, 0] >< [0, 1, 0]" @?= Right ["[0, 0, 1]"]
@@ -1638,7 +1638,7 @@ lintRegressionTests =
         typeOfText "[[1, 2]] @ (let y = 1 in [3, 4])" @?= Right "Vec 1"
         typeOfText "[1, 2] == (let y = 1 in [3, 4])" @?= Right "Bool"
         typeOfText "(\\x -> x * [1, 2]) (let y = 1 in [3, 4])" @?= Right "Mat 2 2"
-        evalText "[1, 2] * (let y = 1 in [3])" @?= Right ["[[3], [6]]"]
+        evalText "[1, 2] * (let y = 1 in [3])" @?= Right ["[3; 6]"]
     , -- Found by the type-directed generator: sections and composition bind
       -- names the desugarer makes up (`§s0`), which printed as they were
       -- and did not re-parse.
@@ -1742,7 +1742,7 @@ preludeTests =
         evalP "(ε @ [0, 1, 0]) @ [1, 0, 0]" @?= Right ["[0, 0, 1]"]
     , testCase "wedge works in any dimension" $ do
         typeOfTextP "\\a b -> a /\\ b" @?= Right "Vec n d -> Vec n d1 -> Mat n n [d d1]"
-        evalP "[1, 0] ∧ [0, 1]" @?= Right ["[[0, 1], [-1, 0]]"]
+        evalP "[1, 0] ∧ [0, 1]" @?= Right ["[0, 1; -1, 0]"]
     , testCase "an orbital calculation with units end to end"
         $ runLinesP
           [ "let r = [7000, 0, 0] km"
@@ -1892,9 +1892,9 @@ affineTests =
     , testCase "linear algebra over enclosures" $ do
         evalText "det [[1, 2], [3, 4]]" @?= Right ["-2"]
         evalText "det [[1 ± 0.01, 2], [3, 4]]" @?= Right ["-2.00 ± 0.04"]
-        evalText "inverse [[1, 2], [3, 4]]" @?= Right ["[[-2, 1], [1.5, -0.5]]"]
+        evalText "inverse [[1, 2], [3, 4]]" @?= Right ["[-2, 1; 1.5, -0.5]"]
         evalText "inverse [[1, 2], [3, 4]] · [[1, 2], [3, 4]]"
-          @?= Right ["[[1, 0], [0, 1]]"]
+          @?= Right ["[1, 0; 0, 1]"]
         evalText "inverse [[1, 1], [1, 1]]"
           @?= Left "error: inverse of a singular matrix"
         evalText "inverse [[1 ± 1, 2], [3, 4]]"
