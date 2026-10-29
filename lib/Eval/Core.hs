@@ -1,43 +1,44 @@
 {-# LANGUAGE TypeFamilies #-}
 
--- | Core: the desugared, untyped, well-scoped term language (design §5.1).
---
--- Core is an abstract binding tree with de Bruijn indices, indexed by the
--- number of variables in scope: a @Term n@ may mention variables @0 .. n-1@
--- and nothing else, so a dangling variable is a Haskell type error. Binders
--- carry a 'Hint', the name the user wrote, for printing only: 'alphaEq' and
--- hashing ignore hints.
---
--- Primitives are saturated: @PrimApp p args@ always carries exactly
--- 'primArity' arguments. Partial uses are eta-expanded by the desugarer.
-module Eval.Core
-  ( -- * Type-level naturals and scope-safe indices
-    Nat (..)
-  , Fin (..)
-  , finToInt
-  , Vec (..)
-  , SomeVec (..)
-  , vecFromList
-  , vecToList
-  , vecLength
-  , vecMap
-  , vecTraverse
-  , vecIndex
-  , vecAppend
-  , Plus
+{- | Core: the desugared, untyped, well-scoped term language (design §5.1).
 
-    -- * Terms
-  , Hash (..)
-  , Hint (..)
-  , NudgeKind (..)
-  , Lit (..)
-  , Term (..)
-  , alphaEq
-  , refs
-  , refsWithIndex
-  , rewriteRefs
-  , primArity
-  ) where
+Core is an abstract binding tree with de Bruijn indices, indexed by the
+number of variables in scope: a @Term n@ may mention variables @0 .. n-1@
+and nothing else, so a dangling variable is a Haskell type error. Binders
+carry a 'Hint', the name the user wrote, for printing only: 'alphaEq' and
+hashing ignore hints.
+
+Primitives are saturated: @PrimApp p args@ always carries exactly
+'primArity' arguments. Partial uses are eta-expanded by the desugarer.
+-}
+module Eval.Core (
+  -- * Type-level naturals and scope-safe indices
+  Nat (..),
+  Fin (..),
+  finToInt,
+  Vec (..),
+  SomeVec (..),
+  vecFromList,
+  vecToList,
+  vecLength,
+  vecMap,
+  vecTraverse,
+  vecIndex,
+  vecAppend,
+  Plus,
+
+  -- * Terms
+  Hash (..),
+  Hint (..),
+  NudgeKind (..),
+  Lit (..),
+  Term (..),
+  alphaEq,
+  refs,
+  refsWithIndex,
+  rewriteRefs,
+  primArity,
+) where
 
 import Data.ByteString (ByteString)
 import Data.Kind (Type)
@@ -119,9 +120,10 @@ vecFromList = \case
 
 -- Terms ---------------------------------------------------------------------
 
--- | A content hash of a Core term (design §6): the bytes of a SHA-256 digest.
--- Defined here so that 'Term' can refer to other terms; hashing itself lives
--- in "Eval.Hash".
+{- | A content hash of a Core term (design §6): the bytes of a SHA-256 digest.
+Defined here so that 'Term' can refer to other terms; hashing itself lives
+in "Eval.Hash".
+-}
 newtype Hash = Hash ByteString
   deriving stock (Eq, Ord, Show)
 
@@ -130,31 +132,36 @@ newtype Hint = Hint Text
   deriving stock (Eq, Ord, Show)
   deriving newtype (IsString)
 
--- | The kind of a nudge (design §3.2): a rigorous bound, or a 1σ standard
--- uncertainty.
+{- | The kind of a nudge (design §3.2): a rigorous bound, or a 1σ standard
+uncertainty.
+-}
 data NudgeKind = Bound | Stat
   deriving stock (Eq, Ord, Show)
 
--- | A constant. A tensor literal carries its shape and its values flat in
--- row-major order; a number is the rank-zero case. The boolean alternative is
--- the last special-cased constant (core.md §5).
+{- | A constant. A tensor literal carries its shape and its values flat in
+row-major order; a number is the rank-zero case. The boolean alternative is
+the last special-cased constant (core.md §5).
+-}
 data Lit
   = LTensor [Int] [Rational]
   | LBool Bool
   deriving stock (Eq, Ord, Show)
 
--- | Core terms in a scope of @n@ variables. @Var FZ@ is the innermost
--- binder. 'Lam' and 'Let' bind one variable in their body. 'Cycle' binds
--- @k@ variables in every body: inside body @i@, index @j < k@ (at depth 0) is
--- member @j@.
+{- | Core terms in a scope of @n@ variables. @Var FZ@ is the innermost
+binder. 'Lam' and 'Let' bind one variable in their body. 'Cycle' binds
+@k@ variables in every body: inside body @i@, index @j < k@ (at depth 0) is
+member @j@.
+-}
 data Term (n :: Nat) where
   Var :: Fin n -> Term n
-  -- | Another definition by content hash, with a cycle index when the
-  -- referenced term is a 'Cycle'.
+  {- | Another definition by content hash, with a cycle index when the
+  referenced term is a 'Cycle'.
+  -}
   Ref :: Hash -> Maybe Int -> Term n
-  -- | A saturated primitive application: exactly 'primArity' arguments.
-  -- Overloading is unresolved here: @PrimApp "add"@ is the overloaded
-  -- addition.
+  {- | A saturated primitive application: exactly 'primArity' arguments.
+  Overloading is unresolved here: @PrimApp "add"@ is the overloaded
+  addition.
+  -}
   PrimApp :: Text -> [Term n] -> Term n
   Lit :: Lit -> Term n
   Lam :: Hint -> Term (S n) -> Term n
@@ -169,43 +176,46 @@ data Term (n :: Nat) where
   Noise :: NudgeKind -> Integer -> Term n
   -- | @x ± err@ or @x ±σ err@.
   Uncertain :: NudgeKind -> Term n -> Term n -> Term n
-  -- | @[a, b, c]@: stack @k@ tensors of shape @s@ into one of shape @k : s@.
-  -- A literal whose elements are all constants is folded into 'Lit' by the
-  -- desugarer, so the two never describe the same value.
+  {- | @[a, b, c]@: stack @k@ tensors of shape @s@ into one of shape @k : s@.
+  A literal whose elements are all constants is folded into 'Lit' by the
+  desugarer, so the two never describe the same value.
+  -}
   Pack :: [Term n] -> Term n
-  -- | @v.i@ or @m.i@: component or row at a literal position. The position
-  -- is checked against the length statically (design §4.1).
+  {- | @v.i@ or @m.i@: component or row at a literal position. The position
+  is checked against the length statically (design §4.1).
+  -}
   Proj :: Term n -> Int -> Term n
   -- | @k@ mutually recursive bodies, each in scope of the @k@ members.
   Cycle :: Vec k Hint -> Vec k (Term (Plus k n)) -> Term n
 
 deriving stock instance Show (Term n)
 
--- | Alpha-equivalence: structural equality ignoring hints. Because variables
--- are de Bruijn indices this is a plain structural walk. The scopes may
--- differ in type; only the indices are compared.
+{- | Alpha-equivalence: structural equality ignoring hints. Because variables
+are de Bruijn indices this is a plain structural walk. The scopes may
+differ in type; only the indices are compared.
+-}
 alphaEq :: Term n -> Term m -> Bool
 alphaEq = go
-  where
-    go :: Term a -> Term b -> Bool
-    go (Var i) (Var j) = finToInt i == finToInt j
-    go (Ref h i) (Ref h' i') = h == h' && i == i'
-    go (PrimApp p as) (PrimApp q bs) = p == q && goList as bs
-    go (Lit l) (Lit l') = l == l'
-    go (Lam _ b) (Lam _ b') = go b b'
-    go (App f a) (App g b) = go f g && go a b
-    go (Let _ e b) (Let _ e' b') = go e e' && go b b'
-    go (If c t e) (If c' t' e') = go c c' && go t t' && go e e'
-    go (Pow t n) (Pow t' n') = n == n' && go t t'
-    go (Noise k n) (Noise k' n') = k == k' && n == n'
-    go (Uncertain k x e) (Uncertain k' x' e') = k == k' && go x x' && go e e'
-    go (Pack as) (Pack bs) = goList as bs
-    go (Proj t i) (Proj t' i') = i == i' && go t t'
-    go (Cycle _ bs) (Cycle _ bs') = goList (vecToList bs) (vecToList bs')
-    go _ _ = False
+ where
+  go :: Term a -> Term b -> Bool
+  go (Var i) (Var j) = finToInt i == finToInt j
+  go (Ref h i) (Ref h' i') = h == h' && i == i'
+  go (PrimApp p as) (PrimApp q bs) = p == q && goList as bs
+  go (Lit l) (Lit l') = l == l'
+  go (Lam _ b) (Lam _ b') = go b b'
+  go (App f a) (App g b) = go f g && go a b
+  go (Let _ e b) (Let _ e' b') = go e e' && go b b'
+  go (If c t e) (If c' t' e') = go c c' && go t t' && go e e'
+  go (Pow t n) (Pow t' n') = n == n' && go t t'
+  go (Noise k n) (Noise k' n') = k == k' && n == n'
+  go (Uncertain k x e) (Uncertain k' x' e') = k == k' && go x x' && go e e'
+  go (Pack as) (Pack bs) = goList as bs
+  go (Proj t i) (Proj t' i') = i == i' && go t t'
+  go (Cycle _ bs) (Cycle _ bs') = goList (vecToList bs) (vecToList bs')
+  go _ _ = False
 
-    goList :: [Term a] -> [Term b] -> Bool
-    goList as bs = length as == length bs && and (zipWith go as bs)
+  goList :: [Term a] -> [Term b] -> Bool
+  goList as bs = length as == length bs && and (zipWith go as bs)
 
 -- | The hashes a term refers to.
 refs :: Term n -> Set Hash
@@ -243,31 +253,34 @@ refsWithIndex = \case
   Proj t _ -> refsWithIndex t
   Cycle _ bs -> foldMap refsWithIndex (vecToList bs)
 
--- | Replace references according to a function; 'Nothing' keeps a reference
--- as it is. Used to upgrade dependents to a new version (design §7.5).
-rewriteRefs :: (Hash -> Maybe Int -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
+{- | Replace references according to a function; 'Nothing' keeps a reference
+as it is. Used to upgrade dependents to a new version (design §7.5).
+-}
+rewriteRefs ::
+  (Hash -> Maybe Int -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
 rewriteRefs f = go
-  where
-    go :: Term m -> Term m
-    go = \case
-      Var i -> Var i
-      Ref h i -> maybe (Ref h i) (uncurry Ref) (f h i)
-      PrimApp p as -> PrimApp p (map go as)
-      Lit l -> Lit l
-      Lam h b -> Lam h (go b)
-      App a b -> App (go a) (go b)
-      Let h e b -> Let h (go e) (go b)
-      If c t e -> If (go c) (go t) (go e)
-      Pow t n -> Pow (go t) n
-      Noise k n -> Noise k n
-      Uncertain k x e -> Uncertain k (go x) (go e)
-      Pack ts -> Pack (map go ts)
-      Proj t i -> Proj (go t) i
-      Cycle hs bs -> Cycle hs (vecMap go bs)
+ where
+  go :: Term m -> Term m
+  go = \case
+    Var i -> Var i
+    Ref h i -> maybe (Ref h i) (uncurry Ref) (f h i)
+    PrimApp p as -> PrimApp p (map go as)
+    Lit l -> Lit l
+    Lam h b -> Lam h (go b)
+    App a b -> App (go a) (go b)
+    Let h e b -> Let h (go e) (go b)
+    If c t e -> If (go c) (go t) (go e)
+    Pow t n -> Pow (go t) n
+    Noise k n -> Noise k n
+    Uncertain k x e -> Uncertain k (go x) (go e)
+    Pack ts -> Pack (map go ts)
+    Proj t i -> Proj (go t) i
+    Cycle hs bs -> Cycle hs (vecMap go bs)
 
--- | The number of arguments each primitive takes. The desugarer uses this to
--- eta-expand partial applications; the evaluator and type checker rely on
--- 'PrimApp' nodes being saturated.
+{- | The number of arguments each primitive takes. The desugarer uses this to
+eta-expand partial applications; the evaluator and type checker rely on
+'PrimApp' nodes being saturated.
+-}
 primArity :: Text -> Maybe Int
 primArity = \case
   "add" -> Just 2

@@ -1,28 +1,29 @@
--- | Dimensions (design §4.1, §4.4): the free abelian group over the seven SI
--- base dimensions and dimension variables, kept in normal form, with
--- Kennedy's unification algorithm.
-module Eval.Dimension
-  ( BaseDim (..)
-  , DimAtom (..)
-  , Dim
-  , dimOne
-  , dimBase
-  , dimVar
-  , dimFromAtoms
-  , dimMul
-  , dimInv
-  , dimDiv
-  , dimPow
-  , dimRoot
-  , dimAtoms
-  , dimVars
-  , isDimOne
-  , substDimVar
-  , renderDim
-  , renderDimWith
-  , renderUnits
-  , baseSymbol
-  ) where
+{- | Dimensions (design §4.1, §4.4): the free abelian group over the seven SI
+base dimensions and dimension variables, kept in normal form, with
+Kennedy's unification algorithm.
+-}
+module Eval.Dimension (
+  BaseDim (..),
+  DimAtom (..),
+  Dim,
+  dimOne,
+  dimBase,
+  dimVar,
+  dimFromAtoms,
+  dimMul,
+  dimInv,
+  dimDiv,
+  dimPow,
+  dimRoot,
+  dimAtoms,
+  dimVars,
+  isDimOne,
+  substDimVar,
+  renderDim,
+  renderDimWith,
+  renderUnits,
+  baseSymbol,
+) where
 
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
@@ -39,8 +40,9 @@ data DimAtom
   | DVar Int
   deriving stock (Eq, Ord, Show)
 
--- | A normalised dimension: atoms with non-zero integer exponents. The
--- dimensionless dimension is the empty map.
+{- | A normalised dimension: atoms with non-zero integer exponents. The
+dimensionless dimension is the empty map.
+-}
 newtype Dim = Dim (Map DimAtom Int)
   deriving stock (Eq, Ord, Show)
 
@@ -112,8 +114,9 @@ renderDimWith varName d
   | isDimOne d = "1"
   | otherwise = "[" <> renderUnitsWith varName d <> "]"
 
--- | The base units of a concrete dimension as they follow a printed value:
--- @m s^-2@; empty when dimensionless.
+{- | The base units of a concrete dimension as they follow a printed value:
+@m s^-2@; empty when dimensionless.
+-}
 renderUnits :: Dim -> Text
 renderUnits d
   | isDimOne d = ""
@@ -121,20 +124,20 @@ renderUnits d
 
 renderUnitsWith :: (Int -> Text) -> Dim -> Text
 renderUnitsWith varName d = T.unwords (map atom (sortOn order (dimAtoms d)))
-  where
-    -- Positive exponents before negative, and within each the customary
-    -- order @kg m s A K mol cd@ (so a joule is @kg m^2 s^-2@), variables last.
-    order (a, k) = (k < 0, rank a)
-    rank = \case
-      Base M -> 0 :: Int
-      Base L -> 1
-      Base T -> 2
-      Base I -> 3
-      Base Θ -> 4
-      Base N -> 5
-      Base J -> 6
-      DVar v -> 7 + v
-    atom (a, k) = name a <> (if k == 1 then "" else "^" <> T.pack (show k))
-    name = \case
-      Base b -> baseSymbol b
-      DVar v -> varName v
+ where
+  -- Positive exponents before negative, and within each the customary
+  -- order @kg m s A K mol cd@ (so a joule is @kg m^2 s^-2@), variables last.
+  order (a, k) = (k < 0, rank a)
+  rank = \case
+    Base M -> 0 :: Int
+    Base L -> 1
+    Base T -> 2
+    Base I -> 3
+    Base Θ -> 4
+    Base N -> 5
+    Base J -> 6
+    DVar v -> 7 + v
+  atom (a, k) = name a <> (if k == 1 then "" else "^" <> T.pack (show k))
+  name = \case
+    Base b -> baseSymbol b
+    DVar v -> varName v

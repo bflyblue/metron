@@ -1,26 +1,27 @@
--- | The codebase (design §7): terms by hash, names as labels pointing at
--- references, and the history of every name.
-module Eval.Codebase
-  ( Reference (..)
-  , Codebase (..)
-  , emptyCodebase
-  , addTerm
-  , bindName
-  , unbindName
-  , markUnit
-  , isUnitRef
-  , lookupName
-  , lookupTerm
-  , lookupTypes
-  , lookupTyped
-  , typeOf
-  , namesOf
-  , historicalNamesOf
-  , historyOf
-  , dependents
-  , findByPrefix
-  , showReference
-  ) where
+{- | The codebase (design §7): terms by hash, names as labels pointing at
+references, and the history of every name.
+-}
+module Eval.Codebase (
+  Reference (..),
+  Codebase (..),
+  emptyCodebase,
+  addTerm,
+  bindName,
+  unbindName,
+  markUnit,
+  isUnitRef,
+  lookupName,
+  lookupTerm,
+  lookupTypes,
+  lookupTyped,
+  typeOf,
+  namesOf,
+  historicalNamesOf,
+  historyOf,
+  dependents,
+  findByPrefix,
+  showReference,
+) where
 
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
@@ -33,30 +34,35 @@ import Eval.Hash (hashHasPrefix, showHash)
 import Eval.TCore (TTerm)
 import Eval.Type (Scheme)
 
--- | A reference to a definition: a hash, plus a member index when the hashed
--- term is a 'Cycle'.
+{- | A reference to a definition: a hash, plus a member index when the hashed
+term is a 'Cycle'.
+-}
 data Reference = Reference {hash :: Hash, index :: Maybe Int}
   deriving stock (Eq, Ord, Show)
 
 data Codebase = Codebase
-  { terms :: Map Hash (Term Z) -- ^ Core: the hashed content
-  , derived :: Map Hash ([Scheme], TTerm Z) -- ^ types and Typed Core, recomputable (design §5.2, §5.3)
+  { terms :: Map Hash (Term Z)
+  -- ^ Core: the hashed content
+  , derived :: Map Hash ([Scheme], TTerm Z)
+  -- ^ types and Typed Core, recomputable (design §5.2, §5.3)
   , names :: Map Text Reference
   , history :: Map Text [Reference] -- newest first
-  , units :: Set.Set Reference -- ^ definitions declared with @unit@ (design §3.2.12); label-level metadata like names
+  , units :: Set.Set Reference
+  -- ^ definitions declared with @unit@ (design §3.2.12); label-level metadata like names
   }
 
 emptyCodebase :: Codebase
 emptyCodebase = Codebase Map.empty Map.empty Map.empty Map.empty Set.empty
 
 markUnit :: Reference -> Codebase -> Codebase
-markUnit r cb = cb {units = Set.insert r cb.units}
+markUnit r cb = cb{units = Set.insert r cb.units}
 
 isUnitRef :: Reference -> Codebase -> Bool
 isUnitRef r cb = Set.member r cb.units
 
--- | Store a term with its types and Typed Core under its hash. A no-op if
--- already present.
+{- | Store a term with its types and Typed Core under its hash. A no-op if
+already present.
+-}
 addTerm :: Hash -> Term Z -> [Scheme] -> TTerm Z -> Codebase -> Codebase
 addTerm h t schemes typed cb =
   cb
@@ -78,8 +84,9 @@ typeOf (Reference h idx) cb = do
     s : _ -> Just s
     [] -> Nothing
 
--- | Point a name at a reference, recording the previous binding in history.
--- Re-binding a name to what it already points at changes nothing.
+{- | Point a name at a reference, recording the previous binding in history.
+Re-binding a name to what it already points at changes nothing.
+-}
 bindName :: Text -> Reference -> Codebase -> Codebase
 bindName n r cb
   | lookupName n cb == Just r = cb
@@ -91,7 +98,7 @@ bindName n r cb
 
 -- | Remove a label. The term and the name's history stay.
 unbindName :: Text -> Codebase -> Codebase
-unbindName n cb = cb {names = Map.delete n cb.names}
+unbindName n cb = cb{names = Map.delete n cb.names}
 
 lookupName :: Text -> Codebase -> Maybe Reference
 lookupName n cb = Map.lookup n cb.names
@@ -113,7 +120,13 @@ historyOf n cb = Map.findWithDefault [] n cb.history
 -- | Names whose current definition mentions the given hash.
 dependents :: Hash -> Codebase -> [Text]
 dependents h cb =
-  sortOn id [n | (n, Reference h' _) <- Map.toList cb.names, Just t <- [lookupTerm h' cb], h `Set.member` refs t]
+  sortOn
+    id
+    [ n
+    | (n, Reference h' _) <- Map.toList cb.names
+    , Just t <- [lookupTerm h' cb]
+    , h `Set.member` refs t
+    ]
 
 -- | Hashes in the codebase whose base32hex form starts with a prefix.
 findByPrefix :: Text -> Codebase -> [Hash]

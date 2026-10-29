@@ -1,21 +1,22 @@
--- | Typed Core (design §5.3, core.md): Core after inference and elaboration,
--- explicitly typed in the manner of System F and GHC's Core. Every binder
--- carries its type, polymorphism is explicit through one kinded abstraction
--- form and one kinded application form, and a primitive carries the type it
--- is used at. The interpreter runs this; a compiler would start from it.
---
--- 'lint' is the counterpart of GHC's Core Lint: a plain type checker (no
--- inference) that validates an elaborated term. Elaboration bugs surface
--- there, not in the evaluator.
-module Eval.TCore
-  ( TTerm (..)
-  , primScheme
-  , baseUnit
-  , closedLens
-  , appendShape
-  , lintClosed
-  , renderTTerm
-  ) where
+{- | Typed Core (design §5.3, core.md): Core after inference and elaboration,
+explicitly typed in the manner of System F and GHC's Core. Every binder
+carries its type, polymorphism is explicit through one kinded abstraction
+form and one kinded application form, and a primitive carries the type it
+is used at. The interpreter runs this; a compiler would start from it.
+
+'lint' is the counterpart of GHC's Core Lint: a plain type checker (no
+inference) that validates an elaborated term. Elaboration bugs surface
+there, not in the evaluator.
+-}
+module Eval.TCore (
+  TTerm (..),
+  primScheme,
+  baseUnit,
+  closedLens,
+  appendShape,
+  lintClosed,
+  renderTTerm,
+) where
 
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -25,8 +26,9 @@ import Eval.Core
 import Eval.Dimension
 import Eval.Type
 
--- | Typed Core terms in a scope of @n@ term variables. Type-level variables
--- are identified by number and bound by 'TTyLam' with their kind.
+{- | Typed Core terms in a scope of @n@ term variables. Type-level variables
+are identified by number and bound by 'TTyLam' with their kind.
+-}
 data TTerm (n :: Nat) where
   TVr :: Fin n -> TTerm n
   TRef :: Hash -> Maybe Int -> TTerm n
@@ -47,9 +49,11 @@ data TTerm (n :: Nat) where
   TTyLam :: VarId -> Kind -> TTerm n -> TTerm n
   -- | Application to a type-level argument.
   TTyApp :: TTerm n -> Arg -> TTerm n
-  -- | Mutually recursive members, monomorphic inside the cycle at the given
-  -- types, generalised together over the listed variables outside it.
-  TCycle :: [(VarId, Kind)] -> Vec k (Hint, Type) -> Vec k (TTerm (Plus k n)) -> TTerm n
+  {- | Mutually recursive members, monomorphic inside the cycle at the given
+  types, generalised together over the listed variables outside it.
+  -}
+  TCycle ::
+    [(VarId, Kind)] -> Vec k (Hint, Type) -> Vec k (TTerm (Plus k n)) -> TTerm n
 
 deriving stock instance Show (TTerm n)
 
@@ -67,17 +71,19 @@ baseUnit = \case
   "cd" -> Just J
   _ -> Nothing
 
--- | The scheme of each primitive. Quantified variables use small fixed ids;
--- inference instantiates them, 'lint' matches against them. See core.md
--- "Operators across ranks" for which are shape-polymorphic, and design §4.3
--- for the dimension rules.
+{- | The scheme of each primitive. Quantified variables use small fixed ids;
+inference instantiates them, 'lint' matches against them. See core.md
+"Operators across ranks" for which are shape-polymorphic, and design §4.3
+for the dimension rules.
+-}
 primScheme :: Text -> Maybe Scheme
 primScheme name = case name of
   "add" -> Just (Forall [sv, dv] (TFun sd (TFun sd sd)))
   "sub" -> Just (Forall [sv, dv] (TFun sd (TFun sd sd)))
   "emul" -> Just (Forall [sv, dv, d2v] (TFun sd (TFun sd2 (TTensor s (dimMul d d2)))))
   "ediv" -> Just (Forall [sv, dv, d2v] (TFun sd (TFun sd2 (TTensor s (dimDiv d d2)))))
-  "div" -> Just (Forall [sv, dv, d2v] (TFun sd (TFun (numD d2) (TTensor s (dimDiv d d2)))))
+  "div" ->
+    Just (Forall [sv, dv, d2v] (TFun sd (TFun (numD d2) (TTensor s (dimDiv d d2)))))
   -- outer, dot, eq and ne have constraint types; see 'lintConstrained'.
   "neg" -> Just (Forall [sv, dv] (TFun sd sd))
   "abs" -> Just (Forall [sv, dv] (TFun sd sd))
@@ -108,7 +114,12 @@ primScheme name = case name of
   "to" -> Just (Forall [sv, dv] (TFun sd (TFun (numD d) sd)))
   -- The wedge product is the general binary product of vectors; the 3D
   -- cross product is `star (wedge a b)` and lives in the prelude.
-  "wedge" -> Just (Forall [nv, dv, d2v] (TFun (vecD n d) (TFun (vecD n d2) (matD n n (dimMul d d2)))))
+  "wedge" ->
+    Just
+      ( Forall
+          [nv, dv, d2v]
+          (TFun (vecD n d) (TFun (vecD n d2) (matD n n (dimMul d d2))))
+      )
   "star" -> Just (Forall [dv] (TFun (matD three three d) (vecD three d)))
   "norm" -> Just (Forall [nv, dv] (TFun (vecD n d) (numD d)))
   "transpose" -> Just (Forall [nv, mv, dv] (TFun (matD n m d) (matD m n d)))
@@ -116,34 +127,37 @@ primScheme name = case name of
   -- det : Mat n n d -> Num [d^n] needs the length as an exponent; until that
   -- relation exists, det is on dimensionless matrices.
   "det" -> Just (Forall [nv] (TFun (matD n n dimOne) numT))
-  "vmap" -> Just (Forall [sv, dv, d2v] (TFun (TFun (numD d) (numD d2)) (TFun sd (TTensor s d2))))
+  "vmap" ->
+    Just
+      (Forall [sv, dv, d2v] (TFun (TFun (numD d) (numD d2)) (TFun sd (TTensor s d2))))
   _ -> case baseUnit name of
     Just b -> mono (numD (dimBase b))
     Nothing -> Nothing
-  where
-    sv = (0, KShape)
-    dv = (1, KDim)
-    d2v = (2, KDim)
-    nv = (3, KLen)
-    mv = (4, KLen)
-    s = SVar 0
-    d = dimVar 1
-    d2 = dimVar 2
-    n = LVar 3 0
-    m = LVar 4 0
-    three = LLit 3
-    sd = TTensor s d
-    sd2 = TTensor s d2
-    matD r c = TTensor (SCons r (SCons c SNil))
-    mono = Just . Forall []
-    num1 = mono (TFun numT numT)
-    cmp = Just (Forall [dv] (TFun (numD d) (TFun (numD d) TBool)))
+ where
+  sv = (0, KShape)
+  dv = (1, KDim)
+  d2v = (2, KDim)
+  nv = (3, KLen)
+  mv = (4, KLen)
+  s = SVar 0
+  d = dimVar 1
+  d2 = dimVar 2
+  n = LVar 3 0
+  m = LVar 4 0
+  three = LLit 3
+  sd = TTensor s d
+  sd2 = TTensor s d2
+  matD r c = TTensor (SCons r (SCons c SNil))
+  mono = Just . Forall []
+  num1 = mono (TFun numT numT)
+  cmp = Just (Forall [dv] (TFun (numD d) (TFun (numD d) TBool)))
 
 -- Lint -------------------------------------------------------------------------
 
--- | Check a closed term and return its scheme(s): one, or one per cycle
--- member. The result is 'Left' only when elaboration produced an ill-typed
--- term, which is an internal error.
+{- | Check a closed term and return its scheme(s): one, or one per cycle
+member. The result is 'Left' only when elaboration produced an ill-typed
+term, which is an internal error.
+-}
 lintClosed :: (Hash -> Maybe [Scheme]) -> TTerm Z -> Either Text [Scheme]
 lintClosed look = \case
   TCycle vars members bodies -> do
@@ -151,36 +165,67 @@ lintClosed look = \case
     sequence_
       [ do
           t <- lint look ctx body >>= asMono ("cycle member `" <> h <> "`")
-          require (t == expected) ("cycle member `" <> h <> "` has type " <> renderType t <> " but is annotated " <> renderType expected)
+          require
+            (t == expected)
+            ( "cycle member `"
+                <> h
+                <> "` has type "
+                <> renderType t
+                <> " but is annotated "
+                <> renderType expected
+            )
       | ((Hint h, expected), body) <- zip (vecToList members) (vecToList bodies)
       ]
     pure [Forall vars t | (_, t) <- vecToList members]
   t -> (: []) <$> lint look VNil t
 
-lint :: (Hash -> Maybe [Scheme]) -> Vec n Scheme -> TTerm n -> Either Text Scheme
+lint ::
+  (Hash -> Maybe [Scheme]) -> Vec n Scheme -> TTerm n -> Either Text Scheme
 lint look ctx = \case
   TVr i -> Right (lookupCtx i ctx)
   TRef h idx -> case look h of
     Nothing -> Left "reference to a definition with no stored type"
-    Just schemes -> maybe (Left "reference to a missing cycle member") Right (nth (fromMaybe 0 idx) schemes)
+    Just schemes ->
+      maybe
+        (Left "reference to a missing cycle member")
+        Right
+        (nth (fromMaybe 0 idx) schemes)
   TPrimApp name ty args -> do
     case primScheme name of
       Just general ->
-        require (ty `isInstanceOf` general) ("primitive " <> name <> " used at " <> renderType ty <> ", not an instance of " <> renderScheme general)
+        require
+          (ty `isInstanceOf` general)
+          ( "primitive "
+              <> name
+              <> " used at "
+              <> renderType ty
+              <> ", not an instance of "
+              <> renderScheme general
+          )
       Nothing -> lintConstrained name ty
     let go t = \case
           [] -> Right t
           arg : rest -> case t of
             TFun p r -> do
               ta <- monoOf arg
-              require (ta == p) ("argument of " <> name <> " has type " <> renderType ta <> ", expected " <> renderType p)
+              require
+                (ta == p)
+                ( "argument of "
+                    <> name
+                    <> " has type "
+                    <> renderType ta
+                    <> ", expected "
+                    <> renderType p
+                )
               go r rest
             _ -> Left ("primitive " <> name <> " applied to too many arguments")
     result <- go ty args
     require (not (isFun result)) ("primitive " <> name <> " is not saturated")
     mono result
   TLit (LTensor dims rs) -> do
-    require (length rs == product dims) "tensor literal has the wrong number of values for its shape"
+    require
+      (length rs == product dims)
+      "tensor literal has the wrong number of values for its shape"
     mono (TTensor (shapeOfDims dims) dimOne)
   TLit (LBool _) -> mono TBool
   TLam _ ty body -> do
@@ -196,14 +241,22 @@ lint look ctx = \case
       _ -> Left ("applied a non-function of type " <> renderType tf)
   TLet _ sc rhs body -> do
     actual <- lint look ctx rhs
-    require (actual == sc) ("let binder annotated " <> renderScheme sc <> " but bound to " <> renderScheme actual)
+    require
+      (actual == sc)
+      ( "let binder annotated "
+          <> renderScheme sc
+          <> " but bound to "
+          <> renderScheme actual
+      )
     lint look (VCons sc ctx) body
   TIf c t e -> do
     tc <- monoOf c
     require (tc == TBool) "if condition is not Bool"
     tt <- monoOf t
     te <- monoOf e
-    require (tt == te) ("if branches differ: " <> renderType tt <> " and " <> renderType te)
+    require
+      (tt == te)
+      ("if branches differ: " <> renderType tt <> " and " <> renderType te)
     mono tt
   TPow b n -> do
     tb <- monoOf b
@@ -222,7 +275,9 @@ lint look ctx = \case
     case tys of
       [] -> Left "an empty pack has no element type to lint against"
       TTensor sh d : rest -> do
-        require (all (== TTensor sh d) rest) "pack of tensors with different shapes or dimensions"
+        require
+          (all (== TTensor sh d) rest)
+          "pack of tensors with different shapes or dimensions"
         mono (TTensor (SCons (LLit (length ts)) sh) d)
       t : _ -> Left ("pack of non-tensors of type " <> renderType t)
   TProj t i -> do
@@ -241,36 +296,50 @@ lint look ctx = \case
         require (kindOf arg == k) "type application at the wrong kind"
         pure (Forall rest (substOnce (Map.singleton v arg) t))
       [] -> Left "type application to a term with no type abstraction"
-  TCycle {} -> Left "a cycle inside an expression"
-  where
-    monoOf t = lint look ctx t >>= asMono "subterm"
-    mono = Right . Forall []
-    isFun = \case
-      TFun _ _ -> True
-      _ -> False
-    kindOf = \case
-      AType _ -> KType
-      ALen _ -> KLen
-      AShape _ -> KShape
-      ADim _ -> KDim
+  TCycle{} -> Left "a cycle inside an expression"
+ where
+  monoOf t = lint look ctx t >>= asMono "subterm"
+  mono = Right . Forall []
+  isFun = \case
+    TFun _ _ -> True
+    _ -> False
+  kindOf = \case
+    AType _ -> KType
+    ALen _ -> KLen
+    AShape _ -> KShape
+    ADim _ -> KDim
 
--- | The primitives whose types are relations rather than schemes (design
--- §4.2). Inference solved or defaulted their constraints; lint re-checks the
--- relation on the elaborated type.
+{- | The primitives whose types are relations rather than schemes (design
+§4.2). Inference solved or defaulted their constraints; lint re-checks the
+relation on the elaborated type.
+-}
 lintConstrained :: Text -> Type -> Either Text ()
 lintConstrained name ty = case (name, ty) of
   ("outer", TFun (TTensor s1 d1) (TFun (TTensor s2 d2) (TTensor s3 d3))) -> do
-    ls <- maybe (Left "outer: the left operand's rank is not known") Right (closedLens s1)
-    require (s3 == appendShape ls s2) ("outer: result shape " <> renderType (TTensor s3 d3) <> " is not the concatenation of its operands")
-    require (d3 == dimMul d1 d2) "outer: result dimension is not the product of its operands'"
+    ls <-
+      maybe (Left "outer: the left operand's rank is not known") Right (closedLens s1)
+    require
+      (s3 == appendShape ls s2)
+      ( "outer: result shape "
+          <> renderType (TTensor s3 d3)
+          <> " is not the concatenation of its operands"
+      )
+    require
+      (d3 == dimMul d1 d2)
+      "outer: result dimension is not the product of its operands'"
   ("dot", TFun (TTensor sl d1) (TFun (TTensor sr d2) (TTensor s3 d3))) -> do
-    ls <- maybe (Left "dot: the left operand's rank is not known") Right (closedLens sl)
+    ls <-
+      maybe (Left "dot: the left operand's rank is not known") Right (closedLens sl)
     (s1, n) <- maybe (Left "dot: the left operand is a number") Right (unsnoc ls)
     s2 <- case sr of
       SCons n' rest | n' == n -> Right rest
       _ -> Left "dot: the right operand's first length is not the left operand's last"
-    require (s3 == appendShape s1 s2) "dot: result shape is not the contraction of its operands"
-    require (d3 == dimMul d1 d2) "dot: result dimension is not the product of its operands'"
+    require
+      (s3 == appendShape s1 s2)
+      "dot: result shape is not the contraction of its operands"
+    require
+      (d3 == dimMul d1 d2)
+      "dot: result dimension is not the product of its operands'"
   (eqName, TFun t (TFun t' TBool))
     | eqName == "eq" || eqName == "ne" -> do
         require (t == t') (eqName <> ": operands differ in type")
@@ -278,11 +347,18 @@ lintConstrained name ty = case (name, ty) of
           TTensor _ _ -> Right ()
           TBool -> Right ()
           _ -> Left ("no equality on " <> renderType t)
-  _ -> Left ("primitive " <> name <> " used at " <> renderType ty <> ", which is not a type it has")
-  where
-    unsnoc = \case
-      [] -> Nothing
-      xs -> Just (init xs, last xs)
+  _ ->
+    Left
+      ( "primitive "
+          <> name
+          <> " used at "
+          <> renderType ty
+          <> ", which is not a type it has"
+      )
+ where
+  unsnoc = \case
+    [] -> Nothing
+    xs -> Just (init xs, last xs)
 
 -- | The lengths of a shape that ends in @[]@.
 closedLens :: Shape -> Maybe [Len]
@@ -312,107 +388,141 @@ lookupCtx i ctx = case (i, ctx) of
   (FZ, VCons x _) -> x
   (FS j, VCons _ xs) -> lookupCtx j xs
 
--- | Whether a type is an instance of a scheme: one-way matching of the
--- scheme's quantified variables, each at its kind. Arguments come before
--- results in a scheme, so by the time a composite dimension such as
--- @d1 d2@ is met, its variables are bound and it is checked by equality;
--- the one composite that binds is a single variable to a power (@sqrt@),
--- solved by taking the root.
+{- | Whether a type is an instance of a scheme: one-way matching of the
+scheme's quantified variables, each at its kind. Arguments come before
+results in a scheme, so by the time a composite dimension such as
+@d1 d2@ is met, its variables are bound and it is checked by equality;
+the one composite that binds is a single variable to a power (@sqrt@),
+solved by taking the root.
+-}
 isInstanceOf :: Type -> Scheme -> Bool
 isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
   Just _ -> True
   Nothing -> False
-  where
-    -- The scheme's variable ids are small fixed numbers that can coincide
-    -- with the inferred type's ids; rename them to negative ids, which no
-    -- inferred type contains, so pattern and actual variables never mix.
-    renamed = Map.fromList [(v, fresh v k) | (v, k) <- vs0]
-    fresh v = \case
-      KType -> AType (TVar (negate (v + 1)))
-      KLen -> ALen (LVar (negate (v + 1)) 0)
-      KShape -> AShape (SVar (negate (v + 1)))
-      KDim -> ADim (dimVar (negate (v + 1)))
-    vs = [(negate (v + 1), k) | (v, k) <- vs0]
-    pat = applyType renamed pat0
-    quantified v = v `elem` map fst vs
-    matchType p t m = case (p, t) of
-      (TVar v, _) | quantified v -> bindArg v (AType t) m
-      (TFun a b, TFun c d) -> matchType a c m >>= matchType b d
-      (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
-      _ -> if p == t then Just m else Nothing
-    matchShape p sh m = case (p, sh) of
-      (SVar v, _) | quantified v -> bindArg v (AShape sh) m
-      (SCons l rest, SCons l' rest') -> matchLen l l' m >>= matchShape rest rest'
-      _ -> if p == sh then Just m else Nothing
-    matchLen p l m = case p of
-      LVar v off | quantified v -> case l of
-        LLit j | j >= off -> bindArg v (ALen (LLit (j - off))) m
-        LVar u j | j >= off -> bindArg v (ALen (LVar u (j - off))) m
-        _ -> Nothing
-      _ -> if p == l then Just m else Nothing
-    -- Bound pattern variables are replaced once (their replacements come
-    -- from another namespace and must not be chased); the remaining
-    -- pattern variables are the scheme's unbound ones.
-    matchDim p actual m =
-      let unbound = [(v, k) | (DVar v, k) <- dimAtoms p, quantified v, not (Map.member v m)]
-          boundPart = dimFromAtoms [(a, k) | (a, k) <- dimAtoms p, case a of DVar v -> not (quantified v) || Map.member v m; _ -> True]
-          known = case substOnce m (TTensor SNil boundPart) of
-            TTensor _ d -> d
-            _ -> boundPart
-       in case unbound of
-            [] -> if known == actual then Just m else Nothing
-            [(v, k)] ->
-              -- p = known · v^k, so v^k = actual / known.
-              dimRoot k (dimDiv actual known) >>= \root -> bindArg v (ADim root) m
-            _ -> Nothing
-    bindArg v arg m = case Map.lookup v m of
-      Nothing -> Just (Map.insert v arg m)
-      Just existing -> if existing == arg then Just m else Nothing
+ where
+  -- The scheme's variable ids are small fixed numbers that can coincide
+  -- with the inferred type's ids; rename them to negative ids, which no
+  -- inferred type contains, so pattern and actual variables never mix.
+  renamed = Map.fromList [(v, fresh v k) | (v, k) <- vs0]
+  fresh v = \case
+    KType -> AType (TVar (negate (v + 1)))
+    KLen -> ALen (LVar (negate (v + 1)) 0)
+    KShape -> AShape (SVar (negate (v + 1)))
+    KDim -> ADim (dimVar (negate (v + 1)))
+  vs = [(negate (v + 1), k) | (v, k) <- vs0]
+  pat = applyType renamed pat0
+  quantified v = v `elem` map fst vs
+  matchType p t m = case (p, t) of
+    (TVar v, _) | quantified v -> bindArg v (AType t) m
+    (TFun a b, TFun c d) -> matchType a c m >>= matchType b d
+    (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
+    _ -> if p == t then Just m else Nothing
+  matchShape p sh m = case (p, sh) of
+    (SVar v, _) | quantified v -> bindArg v (AShape sh) m
+    (SCons l rest, SCons l' rest') -> matchLen l l' m >>= matchShape rest rest'
+    _ -> if p == sh then Just m else Nothing
+  matchLen p l m = case p of
+    LVar v off | quantified v -> case l of
+      LLit j | j >= off -> bindArg v (ALen (LLit (j - off))) m
+      LVar u j | j >= off -> bindArg v (ALen (LVar u (j - off))) m
+      _ -> Nothing
+    _ -> if p == l then Just m else Nothing
+  -- Bound pattern variables are replaced once (their replacements come
+  -- from another namespace and must not be chased); the remaining
+  -- pattern variables are the scheme's unbound ones.
+  matchDim p actual m =
+    let unbound = [(v, k) | (DVar v, k) <- dimAtoms p, quantified v, not (Map.member v m)]
+        boundPart =
+          dimFromAtoms
+            [ (a, k)
+            | (a, k) <- dimAtoms p
+            , case a of DVar v -> not (quantified v) || Map.member v m; _ -> True
+            ]
+        known = case substOnce m (TTensor SNil boundPart) of
+          TTensor _ d -> d
+          _ -> boundPart
+     in case unbound of
+          [] -> if known == actual then Just m else Nothing
+          [(v, k)] ->
+            -- p = known · v^k, so v^k = actual / known.
+            dimRoot k (dimDiv actual known) >>= \root -> bindArg v (ADim root) m
+          _ -> Nothing
+  bindArg v arg m = case Map.lookup v m of
+    Nothing -> Just (Map.insert v arg m)
+    Just existing -> if existing == arg then Just m else Nothing
 
 -- Rendering --------------------------------------------------------------------------
 
--- | Print Typed Core with every annotation visible: @Λt0. \(x : t0) -> x@,
--- @f @Num 1@, @let g : Vec (n1 + 1) -> Num = … in …@.
+{- | Print Typed Core with every annotation visible: @Λt0. \(x : t0) -> x@,
+@f @Num 1@, @let g : Vec (n1 + 1) -> Num = … in …@.
+-}
 renderTTerm :: (Hash -> Maybe Int -> Text) -> Vec n Text -> TTerm n -> Text
 renderTTerm namer = go 0
-  where
-    go :: Int -> Vec m Text -> TTerm m -> Text
-    go prec ctx = \case
-      TVr i -> lookupCtx i ctx
-      TRef h idx -> namer h idx
-      TPrimApp p _ [] -> p
-      TPrimApp p _ args -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
-      TLit (LTensor [] [r]) -> showD r
-      TLit (LTensor dims rs) -> nested dims rs
-      TLit (LBool b) -> if b then "true" else "false"
-      TLam (Hint h) ty b -> paren (prec > 0) ("\\(" <> h <> " : " <> renderTypeIds ty <> ") -> " <> go 0 (VCons h ctx) b)
-      TApp f a -> paren (prec > 10) (go 10 ctx f <> " " <> go 11 ctx a)
-      TLet (Hint h) sc e b ->
-        paren (prec > 0) ("let " <> h <> " : " <> renderSchemeIds sc <> " = " <> go 0 ctx e <> " in " <> go 0 (VCons h ctx) b)
-      TIf c t e -> paren (prec > 0) ("if " <> go 0 ctx c <> " then " <> go 0 ctx t <> " else " <> go 0 ctx e)
-      TPow b n -> paren (prec > 9) (go 10 ctx b <> "^" <> T.pack (show n))
-      TNoise Bound k -> "noise " <> T.pack (show k)
-      TNoise Stat k -> "gauss " <> T.pack (show k)
-      TUncertain k x e -> paren (prec > 5) (go 6 ctx x <> (if k == Bound then " ± " else " ±σ ") <> go 6 ctx e)
-      TPack ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
-      TProj b i -> go 11 ctx b <> "." <> T.pack (show i)
-      TTyLam v k b -> paren (prec > 0) ("Λ" <> varName v k <> ". " <> go 0 ctx b)
-      TTyApp b arg -> paren (prec > 10) (go 10 ctx b <> " @" <> renderArg arg)
-      TCycle vars members bodies ->
-        let ctx' = vecAppend (vecMap (\(Hint h, _) -> h) members) ctx
-            binders = T.concat ["Λ" <> varName v k <> ". " | (v, k) <- vars]
-         in binders
-              <> T.intercalate "; " [h <> " : " <> renderTypeIds ty <> " = " <> go 0 ctx' b | ((Hint h, ty), b) <- zip (vecToList members) (vecToList bodies)]
-    paren b s = if b then "(" <> s <> ")" else s
-    varName v = \case
-      KType -> "t" <> T.pack (show v)
-      KLen -> "n" <> T.pack (show v)
-      KShape -> "s" <> T.pack (show v)
-      KDim -> "d" <> T.pack (show v)
-    showD r = T.pack (show (fromRational r :: Double))
-    nested dims rs = case dims of
-      [] -> maybe "[]" showD (nth 0 rs)
-      [_] -> "[" <> T.intercalate ", " (map showD rs) <> "]"
-      d : rest ->
-        let stride = product rest
-         in "[" <> T.intercalate ", " [nested rest (take stride (drop (i * stride) rs)) | i <- [0 .. d - 1]] <> "]"
+ where
+  go :: Int -> Vec m Text -> TTerm m -> Text
+  go prec ctx = \case
+    TVr i -> lookupCtx i ctx
+    TRef h idx -> namer h idx
+    TPrimApp p _ [] -> p
+    TPrimApp p _ args -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
+    TLit (LTensor [] [r]) -> showD r
+    TLit (LTensor dims rs) -> nested dims rs
+    TLit (LBool b) -> if b then "true" else "false"
+    TLam (Hint h) ty b ->
+      paren
+        (prec > 0)
+        ("\\(" <> h <> " : " <> renderTypeIds ty <> ") -> " <> go 0 (VCons h ctx) b)
+    TApp f a -> paren (prec > 10) (go 10 ctx f <> " " <> go 11 ctx a)
+    TLet (Hint h) sc e b ->
+      paren
+        (prec > 0)
+        ( "let "
+            <> h
+            <> " : "
+            <> renderSchemeIds sc
+            <> " = "
+            <> go 0 ctx e
+            <> " in "
+            <> go 0 (VCons h ctx) b
+        )
+    TIf c t e ->
+      paren
+        (prec > 0)
+        ("if " <> go 0 ctx c <> " then " <> go 0 ctx t <> " else " <> go 0 ctx e)
+    TPow b n -> paren (prec > 9) (go 10 ctx b <> "^" <> T.pack (show n))
+    TNoise Bound k -> "noise " <> T.pack (show k)
+    TNoise Stat k -> "gauss " <> T.pack (show k)
+    TUncertain k x e ->
+      paren
+        (prec > 5)
+        (go 6 ctx x <> (if k == Bound then " ± " else " ±σ ") <> go 6 ctx e)
+    TPack ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
+    TProj b i -> go 11 ctx b <> "." <> T.pack (show i)
+    TTyLam v k b -> paren (prec > 0) ("Λ" <> varName v k <> ". " <> go 0 ctx b)
+    TTyApp b arg -> paren (prec > 10) (go 10 ctx b <> " @" <> renderArg arg)
+    TCycle vars members bodies ->
+      let ctx' = vecAppend (vecMap (\(Hint h, _) -> h) members) ctx
+          binders = T.concat ["Λ" <> varName v k <> ". " | (v, k) <- vars]
+       in binders
+            <> T.intercalate
+              "; "
+              [ h <> " : " <> renderTypeIds ty <> " = " <> go 0 ctx' b
+              | ((Hint h, ty), b) <- zip (vecToList members) (vecToList bodies)
+              ]
+  paren b s = if b then "(" <> s <> ")" else s
+  varName v = \case
+    KType -> "t" <> T.pack (show v)
+    KLen -> "n" <> T.pack (show v)
+    KShape -> "s" <> T.pack (show v)
+    KDim -> "d" <> T.pack (show v)
+  showD r = T.pack (show (fromRational r :: Double))
+  nested dims rs = case dims of
+    [] -> maybe "[]" showD (nth 0 rs)
+    [_] -> "[" <> T.intercalate ", " (map showD rs) <> "]"
+    d : rest ->
+      let stride = product rest
+       in "["
+            <> T.intercalate
+              ", "
+              [nested rest (take stride (drop (i * stride) rs)) | i <- [0 .. d - 1]]
+            <> "]"

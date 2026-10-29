@@ -1,11 +1,12 @@
 {-# LANGUAGE TypeFamilies #-}
 
--- | The parser (design §2.5 to §2.7): megaparsec over the token stream from
--- "Eval.Lexer". Produces the surface AST of "Eval.Syntax".
-module Eval.Parser
-  ( parseProgram
-  , parseExpr
-  ) where
+{- | The parser (design §2.5 to §2.7): megaparsec over the token stream from
+"Eval.Lexer". Produces the surface AST of "Eval.Syntax".
+-}
+module Eval.Parser (
+  parseProgram,
+  parseExpr,
+) where
 
 import Control.Monad.Combinators.Expr
 import Data.Bifunctor (first)
@@ -35,12 +36,12 @@ instance P.Stream TokStream where
   chunkEmpty _ = null
   take1_ s = case s.toks of
     [] -> Nothing
-    t : ts -> Just (t, s {toks = ts})
+    t : ts -> Just (t, s{toks = ts})
   takeN_ n s
     | n <= 0 = Just ([], s)
     | null s.toks = Nothing
-    | otherwise = let (a, b) = splitAt n s.toks in Just (a, s {toks = b})
-  takeWhile_ p s = let (a, b) = span p s.toks in (a, s {toks = b})
+    | otherwise = let (a, b) = splitAt n s.toks in Just (a, s{toks = b})
+  takeWhile_ p s = let (a, b) = span p s.toks in (a, s{toks = b})
 
 instance P.VisualStream TokStream where
   showTokens _ = T.unpack . T.unwords . map (showToken . (.value)) . NE.toList
@@ -63,7 +64,7 @@ instance P.TraversableStream TokStream where
           [] -> ""
      in ( Just lineText
         , pst
-            { P.pstateInput = s {toks = post}
+            { P.pstateInput = s{toks = post}
             , P.pstateOffset = max (P.pstateOffset pst) o
             , P.pstateSourcePos = pos
             }
@@ -85,7 +86,9 @@ parseExpr src = do
 
 runP :: Parser a -> Text -> [Located Token] -> Either Text a
 runP p src toks =
-  first (T.pack . P.errorBundlePretty) (P.runParser (p <* P.eof) "<input>" (TokStream src toks))
+  first
+    (T.pack . P.errorBundlePretty)
+    (P.runParser (p <* P.eof) "<input>" (TokStream src toks))
 
 -- Token helpers --------------------------------------------------------------------
 
@@ -107,13 +110,16 @@ match label f =
 kw :: Keyword -> Parser Span
 kw = tok . TKw
 
--- | A binary operator token, but not when a @)@ follows: that is a right
--- section, and the expression parser must stop before it.
+{- | A binary operator token, but not when a @)@ follows: that is a right
+section, and the expression parser must stop before it.
+-}
 opTok :: Text -> Parser Span
 opTok o = P.try (tok (TOp o) <* P.notFollowedBy (tok TRParen))
 
 name :: Parser Name
-name = (\(sp, t) -> Name sp t) <$> match "identifier" (\case TIdent t -> Just t; _ -> Nothing)
+name =
+  (\(sp, t) -> Name sp t)
+    <$> match "identifier" (\case TIdent t -> Just t; _ -> Nothing)
 
 -- Statements ---------------------------------------------------------------------
 
@@ -132,8 +138,9 @@ unitStatement = do
   e <- expr
   pure (SLet (Binding (spanUnion s e.span) n [] e True))
 
--- | @let b@ as a definition (optionally with @where@), or @let b in e@ as an
--- expression statement. Both start the same way, so they share a prefix.
+{- | @let b@ as a definition (optionally with @where@), or @let b in e@ as an
+expression statement. Both start the same way, so they share a prefix.
+-}
 letStatement :: Parser Statement
 letStatement = do
   s <- kw KLet
@@ -149,8 +156,8 @@ letStatement = do
             sp = foldr (spanUnion . (.span)) (spanUnion s b.span) (maybe [] id wh)
         pure (SLet (Binding sp b.name b.params body' False))
     ]
-  where
-    wrapWhere wb acc = Expr (spanUnion wb.span acc.span) (Let wb.name wb.params wb.body acc)
+ where
+  wrapWhere wb acc = Expr (spanUnion wb.span acc.span) (Let wb.name wb.params wb.body acc)
 
 binding :: Parser Binding
 binding = do
@@ -196,45 +203,47 @@ ifExpr = do
 
 opExpr :: Parser Expr
 opExpr = makeExprParser term table
-  where
-    table =
-      [ [InfixR (binop Compose <$ opTok "."), InfixL backtick]
-      , [Prefix (foldr1 (.) <$> P.some (negP P.<|> sqrtP))]
-      , [ InfixL (binop Outer <$ opTok "*")
-        , InfixL (binop Dot <$ opTok "@")
-        , InfixN (binop Cross <$ opTok "×")
-        , InfixL (binop Wedge <$ opTok "/\\")
-        , InfixL (binop EMul <$ opTok ".*")
-        , InfixL (binop EDiv <$ opTok "./")
-        , InfixL (binop Div <$ opTok "/")
-        ]
-      , [InfixL (binop Add <$ opTok "+"), InfixL (binop Sub <$ opTok "-")]
-      , [InfixN plusMinus]
-      , [ InfixN (binop Eq <$ opTok "==")
-        , InfixN (binop Ne <$ opTok "/=")
-        , InfixN (binop Le <$ opTok "<=")
-        , InfixN (binop Ge <$ opTok ">=")
-        , InfixN (binop Lt <$ opTok "<")
-        , InfixN (binop Gt <$ opTok ">")
-        ]
-      , [InfixR (binop And <$ opTok "&&")]
-      , [InfixR (binop Or <$ opTok "||")]
-      , [InfixN (binop To <$ kw KTo)]
+ where
+  table =
+    [ [InfixR (binop Compose <$ opTok "."), InfixL backtick]
+    , [Prefix (foldr1 (.) <$> P.some (negP P.<|> sqrtP))]
+    ,
+      [ InfixL (binop Outer <$ opTok "*")
+      , InfixL (binop Dot <$ opTok "@")
+      , InfixN (binop Cross <$ opTok "×")
+      , InfixL (binop Wedge <$ opTok "/\\")
+      , InfixL (binop EMul <$ opTok ".*")
+      , InfixL (binop EDiv <$ opTok "./")
+      , InfixL (binop Div <$ opTok "/")
       ]
-    negP = do
-      s <- tok (TOp "-")
-      pure (\e -> Expr (spanUnion s e.span) (Neg e))
-    sqrtP = do
-      s <- tok TSqrt
-      pure (\e -> Expr (spanUnion s e.span) (App (Expr s (Var "sqrt")) e))
-    backtick = do
-      _ <- tok TBacktick
-      n <- name
-      _ <- tok TBacktick
-      pure (binop (Infix n.text))
-    plusMinus = do
-      (_, k) <- match "±" (\case TPlusMinus k -> Just k; _ -> Nothing)
-      pure (binop (PlusMinus k))
+    , [InfixL (binop Add <$ opTok "+"), InfixL (binop Sub <$ opTok "-")]
+    , [InfixN plusMinus]
+    ,
+      [ InfixN (binop Eq <$ opTok "==")
+      , InfixN (binop Ne <$ opTok "/=")
+      , InfixN (binop Le <$ opTok "<=")
+      , InfixN (binop Ge <$ opTok ">=")
+      , InfixN (binop Lt <$ opTok "<")
+      , InfixN (binop Gt <$ opTok ">")
+      ]
+    , [InfixR (binop And <$ opTok "&&")]
+    , [InfixR (binop Or <$ opTok "||")]
+    , [InfixN (binop To <$ kw KTo)]
+    ]
+  negP = do
+    s <- tok (TOp "-")
+    pure (\e -> Expr (spanUnion s e.span) (Neg e))
+  sqrtP = do
+    s <- tok TSqrt
+    pure (\e -> Expr (spanUnion s e.span) (App (Expr s (Var "sqrt")) e))
+  backtick = do
+    _ <- tok TBacktick
+    n <- name
+    _ <- tok TBacktick
+    pure (binop (Infix n.text))
+  plusMinus = do
+    (_, k) <- match "±" (\case TPlusMinus k -> Just k; _ -> Nothing)
+    pure (binop (PlusMinus k))
 
 binop :: Op -> Expr -> Expr -> Expr
 binop o a b = Expr (spanUnion a.span b.span) (BinOp o a b)
@@ -252,15 +261,19 @@ withPower base = do
 
 powerSuffix :: Parser (Span, Integer)
 powerSuffix = caret P.<|> match "superscript" (\case TSup n -> Just n; _ -> Nothing)
-  where
-    caret = do
-      s <- tok (TOp "^")
-      neg <- P.optional (tok (TOp "-"))
-      (s2, n) <- match "integer literal" (\case TNum r | denominator r == 1 -> Just (numerator r); _ -> Nothing)
-      pure (spanUnion s s2, maybe n (const (negate n)) neg)
+ where
+  caret = do
+    s <- tok (TOp "^")
+    neg <- P.optional (tok (TOp "-"))
+    (s2, n) <-
+      match
+        "integer literal"
+        (\case TNum r | denominator r == 1 -> Just (numerator r); _ -> Nothing)
+    pure (spanUnion s s2, maybe n (const (negate n)) neg)
 
--- | Application by juxtaposition, or the quantity rule (§2.6) when the head
--- is a number or vector literal.
+{- | Application by juxtaposition, or the quantity rule (§2.6) when the head
+is a number or vector literal.
+-}
 application :: Parser Expr
 application = do
   hd <- atom
@@ -270,11 +283,11 @@ application = do
     _ -> do
       args <- P.many atom
       pure (foldl (\f a -> Expr (spanUnion f.span a.span) (App f a)) hd args)
-  where
-    quantity hd = do
-      units <- P.many unitAtom
-      pure (foldl (binop Outer) hd units)
-    unitAtom = atom >>= withPower
+ where
+  quantity hd = do
+    units <- P.many unitAtom
+    pure (foldl (binop Outer) hd units)
+  unitAtom = atom >>= withPower
 
 -- | A primary expression with any glued projections.
 atom :: Parser Expr
@@ -286,7 +299,8 @@ atom = do
 primary :: Parser Expr
 primary =
   P.choice
-    [ (\(sp, r) -> Expr sp (Num r)) <$> match "number" (\case TNum r -> Just r; _ -> Nothing)
+    [ (\(sp, r) -> Expr sp (Num r))
+        <$> match "number" (\case TNum r -> Just r; _ -> Nothing)
     , (\sp -> Expr sp (Bool True)) <$> kw KTrue
     , (\sp -> Expr sp (Bool False)) <$> kw KFalse
     , (\n -> Expr n.span (Var n.text)) <$> name
@@ -294,8 +308,9 @@ primary =
     , vecOrMat
     ]
 
--- | @(e)@, a left section @(op e)@, or a right section @(e op)@. @(- e)@ is
--- negation, as in Haskell, so @-@ is excluded from left sections.
+{- | @(e)@, a left section @(op e)@, or a right section @(e op)@. @(- e)@ is
+negation, as in Haskell, so @-@ is excluded from left sections.
+-}
 parens :: Parser Expr
 parens = do
   s <- tok TLParen
@@ -320,35 +335,36 @@ parens = do
 
 sectionOp :: Bool -> Parser Op
 sectionOp allowMinus =
-  P.choice $
-    [ Outer <$ tok (TOp "*")
-    , Dot <$ tok (TOp "@")
-    , Cross <$ tok (TOp "×")
-    , Wedge <$ tok (TOp "/\\")
-    , EMul <$ tok (TOp ".*")
-    , EDiv <$ tok (TOp "./")
-    , Div <$ tok (TOp "/")
-    , Add <$ tok (TOp "+")
-    , Eq <$ tok (TOp "==")
-    , Ne <$ tok (TOp "/=")
-    , Le <$ tok (TOp "<=")
-    , Ge <$ tok (TOp ">=")
-    , Lt <$ tok (TOp "<")
-    , Gt <$ tok (TOp ">")
-    , And <$ tok (TOp "&&")
-    , Or <$ tok (TOp "||")
-    , Compose <$ tok (TOp ".")
-    , To <$ kw KTo
-    , PlusMinus <$> plusMinusKind
-    , Infix . (.text) <$> (tok TBacktick *> name <* tok TBacktick)
-    ]
+  P.choice
+    $ [ Outer <$ tok (TOp "*")
+      , Dot <$ tok (TOp "@")
+      , Cross <$ tok (TOp "×")
+      , Wedge <$ tok (TOp "/\\")
+      , EMul <$ tok (TOp ".*")
+      , EDiv <$ tok (TOp "./")
+      , Div <$ tok (TOp "/")
+      , Add <$ tok (TOp "+")
+      , Eq <$ tok (TOp "==")
+      , Ne <$ tok (TOp "/=")
+      , Le <$ tok (TOp "<=")
+      , Ge <$ tok (TOp ">=")
+      , Lt <$ tok (TOp "<")
+      , Gt <$ tok (TOp ">")
+      , And <$ tok (TOp "&&")
+      , Or <$ tok (TOp "||")
+      , Compose <$ tok (TOp ".")
+      , To <$ kw KTo
+      , PlusMinus <$> plusMinusKind
+      , Infix . (.text) <$> (tok TBacktick *> name <* tok TBacktick)
+      ]
       ++ [Sub <$ tok (TOp "-") | allowMinus]
-  where
-    plusMinusKind :: Parser NudgeKind
-    plusMinusKind = snd <$> match "±" (\case TPlusMinus k -> Just k; _ -> Nothing)
+ where
+  plusMinusKind :: Parser NudgeKind
+  plusMinusKind = snd <$> match "±" (\case TPlusMinus k -> Just k; _ -> Nothing)
 
--- | A bracket literal. Nested brackets are simply vectors of vectors; a
--- ragged nesting is a shape error found by the type checker.
+{- | A bracket literal. Nested brackets are simply vectors of vectors; a
+ragged nesting is a shape error found by the type checker.
+-}
 vecOrMat :: Parser Expr
 vecOrMat = do
   s <- tok TLBracket
