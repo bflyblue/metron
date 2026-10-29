@@ -132,7 +132,7 @@ run defs t = do
   v <-
     first
       (T.pack . show)
-      (evalClosed defaultConfig (Runtime typedOf (\_ _ -> False)) typed)
+      (evalClosed defaultConfig (Runtime typedOf (\_ _ -> False) (\_ _ -> False)) typed)
   first (T.pack . show) (render v)
 
 runClosed :: Term Z -> Either Text Text
@@ -681,13 +681,17 @@ desugarTests =
           Right (_, prov) -> Map.lookup [1] prov @?= Just (S.Span (S.Pos 1 5) (S.Pos 1 7))
           Left err -> assertFailure (T.unpack err)
     , testCase "a resolver turns free names into references"
-        $ let resolver n = if n == "k" then Just (Resolution (h "kay", Nothing) False) else Nothing
+        $ let resolver n =
+                if n == "k" then Just (Resolution (h "kay", Nothing) False False) else Nothing
            in case parseExpr "k + 1"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
                 Right (t, _) -> assertBool (show t) (alphaEq t (Ref (h "kay") Nothing +. num 1 :: Term Z))
                 Left err -> assertFailure (T.unpack err)
     , testCase "codebase names shadow primitives"
-        $ let resolver n = if n == "sqrt" then Just (Resolution (h "mine", Nothing) False) else Nothing
+        $ let resolver n =
+                if n == "sqrt"
+                  then Just (Resolution (h "mine", Nothing) False False)
+                  else Nothing
            in case parseExpr "sqrt 4"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
                 Right (t, _) ->
@@ -1412,7 +1416,10 @@ pipelineProperties src =
       $ forProgram src
       $ \e ->
         withElaborated src e $ \_ (_, typed) ->
-          case evalClosed defaultConfig (Runtime (const Nothing) (\_ _ -> False)) typed
+          case evalClosed
+            defaultConfig
+            (Runtime (const Nothing) (\_ _ -> False) (\_ _ -> False))
+            typed
             >>= render of
             Left (Internal msg) -> counterexample (T.unpack msg) False
             Left (UnknownRef _) -> property False
@@ -1483,6 +1490,8 @@ generatorProperty =
   targetKind = \case
     TBool -> "Bool"
     TFun _ _ -> "function"
+    TPoint _ -> "Point"
+    TScale _ -> "Scale"
     TTensor sh d ->
       ( case rankOf sh of
           0 -> "Num"
@@ -1764,7 +1773,7 @@ preludeTests =
         evalP "1 mg" @?= Right ["1 mg"]
         evalP "1 GHz to Hz" @?= Right ["1000000000 Hz"]
     , testCase "accepted units" $ do
-        evalP "3 h + 30 min" @?= Right ["3.5 h"]
+        evalP "3 h + 30 min" @?= Right ["210 min"]
         evalP "30 min + 3 h" @?= Right ["210 min"]
         evalP "1 L to m^3" @?= Right ["0.001 m^3"]
         evalP "1 AU / c to s" @?= Right ["499.00478383615641191… s"]
@@ -1798,9 +1807,11 @@ displayTests =
         evalP "5 km / h" @?= Right ["5 km h^-1"]
         evalP "(2 km)^2" @?= Right ["4 km^2"]
         evalP "[1, 2] km" @?= Right ["[1, 2] km"]
-    , testCase "a sum keeps the left operand's unit" $ do
-        evalP "5 km + 3 m" @?= Right ["5.003 km"]
+    , testCase "a sum takes the smaller unit, whichever side it is on" $ do
+        evalP "5 km + 3 m" @?= Right ["5003 m"]
         evalP "3 m + 5 km" @?= Right ["5003 m"]
+        evalP "3 h + 30 min" @?= Right ["210 min"]
+        evalP "3 h + 30 min to h" @?= Right ["3.5 h"]
     , testCase "to converts for display" $ do
         evalP "5 km / h to m / s" @?= Right ["1.3888888888888888888… m s^-1"]
         evalP "1 AU / c to min" @?= Right ["8.3167463972692735318… min"]
@@ -1965,6 +1976,50 @@ affineTests =
         case evalP ":budget M_earth" of
           Right (_ : _ : row : _) -> T.isInfixOf "σ      G" row && T.isInfixOf "100% of σ²" row @? T.unpack row
           other -> assertFailure (show other)
+    , testCase "points: scales, .+ and .-, printing on the written scale" $ do
+        evalP "20 degC" @?= Right ["20 degC"]
+        evalP "20 °C .+ 5 K" @?= Right ["25 degC"]
+        evalP "20 degC .+ 9 deltaF" @?= Right ["25 degC"]
+        evalP "77 °F .- 68 °F" @?= Right ["9 deltaF"]
+        evalP "20 degC to degF" @?= Right ["68 degF"]
+        evalP "(25 degC .- 20 degC) to K" @?= Right ["5 K"]
+        evalP "100 degC .- 32 degF" @?= Right ["100 K"]
+        evalP "0 kelvin to degC" @?= Right ["-273.15 degC"]
+        evalP "0 J2000 to JD" @?= Right ["2451545 JD"]
+        evalP "(0 J2000 .+ 365.25 day) .- 0 J2000" @?= Right ["365.25 day"]
+        evalP "100 gauge .- 0 gauge" @?= Right ["100 Pa"]
+    , testCase "points compare and have no sum" $ do
+        evalP "20 degC < 70 degF" @?= Right ["true"]
+        evalP "20 degC == 68 degF" @?= Right ["true"]
+        evalP "0 J2000 < 0 MJD" @?= Right ["false"]
+        typeOfTextP "20 degC" @?= Right "Point [K]"
+        typeOfTextP "degC" @?= Right "Scale [K]"
+        typeOfTextP "\\p q -> p .- q" @?= Right "Point d -> Point d -> Num d"
+        typeOfTextP "\\p v -> p .+ v" @?= Right "Point d -> Num d -> Point d"
+        typeOfTextP "\\a b -> a < b" @?= Right "Num d -> Num d -> Bool"
+        case evalP "20 degC + 5 degC" of
+          Left err -> T.isInfixOf "a point has no sum" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "2 * (20 degC)" of
+          Left err -> T.isInfixOf "a point has no sum" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "20 degC to K" of
+          Left err -> T.isInfixOf "to with a scale" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "[1, 2] < [1, 3]" of
+          Left err -> T.isInfixOf "no ordering on Vec 2" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "scale declarations: user scales, :view and :edit read back as written" $ do
+        runLinesP
+          [ "unit mmHg = 133.322 * Pa"
+          , "scale bp = mmHg at 0 mmHg"
+          , "120 bp .+ 10 mmHg"
+          , "(120 bp .- 80 bp)"
+          ]
+          @?= Right ["130 bp", "40 mmHg"]
+        runLinesP ["let boil = 100 degC", ":view boil"] @?= Right ["boil = 100 degC"]
+        runLinesP [":edit degC"] @?= Right ["scale degC = K at 273.15 * K"]
+        runLinesP [":edit km"] @?= Right ["unit km = 10^3 * m"]
     , testCase "display units of one dimension cancel against each other" $ do
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
         evalP "3 h / min" @?= Right ["180"]
@@ -1973,18 +2028,19 @@ affineTests =
         evalP "5 km / h" @?= Right ["5 km h^-1"]
         evalP "(3 rad/s) * 2 s" @?= Right ["6 rad"]
     , testCase
-        "angle is a dimension: the circular functions take it, their inverses give it" $ do
-        evalP "sin (45 deg)" @?= Right ["0.70710678118654752440…"]
-        evalP "atan2 1 1 to deg" @?= Right ["45.000000000000000000… deg"]
-        evalP "asin 1 to deg" @?= Right ["90 deg"]
-        evalP "5 mrad to deg" @?= Right ["0.28647889756541160438… deg"]
-        evalP "1 sr" @?= Right ["1 sr"]
-        case evalP "sin 1" of
-          Left err -> T.isInfixOf "write 1 rad or 45 deg" err @? T.unpack err
-          Right v -> assertFailure (show v)
-        case evalP "1 rad / s + 1 Hz" of
-          Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err
-          Right v -> assertFailure (show v)
+        "angle is a dimension: the circular functions take it, their inverses give it"
+        $ do
+          evalP "sin (45 deg)" @?= Right ["0.70710678118654752440…"]
+          evalP "atan2 1 1 to deg" @?= Right ["45.000000000000000000… deg"]
+          evalP "asin 1 to deg" @?= Right ["90 deg"]
+          evalP "5 mrad to deg" @?= Right ["0.28647889756541160438… deg"]
+          evalP "1 sr" @?= Right ["1 sr"]
+          case evalP "sin 1" of
+            Left err -> T.isInfixOf "write 1 rad or 45 deg" err @? T.unpack err
+            Right v -> assertFailure (show v)
+          case evalP "1 rad / s + 1 Hz" of
+            Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err
+            Right v -> assertFailure (show v)
     , testCase "angles: deg is a unit built on pi" $ do
         evalP "90 deg" @?= Right ["90 deg"]
         evalP "90 deg to rad" @?= Right ["1.5707963267948966192… rad"]
@@ -2144,6 +2200,8 @@ storeTests =
             , "unit furlong = 201.168 * m"
             , "let r = 10 mm ± 0.01 mm #batch7"
             , "let even n = if n == 0 then true else odd (n - 1); let odd n = if n == 0 then false else even (n - 1)"
+            , "unit mmHg = 133.322 * Pa"
+            , "scale bp = mmHg at 0 mmHg"
             , ":add"
             , "let speed = 6 km / h"
             , ":update"
@@ -2155,6 +2213,7 @@ storeTests =
         loaded.codebase.names @?= s.codebase.names
         loaded.codebase.history @?= s.codebase.history
         loaded.codebase.units @?= s.codebase.units
+        loaded.codebase.scales @?= s.codebase.scales
         Map.keysSet s.codebase.terms `Set.isSubsetOf` Map.keysSet loaded.codebase.terms
           @? "every term came back"
         linesIn

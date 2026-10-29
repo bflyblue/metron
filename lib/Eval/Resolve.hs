@@ -65,7 +65,8 @@ renderResolveError = \case
 -- | Free names resolve to whatever the codebase currently binds.
 resolverFor :: Codebase -> Resolver
 resolverFor cb n =
-  (\r@(Reference h i) -> Resolution (h, i) (isUnitRef r cb)) <$> lookupName n cb
+  (\r@(Reference h i) -> Resolution (h, i) (isUnitRef r cb) (isScaleRef r cb))
+    <$> lookupName n cb
 
 typeLookupFor :: Codebase -> TypeLookup
 typeLookupFor cb h = lookupTypes h cb
@@ -120,7 +121,7 @@ enterComponent cb = \case
         ref = Reference h Nothing
         cb' =
           bindName b.name.text ref (addTerm h term (preferLint schemes linted) typed cb)
-    pure (if b.isUnit then markUnit ref cb' else cb')
+    pure (markKind b.kind ref cb')
   CyclicSCC bs -> enterCycle cb bs
 
 -- | Inference and lint must agree; lint is the authority if they ever differ.
@@ -160,7 +161,7 @@ enterCycle cb bs = do
           bindMember acc (i, b) =
             let ref = Reference h (Just i)
                 acc' = bindName b.name.text ref acc
-             in if b.isUnit then markUnit ref acc' else acc'
+             in markKind b.kind ref acc'
       pure (foldl bindMember cb' (zip [0 ..] sorted))
  where
   desugarOne ::
@@ -227,3 +228,10 @@ storeTerm h term cb = do
     either (Left . (.message)) Right (elaborateClosed (typeLookupFor cb) term)
   linted <- lintClosed (typeLookupFor cb) typed
   pure (addTerm h term (preferLint schemes linted) typed cb)
+
+-- | Record what a binding declared besides its value.
+markKind :: S.BindKind -> Reference -> Codebase -> Codebase
+markKind kind ref cb = case kind of
+  S.Plain -> cb
+  S.Unit -> markUnit ref cb
+  S.ScaleDecl -> markScale ref cb

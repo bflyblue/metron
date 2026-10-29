@@ -53,6 +53,8 @@ derived =
   , ("deg", "pi / 180 * rad")
   , ("arcmin", "deg / 60")
   , ("arcsec", "arcmin / 60")
+  , ("deltaC", "K")
+  , ("deltaF", "5/9 * K")
   ]
 
 -- | The 24 SI prefixes as powers of ten, with @u@ as the ASCII micro.
@@ -143,6 +145,22 @@ constants =
   , ("M_sun", "GM_sun / G")
   ]
 
+{- | Scales for points (design §3.6): temperature scales, epochs on the time
+line, gauge pressure. Each is a step unit and an origin.
+-}
+scales :: [(Text, Text)]
+scales =
+  [ ("degC", "K at 273.15 K")
+  , ("degF", "deltaF at 459.67 deltaF")
+  , ("degR", "deltaF at 0 deltaF")
+  , ("kelvin", "K at 0 K")
+  , ("JD", "day at 0 day")
+  , ("MJD", "day at 2400000.5 day")
+  , ("J2000", "day at 2451545 day")
+  , ("unix", "s at 2440587.5 day")
+  , ("gauge", "Pa at 101325 Pa")
+  ]
+
 {- | Tensor algebra: the 3D Levi-Civita tensor and the cross product as the
 Hodge dual of the wedge product (design §3.3).
 -}
@@ -166,10 +184,12 @@ preludeSource =
          , p <> u /= "kg"
          ]
       ++ [def n e | (n, e) <- constants]
+      ++ [scaleDef n e | (n, e) <- scales]
       ++ [def n e | (n, e) <- algebra]
  where
   def n e = "let " <> n <> " = " <> e
   unitDef n e = "unit " <> n <> " = " <> e
+  scaleDef n e = "scale " <> n <> " = " <> e
 
 -- | Every name the prelude defines.
 preludeNames :: [Text]
@@ -177,4 +197,5 @@ preludeNames =
   map fst derived
     ++ [p <> u | (p, _) <- prefixes, u <- prefixable, p <> u /= "kg"]
     ++ map fst constants
+    ++ map fst scales
     ++ map fst algebra

@@ -51,6 +51,10 @@ type VarId = Int
 data Type
   = TBool
   | TTensor Shape Dim
+  | -- | a point of the affine space over  d@ (design §3.6)
+    TPoint Dim
+  | -- | a scale for writing and printing points (design §3.6)
+    TScale Dim
   | TFun Type Type
   | TVar VarId
   deriving stock (Eq, Ord, Show)
@@ -109,6 +113,8 @@ applyType :: Subst -> Type -> Type
 applyType s = \case
   TBool -> TBool
   TTensor sh d -> TTensor (applyShape s sh) (applyDim s d)
+  TPoint d -> TPoint (applyDim s d)
+  TScale d -> TScale (applyDim s d)
   TFun a b -> TFun (applyType s a) (applyType s b)
   TVar v -> case Map.lookup v s of
     Just (AType t) -> applyType s t
@@ -168,6 +174,8 @@ substOnce m = go
   go = \case
     TBool -> TBool
     TTensor sh d -> TTensor (shape sh) (dim d)
+    TPoint d -> TPoint (dim d)
+    TScale d -> TScale (dim d)
     TFun a b -> TFun (go a) (go b)
     TVar v -> case Map.lookup v m of
       Just (AType t) -> t
@@ -200,6 +208,8 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
   go = \case
     TBool -> []
     TTensor sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
+    TPoint d -> [(v, KDim) | v <- dimVars d]
+    TScale d -> [(v, KDim) | v <- dimVars d]
     TFun a b -> go a ++ go b
     TVar v -> [(v, KType)]
   shape = \case
@@ -249,6 +259,8 @@ renderWith :: Map VarId Text -> Int -> Type -> Text
 renderWith names prec = \case
   TBool -> "Bool"
   TTensor sh d -> tensor sh <> dim d
+  TPoint d -> "Point" <> dim d
+  TScale d -> "Scale" <> dim d
   TFun a b -> paren (prec > 0) (renderWith names 1 a <> " -> " <> renderWith names 0 b)
   TVar v -> Map.findWithDefault ("t" <> T.pack (show v)) v names
  where

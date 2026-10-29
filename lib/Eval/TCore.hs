@@ -106,10 +106,13 @@ primScheme name = case name of
   "exp" -> num1
   "log" -> num1
   "atan2" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) angleT)))
-  "lt" -> cmp
-  "le" -> cmp
-  "gt" -> cmp
-  "ge" -> cmp
+  -- Points and scales (design §3.6).
+  "mkScale" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) (TScale d))))
+  "pointOn" -> Just (Forall [dv] (TFun (TScale d) (TFun numT (TPoint d))))
+  "pointAdd" -> Just (Forall [dv] (TFun (TPoint d) (TFun (numD d) (TPoint d))))
+  "pointSub" -> Just (Forall [dv] (TFun (TPoint d) (TFun (TPoint d) (numD d))))
+  "toScale" -> Just (Forall [dv] (TFun (TPoint d) (TFun (TScale d) (TPoint d))))
+  -- lt, le, gt, ge have instance types; see lintConstrained.
   "and" -> mono (TFun TBool (TFun TBool TBool))
   "or" -> mono (TFun TBool (TFun TBool TBool))
   "not" -> mono (TFun TBool TBool)
@@ -154,7 +157,6 @@ primScheme name = case name of
   mono = Just . Forall []
   num1 = mono (TFun numT numT)
   angleT = numD (dimBase Ang)
-  cmp = Just (Forall [dv] (TFun (numD d) (TFun (numD d) TBool)))
 
 -- Lint -------------------------------------------------------------------------
 
@@ -345,12 +347,19 @@ lintConstrained name ty = case (name, ty) of
       (d3 == dimMul d1 d2)
       "dot: result dimension is not the product of its operands'"
   (eqName, TFun t (TFun t' TBool))
-    | eqName == "eq" || eqName == "ne" -> do
+    | eqName `elem` ["eq", "ne"] -> do
         require (t == t') (eqName <> ": operands differ in type")
         case t of
           TTensor _ _ -> Right ()
           TBool -> Right ()
+          TPoint _ -> Right ()
           _ -> Left ("no equality on " <> renderType t)
+    | eqName `elem` ["lt", "le", "gt", "ge"] -> do
+        require (t == t') (eqName <> ": operands differ in type")
+        case t of
+          TTensor SNil _ -> Right ()
+          TPoint _ -> Right ()
+          _ -> Left ("no ordering on " <> renderType t)
   _ ->
     Left
       ( "primitive "
@@ -420,6 +429,8 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (TVar v, _) | quantified v -> bindArg v (AType t) m
     (TFun a b, TFun c d) -> matchType a c m >>= matchType b d
     (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
+    (TPoint da, TPoint db) -> matchDim da db m
+    (TScale da, TScale db) -> matchDim da db m
     _ -> if p == t then Just m else Nothing
   matchShape p sh m = case (p, sh) of
     (SVar v, _) | quantified v -> bindArg v (AShape sh) m

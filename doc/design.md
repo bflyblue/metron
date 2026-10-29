@@ -53,8 +53,8 @@ versioning of definitions over years.
 ### Non-goals for v1
 
 - Strings, lists, user-defined data types, general type classes, IO, effects.
-- Temperature scales with offsets (°C, °F). They are affine, not multiplicative,
-  and need a different unit model.
+- Temperature scales as units. °C and °F are affine, not multiplicative, so they
+  are scales for points (§3.6), never units.
 - Vectors or matrices whose components have different dimensions (see §3.3).
 - Performance beyond "interactive for a few thousand steps".
 - Non-SI unit systems beyond a handful of accepted units iapetus needs.
@@ -207,6 +207,7 @@ From tightest to loosest:
 | 7 | `*`/`⊗` `·`/`@` `∧`/`/\` `⊙`/`.*` `⊘`/`./` `/` | left | tensor product, contracting product, wedge product, elementwise product and division, scalar division (§4.2) |
 | 7 | `×`/`><` | none | cross product |
 | 6 | `+` `-` | left | overloaded over Num, Vec, Mat |
+| 6 | `.+` `.-` | left | point plus amount, point from point (§3.6) |
 | 5 | `±` `±σ` | none | `value ± bound`, `value ±σ stddev`, see §3.2.5 |
 | 4 | `==` `/=` `<` `<=` `>` `>=` | none | ordering on Num only |
 | 3 | `&&` | right | |
@@ -267,6 +268,8 @@ The grammar is over canonical tokens, after the unicode mapping of §2.8.
 program    ::= statement ( sep statement )*
 sep        ::= newline-at-column-0 | ';'
 statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
+             | 'unit' name '=' expr                      -- a display unit (3.2.12)
+             | 'scale' name '=' expr 'at' expr            -- a point scale (3.6)
              | expr
 bindings   ::= binding ( sep binding )*            -- indented block
 binding    ::= name param* '=' expr
@@ -313,6 +316,7 @@ so a plain keyboard is never a barrier, and the pretty-printer can emit either.
 | `⋆` | `star` | 3D Hodge star, prefix; name `star` |
 | `±` | `+-` | declared hard bound |
 | `±σ` | `+-s` | declared standard uncertainty (1σ) |
+| `°C` `°F` | `degC` `degF` | temperature scales (§3.6); `°` alone is `deg` |
 | `√` | `sqrt` | prefix: `√x`, `√(a² + b²)` |
 | `∘` | `.` | composition |
 | `²` `³` `⁻¹` … | `^2` `^3` `^-1` | superscript digits and `⁻` as a power: `m/s²`, `s⁻²` |
@@ -775,13 +779,23 @@ come from:
   Units of one dimension that meet with opposite signs cancel, with their
   factor folded into the number: `2 m * 90 deg / rad` is `3.14… m`, `3 h / min`
   is `180`, `(2 km)^2 / m` is `4000 km`.
-- `+` and `-` keep the left operand's unit: `5 km + 3 m` is `5.003 km`,
-  `3 m + 5 km` is `5003 m`. Projection, packing, negation, `abs`, `transpose` and
+- `+` and `-` take the **smaller** of their operands' units, so that the result
+  does not depend on operand order: `5 km + 3 m` and `3 m + 5 km` are both
+  `5003 m`. Projection, packing, negation, `abs`, `transpose` and
   `⋆` keep the unit; every other operation drops it.
 - `x to u` replaces the display unit with `u`'s. `to` is shape-polymorphic.
 - Two units with identical definitions are one definition with two names
   (content addressing) and print under one of them; the prelude therefore
   defines `Bq` as `1 * Hz` and `Sv` as `1 * Gy`, so each keeps its own identity.
+
+The rule for which unit a result prints in, in order: an explicit `to` wins;
+otherwise the written units, carried and simplified as above (dimensionless
+results are plain numbers, units of one dimension cancel, sums take the smaller
+unit); otherwise, when an operation drops the hint, SI base units. There is no
+best unit for a result, only the one the user wrote or asked for, so the rule
+never invents one: `1 V * 1 A` prints `1 V A`, not `1 W`, because `N m` is as
+often a torque as a joule. A declared preference per dimension (`:prefer km/h`,
+Frink's `:->`) would slot in between the first two steps and is left for later.
 
 A display unit whose dimension does not match the value's is ignored and base
 units are printed, so the rule can never show a wrong number. Units print by
@@ -977,6 +991,68 @@ correlation matrix is a trivial third.
 
 ---
 
+### 3.6 Points and scales: affine quantities
+
+Some quantities are **points**, not amounts: a temperature, an instant, an
+electric potential, a position. Two points can be subtracted, giving the
+amount between them, and an amount can be added to a point, giving another
+point; but two points have no sum and a point has no double. Everything in
+§3.2 to §3.5 is about amounts, which form the vector space `Num δ`. Points
+form an *affine space* over it, and the language gives them their own type,
+`Point δ`, and their own two operators, so that the arithmetic of points can
+never be confused with the arithmetic of amounts, in the same way that the
+products of §3.3 each have one symbol and one type.
+
+| written | type | meaning |
+|---|---|---|
+| `p .- q` | `Point δ → Point δ → Num δ` | the amount from `q` to `p` |
+| `p .+ v` | `Point δ → Num δ → Point δ` | the point `v` beyond `p` |
+| `p == q`, `p < q` | `Bool` | points of one dimension compare |
+| `p + q`, `k * p`, `p + v` | type errors | points have no sum, no multiple; use `.+` |
+
+`.-` reads "from", and `.+` and `.-` sit at the precedence of `+` and `-`.
+`p .+ -v` is the point `v` before `p`. The one legitimate "sum of points",
+the weighted mean, is `q .+ (p .- q) / 2`.
+
+**Scales.** A point is written and printed on a *scale*: a step unit and an
+origin. The step is an ordinary unit of the amount space, the origin a point
+given as an amount from the base origin:
+
+```
+unit  deltaC = K                        -- the Celsius step is the kelvin
+unit  deltaF = 5/9 * K                  -- the Fahrenheit step
+scale degC  = K  at 273.15 K             -- 0 °C is 273.15 K from absolute zero
+scale degF  = deltaF at 459.67 deltaF    -- 0 °F is 459.67 Fahrenheit steps from it
+scale J2000 = day at 2451545 day         -- an epoch: a point on the time line
+scale gauge = Pa at 101325 Pa            -- gauge pressure
+```
+
+`scale name = step at origin` declares a definition whose value is a scale
+(`mkScale step origin : Scale δ`) and marks the name, like `unit`, so that the
+quantity rule accepts it: `20 degC` is `pointOn degC 20 : Point [K]`, the point
+twenty steps up the scale from its origin, stored as `293.15 K`. `°C` and `°F`
+are the unicode spellings of `degC` and `degF`. A difference carries the step
+unit of the scale its operands were written on, so `77 degF .- 68 degF` is
+`9 deltaF`; `20 degC .+ 5 K` and `20 degC .+ 9 deltaF` are both `25 degC`. `p to degF`
+re-expresses a point on another scale of the same dimension; the point does not
+change. A scale's step and origin may themselves be approximate, in which case a
+point written on it carries their nudges like any other value.
+
+**Printing.** A point prints as `(p − origin) / step` followed by the scale's
+name: `25 degC`, `2451545 J2000`... that is, a point prints on the scale it
+was written on, and a point whose scale has been lost prints as an amount from
+the base origin in base units. Points are the one place a display offset is
+needed, and the only place one is allowed: a *unit* is always a factor
+(§3.2.12), which is why Celsius could never be a unit.
+
+**Why a type and not a cleverer unit.** `20 °C + 5 °C` reads as 25 °C if the
+second is a rise and as nothing if it is a temperature; written with a
+factor-and-offset "unit" it silently becomes `298.15 °C`. The point/amount
+distinction is the information the arithmetic needs, and it is the same
+distinction as instant/duration, position/displacement, potential/potential
+difference and absolute/gauge pressure. One type covers them all. Points on
+tensors (`Point` positions as vectors) are a later extension of the same idea.
+
 ## 4. Type system
 
 Hindley-Milner with let-polymorphism, extended with dimensions after Kennedy
@@ -987,14 +1063,16 @@ concatenation for the products and an equality instance (§4.2).
 ### 4.1 Types
 
 ```
-τ ::= Tensor σ δ | Bool | τ -> τ | α
+τ ::= Tensor σ δ | Point δ | Scale δ | Bool | τ -> τ | α
 σ ::= [] | ν : σ | s                   -- a shape: a list of lengths, possibly ending in a shape variable
 δ ::= 1 | B | d | δ·δ | δ⁻¹          -- an abelian group, normalised
 ν ::= k | n | n + k                    -- a literal, a length variable, or a variable plus a literal offset
 ```
 
 `Num δ` abbreviates `Tensor [] δ`, `Vec ν δ` abbreviates `Tensor [ν] δ`, and
-`Mat μ ν δ` abbreviates `Tensor [μ, ν] δ`.
+`Mat μ ν δ` abbreviates `Tensor [μ, ν] δ`. `Point δ` is a point of an affine space
+over `Num δ` and `Scale δ` a scale for writing and printing them (§3.6); both
+are indexed by a dimension only.
 
 **Variables are kinded.** There is one namespace of variables, each with a kind:
 `Type`, `Len`, `Shape`, and `Dim` when dimensions arrive. Each kind is an index
@@ -1108,6 +1186,11 @@ sin cos tan : Num [rad] -> Num 1
 asin acos atan : Num 1 -> Num [rad]
 sinh cosh tanh exp log : Num 1 -> Num 1
 atan2       : Num d -> Num d -> Num [rad]
+mkScale     : Num d -> Num d -> Scale d      -- step, origin (3.6)
+pointOn     : Scale d -> Num 1 -> Point d    -- what the quantity rule builds for `20 degC`
+pointAdd    : Point d -> Num d -> Point d    -- `.+`
+pointSub    : Point d -> Point d -> Num d    -- `.-`
+toScale     : Point d -> Scale d -> Point d  -- `p to s` when s is a scale
 pi e        : Num 1
 e ^ n       : Num d -> Num [d^n]            -- special form, n an integer literal
 noise n     : Vec n 1                        -- special form, n a natural literal
@@ -1784,6 +1867,8 @@ tuned, and compilation is a later milestone.
    `det` kernels: done (Gaussian elimination with pivots whose enclosure
    excludes zero). Remaining: `covariance`, `:covariance`, `cholesky`, `±` on
    tensors (§3.4), and `contract`/`permute` for ranks above two.
+   Points and scales (§3.6): done for scalars; points on tensors (positions
+   as vectors) remain.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),
@@ -1804,12 +1889,6 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
-- Units as lenses. A display unit is today a factor, implicitly the pair
-  (× f, ÷ f). Writing it as an explicit (forward, backward) pair would cover
-  °C, dB and pH, but a non-linear pair does not compose under products and
-  says nothing about which operations are meaningful (`25 °C − 20 °C` is a
-  difference, `20 °C + 5 °C` is nothing), so it belongs inside a typed point
-  quantity such as `Temp` (§10.8), not in place of one. Revisit with Celsius.
 - A `unit` declaration marks a *reference*, so any definition with the same
   body is the same unit: `let x = 1` is `rad`, and `x + 2` prints `3 rad`. The
   honest fix is for the use site to decide: give `Ref` a name hint (ignored by

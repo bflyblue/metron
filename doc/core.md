@@ -320,6 +320,10 @@ Applying the test to the roadmap, in order:
   `Case` and constructor application, once, and removes `If` and the boolean
   literal. `Vec`, `Mat` and `Proj` stay built in because the length index is
   beyond an ordinary data declaration.
+- **Points and scales (design §3.6).** Two constructors in the *type* language,
+  `Point δ` and `Scale δ`, five saturated primitives, and a `scale`
+  declaration that is label-level metadata like `unit`. No Core change: a
+  point is a number at runtime and `.+`/`.-` are primitive applications.
 - **Affine arithmetic, units, printing, covariance.** Runtime and prelude work.
   `Noise` and `Uncertain` already existed for it, and the arithmetic itself
   landed without touching Core: `Eval.Affine` sits entirely under the

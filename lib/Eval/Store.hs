@@ -5,7 +5,7 @@ A store is a directory:
 @
 format          "eval codebase 1"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
-names.log       append-only: time, then  bind name ref | unname name | unit ref
+names.log       append-only: time, then  bind name ref | unname name | unit ref | scale ref
 @
 
 Terms are content-addressed, so they never conflict and are only ever
@@ -30,8 +30,8 @@ module Eval.Store (
 ) where
 
 import Control.Monad (foldM, foldM_, unless)
-import Data.Either (lefts)
 import Data.ByteString qualified as BS
+import Data.Either (lefts)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set (Set)
@@ -167,6 +167,8 @@ loadStore store base = do
     [_, "unname", name] -> (unbindName name cb, notes)
     [_, "unit", target]
       | Just r <- parseRef target -> (markUnit r cb, notes)
+    [_, "scale", target]
+      | Just r <- parseRef target -> (markScale r cb, notes)
     [] -> (cb, notes)
     _ -> (cb, ("names.log:" <> tshow lineNo <> ": unreadable line, skipped") : notes)
 
@@ -195,7 +197,11 @@ sync store old new = do
         [ stamp <> " unit " <> refText r
         | r <- Set.toList (Set.difference new.units old.units)
         ]
-      entries = binds ++ unnames ++ units
+      scales =
+        [ stamp <> " scale " <> refText r
+        | r <- Set.toList (Set.difference new.scales old.scales)
+        ]
+      entries = binds ++ unnames ++ units ++ scales
   unless (null entries)
     $ TIO.appendFile (store.dir </> "names.log") (T.unlines entries)
  where

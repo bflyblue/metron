@@ -358,4 +358,9 @@ primArity = \case
   "mol" -> Just 0
   "cd" -> Just 0
   "rad" -> Just 0
+  "mkScale" -> Just 2
+  "pointOn" -> Just 2
+  "pointAdd" -> Just 2
+  "pointSub" -> Just 2
+  "toScale" -> Just 2
   _ -> Nothing

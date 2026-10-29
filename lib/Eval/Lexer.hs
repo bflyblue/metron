@@ -31,6 +31,8 @@ import Text.Megaparsec.Char.Lexer qualified as L
 data Keyword
   = KLet
   | KUnit
+  | KScale
+  | KAt
   | KIn
   | KWhere
   | KIf
@@ -209,6 +211,8 @@ identifierOrKeyword = do
   pure $ case name of
     "let" -> TKw KLet
     "unit" -> TKw KUnit
+    "scale" -> TKw KScale
+    "at" -> TKw KAt
     "in" -> TKw KIn
     "where" -> TKw KWhere
     "if" -> TKw KIf
@@ -248,6 +252,8 @@ symbol =
     , string "||" $> TOp "||"
     , string "∨" $> TOp "||"
     , string "∘" $> TOp "."
+    , string ".+" $> TOp ".+"
+    , string ".-" $> TOp ".-"
     , string ".*" $> TOp ".*"
     , string "./" $> TOp "./"
     , string "⊙" $> TOp ".*"
@@ -270,6 +276,8 @@ symbol =
     , char '√' $> TSqrt
     , char '¬' $> TIdent "not"
     , char '⋆' $> TIdent "star"
+    , string "°C" $> TIdent "degC"
+    , string "°F" $> TIdent "degF"
     , char '°' $> TIdent "deg"
     , char '′' $> TIdent "arcmin"
     , char '″' $> TIdent "arcsec"

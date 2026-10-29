@@ -11,6 +11,7 @@ module Eval.Syntax (
   Expr (..),
   Node (..),
   Binding (..),
+  BindKind (..),
   Statement (..),
   renderSpanError,
 ) where
@@ -46,6 +47,10 @@ data Op
     Outer
   | -- | juxtaposition, @5 km@: a literal times a unit expression (§2.6); the desugarer checks the unit
     Scale
+  | -- | @.+@: a point plus an amount (§3.6)
+    PAdd
+  | -- | @.-@: the amount from one point to another (§3.6)
+    PSub
   | -- | @·@, @@@: contracting product
     Dot
   | -- | @×@, @><@: the 3D cross product, a prelude definition
@@ -107,8 +112,13 @@ with @unit@ instead of @let@ is a display unit (design §3.2.12): the
 codebase remembers that about the name, and values computed from it print
 in terms of it.
 -}
+
+-- | What a top-level definition declares besides a value (design §3.2.12, §3.6).
+data BindKind = Plain | Unit | ScaleDecl
+  deriving stock (Eq, Show)
+
 data Binding = Binding
-  {span :: Span, name :: Name, params :: [Name], body :: Expr, isUnit :: Bool}
+  {span :: Span, name :: Name, params :: [Name], body :: Expr, kind :: BindKind}
   deriving stock (Eq, Show)
 
 data Statement

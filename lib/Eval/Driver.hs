@@ -139,6 +139,7 @@ runtimeOf cb =
   Runtime
     { typedOf = (`lookupTyped` cb)
     , isUnit = \h i -> isUnitRef (Reference h i) cb
+    , isScale = \h i -> isScaleRef (Reference h i) cb
     }
 
 {- | Desugar, typecheck, elaborate and lint an expression against a codebase.
@@ -208,7 +209,12 @@ command session src = \case
     e <- parseExpr (T.unwords rest)
     (_, _, ty) <- checkExpr cb (T.unwords rest) e
     pure [ty]
-  ["edit", n] -> keep $ withName n $ \r -> (\body -> ["let " <> n <> " = " <> body]) <$> viewReference cb r
+  ["edit", n] -> keep $ withName n $ \r ->
+    let keyword
+          | isUnitRef r cb = "unit "
+          | isScaleRef r cb = "scale "
+          | otherwise = "let "
+     in (\body -> [keyword <> n <> " = " <> body]) <$> viewReference cb r
   ["lint", n] -> keep $ withName n $ \r -> case lookupTyped r.hash cb of
     Nothing -> Left ("no typed core for " <> showHash r.hash)
     Just t -> case lintClosed (typeLookupFor cb) t of

@@ -47,6 +47,8 @@ data Constraint
     Append Shape Shape Shape
   | -- | @Eq τ@: τ is a tensor or Bool
     EqInstance Type
+  | -- | lt, le, gt, ge: a number or a point (design §3.6)
+    OrdInstance Type
 
 data St = St
   { subst :: Subst
@@ -150,6 +152,8 @@ unify p expected actual = do
     (TVar v, t) -> bindVar p v (AType t)
     (t, TVar v) -> bindVar p v (AType t)
     (TFun a1 b1, TFun a2 b2) -> unify p a1 a2 >> unify p b1 b2
+    (TPoint d1, TPoint d2) -> dims d1 d2
+    (TScale d1, TScale d2) -> dims d1 d2
     (TTensor s1 d1, TTensor s2 d2) -> do
       st <- get
       case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
@@ -158,7 +162,36 @@ unify p expected actual = do
           failAt
             p
             ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
+    (TPoint _, TTensor _ _) ->
+      failAt
+        p
+        ( "expected "
+            <> renderType e
+            <> ", got "
+            <> renderType a
+            <> ": a point and an amount; a point has no sum, multiple or unit; use .+ and .-, or to with a scale (design §3.6)"
+        )
+    (TTensor _ _, TPoint _) ->
+      failAt
+        p
+        ( "expected "
+            <> renderType e
+            <> ", got "
+            <> renderType a
+            <> ": an amount and a point; a point has no sum, multiple or unit; use .+ and .-, or to with a scale (design §3.6)"
+        )
     _ -> failAt p ("expected " <> renderType e <> ", got " <> renderType a)
+ where
+  dims d1 d2 = do
+    st <- get
+    case runStateT (unifyDim p d1 d2) st of
+      Right ((), st') -> put st'
+      Left (TypeError _ detail) -> do
+        e <- resolve expected
+        a <- resolve actual
+        failAt
+          p
+          ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
 
 bindVar :: Path -> VarId -> Arg -> Infer ()
 bindVar p v arg = do
@@ -311,8 +344,20 @@ solveOne p = \case
     case t' of
       TTensor _ _ -> pure True
       TBool -> pure True
+      TPoint _ -> pure True
       TVar _ -> pure False
       _ -> failAt p ("no equality on " <> renderType t')
+  OrdInstance t -> do
+    t' <- resolve t
+    case t' of
+      TTensor SNil _ -> pure True
+      TTensor (SVar _) _ -> pure False
+      TPoint _ -> pure True
+      TVar _ -> pure False
+      _ ->
+        failAt
+          p
+          ("no ordering on " <> renderType t' <> "; only numbers and points compare")
 
 {- | At a generalisation point, constraints that only mention variables about
 to be quantified cannot wait: default them (design §4.2). The unknown-rank
@@ -335,6 +380,12 @@ settle here ctx = do
   forM_ (reverse dflt) $ \(p, c) -> case applyC s c of
     Append s1 _ _ -> unifyShape p s1 SNil >> defer p c
     EqInstance t -> unify p numT t >> defer p c
+    -- Ordering defaults to a number of any dimension, so that \a b -> a < b
+    -- stays dimension-polymorphic.
+    OrdInstance t -> do
+      d <- freshDim
+      unify p (numD d) t
+      defer p c
   solvePending
  where
   partitionWith f xs = (filter f xs, filter (not . f) xs)
@@ -343,11 +394,13 @@ applyC :: Subst -> Constraint -> Constraint
 applyC s = \case
   Append a b c -> Append (applyShape s a) (applyShape s b) (applyShape s c)
   EqInstance t -> EqInstance (applyType s t)
+  OrdInstance t -> OrdInstance (applyType s t)
 
 constraintVars :: Constraint -> [VarId]
 constraintVars = \case
   Append a b c -> map fst (concatMap (freeVars . (`TTensor` dimOne)) [a, b, c])
   EqInstance t -> map fst (freeVars t)
+  OrdInstance t -> map fst (freeVars t)
 
 -- Generalisation and instantiation ---------------------------------------------------
 
@@ -415,6 +468,8 @@ negativeOnly quantified ts =
   exponents v = \case
     TBool -> []
     TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TPoint d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TScale d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TFun a b -> exponents v a ++ exponents v b
     TVar _ -> []
 
@@ -605,6 +660,10 @@ primType p name argc = do
     _ | name == "eq" || name == "ne" -> do
       a <- freshType
       defer p (EqInstance a)
+      pure (TFun a (TFun a TBool))
+    _ | name `elem` ["lt", "le", "gt", "ge"] -> do
+      a <- freshType
+      defer p (OrdInstance a)
       pure (TFun a (TFun a TBool))
     _ -> case primScheme name of
       Just sc -> fst <$> instantiate sc

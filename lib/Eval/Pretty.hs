@@ -171,12 +171,41 @@ renderValueWith namer scale showMagnitude = \case
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
+  -- A point prints on the scale it was written on (design §3.6): steps from
+  -- the origin, then the scale's name; without a scale, as an amount from
+  -- the base origin in base units.
+  VPoint d sc m -> do
+    x <- m
+    pure $ case sc of
+      Just s
+        | Just atom <- s.name
+        , Right steps <- divM (scale + 4) (subM x s.origin) s.step ->
+            showMagnitude steps <> " " <> atomNameWith namer atom
+      _ ->
+        showMagnitude x
+          <> (if T.null (renderUnits d) then "" else " " <> renderUnits d)
+          <> " (point)"
+  VScale s ->
+    Right $ case s.name of
+      Just atom -> "scale " <> atomNameWith namer atom
+      Nothing ->
+        "scale: step "
+          <> showMagnitude s.step
+          <> " at "
+          <> showMagnitude s.origin
+          <> (if T.null (renderUnits s.dim) then "" else " " <> renderUnits s.dim)
   v -> do
     (dims, scaled, units) <- displayParts namer scale v
     pure
       ( renderNested showMagnitude dims scaled
           <> (if T.null units then "" else " " <> units)
       )
+
+-- | The current name of a unit or scale atom.
+atomNameWith :: RefNamer -> UnitAtom -> Text
+atomNameWith namer = \case
+  UnitRef h i -> namer h i
+  UnitBase u -> u
 
 {- | What a tensor prints as: its shape, its magnitudes in the display unit
 (or in base units), and the unit text. Forces every element.
@@ -198,12 +227,9 @@ displayParts namer scale = \case
   -- Positive exponents first, otherwise in the order the units appeared.
   renderHint h =
     T.unwords
-      [ atomName u.atom <> (if u.power == 1 then "" else "^" <> tshow u.power)
+      [ atomNameWith namer u.atom <> (if u.power == 1 then "" else "^" <> tshow u.power)
       | u <- filter ((> 0) . (.power)) h.atoms ++ filter ((< 0) . (.power)) h.atoms
       ]
-  atomName = \case
-    UnitRef h i -> namer h i
-    UnitBase u -> u
 
 {- | The raw form of a magnitude for @:exact@ (design §3.2.10): the rational,
 or the midpoint, every nudge with its kind and origin, and the slack.
@@ -375,6 +401,11 @@ renderTerm namer = go 0
 
   prim :: Int -> Vec m Text -> Text -> [Term m] -> Text
   prim prec ctx p args = case (binary p, args) of
+    -- Points and scales read back as they are written (design §3.6).
+    (_, [s, Lit (LTensor [] [r])])
+      | p == "pointOn" ->
+          paren (prec > 10) (renderRational 20 r <> " " <> go 11 ctx s)
+    (_, [a, b]) | p == "mkScale" -> paren (prec > 0) (go 1 ctx a <> " at " <> go 1 ctx b)
     (Just (sym, lvl, assoc), [a, b]) ->
       let (lp, rp) = case assoc of
             L -> (lvl, lvl + 1)

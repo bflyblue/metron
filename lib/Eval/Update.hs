@@ -97,7 +97,8 @@ propagate initial cb0 = go cb0 initial (Propagation cb0 [] []) affectedInOrder
                   refmap' = foldr (\(_, old, new) -> Map.insert old new) refmap renamed
                   rebind (n, old, new) acc' =
                     let acc'' = bindName n new acc'
-                     in if isUnitRef old acc'' then markUnit new acc'' else acc''
+                     in (if isScaleRef old acc'' then markScale new else id)
+                          (if isUnitRef old acc'' then markUnit new acc'' else acc'')
                   cb' = foldr rebind (addTerm h' t' schemes typed cb) renamed
                in go cb' refmap' acc{upgraded = reverse renamed ++ acc.upgraded} hs
 

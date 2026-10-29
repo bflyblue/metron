@@ -60,7 +60,7 @@ index). Names bound locally shadow these; these shadow primitives.
 {- | What a free name resolves to, and whether it was declared a display unit
 (design §3.2.12), which is what the quantity rule accepts (§2.6).
 -}
-data Resolution = Resolution {ref :: (Hash, Maybe Int), isUnit :: Bool}
+data Resolution = Resolution {ref :: (Hash, Maybe Int), isUnit :: Bool, isScale :: Bool}
 
 type Resolver = Text -> Maybe Resolution
 
@@ -151,7 +151,12 @@ desugar path ctx e = do
           <$> asks (.owner)
           <*> desugar (0 : path) ctx a
           <*> desugar (1 : path) ctx b
-      S.To -> prim "to" [a, b]
+      -- A point moves to another scale; everything else to a display unit.
+      S.To -> do
+        scaleName <- isScaleName ctx b
+        prim (if scaleName then "toScale" else "to") [a, b]
+      S.PAdd -> prim "pointAdd" [a, b]
+      S.PSub -> prim "pointSub" [a, b]
       S.Compose ->
         -- f ∘ g  =  \x -> f (g x)
         let x = fresh "c" 0
@@ -177,20 +182,25 @@ desugar path ctx e = do
           )
       -- Juxtaposition is for units (§2.6): 5 km, 3 (m/s), [1, 0, 0] km.
       S.Scale -> do
+        scaleName <- isScaleName ctx b
         ok <- unitExpr ctx b
-        if ok
-          then prim "outer" [a, b]
+        if scaleName
+          then -- 20 degC: a point on the scale (design §3.6).
+            prim "pointOn" [b, a]
           else
-            failWith
-              ( BadSpecialForm
-                  b.span
-                  ( ( case b.node of
-                        S.Var x -> "`" <> x <> "` is not a unit"
-                        _ -> "this is not a unit expression"
-                    )
-                      <> ": a value next to a literal must be a unit (5 km, 3 (m/s)); write the `*`"
+            if ok
+              then prim "outer" [a, b]
+              else
+                failWith
+                  ( BadSpecialForm
+                      b.span
+                      ( ( case b.node of
+                            S.Var x -> "`" <> x <> "` is not a unit"
+                            _ -> "this is not a unit expression"
+                        )
+                          <> ": a value next to a literal must be a unit (5 km, 3 (m/s)); write the `*`"
+                      )
                   )
-              )
       _ -> prim (opPrim op) [a, b]
     -- Negating a constant is a negative constant, so that `-3` and a literal
     -- negative three are one term with one hash (core.md §6: constants are
@@ -373,6 +383,8 @@ opPrim = \case
   S.And -> "and"
   S.Or -> "or"
   S.To -> "to"
+  S.PAdd -> "pointAdd"
+  S.PSub -> "pointSub"
   S.PlusMinus _ -> "uncertain"
   S.Compose -> "compose"
   S.Infix n -> n
@@ -415,3 +427,11 @@ unitExpr ctx e = case e.node of
   _ -> pure False
  where
   specialNames = ["noise", "gauss", "within", "sigma"]
+
+-- | Whether an expression is a free name declared with @scale@ (design §3.6).
+isScaleName :: Ctx n -> S.Expr -> M Bool
+isScaleName ctx e = case e.node of
+  S.Var x
+    | Nothing <- lookupCtx x ctx ->
+        asks (\env -> maybe False (.isScale) (env.resolve x))
+  _ -> pure False

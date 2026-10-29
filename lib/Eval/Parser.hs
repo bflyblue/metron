@@ -127,7 +127,7 @@ program :: Parser [Statement]
 program = P.many (tok TSep) *> P.sepEndBy statement (P.some (tok TSep))
 
 statement :: Parser Statement
-statement = letStatement P.<|> unitStatement P.<|> SExpr <$> expr
+statement = letStatement P.<|> unitStatement P.<|> scaleStatement P.<|> SExpr <$> expr
 
 -- | @unit name = expr@: a definition that is also a display unit.
 unitStatement :: Parser Statement
@@ -136,7 +136,22 @@ unitStatement = do
   n <- name
   _ <- tok TEquals
   e <- expr
-  pure (SLet (Binding (spanUnion s e.span) n [] e True))
+  pure (SLet (Binding (spanUnion s e.span) n [] e Unit))
+
+{- | @scale name = step at origin@ (design §3.6): a definition whose value is
+@mkScale step origin@, marked as a scale.
+-}
+scaleStatement :: Parser Statement
+scaleStatement = do
+  s <- kw KScale
+  n <- name
+  _ <- tok TEquals
+  step <- expr
+  _ <- kw KAt
+  origin <- expr
+  let sp = spanUnion s origin.span
+      body = Expr sp (App (Expr sp (App (Expr s (Var "mkScale")) step)) origin)
+  pure (SLet (Binding sp n [] body ScaleDecl))
 
 {- | @let b@ as a definition (optionally with @where@), or @let b in e@ as an
 expression statement. Both start the same way, so they share a prefix.
@@ -154,7 +169,7 @@ letStatement = do
         wh <- P.optional whereClause
         let body' = maybe b.body (foldr wrapWhere b.body) wh
             sp = foldr (spanUnion . (.span)) (spanUnion s b.span) (maybe [] id wh)
-        pure (SLet (Binding sp b.name b.params body' False))
+        pure (SLet (Binding sp b.name b.params body' Plain))
     ]
  where
   wrapWhere wb acc = Expr (spanUnion wb.span acc.span) (Let wb.name wb.params wb.body acc)
@@ -165,7 +180,7 @@ binding = do
   ps <- P.many name
   _ <- tok TEquals
   e <- expr
-  pure (Binding (spanUnion n.span e.span) n ps e False)
+  pure (Binding (spanUnion n.span e.span) n ps e Plain)
 
 whereClause :: Parser [Binding]
 whereClause = kw KWhere *> P.sepBy1 binding (tok TSep) <* tok TBlockEnd
@@ -216,7 +231,12 @@ opExpr = makeExprParser term table
       , InfixL (binop EDiv <$ opTok "./")
       , InfixL (binop Div <$ opTok "/")
       ]
-    , [InfixL (binop Add <$ opTok "+"), InfixL (binop Sub <$ opTok "-")]
+    ,
+      [ InfixL (binop Add <$ opTok "+")
+      , InfixL (binop Sub <$ opTok "-")
+      , InfixL (binop PAdd <$ opTok ".+")
+      , InfixL (binop PSub <$ opTok ".-")
+      ]
     , [InfixN plusMinus]
     , [Postfix labelP]
     ,
@@ -368,6 +388,8 @@ sectionOp allowMinus =
       , And <$ tok (TOp "&&")
       , Or <$ tok (TOp "||")
       , Compose <$ tok (TOp ".")
+      , PAdd <$ tok (TOp ".+")
+      , PSub <$ tok (TOp ".-")
       , To <$ kw KTo
       , PlusMinus <$> plusMinusKind
       , Infix . (.text) <$> (tok TBacktick *> name <* tok TBacktick)

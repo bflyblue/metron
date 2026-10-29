@@ -153,3 +153,16 @@
 - Display units of one dimension cancel: `2 m * 90 deg / rad` prints
   `3.14… m`, `3 h / min` prints `180`, `(2 km)^2 / m` prints `4000 km`. Hints
   now carry each unit's own dimension and factor.
+- Points and scales (design §3.6). Affine quantities get their own type:
+  `Point d` with `p .- q : Num d` and `p .+ v : Point d`, written on a
+  `scale name = step at origin` and printed on the scale they were written
+  on. `20 °C .+ 5 K` is `25 degC`, `77 °F .- 68 °F` is `9 deltaF`,
+  `20 degC + 5 degC` is a type error that says why. Points compare with `==`
+  and `<`; the comparisons are now instance-constrained over numbers and
+  points. Prelude: `degC`, `degF`, `degR`, `kelvin` with step units `deltaC`
+  and `deltaF`; epochs `JD`, `MJD`, `J2000`, `unix`; `gauge` pressure. The
+  type language gains `Point` and `Scale`; Core is unchanged.
+- Sums take the smaller unit, so `5 km + 3 m` and `3 m + 5 km` both print
+  `5003 m` (was: the left operand's). Design §3.2.12 states the display rule
+  in order: `to` wins; else the written units, simplified; else base units.
+  Products are never renamed to a named unit.

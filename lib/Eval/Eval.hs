@@ -26,6 +26,7 @@ module Eval.Eval (
   UnitAtom (..),
   UnitHint (..),
   UnitFactor (..),
+  ScaleHint (..),
   Site (..),
   eval,
   evalClosed,
@@ -70,6 +71,7 @@ reference, and whether a reference was declared a display unit.
 data Runtime = Runtime
   { typedOf :: Hash -> Maybe (TTerm Z)
   , isUnit :: Hash -> Maybe Int -> Bool
+  , isScale :: Hash -> Maybe Int -> Bool
   }
 
 data EvalError
@@ -128,9 +130,25 @@ data UnitHint = UnitHint
   }
   deriving stock (Eq, Show)
 
+{- | How a point is written and printed (design §3.6): a step unit, an origin
+as an amount from the base origin, and the declared name if any.
+-}
+data ScaleHint = ScaleHint
+  { name :: Maybe UnitAtom
+  , step :: Magnitude
+  , stepHint :: Maybe UnitHint
+  -- ^ the step's own display unit, which differences inherit
+  , origin :: Magnitude
+  , dim :: Dim
+  }
+  deriving stock (Eq, Show)
+
 data Value
   = -- | lengths, dimension, display unit, flat row-major elements in SI base units
     VTensor [Int] Dim (Maybe UnitHint) (Vector Elem)
+  | -- | a point of the affine space over the dimension, as an amount from the base origin, with the scale it was written on
+    VPoint Dim (Maybe ScaleHint) Elem
+  | VScale ScaleHint
   | VBool Bool
   | VClosure Closure
 
@@ -166,7 +184,9 @@ eval cfg rt = go
               Nothing -> Left (BadCycleIndex i)
             _ -> Left (BadCycleIndex i)
         -- A declared unit is its own display unit (design §3.2.12).
-        if rt.isUnit h mi then asUnit (UnitRef h mi) v else Right v
+        if rt.isUnit h mi
+          then asUnit (UnitRef h mi) v
+          else if rt.isScale h mi then asScale (UnitRef h mi) v else Right v
     TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
     TLit (LTensor dims rs) -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
     TLit (LBool b) -> Right (VBool b)
@@ -288,6 +308,22 @@ tensor = \case
   VTensor dims d hint buf -> Right (dims, d, hint, buf)
   _ -> Left (Internal "expected a tensor")
 
+point :: Value -> Either EvalError (Dim, Maybe ScaleHint, Elem)
+point = \case
+  VPoint d sc m -> Right (d, sc, m)
+  _ -> Left (Internal "expected a point")
+
+scaleOf :: Value -> Either EvalError ScaleHint
+scaleOf = \case
+  VScale s -> Right s
+  _ -> Left (Internal "expected a scale")
+
+-- | A number or a point: what the comparisons order.
+ordered :: Value -> Either EvalError Magnitude
+ordered = \case
+  VPoint _ _ m -> m
+  v -> scalar v
+
 -- | The one element of a rank-zero tensor.
 scalar :: Value -> Either EvalError Magnitude
 scalar v = (\(x, _, _) -> x) <$> scalarFull v
@@ -310,6 +346,12 @@ asUnit atom = \case
   VTensor [] d _ buf | V.length buf == 1 -> do
     x <- V.head buf
     Right (VTensor [] d (Just (UnitHint [UnitFactor atom 1 d x] x d)) buf)
+  v -> Right v
+
+-- | Name a scale value after the definition it came from.
+asScale :: UnitAtom -> Value -> Thunk
+asScale atom = \case
+  VScale s -> Right (VScale s{name = Just atom})
   v -> Right v
 
 -- Display units ----------------------------------------------------------------------
@@ -363,6 +405,12 @@ hintInv p a = mkHint p [u{power = negate u.power} | u <- a.atoms]
 hintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
 hintPow p k a = mkHint p [u{power = u.power * k} | u <- a.atoms]
 
+{- | The unit a sum prints in: the smaller of its operands', so that a + b and
+b + a print alike (design §3.2.12); the left one when they are equal.
+-}
+smallerUnit :: UnitHint -> UnitHint -> Maybe UnitHint
+smallerUnit a b = Just (if midpoint b.factor < midpoint a.factor then b else a)
+
 {- | The display unit of a product or quotient of two values: combine when
 both have one, keep the one that exists otherwise.
 -}
@@ -400,8 +448,8 @@ runPrim cfg rt prim args = case (prim, args) of
               (Exact 1)
           )
   -- Sum: the left operand's display unit wins.
-  ("add", [a, b]) -> elementwise2 (pureOp addM) const (combine (\x _ -> Just x)) a b
-  ("sub", [a, b]) -> elementwise2 (pureOp subM) const (combine (\x _ -> Just x)) a b
+  ("add", [a, b]) -> elementwise2 (pureOp addM) const (combine smallerUnit) a b
+  ("sub", [a, b]) -> elementwise2 (pureOp subM) const (combine smallerUnit) a b
   ("neg", [a]) -> elementwise1 negM a
   ("abs", [a]) -> elementwise1 (absM p) a
   ("emul", [a, b]) -> elementwise2 (pureOp (mulM p)) dimMul (combine (hintMul p)) a b
@@ -587,6 +635,31 @@ runPrim cfg rt prim args = case (prim, args) of
     (dims, d, _, buf) <- tensor =<< a
     (_, _, uh) <- scalarFull =<< u
     Right (VTensor dims d uh buf)
+  -- Points and scales (design §3.6).
+  ("mkScale", [st, o]) -> do
+    (stepM, d, stepHint) <- scalarFull =<< st
+    (originM, _, _) <- scalarFull =<< o
+    Right (VScale (ScaleHint Nothing stepM stepHint originM d))
+  ("pointOn", [s, x]) -> do
+    sc <- scaleOf =<< s
+    k <- scalar =<< x
+    Right (VPoint sc.dim (Just sc) (Right (addM sc.origin (mulM p k sc.step))))
+  ("pointAdd", [pt, v]) -> do
+    (d, sc, m) <- point =<< pt
+    (dv, _, _) <- scalarFull =<< v
+    Right (VPoint d sc ((`addM` dv) <$> m))
+  -- The amount between two points, in the step unit of their common scale.
+  ("pointSub", [pt, q]) -> do
+    (d, sc1, m1) <- point =<< pt
+    (_, sc2, m2) <- point =<< q
+    let hint = case (sc1, sc2) of
+          (Just a, Just b) | a.name == b.name -> a.stepHint
+          _ -> Nothing
+    Right (VTensor [] d hint (V.singleton (subM <$> m1 <*> m2)))
+  ("toScale", [pt, s]) -> do
+    (d, _, m) <- point =<< pt
+    sc <- scaleOf =<< s
+    Right (VPoint d (Just sc) m)
   _
     | primArity prim == Just (length args) ->
         Left (Unsupported (prim <> ": not implemented yet"))
@@ -623,8 +696,8 @@ runPrim cfg rt prim args = case (prim, args) of
     x <- scalar =<< a
     num (dimBase Ang) Nothing <$> f x
   compareWith decide a b = do
-    x <- scalar =<< a
-    y <- scalar =<< b
+    x <- ordered =<< a
+    y <- ordered =<< b
     VBool . decide <$> arith (compareM cfg.sigma p x y)
   -- Tensors of one shape (lint agrees) or two booleans: the equality
   -- instances of design §4.2. Tensors are equal when every component is
@@ -638,7 +711,13 @@ runPrim cfg rt prim args = case (prim, args) of
         ys' <- sequence (V.toList ys)
         and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
       (VBool m, VBool n) -> Right (m == n)
-      _ -> Left (Internal "==: operands are not both tensors or both booleans")
+      (VPoint _ _ xm, VPoint _ _ ym) -> do
+        xv <- xm
+        yv <- ym
+        arith (equalM cfg.sigma p xv yv)
+      _ ->
+        Left
+          (Internal "==: operands are not both tensors, both booleans or both points")
   matrixRows n buf = do
     xs <- sequence (V.toList buf)
     pure (chunks n xs)
@@ -730,6 +809,8 @@ render = \case
   VTensor dims _ _ buf -> do
     rs <- sequence (V.toList buf)
     pure (nested dims rs)
+  VPoint _ _ m -> ("point " <>) . magnitude <$> m
+  VScale _ -> Right "<scale>"
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
