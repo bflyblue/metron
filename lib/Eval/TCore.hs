@@ -316,10 +316,21 @@ lookupCtx i ctx = case (i, ctx) of
 -- the one composite that binds is a single variable to a power (@sqrt@),
 -- solved by taking the root.
 isInstanceOf :: Type -> Scheme -> Bool
-isInstanceOf ty (Forall vs pat) = case matchType pat ty Map.empty of
+isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
   Just _ -> True
   Nothing -> False
   where
+    -- The scheme's variable ids are small fixed numbers that can coincide
+    -- with the inferred type's ids; rename them to negative ids, which no
+    -- inferred type contains, so pattern and actual variables never mix.
+    renamed = Map.fromList [(v, fresh v k) | (v, k) <- vs0]
+    fresh v = \case
+      KType -> AType (TVar (negate (v + 1)))
+      KLen -> ALen (LVar (negate (v + 1)) 0)
+      KShape -> AShape (SVar (negate (v + 1)))
+      KDim -> ADim (dimVar (negate (v + 1)))
+    vs = [(negate (v + 1), k) | (v, k) <- vs0]
+    pat = applyType renamed pat0
     quantified v = v `elem` map fst vs
     matchType p t m = case (p, t) of
       (TVar v, _) | quantified v -> bindArg v (AType t) m

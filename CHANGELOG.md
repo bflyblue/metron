@@ -56,3 +56,11 @@
   instance matching uses a one-shot substitution, fixing a namespace clash
   between a scheme's ids and inference's. Display units and the prelude are
   next.
+- Dimensions: a `Dim` kind over the seven SI base dimensions with Kennedy's
+  unification (including the Euclid step), dimensioned types for every
+  primitive (`sqrt : Num [d^2] -> Num d`, `(*)` multiplies dimensions, …),
+  the base units `m kg s A K mol cd` as primitives, dimension vectors on
+  runtime tensors, and values printed in base units: `9.81 m / s^2` is
+  `9.81 m s^-2`. `1 m + 1 s` is a static error naming the residual. Lint's
+  instance matcher renames scheme variables so they cannot collide with
+  inferred ones (a real bug found by the first dimensioned primitive).
