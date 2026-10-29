@@ -87,7 +87,8 @@
   (`\k -> let g = \v -> k * v in g [1, 2]` was typed `Num d -> Tensor s d`,
   and lint then rejected its uses); generalisation flipped an inverted
   dimension variable in the scheme but not in the elaborated term (lint
-  rejected the let); sections and composition printed the desugarer's binder
+  rejected the let; now done through the substitution, and over all of a
+  cycle's members at once, since they share quantified variables); sections and composition printed the desugarer's binder
   names (`\§s0 -> …`), which do not re-parse; and `neg 3` printed as `-3`,
   a different term. Also fixed: a dimension equation with no integer
   solution, `sqrt (1 m)`, looped in Kennedy's Euclid step instead of failing.

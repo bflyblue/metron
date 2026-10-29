@@ -74,7 +74,7 @@ elaborateClosed look term = do
                pure body')
             (vecZip3 (indices bodies) bodies vars)
         settle [] VNil
-        schemes <- mapM (generalise VNil) (vecToList vars)
+        schemes <- generaliseAll VNil (vecToList vars)
         s <- gets (.subst)
         let quantified = nubBy (\a b -> fst a == fst b) (concat [vs | Forall vs _ <- schemes])
             members = vecZipWith (\h v -> (h, applyType s v)) hints vars
@@ -337,26 +337,43 @@ constraintVars = \case
 -- agree.
 generalise :: Vec n Scheme -> Type -> Infer Scheme
 generalise ctx t = do
-  (t0, quantified0) <- candidates
-  forM_ (negativeOnly quantified0 t0) $ \v -> do
+  orient ctx [t]
+  quantify ctx t
+
+-- | Types generalised together, as a cycle's members are: they share their
+-- quantified variables, so a dimension variable is flipped only when it is
+-- inverted in all of them.
+generaliseAll :: Vec n Scheme -> [Type] -> Infer [Scheme]
+generaliseAll ctx ts = do
+  orient ctx ts
+  mapM (quantify ctx) ts
+
+orient :: Vec n Scheme -> [Type] -> Infer ()
+orient ctx ts = do
+  candidates <- mapM (quantifiable ctx) ts
+  let quantified = nubBy (\a b -> fst a == fst b) (concatMap snd candidates)
+  forM_ (negativeOnly quantified (map fst candidates)) $ \v -> do
     w <- freshDim
     bindVar [] v (ADim (dimInv w))
-  (t', quantified) <- candidates
-  pure (Forall quantified t')
-  where
-    candidates = do
-      s <- gets (.subst)
-      pending <- gets (.pending)
-      let t' = applyType s t
-          envVars =
-            concat [map fst (freeVars (applyType s b)) | Forall _ b <- vecToList ctx]
-              ++ concatMap (constraintVars . applyC s . snd) pending
-      pure (t', filter ((`notElem` envVars) . fst) (freeVars t'))
 
--- | The quantified dimension variables that occur only with negative
--- exponents.
-negativeOnly :: [(VarId, Kind)] -> Type -> [VarId]
-negativeOnly quantified t = [v | (v, KDim) <- quantified, let ks = exponents v t, not (null ks), all (< 0) ks]
+quantify :: Vec n Scheme -> Type -> Infer Scheme
+quantify ctx t = (\(t', quantified) -> Forall quantified t') <$> quantifiable ctx t
+
+-- | A type under the substitution, and its variables that may be quantified.
+quantifiable :: Vec n Scheme -> Type -> Infer (Type, [(VarId, Kind)])
+quantifiable ctx t = do
+  s <- gets (.subst)
+  pending <- gets (.pending)
+  let t' = applyType s t
+      envVars =
+        concat [map fst (freeVars (applyType s b)) | Forall _ b <- vecToList ctx]
+          ++ concatMap (constraintVars . applyC s . snd) pending
+  pure (t', filter ((`notElem` envVars) . fst) (freeVars t'))
+
+-- | The quantified dimension variables that occur, in all the types
+-- together, only with negative exponents.
+negativeOnly :: [(VarId, Kind)] -> [Type] -> [VarId]
+negativeOnly quantified ts = [v | (v, KDim) <- quantified, let ks = concatMap (exponents v) ts, not (null ks), all (< 0) ks]
   where
     exponents v = \case
       TBool -> []

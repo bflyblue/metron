@@ -1295,6 +1295,20 @@ lintRegressionTests =
       testCase "a dimension variable flipped at generalisation is flipped in the term too" $ do
         typeOfText "\\x -> let k = \\w -> if true then x else 1 / w in x" @?= Right "Num d -> Num d"
         evalText "let g = \\x -> let k = \\w -> if true then x else 1 / w in x in g (2 m)" @?= Right ["2 m"]
+    , -- The members of a cycle share one set of quantified variables, so a
+      -- variable is flipped only when it is inverted in every member; flipping
+      -- it member by member gave schemes that disagreed with lint's.
+      testCase "a cycle's inferred schemes agree with lint's when a dimension is inverted" $
+        let -- Inside a member's lambda: v0 is its argument, v1 is f, v2 is g.
+            f' = Lam "x" (If (v0 ==. v0) (bool True) (App v2 (num 1 /. v0)))
+            g' = Lam "y" (If (v0 ==. v0) (bool True) (App v1 (num 1 /. v0)))
+            cycle' = Cycle (VCons "f" (VCons "g" VNil)) (VCons f' (VCons g' VNil))
+         in case elaborateClosed (const Nothing) cycle' of
+              Left err -> assertFailure (T.unpack err.message)
+              Right (schemes, typed) -> do
+                let closed (Forall vs t) = all ((`elem` map fst vs) . fst) (freeVars t)
+                all closed schemes @? show schemes
+                map renderScheme <$> lintClosed (const Nothing) typed @?= Right (map renderScheme schemes)
     , -- Found by the type-directed generator. `neg 0` (the primitive applied
       -- to a constant) printed as `-0`, which reads back as the constant
       -- zero: a different term with a different hash.
