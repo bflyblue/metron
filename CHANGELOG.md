@@ -126,3 +126,7 @@
   `[5, 10, 15; 20, 25, 30; 35, 40, 45]`, rank three uses `;;`. A tensor whose
   outermost axis has length one stays nested so that it reads back at the
   same rank.
+- Juxtaposition is for units only: `5 g`, `5 km/h`, `3 (m/s)` and `90 deg`
+  work as before, but `5 a` for a matrix `a`, `2 pi` and `3 f x` are now
+  errors that ask for the `*`. The parser builds a `Scale` node and the
+  desugarer, which knows which names were declared units, checks it.

@@ -534,15 +534,15 @@ parserTests =
         $ parseShape "x ^ -2 + y²" @?= Right (O S.Add (P (V "x") (-2)) (P (V "y") 2))
     , testCase "quantity rule: 9.81 m/s^2"
         $ parseShape "9.81 m/s^2"
-          @?= Right (O S.Div (O S.Outer (N (981 / 100)) (V "m")) (P (V "s") 2))
+          @?= Right (O S.Div (O S.Scale (N (981 / 100)) (V "m")) (P (V "s") 2))
     , testCase "quantity rule: 3 m^2 kg and superscripts"
         $ parseShape "3 m² kg"
-          @?= Right (O S.Outer (O S.Outer (N 3) (P (V "m") 2)) (V "kg"))
+          @?= Right (O S.Scale (O S.Scale (N 3) (P (V "m") 2)) (V "kg"))
     , testCase "quantity rule: 5 km/h"
-        $ parseShape "5 km/h" @?= Right (O S.Div (O S.Outer (N 5) (V "km")) (V "h"))
+        $ parseShape "5 km/h" @?= Right (O S.Div (O S.Scale (N 5) (V "km")) (V "h"))
     , testCase "quantity rule: 3 f x is a product, 3 (f x) too" $ do
-        parseShape "3 f x" @?= Right (O S.Outer (O S.Outer (N 3) (V "f")) (V "x"))
-        parseShape "3 (f x)" @?= Right (O S.Outer (N 3) (A (V "f") (V "x")))
+        parseShape "3 f x" @?= Right (O S.Scale (O S.Scale (N 3) (V "f")) (V "x"))
+        parseShape "3 (f x)" @?= Right (O S.Scale (N 3) (A (V "f") (V "x")))
     , testCase "a literal next to a literal is an error, not a product" $ do
         case parseShape "5 4 3" of
           Left err ->
@@ -552,8 +552,8 @@ parserTests =
         case parseShape "2 [1, 2]" of
           Left err -> T.isInfixOf "write the multiplication" err @? T.unpack err
           Right t -> assertFailure (show t)
-        parseShape "2 pi" @?= Right (O S.Outer (N 2) (V "pi"))
-        parseShape "3 (m/s)" @?= Right (O S.Outer (N 3) (O S.Div (V "m") (V "s")))
+        parseShape "2 pi" @?= Right (O S.Scale (N 2) (V "pi"))
+        parseShape "3 (m/s)" @?= Right (O S.Scale (N 3) (O S.Div (V "m") (V "s")))
     , testCase "rows with ; and planes with ;;" $ do
         parseShape "[1, 2; 3, 4]" @?= Right (Vc [Vc [N 1, N 2], Vc [N 3, N 4]])
         parseShape "[1; 2]" @?= Right (Vc [Vc [N 1], Vc [N 2]])
@@ -565,9 +565,9 @@ parserTests =
         parseShape "[f x; g y]"
           @?= Right (Vc [Vc [A (V "f") (V "x")], Vc [A (V "g") (V "y")]])
     , testCase "vector literal with units"
-        $ parseShape "[1, 0, 0] km" @?= Right (O S.Outer (Vc [N 1, N 0, N 0]) (V "km"))
+        $ parseShape "[1, 0, 0] km" @?= Right (O S.Scale (Vc [N 1, N 0, N 0]) (V "km"))
     , testCase "degree sign"
-        $ parseShape "45°" @?= Right (O S.Outer (N 45) (V "deg"))
+        $ parseShape "45°" @?= Right (O S.Scale (N 45) (V "deg"))
     , testCase "lambda with several parameters extends right"
         $ parseShape "\\x y -> x + y" @?= Right (L ["x", "y"] (O S.Add (V "x") (V "y")))
     , testCase "let in"
@@ -603,7 +603,7 @@ parserTests =
     , testCase "to has the lowest precedence"
         $ parseShape "5 km / h to m / s"
           @?= Right
-            (O S.To (O S.Div (O S.Outer (N 5) (V "km")) (V "h")) (O S.Div (V "m") (V "s")))
+            (O S.To (O S.Div (O S.Scale (N 5) (V "km")) (V "h")) (O S.Div (V "m") (V "s")))
     , testCase "statements with where"
         $ case parseProgram "let f x = x * k where k = 2\nf 3" of
           Right [S.SLet b, S.SExpr e] -> do
@@ -671,13 +671,13 @@ desugarTests =
           Right (_, prov) -> Map.lookup [1] prov @?= Just (S.Span (S.Pos 1 5) (S.Pos 1 7))
           Left err -> assertFailure (T.unpack err)
     , testCase "a resolver turns free names into references"
-        $ let resolver n = if n == "k" then Just (h "kay", Nothing) else Nothing
+        $ let resolver n = if n == "k" then Just (Resolution (h "kay", Nothing) False) else Nothing
            in case parseExpr "k + 1"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
                 Right (t, _) -> assertBool (show t) (alphaEq t (Ref (h "kay") Nothing +. num 1 :: Term Z))
                 Left err -> assertFailure (T.unpack err)
     , testCase "codebase names shadow primitives"
-        $ let resolver n = if n == "sqrt" then Just (h "mine", Nothing) else Nothing
+        $ let resolver n = if n == "sqrt" then Just (Resolution (h "mine", Nothing) False) else Nothing
            in case parseExpr "sqrt 4"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
                 Right (t, _) ->
@@ -1186,8 +1186,31 @@ productTests =
     , testCase "elementwise division by zero fails only for that element" $ do
         evalText "([1, 2] ./ [0, 2]).1" @?= Right ["1"]
         evalText "([1, 2] ./ [0, 2]).0" @?= Left "error: division by zero"
-    , testCase "quantity rule is a tensor product"
-        $ runLines ["let m = 1", "3 m"] @?= Right ["3"]
+    , testCase "quantity rule multiplies a literal by a declared unit"
+        $ runLines ["unit dozen = 12", "3 dozen", "3 dozen to 1"]
+          @?= Right ["3 dozen", "36"]
+    , testCase "juxtaposition is for units only" $ do
+        evalP "5 g" @?= Right ["5 g"]
+        evalP "3 (m/s)" @?= Right ["3 m s^-1"]
+        evalP "90 deg to rad" @?= Right ["1.5707963267948966192… rad"]
+        case runLinesP ["let a = [1, 2; 3, 4]", "5 a"] of
+          Left err -> T.isInfixOf "`a` is not a unit" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "2 pi" of
+          Left err -> T.isInfixOf "`pi` is not a unit" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "\\m -> 5 m" of
+          Left err -> T.isInfixOf "`m` is not a unit" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "let f x = x in 3 f" of
+          Left err -> T.isInfixOf "`f` is not a unit" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "3 (f x)" of
+          Left err -> T.isInfixOf "not a unit expression" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "3 furlongs" of
+          Left err -> T.isInfixOf "unknown name `furlongs`" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "names work prefix and infix" $ do
         evalText "outer 2 [1, 2]" @?= Right ["[2, 4]"]
         evalText "[1, 2] `dot` [3, 4]" @?= Right ["11"]

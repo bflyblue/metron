@@ -63,7 +63,8 @@ renderResolveError = \case
 
 -- | Free names resolve to whatever the codebase currently binds.
 resolverFor :: Codebase -> Resolver
-resolverFor cb n = (\(Reference h i) -> (h, i)) <$> lookupName n cb
+resolverFor cb n =
+  (\r@(Reference h i) -> Resolution (h, i) (isUnitRef r cb)) <$> lookupName n cb
 
 typeLookupFor :: Codebase -> TypeLookup
 typeLookupFor cb h = lookupTypes h cb

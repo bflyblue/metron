@@ -233,11 +233,15 @@ quantity ::= number unitatom+
 unitatom ::= atom [ '^' [ '-' ] natural ]
 ```
 
-A unit atom is an atom that is not itself a literal (an identifier or a
-parenthesised expression) optionally raised to an integer power. Two literals
-side by side, `5 4 3` or `2 [1, 2]`, are a parse error that asks for the
-multiplication to be written out: a product of plain numbers is clearer as
-`5 * 4 * 3`, and the rule exists for units, not arithmetic. The whole quantity binds like an
+A unit atom is a unit name, or a parenthesised **unit expression**: base and
+declared units (§3.2.12), numbers, and those combined with `*`, `/`, `^` and
+juxtaposition. Nothing else may follow a literal without an operator. Two
+literals side by side, `5 4 3` or `2 [1, 2]`, are a parse error; a name that is
+not a unit, `5 a` for a matrix `a`, `2 pi`, or `5 m` under a binder `\m ->`, is
+a desugaring error that says "`a` is not a unit: write the `*`". The parser
+produces a `Scale` node and the desugarer, which knows which names are units,
+checks it. The rule exists for units, not arithmetic: `5 * 4 * 3` and `5 * a`
+are clearer written out, and `5 a` reads as a quantity to anyone who sees it. The whole quantity binds like an
 application. Examples:
 
 | Written | Means |
@@ -247,13 +251,11 @@ application. Examples:
 | `9.81 m/s^2` | `(9.81 * m) / (s^2)` |
 | `5 km/h` | `(5 * km) / h` |
 | `[1, 0, 0] km` | `[1, 0, 0] * km` |
-| `3 (f x)` | `3 * (f x)` |
-| `3 f x` | `3 * f * x` |
+| `3 (m/s)` | `3 * (m / s)` |
+| `5 a`, `2 pi`, `3 f x` | errors: not units |
 
-The last line is the cost of the rule: a literal followed by identifiers is a
-product, never an application of `f` to `x`. Write `3 (f x)` if you mean the
-application. The rule applies only to literals. A variable needs an explicit
-operator: `x * km`.
+The rule applies only to a literal on the left and units on the right. A
+variable needs an explicit operator on either side: `x * km`, `5 * a`.
 
 The rule is a parse-time rewrite to `*`. Core (§5.1) never sees it.
 

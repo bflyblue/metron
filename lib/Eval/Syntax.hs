@@ -44,6 +44,8 @@ data Op
   | Sub
   | -- | @*@, @⊗@: tensor product, including scalar scaling
     Outer
+  | -- | juxtaposition, @5 km@: a literal times a unit expression (§2.6); the desugarer checks the unit
+    Scale
   | -- | @·@, @@@: contracting product
     Dot
   | -- | @×@, @><@: the 3D cross product, a prelude definition

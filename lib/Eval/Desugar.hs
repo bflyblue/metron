@@ -16,6 +16,7 @@ module Eval.Desugar (
   desugarClosed,
   desugarDefinition,
   desugarMember,
+  Resolution (..),
   desugarIn,
   renderDesugarError,
 ) where
@@ -26,11 +27,13 @@ import Control.Monad.State.Strict (StateT, modify', runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust, isNothing)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core
 import Eval.Syntax qualified as S
+import Eval.TCore (baseUnit)
 
 -- | Child positions from the root of a Core term.
 type Path = [Int]
@@ -53,7 +56,13 @@ renderDesugarError = \case
 {- | How free names resolve to codebase references (hash and optional cycle
 index). Names bound locally shadow these; these shadow primitives.
 -}
-type Resolver = Text -> Maybe (Hash, Maybe Int)
+
+{- | What a free name resolves to, and whether it was declared a display unit
+(design §3.2.12), which is what the quantity rule accepts (§2.6).
+-}
+data Resolution = Resolution {ref :: (Hash, Maybe Int), isUnit :: Bool}
+
+type Resolver = Text -> Maybe Resolution
 
 noResolver :: Resolver
 noResolver _ = Nothing
@@ -119,7 +128,7 @@ desugar path ctx e = do
       let (hd, args) = spine e
        in case hd.node of
             S.Var x | Nothing <- lookupCtx x ctx -> do
-              bound <- asks (\env -> env.resolve x)
+              bound <- asks (\env -> (.ref) <$> env.resolve x)
               case bound of
                 -- A codebase name: ordinary application of a reference.
                 Just _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
@@ -166,6 +175,22 @@ desugar path ctx e = do
               e.span
               (S.App (S.Expr e.span (S.App (S.Expr e.span (S.Var "cross")) a)) b)
           )
+      -- Juxtaposition is for units (§2.6): 5 km, 3 (m/s), [1, 0, 0] km.
+      S.Scale -> do
+        ok <- unitExpr ctx b
+        if ok
+          then prim "outer" [a, b]
+          else
+            failWith
+              ( BadSpecialForm
+                  b.span
+                  ( ( case b.node of
+                        S.Var x -> "`" <> x <> "` is not a unit"
+                        _ -> "this is not a unit expression"
+                    )
+                      <> ": a value next to a literal must be a unit (5 km, 3 (m/s)); write the `*`"
+                  )
+              )
       _ -> prim (opPrim op) [a, b]
     -- Negating a constant is a negative constant, so that `-3` and a literal
     -- negative three are one term with one hash (core.md §6: constants are
@@ -239,7 +264,7 @@ headApp :: Path -> Ctx n -> S.Expr -> Text -> [S.Expr] -> M (Term n)
 headApp path ctx hd x args = case lookupCtx x ctx of
   Just i -> applyAll path ctx (\_ -> pure (Var i)) args
   Nothing -> do
-    bound <- asks (\env -> env.resolve x)
+    bound <- asks (\env -> (.ref) <$> env.resolve x)
     case bound of
       Just (h, idx) -> applyAll path ctx (\_ -> pure (Ref h idx)) args
       -- noise n and gauss n take a literal count (design §3.2.5): the
@@ -332,6 +357,7 @@ opPrim = \case
   S.Add -> "add"
   S.Sub -> "sub"
   S.Outer -> "outer"
+  S.Scale -> "outer"
   S.Dot -> "dot"
   S.Cross -> "cross"
   S.Wedge -> "wedge"
@@ -361,3 +387,31 @@ declaresUncertainty e = case e.node of
   _ -> case spine e of
     (hd, _ : _) | S.Var x <- hd.node -> x `elem` ["noise", "gauss", "within", "sigma"]
     _ -> False
+
+{- | Whether an expression may follow a literal under the quantity rule
+(§2.6): a base unit or a declared unit (not shadowed by a local binder),
+a number, or those combined with @*@, @/@, @^@ and juxtaposition.
+-}
+unitExpr :: Ctx n -> S.Expr -> M Bool
+unitExpr ctx e = case e.node of
+  S.Num _ -> pure True
+  S.Var x
+    | Just _ <- lookupCtx x ctx -> pure False
+    -- A base unit is a unit; a declared name is what it was declared; any
+    -- other primitive or special form (pi, sin, noise) is not; an unknown
+    -- name is let through so that the ordinary path reports it as unknown.
+    | otherwise ->
+        asks
+          ( \env ->
+              maybe
+                (isJust (baseUnit x) || (isNothing (primArity x) && x `notElem` specialNames))
+                (.isUnit)
+                (env.resolve x)
+          )
+  S.Pow u _ -> unitExpr ctx u
+  S.BinOp op a b
+    | op `elem` [S.Outer, S.Div, S.Scale] ->
+        (&&) <$> unitExpr ctx a <*> unitExpr ctx b
+  _ -> pure False
+ where
+  specialNames = ["noise", "gauss", "within", "sigma"]

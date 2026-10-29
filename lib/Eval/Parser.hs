@@ -291,7 +291,7 @@ application = do
  where
   quantity hd = do
     units <- P.many unitAtom
-    pure (foldl (binop Outer) hd units)
+    pure (foldl (binop Scale) hd units)
   unitAtom = do
     o <- P.getOffset
     a <- atom
