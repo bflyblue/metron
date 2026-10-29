@@ -357,4 +357,5 @@ primArity = \case
   "K" -> Just 0
   "mol" -> Just 0
   "cd" -> Just 0
+  "rad" -> Just 0
   _ -> Nothing

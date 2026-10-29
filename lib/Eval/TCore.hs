@@ -69,6 +69,7 @@ baseUnit = \case
   "K" -> Just Θ
   "mol" -> Just N
   "cd" -> Just J
+  "rad" -> Just Ang
   _ -> Nothing
 
 {- | The scheme of each primitive. Quantified variables use small fixed ids;
@@ -91,18 +92,20 @@ primScheme name = case name of
   "ceil" -> num1
   "round" -> num1
   "sqrt" -> Just (Forall [dv] (TFun (numD (dimPow 2 d)) (numD d)))
-  "sin" -> num1
-  "cos" -> num1
-  "tan" -> num1
-  "asin" -> num1
-  "acos" -> num1
-  "atan" -> num1
+  -- Plane angle is a dimension (design §3.2.11): the circular functions take
+  -- radians and their inverses return them.
+  "sin" -> mono (TFun angleT numT)
+  "cos" -> mono (TFun angleT numT)
+  "tan" -> mono (TFun angleT numT)
+  "asin" -> mono (TFun numT angleT)
+  "acos" -> mono (TFun numT angleT)
+  "atan" -> mono (TFun numT angleT)
   "sinh" -> num1
   "cosh" -> num1
   "tanh" -> num1
   "exp" -> num1
   "log" -> num1
-  "atan2" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) numT)))
+  "atan2" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) angleT)))
   "lt" -> cmp
   "le" -> cmp
   "gt" -> cmp
@@ -150,6 +153,7 @@ primScheme name = case name of
   matD r c = TTensor (SCons r (SCons c SNil))
   mono = Just . Forall []
   num1 = mono (TFun numT numT)
+  angleT = numD (dimBase Ang)
   cmp = Just (Forall [dv] (TFun (numD d) (TFun (numD d) TBool)))
 
 -- Lint -------------------------------------------------------------------------

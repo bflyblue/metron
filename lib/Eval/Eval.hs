@@ -25,6 +25,7 @@ module Eval.Eval (
   Runtime (..),
   UnitAtom (..),
   UnitHint (..),
+  UnitFactor (..),
   Site (..),
   eval,
   evalClosed,
@@ -34,6 +35,8 @@ module Eval.Eval (
   render,
 ) where
 
+import Control.Monad (foldM)
+import Data.List (nub)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -107,11 +110,21 @@ data UnitAtom
 magnitude in base units, and its dimension (which must match the value's
 for the hint to be used).
 -}
+
+{- | One named unit in a display hint, raised to a power, with the dimension
+and magnitude of a single power of it.
+-}
+data UnitFactor = UnitFactor
+  {atom :: UnitAtom, power :: Int, unitDim :: Dim, unitFactor :: Magnitude}
+  deriving stock (Eq, Show)
+
 data UnitHint = UnitHint
-  { atoms :: [(UnitAtom, Int)]
+  { atoms :: [UnitFactor]
   -- ^ in order of first appearance, so @V A@ prints as written
   , factor :: Magnitude
+  -- ^ the product of the atoms
   , dim :: Dim
+  -- ^ the product of the atoms
   }
   deriving stock (Eq, Show)
 
@@ -296,48 +309,69 @@ asUnit :: UnitAtom -> Value -> Thunk
 asUnit atom = \case
   VTensor [] d _ buf | V.length buf == 1 -> do
     x <- V.head buf
-    Right (VTensor [] d (Just (UnitHint [(atom, 1)] x d)) buf)
+    Right (VTensor [] d (Just (UnitHint [UnitFactor atom 1 d x] x d)) buf)
   v -> Right v
 
 -- Display units ----------------------------------------------------------------------
 
-hintMul :: Precision -> UnitHint -> UnitHint -> UnitHint
-hintMul p a b =
-  UnitHint
-    (filter ((/= 0) . snd) (foldl merge a.atoms b.atoms))
-    (mulM p a.factor b.factor)
-    (dimMul a.dim b.dim)
+{- | A hint from its atoms: powers of zero go, units of one dimension that
+appear with opposite signs cancel ( rad^-1@ is a number,  m^-1@ is
+1000, ^2 m^-1@ is @), and the total factor and dimension are
+recomputed from what is left. Nothing when a factor cannot be raised to its
+power, which drops the hint.
+-}
+mkHint :: Precision -> [UnitFactor] -> Maybe UnitHint
+mkHint p factors = do
+  let kept = filter ((/= 0) . (.power)) (cancel factors)
+  total <-
+    foldM
+      ( \acc u ->
+          either
+            (const Nothing)
+            (Just . mulM p acc)
+            (powM p u.unitFactor (fromIntegral u.power))
+      )
+      (Exact 1)
+      kept
+  pure
+    ( UnitHint
+        kept
+        total
+        (foldr (dimMul . (\u -> dimPow u.power u.unitDim)) dimOne kept)
+    )
  where
-  merge acc (atom, k)
-    | any ((== atom) . fst) acc =
-        [(x, if x == atom then j + k else j) | (x, j) <- acc]
-    | otherwise = acc ++ [(atom, k)]
+  -- Within a dimension, mixed signs collapse onto the first-written unit
+  -- with the net power.
+  cancel us = concatMap reduce (groupOn (.unitDim) us)
+  reduce group@(u : _)
+    | any ((> 0) . (.power)) group && any ((< 0) . (.power)) group =
+        [u{power = sum (map (.power) group)}]
+  reduce group = group
+  groupOn key xs = [[x | x <- xs, key x == k] | k <- nub (map key xs)]
 
--- | A unit whose magnitude may be zero has no inverse; the hint is dropped.
+hintMul :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
+hintMul p a b = mkHint p (foldl merge a.atoms b.atoms)
+ where
+  merge acc u
+    | any ((== u.atom) . (.atom)) acc =
+        [if x.atom == u.atom then x{power = x.power + u.power} else x | x <- acc]
+    | otherwise = acc ++ [u]
+
 hintInv :: Precision -> UnitHint -> Maybe UnitHint
-hintInv p a =
-  (\f -> UnitHint [(x, negate k) | (x, k) <- a.atoms] f (dimInv a.dim))
-    <$> either (const Nothing) Just (recipM p a.factor)
+hintInv p a = mkHint p [u{power = negate u.power} | u <- a.atoms]
 
 hintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
-hintPow p k a =
-  ( \f ->
-      UnitHint
-        (filter ((/= 0) . snd) [(x, j * k) | (x, j) <- a.atoms])
-        f
-        (dimPow k a.dim)
-  )
-    <$> either (const Nothing) Just (powM p a.factor (fromIntegral k))
+hintPow p k a = mkHint p [u{power = u.power * k} | u <- a.atoms]
 
 {- | The display unit of a product or quotient of two values: combine when
 both have one, keep the one that exists otherwise.
 -}
 combine ::
-  (UnitHint -> UnitHint -> UnitHint) ->
+  (UnitHint -> UnitHint -> Maybe UnitHint) ->
   Maybe UnitHint ->
   Maybe UnitHint ->
   Maybe UnitHint
-combine f (Just a) (Just b) = Just (f a b)
+combine f (Just a) (Just b) = f a b
 combine _ (Just a) Nothing = Just a
 combine _ Nothing (Just b) = Just b
 combine _ Nothing Nothing = Nothing
@@ -356,12 +390,18 @@ runPrim cfg rt prim args = case (prim, args) of
         Right
           ( num
               (dimBase b)
-              (Just (UnitHint [(UnitBase unit, 1)] (Exact 1) (dimBase b)))
+              ( Just
+                  ( UnitHint
+                      [UnitFactor (UnitBase unit) 1 (dimBase b) (Exact 1)]
+                      (Exact 1)
+                      (dimBase b)
+                  )
+              )
               (Exact 1)
           )
   -- Sum: the left operand's display unit wins.
-  ("add", [a, b]) -> elementwise2 (pureOp addM) const (combine const) a b
-  ("sub", [a, b]) -> elementwise2 (pureOp subM) const (combine const) a b
+  ("add", [a, b]) -> elementwise2 (pureOp addM) const (combine (\x _ -> Just x)) a b
+  ("sub", [a, b]) -> elementwise2 (pureOp subM) const (combine (\x _ -> Just x)) a b
   ("neg", [a]) -> elementwise1 negM a
   ("abs", [a]) -> elementwise1 (absM p) a
   ("emul", [a, b]) -> elementwise2 (pureOp (mulM p)) dimMul (combine (hintMul p)) a b
@@ -453,16 +493,16 @@ runPrim cfg rt prim args = case (prim, args) of
   ("sin", [a]) -> dimensionless (Right . sinM p) a
   ("cos", [a]) -> dimensionless (Right . cosM p) a
   ("tan", [a]) -> dimensionless (arith . tanM p) a
-  ("asin", [a]) -> dimensionless (arith . asinM p) a
-  ("acos", [a]) -> dimensionless (arith . acosM p) a
-  ("atan", [a]) -> dimensionless (Right . atanM p) a
+  ("asin", [a]) -> angle (arith . asinM p) a
+  ("acos", [a]) -> angle (arith . acosM p) a
+  ("atan", [a]) -> angle (Right . atanM p) a
   ("sinh", [a]) -> dimensionless (Right . sinhM p) a
   ("cosh", [a]) -> dimensionless (Right . coshM p) a
   ("tanh", [a]) -> dimensionless (arith . tanhM p) a
   ("atan2", [a, b]) -> do
     y <- scalar =<< a
     x <- scalar =<< b
-    num dimOne Nothing <$> arith (atan2M p y x)
+    num (dimBase Ang) Nothing <$> arith (atan2M p y x)
   ("pi", []) -> Right (num dimOne Nothing (piM p))
   -- Euclidean norm of a vector.
   ("norm", [a]) -> do
@@ -578,6 +618,10 @@ runPrim cfg rt prim args = case (prim, args) of
   dimensionless f a = do
     x <- scalar =<< a
     num dimOne Nothing <$> f x
+  -- A scalar function whose result is an angle in radians.
+  angle f a = do
+    x <- scalar =<< a
+    num (dimBase Ang) Nothing <$> f x
   compareWith decide a b = do
     x <- scalar =<< a
     y <- scalar =<< b

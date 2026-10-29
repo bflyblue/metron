@@ -1586,9 +1586,11 @@ unitTests =
         $ case evalText "1 m + 1 s" of
           Left err -> T.isInfixOf "dimensions differ by [m s^-1]" err @? T.unpack err
           Right v -> assertFailure (show v)
-    , testCase "transcendentals need dimensionless arguments"
+    , testCase "the circular functions take an angle"
         $ case evalText "sin (1 m)" of
-          Left err -> T.isInfixOf "expected Num, got Num [m]" err @? T.unpack err
+          Left err ->
+            T.isInfixOf "sin takes an angle" err && T.isInfixOf "got Num [m]" err
+              @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "tensor literals need one dimension"
         $ case evalText "[1 m, 2 s]" of
@@ -1598,7 +1600,7 @@ unitTests =
         typeOfText "\\r -> r^2" @?= Right "Num d -> Num [d^2]"
         typeOfText "\\x -> sqrt x" @?= Right "Num [d^2] -> Num d"
         typeOfText "\\x -> sqrt (x * x)" @?= Right "Num d -> Num d"
-        typeOfText "\\a b -> atan2 a b" @?= Right "Num d -> Num d -> Num"
+        typeOfText "\\a b -> atan2 a b" @?= Right "Num d -> Num d -> Num [rad]"
         typeOfText "\\x y -> x < y" @?= Right "Num d -> Num d -> Bool"
     , testCase "Kennedy's Euclid step: non-divisible exponents"
         $ typeOfText "\\f -> sqrt (f * f * f)" @?= Right "Num [d^2] -> Num [d^3]"
@@ -1850,16 +1852,16 @@ affineTests =
         evalText "sqrt 16" @?= Right ["4"]
         evalText "6.62607015e-34" @?= Right ["6.62607015e-34"]
     , testCase "certain digits of approximations end in an ellipsis, zeros included" $ do
-        evalText "sin 1" @?= Right ["0.84147098480789650665…"]
+        evalText "sin (1 rad)" @?= Right ["0.84147098480789650665…"]
         evalText "pi" @?= Right ["3.1415926535897932384…"]
         evalText "exp 1" @?= Right ["2.7182818284590452353…"]
         evalText "log 2" @?= Right ["0.69314718055994530941…"]
-        evalText "tan (pi/4)" @?= Right ["1.0000000000000000000…"]
+        evalText "tan (pi/4 * rad)" @?= Right ["1.0000000000000000000…"]
         evalText "sqrt 2 * sqrt 2" @?= Right ["2.0000000000000000000…"]
         evalText "exp (-80)" @?= Right ["1.8048513878454151723…e-35"]
         evalText "sinh 1e-20" @?= Right ["1.0000000000000000000…e-20"]
     , testCase "the same operation twice gives the same nudge, so it cancels" $ do
-        evalText "sin 1 - sin 1" @?= Right ["0"]
+        evalText "sin (1 rad) - sin (1 rad)" @?= Right ["0"]
         evalText "let x = 5 ± 0.1 in x - x" @?= Right ["0"]
         evalText "let x = 5 ± 0.1 in x + 2 * x - 3 * x" @?= Right ["0"]
         evalText "let y = 1 ± 0.1 in y / y" @?= Right ["1"]
@@ -1887,7 +1889,7 @@ affineTests =
           Right out -> assertFailure (show out)
     , testCase "tiny magnitudes keep their significant digits" $ do
         evalText "sqrt (1e-68 * (1 ± 1e-10))" @?= Right ["1.00000000000e-34 ± 5e-45"]
-        evalText "sin 1e-20" @?= Right ["1.0000000000000000000…e-20"]
+        evalText "sin (1e-20 rad)" @?= Right ["1.0000000000000000000…e-20"]
     , testCase "comparisons are decided only when the enclosures separate" $ do
         evalText "5 ± 0.1 < 6" @?= Right ["true"]
         evalText "let x = 5 ± 0.1 in x == x" @?= Right ["true"]
@@ -1913,13 +1915,13 @@ affineTests =
         evalText "sqrt (0 ± 1)" @?= Left "error: sqrt of a value that may be negative"
         evalText "log 0" @?= Left "error: log of a value that may be zero or negative"
         evalText "1 / (1 ± 2)" @?= Left "error: division by zero"
-        evalText "asin 1" @?= Right ["1.5707963267948966192…"]
+        evalText "asin 1" @?= Right ["1.5707963267948966192… rad"]
     , testCase "abs, atan2 and the hyperbolics" $ do
         evalText "abs (0 ± 1)" @?= Right ["0.5 ± 0.5"]
         evalText "abs ((5 ± 0.1) - 7)" @?= Right ["2.0 ± 0.1"]
-        evalText "atan2 1 1" @?= Right ["0.78539816339744830961…"]
-        evalText "atan2 (-1) (-1)" @?= Right ["-2.3561944901923449288…"]
-        evalText "acos 0" @?= Right ["1.5707963267948966192…"]
+        evalText "atan2 1 1" @?= Right ["0.78539816339744830961… rad"]
+        evalText "atan2 (-1) (-1)" @?= Right ["-2.3561944901923449288… rad"]
+        evalText "acos 0" @?= Right ["1.5707963267948966192… rad"]
         evalText "cosh 0" @?= Right ["1"]
         evalText "tanh 1" @?= Right ["0.76159415595576488811…"]
     , testCase "linear algebra over enclosures" $ do
@@ -1943,7 +1945,7 @@ affineTests =
     , testCase ":exact shows the midpoint, the nudges and their origins" $ do
         evalText ":exact 2 ± 0.1" @?= Right ["2 + 0.1·e[bound, input]"]
         runLines ["let x = 5 ± 0.1", ":exact x"] @?= Right ["5 + 0.1·e[bound, x]"]
-        case evalText ":exact sin 1" of
+        case evalText ":exact sin (1 rad)" of
           Right [out] ->
             T.isPrefixOf "0.84147098480789650665… + " out
               && T.isInfixOf "·e[bound, sin]" out
@@ -1963,6 +1965,26 @@ affineTests =
         case evalP ":budget M_earth" of
           Right (_ : _ : row : _) -> T.isInfixOf "σ      G" row && T.isInfixOf "100% of σ²" row @? T.unpack row
           other -> assertFailure (show other)
+    , testCase "display units of one dimension cancel against each other" $ do
+        evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
+        evalP "3 h / min" @?= Right ["180"]
+        evalP "1 km / m" @?= Right ["1000"]
+        evalP "(2 km)^2 / m" @?= Right ["4000 km"]
+        evalP "5 km / h" @?= Right ["5 km h^-1"]
+        evalP "(3 rad/s) * 2 s" @?= Right ["6 rad"]
+    , testCase
+        "angle is a dimension: the circular functions take it, their inverses give it" $ do
+        evalP "sin (45 deg)" @?= Right ["0.70710678118654752440…"]
+        evalP "atan2 1 1 to deg" @?= Right ["45.000000000000000000… deg"]
+        evalP "asin 1 to deg" @?= Right ["90 deg"]
+        evalP "5 mrad to deg" @?= Right ["0.28647889756541160438… deg"]
+        evalP "1 sr" @?= Right ["1 sr"]
+        case evalP "sin 1" of
+          Left err -> T.isInfixOf "write 1 rad or 45 deg" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "1 rad / s + 1 Hz" of
+          Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "angles: deg is a unit built on pi" $ do
         evalP "90 deg" @?= Right ["90 deg"]
         evalP "90 deg to rad" @?= Right ["1.5707963267948966192… rad"]
@@ -2158,14 +2180,16 @@ storeTests =
             , "r = 10 * mm ± 0.01 * mm #batch7"
             ]
     , testCase
-        "the store only holds what the user added, plus the prelude terms those use" $ withTempStore $ \dir -> do
-        _ <- persistLines dir ["let d = 3 km", ":add"]
-        (loaded, _) <- reload dir
-        -- km and its definition chain are on disk; a prelude name the user
-        -- never touched is still only in memory from the prelude.
-        Map.size loaded.codebase.terms @?= Map.size withPrelude.codebase.terms + 1
-        linesIn loaded ["d", "G"]
-          @?= Right ["3 km", "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
+        "the store only holds what the user added, plus the prelude terms those use"
+        $ withTempStore
+        $ \dir -> do
+          _ <- persistLines dir ["let d = 3 km", ":add"]
+          (loaded, _) <- reload dir
+          -- km and its definition chain are on disk; a prelude name the user
+          -- never touched is still only in memory from the prelude.
+          Map.size loaded.codebase.terms @?= Map.size withPrelude.codebase.terms + 1
+          linesIn loaded ["d", "G"]
+            @?= Right ["3 km", "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
     , testCase "a user rebinding of a prelude name wins over the prelude on reload" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let c = 3e8 m / s", ":update"]
         (loaded, _) <- reload dir

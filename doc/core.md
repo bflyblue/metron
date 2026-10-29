@@ -268,9 +268,13 @@ The policy, now that stores exist (design §7.4):
   decode with the old decoder, re-encode, map every old hash to its new one,
   rewrite the references in dependency order (the `propagate` machinery), and
   rewrite the log. None is written yet, since no store predates format 1.
-- **Primitives are append-only.** A stored term names its primitives by
-  text, so a primitive may be added but never renamed or removed without a
-  migration.
+- **Primitives are append-only, and their types only tighten knowingly.** A
+  stored term names its primitives by text, so a primitive may be added but
+  never renamed or removed without a migration. A primitive's type may change
+  (the circular functions gained an angle dimension after stores existed),
+  but every stored term is re-checked on load, so such a change turns the
+  definitions it breaks into load-time notes rather than wrong answers, and
+  is listed in the changelog.
 
 ## 7. Changing Core
 

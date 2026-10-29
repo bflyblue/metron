@@ -143,3 +143,13 @@
   the store, and `:store` shows which store is in use. core.md records the
   hash-stability policy: desugaring changes need no migration, encoding and
   Core changes bump the format number.
+- Plane angle is a dimension (design §3.2.11). `rad` is the eighth base unit;
+  `sin`, `cos` and `tan` take `Num [rad]`, `asin`, `acos`, `atan` and `atan2`
+  return it, `sr = rad^2`, `lm = cd sr`, and `rad` takes prefixes. `sin 1` is
+  a type error that asks for `1 rad` or `45 deg`; `rad/s` and `Hz` are now
+  different types; arc length is `r * θ / rad`. Stored definitions that
+  applied the circular functions to plain numbers no longer typecheck and are
+  reported as notes at load. Hash-affecting for `sr`, `lm` and `lx`.
+- Display units of one dimension cancel: `2 m * 90 deg / rad` prints
+  `3.14… m`, `3 h / min` prints `180`, `(2 km)^2 / m` prints `4000 km`. Hints
+  now carry each unit's own dimension and factor.

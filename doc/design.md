@@ -702,9 +702,20 @@ tolerance, `abs (a - b) < 1e-9`, which the enclosure then decides rigorously.
 
 #### 3.2.11 Units and dimensions at runtime
 
-The seven SI base dimensions are length L, mass M, time T, current I, temperature
-Θ, amount N, luminous intensity J. Their base units `m kg s A K mol cd` are
-**builtins** of type `Num [L]`, `Num [M]`, and so on. Everything else is prelude
+The base dimensions are the seven of the SI, length L, mass M, time T, current
+I, temperature Θ, amount N, luminous intensity J, **plus plane angle**, whose
+base unit is the radian. Their base units `m kg s A K mol cd rad` are
+**builtins** of type `Num [L]`, `Num [M]`, and so on.
+
+The SI declares the radian dimensionless, so that `s = r θ` and `sin θ` read as
+the formulas are written. We give angle a dimension instead, as Boost.Units does,
+because the calculator's job is to catch the mistakes the formulas invite: `sin 1`
+is an error that asks for `1 rad` or `45 deg`, angular velocity `rad/s` and
+frequency `Hz` are different types that cannot be added or confused by a factor
+of 2π, and `sr = rad^2` makes the photometric units honest. The price is that an
+angle must be divided out where the SI quietly drops it: arc length is
+`r * θ / rad` and angular velocity from a speed is `v / r * rad`, the same
+bookkeeping every other dimension already asks for. Everything else is prelude
 source written in the language itself and therefore hashed, viewable and
 rebindable:
 
@@ -718,7 +729,7 @@ let g  = kg / 1000              -- the one wrinkle: the base unit carries a pref
 ```
 
 The prelude ships: the 22 derived SI units (N, J, W, Pa, Hz, C, V, Ω, F, S, T, H,
-Wb, lm, lx, Bq, Gy, Sv, kat, and `rad = 1`, `sr = 1`), the 24 SI prefixes applied to
+Wb, lm, lx, Bq, Gy, Sv, kat, `sr = rad^2`), the 24 SI prefixes applied to
 every base and derived unit plus `L` and `g` (`km`, `mm`, `µs`, `kPa`, `GHz`, …),
 and the accepted units iapetus needs: `min h day year` (Julian, 365.25 day), `AU`,
 `deg arcmin arcsec`, `L`, `t`. The prefix table is generated into `prelude.ev` by a
@@ -761,6 +772,9 @@ come from:
 - `*`, `·`, `⊙`, `∧` and `^` combine display units by multiplying them; `/` and
   `⊘` divide; `5 km / h` prints as `5 km h^-1` and `(2 km)^2` as `4 km^2`. Unit
   names keep the order they were written in, so `1 V * 1 A` prints as `1 V A`.
+  Units of one dimension that meet with opposite signs cancel, with their
+  factor folded into the number: `2 m * 90 deg / rad` is `3.14… m`, `3 h / min`
+  is `180`, `(2 km)^2 / m` is `4000 km`.
 - `+` and `-` keep the left operand's unit: `5 km + 3 m` is `5.003 km`,
   `3 m + 5 km` is `5003 m`. Projection, packing, negation, `abs`, `transpose` and
   `⋆` keep the unit; every other operation drops it.
@@ -1090,8 +1104,10 @@ to          : Num d -> Num d -> Num d                    (and Vec, Mat)
 sqrt        : Num [d^2] -> Num d
 abs         : Num d -> Num d
 floor ceil round : Num 1 -> Num 1
-sin cos tan asin acos atan sinh cosh tanh exp log : Num 1 -> Num 1
-atan2       : Num d -> Num d -> Num 1
+sin cos tan : Num [rad] -> Num 1
+asin acos atan : Num 1 -> Num [rad]
+sinh cosh tanh exp log : Num 1 -> Num 1
+atan2       : Num d -> Num d -> Num [rad]
 pi e        : Num 1
 e ^ n       : Num d -> Num [d^n]            -- special form, n an integer literal
 noise n     : Vec n 1                        -- special form, n a natural literal
@@ -1101,10 +1117,11 @@ v.i         : Vec (n + i + 1) d -> Num d    -- special form, i a literal positio
 m.i         : Mat (k + i + 1) n d -> Vec n d
 ```
 
-`sin` and friends take `Num 1`, so `rad = 1` and `deg = pi / 180` in the prelude
-make `sin (90 deg)` type-check and `sin (1 m)` fail. `atan2 : Num d -> Num d ->
-Num 1` is the one trigonometric function that accepts a dimension, because its
-two arguments share one and the result is an angle.
+The circular functions take an angle and their inverses return one (§3.2.11):
+`rad` is a base unit and `deg = pi / 180 * rad`, so `sin (90 deg)` type-checks,
+`sin (1 m)` fails, and so does `sin 1`, with a message that asks for `1 rad` or
+`45 deg`. `atan2 : Num d -> Num d -> Num [rad]` accepts any one dimension for
+its two arguments. The hyperbolic functions, `exp` and `log` take plain numbers.
 
 ### 4.4 Dimension unification
 
@@ -1787,6 +1804,12 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
+- Units as lenses. A display unit is today a factor, implicitly the pair
+  (× f, ÷ f). Writing it as an explicit (forward, backward) pair would cover
+  °C, dB and pH, but a non-linear pair does not compose under products and
+  says nothing about which operations are meaningful (`25 °C − 20 °C` is a
+  difference, `20 °C + 5 °C` is nothing), so it belongs inside a typed point
+  quantity such as `Temp` (§10.8), not in place of one. Revisit with Celsius.
 - A `unit` declaration marks a *reference*, so any definition with the same
   body is the same unit: `let x = 1` is `rad`, and `x + 2` prints `3 rad`. The
   honest fix is for the use site to decide: give `Ref` a name hint (ignored by

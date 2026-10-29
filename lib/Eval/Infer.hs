@@ -458,7 +458,13 @@ infer look p ctx = \case
     let go i ty = \case
           [] -> pure ty
           a : rest -> case ty of
-            TFun param r -> unify (i : p) param a >> go (i + 1) r rest
+            TFun param r -> do
+              -- The circular functions are the common place to forget that
+              -- angles carry a unit (design §3.2.11).
+              if name `elem` ["sin", "cos", "tan"]
+                then unifyMsg (i : p) param a (name <> " takes an angle: write 1 rad or 45 deg")
+                else unify (i : p) param a
+              go (i + 1) r rest
             _ -> failAt p ("primitive " <> name <> " applied to too many arguments")
     result <- go (0 :: Int) t (map fst typed)
     -- The arguments may have fixed the shapes a pending product constraint

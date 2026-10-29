@@ -198,8 +198,8 @@ displayParts namer scale = \case
   -- Positive exponents first, otherwise in the order the units appeared.
   renderHint h =
     T.unwords
-      [ atomName a <> (if k == 1 then "" else "^" <> tshow k)
-      | (a, k) <- filter ((> 0) . snd) h.atoms ++ filter ((< 0) . snd) h.atoms
+      [ atomName u.atom <> (if u.power == 1 then "" else "^" <> tshow u.power)
+      | u <- filter ((> 0) . (.power)) h.atoms ++ filter ((< 0) . (.power)) h.atoms
       ]
   atomName = \case
     UnitRef h i -> namer h i

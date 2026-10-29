@@ -32,7 +32,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 
 -- | Length, mass, time, current, temperature, amount, luminous intensity.
-data BaseDim = L | M | T | I | Θ | N | J
+data BaseDim = L | M | T | I | Θ | N | J | Ang
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 data DimAtom
@@ -104,6 +104,7 @@ baseSymbol = \case
   Θ -> "K"
   N -> "mol"
   J -> "cd"
+  Ang -> "rad"
 
 -- | @[m s^-2]@, @[d1 d2^-1]@; the empty dimension renders as @1@.
 renderDim :: Dim -> Text
@@ -136,7 +137,8 @@ renderUnitsWith varName d = T.unwords (map atom (sortOn order (dimAtoms d)))
     Base Θ -> 4
     Base N -> 5
     Base J -> 6
-    DVar v -> 7 + v
+    Base Ang -> 7
+    DVar v -> 8 + v
   atom (a, k) = name a <> (if k == 1 then "" else "^" <> T.pack (show k))
   name = \case
     Base b -> baseSymbol b

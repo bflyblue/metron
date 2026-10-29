@@ -35,9 +35,8 @@ derived =
     -- (content addressing), and would print under one of them. Where two units
     -- are the same quantity under different names, one is defined through the
     -- other so that each keeps its own identity and prints as itself.
-    ("rad", "1")
-  , ("sr", "1 * rad")
-  , ("lm", "cd")
+    ("sr", "rad^2")
+  , ("lm", "cd * sr")
   , ("lx", "lm / m^2")
   , ("Bq", "1 * Hz")
   , ("Gy", "J / kg")
@@ -97,6 +96,7 @@ prefixable =
   , "K"
   , "mol"
   , "cd"
+  , "rad"
   , "g"
   , "N"
   , "J"

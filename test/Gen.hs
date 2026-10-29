@@ -753,7 +753,15 @@ tensorProds sc ls d n =
                )
              | isDimOne d
              ]
-          ++ [(1, oneof (scalarUnimplemented ++ concat [angles | isDimOne d]))]
+          ++ [
+               ( 1
+               , oneof
+                   ( scalarUnimplemented
+                       ++ concat [angles | isDimOne d]
+                       ++ concat [inverses | d == dimBase Ang]
+                   )
+               )
+             ]
       [r, c] ->
         [
           ( 1
@@ -805,17 +813,26 @@ tensorProds sc ls d n =
         a <- gen sc (tensor [k] d) (n - 1)
         pure (G (app (var "norm") a.expr) True)
     ]
-  -- Dimensionless results only.
-  angles = [transcendental, arctan2]
+  -- Dimensionless results: exp and log of a number, sin and cos of an angle.
+  angles = [transcendental, circular]
+  transcendental = do
+    f <- elements ["exp", "log"]
+    a <- gen sc numT (n - 1)
+    pure (G (app (var f) a.expr) True)
+  circular = do
+    f <- elements ["sin", "cos"]
+    a <- gen sc (numD (dimBase Ang)) (n - 1)
+    pure (G (app (var f) a.expr) True)
+  -- Results in radians: the inverse functions.
+  inverses = [arctan2, arctan]
   arctan2 = do
     d1 <- genDim
     a <- gen sc (numD d1) half
     b <- gen sc (numD d1) half
     pure (G (apps (var "atan2") [a.expr, b.expr]) True)
-  transcendental = do
-    f <- elements ["sin", "cos", "exp", "log", "atan"]
+  arctan = do
     a <- gen sc numT (n - 1)
-    pure (G (app (var f) a.expr) True)
+    pure (G (app (var "atan") a.expr) True)
 
 -- | Exponents @e@ and bases @d'@ with @d'^e = d@.
 powers :: Dim -> [(Integer, Dim)]
