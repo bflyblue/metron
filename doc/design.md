@@ -202,15 +202,19 @@ From tightest to loosest:
 | 10 | application, quantity rule | left | `f a b`, `3 m` |
 | 9 | `^` | n/a | exponent must be an integer literal, optionally negative, so `^` cannot chain; a glued superscript is the same operator |
 | 8 | unary `-` | prefix | `-x` |
-| 7 | `*`/`⊗` `·`/`@` `⊙`/`.*` `⊘`/`./` `/` | left | tensor product, contracting product, elementwise product and division, scalar division (§4.2) |
+| 7 | `*`/`⊗` `·`/`@` `∧`/`/\` `⊙`/`.*` `⊘`/`./` `/` | left | tensor product, contracting product, wedge product, elementwise product and division, scalar division (§4.2) |
 | 7 | `×`/`><` | none | cross product |
 | 6 | `+` `-` | left | overloaded over Num, Vec, Mat |
 | 5 | `±` `±σ` | none | `value ± bound`, `value ±σ stddev`, see §3.2.5 |
-| 4½ | `#label` | postfix | names the unknown a `±`, `noise` or `gauss` declares, see §3.2.4 |
 | 4 | `==` `/=` `<` `<=` `>` `>=` | none | ordering on Num only |
 | 3 | `&&` | right | |
 | 2 | `\|\|` | right | |
 | 1 | `to` | none | unit conversion, lowest so `5 km / h to m/s` reads naturally |
+
+`#label` is not an operator but a postfix on a `±`, `noise` or `gauss`
+expression (§3.2.4). It is parsed after level 5 and before level 4, so it
+attaches to the whole `±` expression and `x == 5 ± 0.1 #s7` labels the `±`,
+not the comparison.
 
 `+ - * /` are overloaded; everything else that works on vectors or matrices is a
 named function: `dot`, `cross`, `norm`, `transpose`, `inverse`, `det`, `identity`,
