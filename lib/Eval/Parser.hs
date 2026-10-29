@@ -272,7 +272,8 @@ powerSuffix = caret P.<|> match "superscript" (\case TSup n -> Just n; _ -> Noth
     pure (spanUnion s s2, maybe n (const (negate n)) neg)
 
 {- | Application by juxtaposition, or the quantity rule (§2.6) when the head
-is a number or vector literal.
+is a number or vector literal. A literal next to another literal is an
+error:  4 3@ is not a product, write  * 4 * 3@.
 -}
 application :: Parser Expr
 application = do
@@ -287,7 +288,17 @@ application = do
   quantity hd = do
     units <- P.many unitAtom
     pure (foldl (binop Outer) hd units)
-  unitAtom = atom >>= withPower
+  unitAtom = do
+    o <- P.getOffset
+    a <- atom
+    case a.node of
+      Num _ ->
+        P.setOffset o
+          >> fail "a number next to a number: write the multiplication, 5 * 4"
+      Vec _ ->
+        P.setOffset o
+          >> fail "a literal next to a vector literal: write the multiplication, 2 * [1, 2]"
+      _ -> withPower a
 
 -- | A primary expression with any glued projections.
 atom :: Parser Expr
@@ -362,12 +373,44 @@ sectionOp allowMinus =
   plusMinusKind :: Parser NudgeKind
   plusMinusKind = snd <$> match "±" (\case TPlusMinus k -> Just k; _ -> Nothing)
 
-{- | A bracket literal. Nested brackets are simply vectors of vectors; a
-ragged nesting is a shape error found by the type checker.
+{- | A bracket literal (§2.4). Commas separate elements, @;@ separates rows,
+@;;@ separates planes, and so on: @[1, 2; 3, 4]@ is @[[1, 2], [3, 4]]@. The
+rank is one more than the highest separator used, and a level that never
+appears is a length-one axis, so @[1; 2]@ is a 2×1 matrix. Nested brackets
+are still vectors of vectors; a ragged nesting is a shape error found by the
+type checker.
 -}
 vecOrMat :: Parser Expr
 vecOrMat = do
   s <- tok TLBracket
-  es <- P.sepBy expr (tok TComma)
+  items <- P.optional $ do
+    x0 <- expr
+    rest <- P.many ((,) <$> separator <*> expr)
+    pure (x0 : map snd rest, map fst rest)
   e <- tok TRBracket
-  pure (Expr (spanUnion s e) (Vec es))
+  pure $ Expr (spanUnion s e) $ case items of
+    Nothing -> Vec []
+    Just (es, seps) -> Vec (splitLevel (maximum (0 : seps)) es seps)
+ where
+  separator =
+    P.choice
+      [ 0 <$ tok TComma
+      , 1 <$ tok TSep
+      , snd <$> match "row separator" (\case TSemis n -> Just n; _ -> Nothing)
+      ]
+  -- The elements of the literal at a level: at level 0 the expressions
+  -- themselves, above that one nested literal per group between separators
+  -- of that level.
+  splitLevel :: Int -> [Expr] -> [Int] -> [Expr]
+  splitLevel 0 es _ = es
+  splitLevel k es seps = [nested (splitLevel (k - 1) g gs) | (g, gs) <- groups k es seps]
+  nested xs = Expr (foldr1 spanUnion (map (.span) xs)) (Vec xs)
+  groups :: Int -> [Expr] -> [Int] -> [([Expr], [Int])]
+  groups k es seps = case es of
+    [] -> []
+    e0 : rest -> go [e0] [] rest seps
+   where
+    go acc accS (x : xs) (s : ss)
+      | s == k = (reverse acc, reverse accS) : go [x] [] xs ss
+      | otherwise = go (x : acc) (s : accS) xs ss
+    go acc accS _ _ = [(reverse acc, reverse accS)]

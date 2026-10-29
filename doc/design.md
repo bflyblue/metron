@@ -175,13 +175,23 @@ f ∘ g                                -- composition, \x -> f (g x)
 
 ```
 [1, 2, 3]                       -- Vec 3
-[[1, 0], [0, 1]]                -- Mat 2 2
+[1, 0; 0, 1]                    -- Mat 2 2, rows separated by ;
+[[1, 0], [0, 1]]                -- the same matrix, nested
+[1; 2]                          -- Mat 2 1, a column
+[1, 2; 3, 4;; 5, 6; 7, 8]       -- Tensor [2, 2, 2]: ;; separates planes
 [x, y, z] m                     -- Vec 3 [m], via the quantity rule
 ```
 
-A vector literal is a bracketed, comma-separated list of expressions. A matrix
-literal is a bracketed list of vector literals of equal length. Components may be
-any expression. Ragged rows are a parse error.
+A literal is a bracketed list of expressions. Commas separate elements, `;`
+separates rows, `;;` separates planes, and so on; the rank is one more than the
+highest separator used, and a level that never appears is a length-one axis
+(so `[1; 2]` is a 2×1 matrix, not a vector). The separator forms are sugar for
+nesting: `[1, 2; 3, 4]` is `[[1, 2], [3, 4]]`, and Core sees only the nested
+form. Elements are separated by commas, never by spaces: in a language where
+juxtaposition is application and the quantity rule, `[sin x]` and `[2 pi]`
+must keep meaning what they mean outside brackets. Components may be any
+expression; every element must have the same shape and dimension, which the
+type checker enforces.
 
 ### 2.5 Operators
 
@@ -216,8 +226,11 @@ quantity ::= number unitatom+
 unitatom ::= atom [ '^' [ '-' ] natural ]
 ```
 
-A unit atom is an atom (identifier, parenthesised expression, or literal)
-optionally raised to an integer power. The whole quantity binds like an
+A unit atom is an atom that is not itself a literal (an identifier or a
+parenthesised expression) optionally raised to an integer power. Two literals
+side by side, `5 4 3` or `2 [1, 2]`, are a parse error that asks for the
+multiplication to be written out: a product of plain numbers is clearer as
+`5 * 4 * 3`, and the rule exists for units, not arithmetic. The whole quantity binds like an
 application. Examples:
 
 | Written | Means |
@@ -265,8 +278,8 @@ projection ::= natural
 primary    ::= number | name | 'true' | 'false'
              | '(' expr ')' | section | vector | matrix
 section    ::= '(' operator expr ')' | '(' expr operator ')'
-vector     ::= '[' expr ( ',' expr )* ']'
-matrix     ::= '[' vector ( ',' vector )* ']'
+vector     ::= '[' [ expr ( sep expr )* ] ']'     -- sep: ',' elements, ';' rows, ';;' planes …
+matrix     ::= vector                             -- [1, 2; 3, 4] or [[1, 2], [3, 4]]
 ```
 
 ### 2.8 Unicode spellings

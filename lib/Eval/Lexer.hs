@@ -65,8 +65,10 @@ data Token
     TSup Integer
   | -- | A projection glued to the preceding atom: @v.0@, @m.1.2@.
     TProj Int
-  | -- | Statement or binding separator: a @;@, or layout.
+  | -- | Statement or binding separator: a @;@, or layout. Inside brackets, a row separator.
     TSep
+  | -- | @;;@, @;;;@ …: a separator of rank two or more inside a bracket literal (§2.4).
+    TSemis Int
   | -- | End of a @where@ block, inserted by layout.
     TBlockEnd
   deriving stock (Eq, Ord, Show)
@@ -264,7 +266,7 @@ symbol =
     , char ']' $> TRBracket
     , char ',' $> TComma
     , char '`' $> TBacktick
-    , char ';' $> TSep
+    , (\n -> if n == 1 then TSep else TSemis n) . length <$> some (char ';')
     ]
 
 {- | @.0@, @.12@: a projection only when digits follow the dot immediately;
@@ -376,4 +378,5 @@ showToken = \case
   TSup n -> "^" <> T.pack (show n)
   TProj i -> "." <> T.pack (show i)
   TSep -> "newline"
+  TSemis n -> T.replicate n ";"
   TBlockEnd -> "end of block"

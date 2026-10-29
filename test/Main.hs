@@ -541,6 +541,27 @@ parserTests =
     , testCase "quantity rule: 3 f x is a product, 3 (f x) too" $ do
         parseShape "3 f x" @?= Right (O S.Outer (O S.Outer (N 3) (V "f")) (V "x"))
         parseShape "3 (f x)" @?= Right (O S.Outer (N 3) (A (V "f") (V "x")))
+    , testCase "a literal next to a literal is an error, not a product" $ do
+        case parseShape "5 4 3" of
+          Left err ->
+            T.isInfixOf "write the multiplication" err && T.isInfixOf "1:3" err
+              @? T.unpack err
+          Right t -> assertFailure (show t)
+        case parseShape "2 [1, 2]" of
+          Left err -> T.isInfixOf "write the multiplication" err @? T.unpack err
+          Right t -> assertFailure (show t)
+        parseShape "2 pi" @?= Right (O S.Outer (N 2) (V "pi"))
+        parseShape "3 (m/s)" @?= Right (O S.Outer (N 3) (O S.Div (V "m") (V "s")))
+    , testCase "rows with ; and planes with ;;" $ do
+        parseShape "[1, 2; 3, 4]" @?= Right (Vc [Vc [N 1, N 2], Vc [N 3, N 4]])
+        parseShape "[1; 2]" @?= Right (Vc [Vc [N 1], Vc [N 2]])
+        parseShape "[1, 2; 3, 4;; 5, 6; 7, 8]"
+          @?= Right
+            (Vc [Vc [Vc [N 1, N 2], Vc [N 3, N 4]], Vc [Vc [N 5, N 6], Vc [N 7, N 8]]])
+        parseShape "[1, 2;; 3, 4]"
+          @?= Right (Vc [Vc [Vc [N 1, N 2]], Vc [Vc [N 3, N 4]]])
+        parseShape "[f x; g y]"
+          @?= Right (Vc [Vc [A (V "f") (V "x")], Vc [A (V "g") (V "y")]])
     , testCase "vector literal with units"
         $ parseShape "[1, 0, 0] km" @?= Right (O S.Outer (Vc [N 1, N 0, N 0]) (V "km"))
     , testCase "degree sign"
@@ -998,6 +1019,13 @@ typeTests =
     , testCase "vector and matrix literals" $ do
         typeOfText "[1, 2, 3]" @?= Right "Vec 3"
         typeOfText "[[1, 2], [3, 4]]" @?= Right "Mat 2 2"
+        typeOfText "[1, 2; 3, 4]" @?= Right "Mat 2 2"
+        typeOfText "[1; 2]" @?= Right "Mat 2 1"
+        typeOfText "[1, 2; 3, 4;; 5, 6; 7, 8]" @?= Right "Tensor [2, 2, 2]"
+        evalText "[1, 2; 3, 4] · [1, 1]" @?= Right ["[3, 7]"]
+        case evalText "[1, 2; 3]" of
+          Left err -> T.isInfixOf "same shape" err @? T.unpack err
+          Right v -> assertFailure (show v)
         typeOfText "[[1, 2], [3, 4]].1" @?= Right "Vec 2"
     , testCase "projection gives a lower bound on the length (design §4.1)" $ do
         typeOfText "\\v -> v.0" @?= Right "Tensor (n + 1 : s) d -> Tensor s d"
@@ -1394,21 +1422,22 @@ generatorProperty :: Property
 generatorProperty =
   forAllShow
     genProgram
-    (\(ty, e) -> T.unpack (renderType ty) <> "\n" <> showProgram e) $ \(ty, e) ->
-    withElaborated typedSource e $ \_ (schemes, typed) ->
-      case schemes of
-        [sc] ->
-          tabulate "target" [targetKind ty]
-            . tabulate "depth" [bucket (exprDepth e)]
-            . foldr (\(name, present) k -> classify present name . k) id (features typed)
-            $ counterexample
-              ( "built for "
-                  <> T.unpack (renderType ty)
-                  <> ", inferred "
-                  <> T.unpack (renderScheme sc)
-              )
-              (instanceOf sc ty)
-        _ -> counterexample "more than one scheme" False
+    (\(ty, e) -> T.unpack (renderType ty) <> "\n" <> showProgram e)
+    $ \(ty, e) ->
+      withElaborated typedSource e $ \_ (schemes, typed) ->
+        case schemes of
+          [sc] ->
+            tabulate "target" [targetKind ty]
+              . tabulate "depth" [bucket (exprDepth e)]
+              . foldr (\(name, present) k -> classify present name . k) id (features typed)
+              $ counterexample
+                ( "built for "
+                    <> T.unpack (renderType ty)
+                    <> ", inferred "
+                    <> T.unpack (renderScheme sc)
+                )
+                (instanceOf sc ty)
+          _ -> counterexample "more than one scheme" False
  where
   bucket d
     | d < 5 = "1-4"
@@ -1590,13 +1619,14 @@ lintRegressionTests =
       -- `g [1, 2]` came out as `Tensor s` and inference accepted programs
       -- that lint then rejected.
       testCase
-        "a let does not generalise variables a pending product constraint ties to the scope" $ do
-        typeOfText "\\k -> let g = \\v -> k * v in g [1, 2]"
-          @?= Right "Num d -> Vec 2 d"
-        case evalText "((\\k -> let g = \\v -> k * v in g [1, 2]) 3) + [1, 2, 3]" of
-          Left err -> T.isInfixOf "lengths differ" err @? T.unpack err
-          Right v -> assertFailure (show v)
-        evalText "(\\k -> let g = \\v -> k * v in g [1, 2]) 3" @?= Right ["[3, 6]"]
+        "a let does not generalise variables a pending product constraint ties to the scope"
+        $ do
+          typeOfText "\\k -> let g = \\v -> k * v in g [1, 2]"
+            @?= Right "Num d -> Vec 2 d"
+          case evalText "((\\k -> let g = \\v -> k * v in g [1, 2]) 3) + [1, 2, 3]" of
+            Left err -> T.isInfixOf "lengths differ" err @? T.unpack err
+            Right v -> assertFailure (show v)
+          evalText "(\\k -> let g = \\v -> k * v in g [1, 2]) 3" @?= Right ["[3, 6]"]
     , -- Found by the type-directed generator. A let inside an operand of a
       -- product or of `==` settled the operator's own constraint, created
       -- outside the let, and defaulted its operand to a scalar.
@@ -1621,12 +1651,13 @@ lintRegressionTests =
       -- scheme but not in the elaborated term, so lint saw a let annotated
       -- `Num d -> Num d` bound to `Num [d^-1] -> Num [d^-1]`.
       testCase
-        "a dimension variable flipped at generalisation is flipped in the term too" $ do
-        typeOfText "\\x -> let k = \\w -> if true then x else 1 / w in x"
-          @?= Right "Num d -> Num d"
-        evalText
-          "let g = \\x -> let k = \\w -> if true then x else 1 / w in x in g (2 m)"
-          @?= Right ["2 m"]
+        "a dimension variable flipped at generalisation is flipped in the term too"
+        $ do
+          typeOfText "\\x -> let k = \\w -> if true then x else 1 / w in x"
+            @?= Right "Num d -> Num d"
+          evalText
+            "let g = \\x -> let k = \\w -> if true then x else 1 / w in x in g (2 m)"
+            @?= Right ["2 m"]
     , -- The members of a cycle share one set of quantified variables, so a
       -- variable is flipped only when it is inverted in every member; flipping
       -- it member by member gave schemes that disagreed with lint's.

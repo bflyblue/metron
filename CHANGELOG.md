@@ -108,3 +108,7 @@
   solution, `sqrt (1 m)`, looped in Kennedy's Euclid step instead of failing.
   No hashes change; some definitions' stored types do (the second bug's were
   unsound).
+- Tensor literals take `;` for rows and `;;` for planes: `[1, 2; 3, 4]` is
+  `[[1, 2], [3, 4]]`, `[1; 2]` is a 2×1 matrix. Elements stay comma
+  separated. Two literals side by side (`5 4 3`, `2 [1, 2]`) are now a parse
+  error asking for the multiplication; the quantity rule is for `5 m/s`.
