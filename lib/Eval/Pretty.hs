@@ -13,6 +13,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Eval.Core
+import Eval.Dimension (renderUnits)
 import Eval.Eval
 
 -- Values ------------------------------------------------------------------------
@@ -43,9 +44,10 @@ fractionDigits n frac
 
 renderValue :: Int -> Value -> Either EvalError Text
 renderValue scale = \case
-  VTensor dims buf -> do
+  VTensor dims d buf -> do
     rs <- sequence (V.toList buf)
-    pure (renderNested (renderRational scale) dims rs)
+    let units = renderUnits d
+    pure (renderNested (renderRational scale) dims rs <> (if T.null units then "" else " " <> units))
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"

@@ -26,7 +26,7 @@ import Test.Tasty.QuickCheck
 main :: IO ()
 main =
   defaultMain
-    (testGroup "eval" [coreTests, evalTests, tcoreTests, lexerTests, parserTests, desugarTests, hashTests, prettyTests, endToEndTests, codebaseTests, typeTests, soundnessTests, productTests, propertyTests])
+    (testGroup "eval" [coreTests, evalTests, tcoreTests, lexerTests, parserTests, desugarTests, hashTests, prettyTests, endToEndTests, codebaseTests, typeTests, soundnessTests, productTests, propertyTests, unitTests, lintRegressionTests])
 
 -- Term-building helpers -------------------------------------------------
 
@@ -240,9 +240,9 @@ tcoreTests =
         showCore <$> elabText "let id x = x in if id true then id 1 else 2"
           @?= Right "let id : t0 -> t0 = Λt0. \\(x : t0) -> x in if id @Bool true then id @Num 1.0 else 2.0"
     , testCase "length polymorphism is explicit too" $
-        showCore <$> elabText "\\v -> v.0 + 1" @?= Right "Λn2. \\(v : Vec (n2 + 1)) -> add v.0 1.0"
+        showCore <$> elabText "\\v -> v.0 + 1" @?= Right "Λn3. \\(v : Vec (n3 + 1)) -> add v.0 1.0"
     , testCase "shape polymorphism is explicit too" $
-        showCore <$> elabText "\\v -> v.0" @?= Right "Λn1. Λs2. \\(v : Tensor (n1 + 1 : s2)) -> v.0"
+        showCore <$> elabText "\\v -> v.0" @?= Right "Λn1. Λs2. Λd3. \\(v : Tensor (n1 + 1 : s2) d3) -> v.0"
     , testCase "primitives record the type they are used at" $
         showCore <$> elabText "1 == 2" @?= Right "eq 1.0 2.0"
     , testCase "lint accepts everything elaboration produces" $
@@ -259,7 +259,7 @@ tcoreTests =
           @?= Left "argument of add has type Bool, expected Num"
     , testCase "lint rejects a primitive at a type that is not an instance of its scheme" $
         lintClosed (const Nothing) (TPrimApp "add" (TFun TBool (TFun TBool TBool)) [TLit (LBool True), TLit (LBool False)])
-          @?= Left "primitive add used at Bool -> Bool -> Bool, not an instance of Tensor s -> Tensor s -> Tensor s"
+          @?= Left "primitive add used at Bool -> Bool -> Bool, not an instance of Tensor s d -> Tensor s d -> Tensor s d"
     , testCase "lint rejects a mismatched let annotation" $
         case lintClosed (const Nothing) (TLet "x" (Forall [] TBool) (TLit (LTensor [] [1])) (TVr FZ)) of
           Left err -> T.isPrefixOf "let binder annotated" err @? T.unpack err
@@ -573,9 +573,9 @@ endToEndTests =
         evalText "let twice f x = f (f x)\nlet inc = (+ 1)\ntwice inc 5" @?= Right ["7"]
     , testCase "division by zero is a runtime error" $
         evalText "1 / 0" @?= Left "error: division by zero"
-    , testCase "unknown unit until the prelude exists" $
-        case evalText "3 m" of
-          Left err -> T.isInfixOf "unknown name `m`" err @? T.unpack err
+    , testCase "an unknown unit is an unknown name" $
+        case evalText "3 furlongs" of
+          Left err -> T.isInfixOf "unknown name `furlongs`" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "recursion" $
         evalText "let fact n = if n == 0 then 1 else n * fact (n - 1)\nfact 10" @?= Right ["3628800"]
@@ -757,11 +757,11 @@ typeTests =
         typeOfText "[[1, 2], [3, 4]]" @?= Right "Mat 2 2"
         typeOfText "[[1, 2], [3, 4]].1" @?= Right "Vec 2"
     , testCase "projection gives a lower bound on the length (design §4.1)" $ do
-        typeOfText "\\v -> v.0" @?= Right "Tensor (n + 1 : s) -> Tensor s"
-        typeOfText "\\v -> v.2 + v.0" @?= Right "Tensor (n + 3 : s) -> Tensor s"
+        typeOfText "\\v -> v.0" @?= Right "Tensor (n + 1 : s) d -> Tensor s d"
+        typeOfText "\\v -> v.2 + v.0" @?= Right "Tensor (n + 3 : s) d -> Tensor s d"
         typeOfText "\\v -> v.0 + 1" @?= Right "Vec (n + 1) -> Num"
     , testCase "elementwise operators are shape-polymorphic (core.md)" $ do
-        typeOfText "\\a b -> a + b" @?= Right "Tensor s -> Tensor s -> Tensor s"
+        typeOfText "\\a b -> a + b" @?= Right "Tensor s d -> Tensor s d -> Tensor s d"
         typeOfText "[1, 2] + [3, 4]" @?= Right "Vec 2"
         typeOfText "neg [[1, 2], [3, 4]]" @?= Right "Mat 2 2"
     , testCase "products have one type each (design §4.2)" $ do
@@ -774,8 +774,8 @@ typeTests =
         typeOfText "[1, 2] .* [3, 4]" @?= Right "Vec 2"
         typeOfText "[2, 4] / 2" @?= Right "Vec 2"
     , testCase "an unknown-rank product operand defaults at generalisation" $ do
-        typeOfText "\\k v -> k * v" @?= Right "Num -> Tensor s -> Tensor s"
-        typeOfText "\\a b -> a @ b" @?= Right "Vec n -> Tensor (n : s) -> Tensor s"
+        typeOfText "\\k v -> k * v" @?= Right "Num d -> Tensor s d1 -> Tensor s [d d1]"
+        typeOfText "\\a b -> a @ b" @?= Right "Vec n d -> Tensor (n : s) d1 -> Tensor s [d d1]"
     , testCase "contraction requires matching inner lengths" $
         case evalText "[[1, 2], [3, 4]] @ [1, 2, 3]" of
           Left err -> T.isInfixOf "lengths differ: 2 and 3" err @? T.unpack err
@@ -785,9 +785,9 @@ typeTests =
           Left err -> T.isInfixOf "lengths differ: 2 and 3" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "length-polymorphic primitives" $ do
-        typeOfText "dot" @?= Right "Vec n -> Tensor (n : s) -> Tensor s"
-        typeOfText "transpose" @?= Right "Mat n m -> Mat m n"
-        typeOfText "cross" @?= Right "Vec 3 -> Vec 3 -> Vec 3"
+        typeOfText "dot" @?= Right "Vec n d -> Tensor (n : s) d1 -> Tensor s [d d1]"
+        typeOfText "transpose" @?= Right "Mat n m d -> Mat m n d"
+        typeOfText "cross" @?= Right "Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
     , testCase "recursive definitions get types" $
         runLines ["let fact n = if n == 0 then 1 else n * fact (n - 1)", ":type fact"] @?= Right ["Num -> Num"]
     , testCase "mutually recursive definitions get types" $
@@ -1044,4 +1044,68 @@ propertyTests =
           case desugarClosed noResolver e of
             Left _ -> discard
             Right (t, _) -> fmap fst (elaborateClosed (const Nothing) t) === fmap fst (elaborateClosed (const Nothing) t)
+    ]
+
+-- Units and dimensions --------------------------------------------------------------
+
+unitTests :: TestTree
+unitTests =
+  testGroup
+    "units"
+    [ testCase "base units are primitives" $ do
+        evalText "3 m" @?= Right ["3 m"]
+        typeOfText "3 m" @?= Right "Num [m]"
+    , testCase "quantity rule with powers" $ do
+        evalText "9.81 m / s^2" @?= Right ["9.81 m s^-2"]
+        typeOfText "9.81 m/s^2" @?= Right "Num [m s^-2]"
+    , testCase "dimensions multiply and divide" $ do
+        evalText "(2 m) * (3 s)" @?= Right ["6 m s"]
+        evalText "(6 m) / (2 s)" @?= Right ["3 m s^-1"]
+        evalText "(3 m)^2" @?= Right ["9 m^2"]
+        evalText "[1, 2] m" @?= Right ["[1, 2] m"]
+        evalText "2 kg * 3 m / s^2 == 6 kg * m / s^2" @?= Right ["true"]
+    , testCase "adding different dimensions is a static error" $
+        case evalText "1 m + 1 s" of
+          Left err -> T.isInfixOf "dimensions differ by [m s^-1]" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "transcendentals need dimensionless arguments" $
+        case evalText "sin (1 m)" of
+          Left err -> T.isInfixOf "expected Num, got Num [m]" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "tensor literals need one dimension" $
+        case evalText "[1 m, 2 s]" of
+          Left err -> T.isInfixOf "same shape" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "dimension polymorphism" $ do
+        typeOfText "\\r -> r^2" @?= Right "Num d -> Num [d^2]"
+        typeOfText "\\x -> sqrt x" @?= Right "Num [d^2] -> Num d"
+        typeOfText "\\x -> sqrt (x * x)" @?= Right "Num d -> Num d"
+        typeOfText "\\a b -> atan2 a b" @?= Right "Num d -> Num d -> Num"
+        typeOfText "\\x y -> x < y" @?= Right "Num d -> Num d -> Bool"
+    , testCase "Kennedy's Euclid step: non-divisible exponents" $
+        typeOfText "\\f -> sqrt (f * f * f)" @?= Right "Num [d^2] -> Num [d^3]"
+    , testCase "an uncertainty must share the value's dimension" $
+        case evalText "3 m ± 1 s" of
+          Left err -> T.isInfixOf "dimension of the value" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "to keeps the value for now" $
+        evalText "(3 m) to m" @?= Right ["3 m"]
+    , testCase "a definition carries its dimension through the codebase" $
+        runLines ["let g = 9.81 m / s^2", "let fall t = g * t^2 / 2", ":add", ":type fall", "fall (3 s)"]
+          @?= Right ["added g", "added fall", "Num d -> Num [m d^2 s^-2]", "44.145 m"]
+    ]
+
+-- Regressions found by lint ------------------------------------------------------------
+
+lintRegressionTests :: TestTree
+lintRegressionTests =
+  testGroup
+    "lint regressions"
+    [ testCase "instantiation renames quantified variables simultaneously" $ do
+        typeOfText "\\a b -> a >< b" @?= Right "Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
+        evalText "[1, 0, 0] m >< ([0, 1, 0] m / s)" @?= Right ["[0, 0, 1] m^2 s^-1"]
+        evalText "[1, 2] m ⊙ [3, 4] s" @?= Right ["[3, 8] m s"]
+    , testCase "a stored polymorphic definition instantiates at several dimensions" $
+        runLines ["let sq x = x * x", ":add", "sq (3 m)", "sq (2 s)", ":type sq"]
+          @?= Right ["added sq", "9 m^2", "4 s^2", "Num d -> Num [d^2]"]
     ]

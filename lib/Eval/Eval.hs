@@ -5,9 +5,11 @@
 -- as internal errors.
 --
 -- Tensors are one runtime shape: a flat row-major buffer of element thunks
--- beside the list of lengths. A number is the rank-zero case with a buffer
--- of one. Projection is a slice, elementwise arithmetic is a zip over the
--- buffer, and laziness per component comes from the element thunks.
+-- beside the list of lengths and a dimension vector. A number is the
+-- rank-zero case with a buffer of one. Projection is a slice, elementwise
+-- arithmetic is a zip over the buffer, and laziness per component comes
+-- from the element thunks. The dimension vector exists only for printing:
+-- types are checked before evaluation.
 module Eval.Eval
   ( Value (..)
   , Closure (..)
@@ -30,6 +32,7 @@ import Data.Text qualified as T
 import Data.Vector (Vector)
 import Data.Vector qualified as V
 import Eval.Core
+import Eval.Dimension
 import Eval.TCore
 
 -- | Evaluation parameters. Nothing uses 'scale' yet; it is threaded now so
@@ -64,7 +67,8 @@ type Elem = Either EvalError Rational
 type Env n = Vec n Thunk
 
 data Value
-  = VTensor [Int] (Vector Elem)
+  = -- | lengths, dimension, flat row-major elements in SI base units
+    VTensor [Int] Dim (Vector Elem)
   | VBool Bool
   | VClosure Closure
 
@@ -91,7 +95,7 @@ eval cfg look = go
               Nothing -> Left (BadCycleIndex i)
             _ -> Left (BadCycleIndex i)
       TPrimApp p _ args -> runPrim cfg look p (map (go env) args)
-      TLit (LTensor dims rs) -> Right (VTensor dims (V.fromList (map Right rs)))
+      TLit (LTensor dims rs) -> Right (VTensor dims dimOne (V.fromList (map Right rs)))
       TLit (LBool b) -> Right (VBool b)
       TLam _ _ body -> Right (VClosure (Closure env body))
       TApp f a -> do
@@ -105,8 +109,10 @@ eval cfg look = go
           VBool False -> go env e
           _ -> Left (Internal "if: condition is not a boolean")
       TPow t n -> do
-        x <- scalar =<< go env t
-        if x == 0 && n < 0 then Left DivideByZero else Right (num (x ^^ n))
+        (x, d) <- scalarWithDim =<< go env t
+        if x == 0 && n < 0
+          then Left DivideByZero
+          else Right (VTensor [] (dimPow (fromIntegral n) d) (V.singleton (Right (x ^^ n))))
       TNoise _ _ -> Left (Unsupported "noise: affine arithmetic is not implemented yet")
       TUncertain {} -> Left (Unsupported "±: affine arithmetic is not implemented yet")
       -- Stack the component buffers; the shapes agree by lint. A component
@@ -115,24 +121,24 @@ eval cfg look = go
       -- only raised when that component is used.
       TPack ts ->
         let results = map (tensor <=< go env) ts
-            known = [dims | Right (dims, _) <- results]
+            known = [(dims, d) | Right (dims, d, _) <- results]
          in case (results, known) of
-              ([], _) -> Right (VTensor [0] V.empty)
-              (_, dims : _) ->
+              ([], _) -> Right (VTensor [0] dimOne V.empty)
+              (_, (dims, d) : _) ->
                 let block = \case
-                      Right (_, buf) -> buf
+                      Right (_, _, buf) -> buf
                       Left err -> V.replicate (product dims) (Left err)
-                 in Right (VTensor (length results : dims) (V.concat (map block results)))
+                 in Right (VTensor (length results : dims) d (V.concat (map block results)))
               (Left err : _, []) -> Left err
               (Right _ : _, []) -> Left (Internal "unreachable: a tensor with no shape")
       -- Slice out component i: a view, not a copy.
       TProj t i -> do
-        (dims, buf) <- tensor =<< go env t
+        (dims, d, buf) <- tensor =<< go env t
         case dims of
-          d : rest
-            | i < d ->
+          k : rest
+            | i < k ->
                 let stride = product rest
-                 in Right (VTensor rest (V.slice (i * stride) stride buf))
+                 in Right (VTensor rest d (V.slice (i * stride) stride buf))
           _ -> Left (Internal ("projection ." <> tshow i <> " out of range"))
       -- Erasure.
       TTyLam _ _ b -> go env b
@@ -167,18 +173,21 @@ apply cfg look f arg = case f of
 
 -- Values ---------------------------------------------------------------------------
 
-num :: Rational -> Value
-num r = VTensor [] (V.singleton (Right r))
+num :: Dim -> Rational -> Value
+num d r = VTensor [] d (V.singleton (Right r))
 
-tensor :: Value -> Either EvalError ([Int], Vector Elem)
+tensor :: Value -> Either EvalError ([Int], Dim, Vector Elem)
 tensor = \case
-  VTensor dims buf -> Right (dims, buf)
+  VTensor dims d buf -> Right (dims, d, buf)
   _ -> Left (Internal "expected a tensor")
 
 -- | The one element of a rank-zero tensor.
 scalar :: Value -> Either EvalError Rational
-scalar = \case
-  VTensor [] buf | V.length buf == 1 -> V.head buf
+scalar v = fst <$> scalarWithDim v
+
+scalarWithDim :: Value -> Either EvalError (Rational, Dim)
+scalarWithDim = \case
+  VTensor [] d buf | V.length buf == 1 -> (,d) <$> V.head buf
   _ -> Left (Internal "expected a number")
 
 bool :: Value -> Either EvalError Bool
@@ -190,28 +199,30 @@ bool = \case
 
 -- | Run a saturated primitive. Arguments are in source order and are forced
 -- only as the primitive needs them; elementwise operations stay lazy per
--- element.
+-- element. Dimensions follow the rules of design §4.3.
 runPrim :: Config -> Lookup -> Text -> [Thunk] -> Thunk
 runPrim cfg look p args = case (p, args) of
-  ("add", [a, b]) -> elementwise2 (+) a b
-  ("sub", [a, b]) -> elementwise2 (-) a b
+  (unit, []) | Just b <- baseUnit unit -> Right (num (dimBase b) 1)
+  ("add", [a, b]) -> elementwise2 (+) const a b
+  ("sub", [a, b]) -> elementwise2 (-) const a b
   ("neg", [a]) -> elementwise1 negate a
   ("abs", [a]) -> elementwise1 abs a
-  ("emul", [a, b]) -> elementwise2 (*) a b
+  ("emul", [a, b]) -> elementwise2 (*) dimMul a b
   ("ediv", [a, b]) -> do
-    (dims, xs) <- tensor =<< a
-    (_, ys) <- tensor =<< b
-    Right (VTensor dims (V.zipWith (\x y -> x >>= \x' -> y >>= divide x') xs ys))
-  -- Tensor product: ranks add, every pair of elements multiplied.
+    (dims, d1, xs) <- tensor =<< a
+    (_, d2, ys) <- tensor =<< b
+    Right (VTensor dims (dimDiv d1 d2) (V.zipWith (\x y -> x >>= \x' -> y >>= divide x') xs ys))
+  -- Tensor product: ranks add, dimensions multiply, every pair of elements
+  -- multiplied.
   ("outer", [a, b]) -> do
-    (d1, xs) <- tensor =<< a
-    (d2, ys) <- tensor =<< b
-    Right (VTensor (d1 ++ d2) (V.concatMap (\x -> V.map (\y -> (*) <$> x <*> y) ys) xs))
+    (d1, dim1, xs) <- tensor =<< a
+    (d2, dim2, ys) <- tensor =<< b
+    Right (VTensor (d1 ++ d2) (dimMul dim1 dim2) (V.concatMap (\x -> V.map (\y -> (*) <$> x <*> y) ys) xs))
   -- Contracting product: the left operand's last index against the right
   -- operand's first.
   ("dot", [a, b]) -> do
-    (dl, xs) <- tensor =<< a
-    (dr, ys) <- tensor =<< b
+    (dl, dim1, xs) <- tensor =<< a
+    (dr, dim2, ys) <- tensor =<< b
     case (reverse dl, dr) of
       (n : d1rev, n' : d2) | n == n' ->
         let d1 = reverse d1rev
@@ -220,12 +231,12 @@ runPrim cfg look p args = case (p, args) of
             element k =
               let (i, j) = k `divMod` stride2
                in sum <$> sequence [(*) <$> (xs V.! (i * n + c)) <*> (ys V.! (c * stride2 + j)) | c <- [0 .. n - 1]]
-         in Right (VTensor (d1 ++ d2) (V.generate (rows * stride2) element))
+         in Right (VTensor (d1 ++ d2) (dimMul dim1 dim2) (V.generate (rows * stride2) element))
       _ -> Left (Internal "dot: operand shapes do not contract")
   ("div", [a, b]) -> do
-    (dims, xs) <- tensor =<< a
-    k <- scalar =<< b
-    Right (VTensor dims (V.map (\x -> x >>= (`divide` k)) xs))
+    (dims, d1, xs) <- tensor =<< a
+    (k, d2) <- scalarWithDim =<< b
+    Right (VTensor dims (dimDiv d1 d2) (V.map (\x -> x >>= (`divide` k)) xs))
   ("eq", [a, b]) -> VBool <$> equal a b
   ("ne", [a, b]) -> VBool . not <$> equal a b
   ("lt", [a, b]) -> compareWith (<) a b
@@ -240,43 +251,47 @@ runPrim cfg look p args = case (p, args) of
     x <- bool =<< a
     if x then Right (VBool True) else VBool <$> (bool =<< b)
   ("not", [a]) -> VBool . not <$> (bool =<< a)
-  ("floor", [a]) -> num . fromInteger . floor <$> (scalar =<< a)
-  ("ceil", [a]) -> num . fromInteger . ceiling <$> (scalar =<< a)
-  ("round", [a]) -> num . fromInteger . round <$> (scalar =<< a)
-  ("dot", [a, b]) -> do
-    (_, xs) <- tensor =<< a
-    (_, ys) <- tensor =<< b
-    products <- sequence (V.toList (V.zipWith (\x y -> (*) <$> x <*> y) xs ys))
-    Right (num (sum products))
+  ("floor", [a]) -> num dimOne . fromInteger . floor <$> (scalar =<< a)
+  ("ceil", [a]) -> num dimOne . fromInteger . ceiling <$> (scalar =<< a)
+  ("round", [a]) -> num dimOne . fromInteger . round <$> (scalar =<< a)
   ("cross", [a, b]) -> do
-    (_, xs) <- tensor =<< a
-    (_, ys) <- tensor =<< b
+    (_, dim1, xs) <- tensor =<< a
+    (_, dim2, ys) <- tensor =<< b
     xs' <- sequence (V.toList xs)
     ys' <- sequence (V.toList ys)
     case (xs', ys') of
       ([x0, x1, x2], [y0, y1, y2]) ->
-        Right (VTensor [3] (V.fromList (map Right [x1 * y2 - x2 * y1, x2 * y0 - x0 * y2, x0 * y1 - x1 * y0])))
+        Right (VTensor [3] (dimMul dim1 dim2) (V.fromList (map Right [x1 * y2 - x2 * y1, x2 * y0 - x0 * y2, x0 * y1 - x1 * y0])))
       _ -> Left (Internal "cross of non-3-vectors")
   ("transpose", [a]) -> do
-    (dims, buf) <- tensor =<< a
+    (dims, d, buf) <- tensor =<< a
     case dims of
-      [r, c] -> Right (VTensor [c, r] (V.generate (r * c) (\k -> let (j, i) = k `divMod` r in buf V.! (i * c + j))))
+      [r, c] -> Right (VTensor [c, r] d (V.generate (r * c) (\k -> let (j, i) = k `divMod` r in buf V.! (i * c + j))))
       _ -> Left (Internal "transpose of a non-matrix")
   ("vmap", [f, a]) -> do
     fv <- f
-    (dims, buf) <- tensor =<< a
-    Right (VTensor dims (V.map (\x -> apply cfg look fv (num <$> x) >>= scalar) buf))
+    (dims, d, buf) <- tensor =<< a
+    let results = V.map (\x -> apply cfg look fv (Right (VTensor [] d (V.singleton x)))) buf
+    -- The result dimension is a property of the function; read it off the
+    -- first element, or keep the input's for an empty tensor.
+    outDim <-
+      if V.null results
+        then Right d
+        else snd <$> (scalarWithDim =<< V.head results)
+    Right (VTensor dims outDim (V.map (>>= scalar) results))
+  -- Conversion keeps the value; display units arrive with the prelude.
+  ("to", [a, _]) -> a
   _
     | primArity p == Just (length args) -> Left (Unsupported (p <> ": not implemented yet"))
     | otherwise -> Left (Internal ("primitive " <> p <> " is unknown or applied to the wrong number of arguments"))
   where
     elementwise1 op a = do
-      (dims, buf) <- tensor =<< a
-      Right (VTensor dims (V.map (fmap op) buf))
-    elementwise2 op a b = do
-      (dims, xs) <- tensor =<< a
-      (_, ys) <- tensor =<< b
-      Right (VTensor dims (V.zipWith (\x y -> op <$> x <*> y) xs ys))
+      (dims, d, buf) <- tensor =<< a
+      Right (VTensor dims d (V.map (fmap op) buf))
+    elementwise2 op dimOp a b = do
+      (dims, d1, xs) <- tensor =<< a
+      (_, d2, ys) <- tensor =<< b
+      Right (VTensor dims (dimOp d1 d2) (V.zipWith (\x y -> op <$> x <*> y) xs ys))
     divide x y = if y == 0 then Left DivideByZero else Right (x / y)
     compareWith op a b = do
       x <- scalar =<< a
@@ -288,7 +303,7 @@ runPrim cfg look p args = case (p, args) of
       x <- a
       y <- b
       case (x, y) of
-        (VTensor _ xs, VTensor _ ys) -> do
+        (VTensor _ _ xs, VTensor _ _ ys) -> do
           xs' <- sequence (V.toList xs)
           ys' <- sequence (V.toList ys)
           Right (xs' == ys')
@@ -296,10 +311,11 @@ runPrim cfg look p args = case (p, args) of
         _ -> Left (Internal "==: operands are not both tensors or both booleans")
 
 -- | A plain rendering for tests. Forces every element. Rationals print as
--- @n/d@; decimal output is "Eval.Pretty"'s job.
+-- @n/d@ and dimensions are omitted; decimal output with units is
+-- "Eval.Pretty"'s job.
 render :: Value -> Either EvalError Text
 render = \case
-  VTensor dims buf -> do
+  VTensor dims _ buf -> do
     rs <- sequence (V.toList buf)
     pure (nested dims rs)
   VBool True -> Right "true"

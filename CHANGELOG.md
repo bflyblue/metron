@@ -46,4 +46,13 @@
   deterministic. They found and fixed two things: a binder hint shadowing a
   free name printed ambiguously (binders are now freshened), and `-3`
   desugaring differently from a negative literal (negation of a constant is
-  now the negative constant).
+  now the negative constant). **Hash-affecting**: definitions containing a
+  negated constant change hash.
+- Dimensions in the type system: `Tensor s δ` with a `Dim` kind, Kennedy's
+  unification, dimension-polymorphic primitives (`sqrt : Num [d^2] -> Num d`,
+  `\r -> r^2 : Num d -> Num [d^2]`), the seven SI base units as primitives,
+  runtime dimension vectors and printing in base units (`9.81 m s^-2`).
+  Static errors name the residual: "dimensions differ by [m s^-1]". Lint's
+  instance matching uses a one-shot substitution, fixing a namespace clash
+  between a scheme's ids and inference's. Display units and the prelude are
+  next.

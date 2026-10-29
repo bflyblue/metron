@@ -1,9 +1,10 @@
--- | Types, kinds and schemes (design §4.1), without dimensions yet.
+-- | Types, kinds and schemes (design §4.1).
 --
 -- There is one namespace of variables, each with a 'Kind'. Every kind is an
 -- index domain with its own equational theory: types unify syntactically,
--- lengths by the offset rule, shapes element-wise. No term ever appears in
--- a type, which keeps this on the indexed-types side of the line.
+-- lengths by the offset rule, shapes element-wise, dimensions by Kennedy's
+-- algorithm. No term ever appears in a type, which keeps this on the
+-- indexed-types side of the line.
 module Eval.Type
   ( Kind (..)
   , VarId
@@ -17,11 +18,15 @@ module Eval.Type
   , applyType
   , applyLen
   , applyShape
+  , applyDim
   , applyArg
   , applyScheme
+  , substOnce
   , freeVars
   , numT
+  , numD
   , vecT
+  , vecD
   , shapeOfDims
   , renderType
   , renderScheme
@@ -35,15 +40,16 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+import Eval.Dimension
 
-data Kind = KType | KLen | KShape
+data Kind = KType | KLen | KShape | KDim
   deriving stock (Eq, Ord, Show)
 
 type VarId = Int
 
 data Type
   = TBool
-  | TTensor Shape
+  | TTensor Shape Dim
   | TFun Type Type
   | TVar VarId
   deriving stock (Eq, Ord, Show)
@@ -67,6 +73,7 @@ data Arg
   = AType Type
   | ALen Len
   | AShape Shape
+  | ADim Dim
   deriving stock (Eq, Ord, Show)
 
 -- | @forall (v : kind)…. type@.
@@ -78,11 +85,18 @@ type Subst = Map VarId Arg
 emptySubst :: Subst
 emptySubst = Map.empty
 
+-- | A dimensionless number.
 numT :: Type
-numT = TTensor SNil
+numT = TTensor SNil dimOne
+
+numD :: Dim -> Type
+numD = TTensor SNil
 
 vecT :: Len -> Type
-vecT n = TTensor (SCons n SNil)
+vecT n = TTensor (SCons n SNil) dimOne
+
+vecD :: Len -> Dim -> Type
+vecD n = TTensor (SCons n SNil)
 
 shapeOfDims :: [Int] -> Shape
 shapeOfDims = foldr (SCons . LLit) SNil
@@ -92,7 +106,7 @@ shapeOfDims = foldr (SCons . LLit) SNil
 applyType :: Subst -> Type -> Type
 applyType s = \case
   TBool -> TBool
-  TTensor sh -> TTensor (applyShape s sh)
+  TTensor sh d -> TTensor (applyShape s sh) (applyDim s d)
   TFun a b -> TFun (applyType s a) (applyType s b)
   TVar v -> case Map.lookup v s of
     Just (AType t) -> applyType s t
@@ -118,16 +132,59 @@ applyShape s = \case
     Just (AShape sh) -> applyShape s sh
     _ -> SVar v
 
+-- | Substitute every bound dimension variable, renormalising. A binding may
+-- itself mention variables, so iterate until no bound variable remains.
+applyDim :: Subst -> Dim -> Dim
+applyDim s d = case [(v, bound) | v <- dimVars d, Just (ADim bound) <- [Map.lookup v s]] of
+  [] -> d
+  bindings -> applyDim s (foldr (\(v, bound) acc -> substDimVar v bound acc) d bindings)
+
 applyArg :: Subst -> Arg -> Arg
 applyArg s = \case
   AType t -> AType (applyType s t)
   ALen l -> ALen (applyLen s l)
   AShape sh -> AShape (applyShape s sh)
+  ADim d -> ADim (applyDim s d)
 
 -- | Apply to the body of a scheme; quantified variables are never in the
 -- substitution's domain.
 applyScheme :: Subst -> Scheme -> Scheme
 applyScheme s (Forall vs t) = Forall vs (applyType s t)
+
+-- | A one-shot simultaneous substitution: each variable is replaced once and
+-- the replacements are not themselves substituted into. This is what
+-- instantiation and lint need, where the variables being replaced (a
+-- scheme's quantified ids) and the variables in the replacements (another
+-- inference run's ids) are different namespaces that may share numbers;
+-- 'applyType' chases bindings and would conflate them.
+substOnce :: Map VarId Arg -> Type -> Type
+substOnce m = go
+  where
+    go = \case
+      TBool -> TBool
+      TTensor sh d -> TTensor (shape sh) (dim d)
+      TFun a b -> TFun (go a) (go b)
+      TVar v -> case Map.lookup v m of
+        Just (AType t) -> t
+        _ -> TVar v
+    shape = \case
+      SNil -> SNil
+      SCons l sh -> SCons (len l) (shape sh)
+      SVar v -> case Map.lookup v m of
+        Just (AShape sh) -> sh
+        _ -> SVar v
+    len = \case
+      LLit k -> LLit k
+      LVar v k -> case Map.lookup v m of
+        Just (ALen l) -> shiftLen k l
+        _ -> LVar v k
+    dim d =
+      foldr dimMul dimOne
+        [ case a of
+            DVar v | Just (ADim d') <- Map.lookup v m -> dimPow k d'
+            _ -> dimFromAtoms [(a, k)]
+        | (a, k) <- dimAtoms d
+        ]
 
 -- | Free variables with their kinds, in order of first appearance.
 freeVars :: Type -> [(VarId, Kind)]
@@ -135,7 +192,7 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
   where
     go = \case
       TBool -> []
-      TTensor sh -> shape sh
+      TTensor sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
       TFun a b -> go a ++ go b
       TVar v -> [(v, KType)]
     shape = \case
@@ -149,16 +206,17 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
 -- Rendering ---------------------------------------------------------------------
 
 -- | Print a type with variables named by kind in order of appearance: @a b c@
--- for types, @n m k@ for lengths, @s s1 s2@ for shapes (design §4.5). Rank
--- zero, one and two tensors print as @Num@, @Vec@ and @Mat@.
+-- for types, @n m k@ for lengths, @s s1 s2@ for shapes, @d d1 d2@ for
+-- dimensions (design §4.5). Rank zero, one and two tensors print as @Num@,
+-- @Vec@ and @Mat@; a dimension follows in brackets unless it is @1@.
 renderType :: Type -> Text
 renderType t = renderWith (prettyNames (freeVars t)) 0 t
 
 renderScheme :: Scheme -> Text
 renderScheme (Forall _ t) = renderType t
 
--- | Print naming variables by their ids (@t0@, @n1@, @s2@), so that binders
--- and uses in Typed Core line up (design §5.3).
+-- | Print naming variables by their ids (@t0@, @n1@, @s2@, @d3@), so that
+-- binders and uses in Typed Core line up (design §5.3).
 renderTypeIds :: Type -> Text
 renderTypeIds t = renderWith (idNames (freeVars t)) 0 t
 
@@ -170,6 +228,7 @@ renderArg = \case
   AType t -> renderTypeIds t
   ALen l -> renderLen (idNames [(v, KLen) | LVar v _ <- [l]]) l
   AShape sh -> renderShapeList (idNames (shapeVars sh)) sh
+  ADim d -> renderDimWith (\v -> "d" <> T.pack (show v)) d
   where
     shapeVars = \case
       SNil -> []
@@ -180,14 +239,23 @@ renderArg = \case
 renderWith :: Map VarId Text -> Int -> Type -> Text
 renderWith names prec = \case
   TBool -> "Bool"
-  TTensor SNil -> "Num"
-  TTensor (SCons n SNil) -> "Vec " <> renderLen names n
-  TTensor (SCons m (SCons n SNil)) -> "Mat " <> renderLen names m <> " " <> renderLen names n
-  TTensor sh -> "Tensor " <> renderShapeList names sh
+  TTensor sh d -> tensor sh <> dim d
   TFun a b -> paren (prec > 0) (renderWith names 1 a <> " -> " <> renderWith names 0 b)
   TVar v -> Map.findWithDefault ("t" <> T.pack (show v)) v names
   where
     paren b s = if b then "(" <> s <> ")" else s
+    tensor = \case
+      SNil -> "Num"
+      SCons n SNil -> "Vec " <> renderLen names n
+      SCons m (SCons n SNil) -> "Mat " <> renderLen names m <> " " <> renderLen names n
+      sh -> "Tensor " <> renderShapeList names sh
+    -- A lone dimension variable prints bare (@Num d@); anything else in
+    -- brackets (@Num [m s^-2]@, @Num [d d1]@).
+    dim d
+      | isDimOne d = ""
+      | [(DVar v, 1)] <- dimAtoms d = " " <> dimName v
+      | otherwise = " " <> renderDimWith dimName d
+    dimName v = Map.findWithDefault ("d" <> T.pack (show v)) v names
 
 -- | A length on its own: an offset form is parenthesised, @Vec (n + 1)@.
 renderLen :: Map VarId Text -> Len -> Text
@@ -227,6 +295,7 @@ prettyNames vs =
     zip [v | (v, KType) <- vs] (map T.singleton ['a' .. 'm'] ++ ["t" <> T.pack (show i) | i <- [1 :: Int ..]])
       ++ zip [v | (v, KLen) <- vs] (["n", "m", "k", "l", "p", "q"] ++ ["n" <> T.pack (show i) | i <- [1 :: Int ..]])
       ++ zip [v | (v, KShape) <- vs] ("s" : ["s" <> T.pack (show i) | i <- [1 :: Int ..]])
+      ++ zip [v | (v, KDim) <- vs] ("d" : ["d" <> T.pack (show i) | i <- [1 :: Int ..]])
 
 idNames :: [(VarId, Kind)] -> Map VarId Text
 idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
@@ -235,3 +304,4 @@ idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
       KType -> "t"
       KLen -> "n"
       KShape -> "s"
+      KDim -> "d"

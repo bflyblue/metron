@@ -314,4 +314,12 @@ primArity = \case
   "det" -> Just 1
   "vmap" -> Just 2
   "pi" -> Just 0
+  -- The seven SI base units (design §3.2.11).
+  "m" -> Just 0
+  "kg" -> Just 0
+  "s" -> Just 0
+  "A" -> Just 0
+  "K" -> Just 0
+  "mol" -> Just 0
+  "cd" -> Just 0
   _ -> Nothing

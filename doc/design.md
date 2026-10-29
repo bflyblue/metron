@@ -960,11 +960,12 @@ has one type too. General contraction and index permutation (`contract i j`,
 `permute [p…]`, with literal indices) are roadmap items for ranks above two.
 ### 4.3 Types of the primitives
 
-*Status.* Implemented without dimensions and without the `*`/`/` overloading
-table. `+`, `-`, `neg`, `abs`, `vmap` and `==` are shape-polymorphic over
-`Tensor s` (core.md, "Operators across ranks"); `*` and `/` are scalar until the
-table exists. Kinded variables, shapes, let-polymorphism and the rest of this
-table are in place.
+*Status.* Implemented: kinded variables for types, lengths, shapes and
+dimensions; Kennedy unification; the seven base units as primitives; the
+products of §4.2 with multiplying dimensions. `det` is on dimensionless
+matrices until the length-as-exponent relation `Num [d^n]` exists. Display
+units, the prelude and `to` with a display hint are the remaining pieces of
+roadmap item 2.
 
 ```
 literal     : Num 1
@@ -1292,6 +1293,11 @@ SHA-256 of the encoding, displayed as a base32hex prefix: `#a3f9k`.
 length and big-endian magnitude bytes, so arbitrarily large integers encode
 canonically. The encoding is also the on-disk format (§7.4) and must round-trip.
 
+The hash therefore depends on the desugaring rules and this encoding as well as
+on what the user wrote; a change to either re-identifies stored definitions.
+core.md, "What the hash depends on", records the consequences and the policy
+decision that persistence (§10, item 6) requires.
+
 ### 6.2 Hashing cycles
 
 Mutually recursive definitions form a cycle. Hashing follows Unison's
@@ -1612,6 +1618,8 @@ tuned, and compilation is a later milestone.
 2. **Dimensions.** `Dimension` module, Kennedy unifier, base-unit builtins, prelude
    generator, `to`, display hints, quantity printing. Before affine arithmetic,
    because the daily calculator needs `km/h to m/s` before it needs `sin`.
+   Status: type system, base units and base-unit printing done; prelude,
+   display hints and `to` remaining.
 3. **Affine magnitudes.** `Affine` and `Transcendental`, all transcendental
    builtins, hash-named nudges with kinds, `±`, `±σ`, `noise` and `gauss` with
    definition-site identity,

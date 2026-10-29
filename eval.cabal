@@ -27,6 +27,7 @@ library
     , Eval.Codebase
     , Eval.Core
     , Eval.Desugar
+    , Eval.Dimension
     , Eval.Driver
     , Eval.Eval
     , Eval.Hash

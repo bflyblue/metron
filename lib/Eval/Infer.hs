@@ -24,8 +24,11 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.List (minimumBy)
+import Data.Ord (comparing)
 import Eval.Core
 import Eval.Desugar (Path)
+import Eval.Dimension
 import Eval.TCore
 import Eval.Type
 
@@ -97,6 +100,12 @@ fresh k = do
     KType -> AType (TVar st.next)
     KLen -> ALen (LVar st.next 0)
     KShape -> AShape (SVar st.next)
+    KDim -> ADim (dimVar st.next)
+
+freshDim :: Infer Dim
+freshDim = fresh KDim >>= \case
+  ADim d -> pure d
+  _ -> error "fresh KDim"
 
 freshType :: Infer Type
 freshType = fresh KType >>= \case
@@ -133,9 +142,9 @@ unify p expected actual = do
     (TVar v, t) -> bindVar p v (AType t)
     (t, TVar v) -> bindVar p v (AType t)
     (TFun a1 b1, TFun a2 b2) -> unify p a1 a2 >> unify p b1 b2
-    (TTensor s1, TTensor s2) -> do
+    (TTensor s1 d1, TTensor s2 d2) -> do
       st <- get
-      case runStateT (unifyShape p s1 s2) st of
+      case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
         Right ((), st') -> put st'
         Left (TypeError _ detail) ->
           failAt p ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
@@ -145,12 +154,14 @@ bindVar :: Path -> VarId -> Arg -> Infer ()
 bindVar p v arg = do
   let occurs = case arg of
         AType t -> v `elem` map fst (freeVars t)
-        AShape s -> v `elem` map fst (freeVars (TTensor s))
+        AShape s -> v `elem` map fst (freeVars (TTensor s dimOne))
         ALen _ -> False
+        ADim d -> v `elem` dimVars d
       trivial = case arg of
         AType (TVar w) -> w == v
         AShape (SVar w) -> w == v
         ALen (LVar w 0) -> w == v
+        ADim d -> d == dimVar v
         _ -> False
   unless trivial $
     if occurs
@@ -189,6 +200,32 @@ unifyLen p x y = do
     bindLen v k j
       | j >= k = bindVar p v (ALen (LLit (j - k)))
       | otherwise = failAt p ("a vector of length " <> tshow j <> " is too short: at least " <> tshow k <> " needed")
+
+-- | Kennedy's algorithm (design §4.4): to unify two dimensions, solve
+-- @d1 · d2⁻¹ = 1@. Pick the variable with the smallest exponent; if it
+-- divides every other exponent, solve for it; otherwise substitute a fresh
+-- variable times the quotients and repeat, Euclid-style.
+unifyDim :: Path -> Dim -> Dim -> Infer ()
+unifyDim p d1 d2 = solve (dimDiv d1 d2)
+  where
+    solve delta = do
+      s <- gets (.subst)
+      let d = applyDim s delta
+          vars = [(v, k) | (DVar v, k) <- dimAtoms d]
+      case vars of
+        [] -> unless (isDimOne d) (failAt p ("dimensions differ by " <> renderDim d))
+        _ -> do
+          let (v, x0) = minimumBy (comparing (abs . snd)) vars
+          -- Work with a positive exponent: δ = 1 and δ⁻¹ = 1 are the same equation.
+          let d' = if x0 < 0 then dimInv d else d
+              x = abs x0
+              others = [(a, k) | (a, k) <- dimAtoms d', a /= DVar v]
+          if all (\(_, k) -> k `mod` x == 0) others
+            then bindVar p v (ADim (dimFromAtoms [(a, negate (k `div` x)) | (a, k) <- others]))
+            else do
+              v' <- freshDim
+              bindVar p v (ADim (dimMul v' (dimFromAtoms [(a, negate (k `div` x)) | (a, k) <- others])))
+              solve d'
 
 -- Constraints ----------------------------------------------------------------------
 
@@ -235,7 +272,7 @@ solveOne p = \case
   EqInstance t -> do
     t' <- resolve t
     case t' of
-      TTensor _ -> pure True
+      TTensor _ _ -> pure True
       TBool -> pure True
       TVar _ -> pure False
       _ -> failAt p ("no equality on " <> renderType t')
@@ -264,7 +301,7 @@ settle ctx = do
       Append a b c -> Append (applyShape s a) (applyShape s b) (applyShape s c)
       EqInstance t -> EqInstance (applyType s t)
     constraintVars = \case
-      Append a b c -> map fst (concatMap (freeVars . TTensor) [a, b, c])
+      Append a b c -> map fst (concatMap (freeVars . (`TTensor` dimOne)) [a, b, c])
       EqInstance t -> map fst (freeVars t)
 
 -- Generalisation and instantiation ---------------------------------------------------
@@ -274,7 +311,29 @@ generalise ctx t = do
   s <- gets (.subst)
   let t' = applyType s t
       envVars = concat [map fst (freeVars (applyType s b)) | Forall _ b <- vecToList ctx]
-  pure (Forall (filter ((`notElem` envVars) . fst) (freeVars t')) t')
+      quantified = filter ((`notElem` envVars) . fst) (freeVars t')
+  pure (Forall quantified (positiveDims quantified t'))
+
+-- | Kennedy's algorithm may solve for the inverse of a variable, giving
+-- @Num [d^-2] -> Num [d^-3]@ where @Num [d^2] -> Num [d^3]@ means the same
+-- scheme. A quantified dimension variable that only appears with negative
+-- exponents is replaced by its inverse.
+positiveDims :: [(VarId, Kind)] -> Type -> Type
+positiveDims quantified t = foldr flipIfNegative t [v | (v, KDim) <- quantified]
+  where
+    flipIfNegative v ty
+      | not (null (exponents v ty)) && all (< 0) (exponents v ty) = rewrite v ty
+      | otherwise = ty
+    exponents v = \case
+      TBool -> []
+      TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+      TFun a b -> exponents v a ++ exponents v b
+      TVar _ -> []
+    rewrite v = \case
+      TBool -> TBool
+      TTensor sh d -> TTensor sh (substDimVar v (dimInv (dimVar v)) d)
+      TFun a b -> TFun (rewrite v a) (rewrite v b)
+      TVar w -> TVar w
 
 -- | Replace the quantified variables by fresh ones and return the arguments
 -- used, for the explicit type applications. This is a one-shot renaming, not
@@ -285,27 +344,10 @@ instantiate :: Scheme -> Infer (Type, [Arg])
 instantiate (Forall vs t) = do
   args <- mapM (fresh . snd) vs
   let m = Map.fromList (zip (map fst vs) args)
-  pure (rename m t, args)
-  where
-    rename m = \case
-      TBool -> TBool
-      TTensor sh -> TTensor (renameShape m sh)
-      TFun a b -> TFun (rename m a) (rename m b)
-      TVar v -> case Map.lookup v m of
-        Just (AType t') -> t'
-        _ -> TVar v
-    renameShape m = \case
-      SNil -> SNil
-      SCons l sh -> SCons (renameLen m l) (renameShape m sh)
-      SVar v -> case Map.lookup v m of
-        Just (AShape sh) -> sh
-        _ -> SVar v
-    renameLen m = \case
-      LLit k -> LLit k
-      LVar v k -> case Map.lookup v m of
-        Just (ALen (LVar w j)) -> LVar w (j + k)
-        Just (ALen (LLit j)) -> LLit (j + k)
-        _ -> LVar v k
+  -- Simultaneous, not sequential: a fresh id can equal the next quantified
+  -- id, and replacing one variable at a time would then rename twice (lint
+  -- caught `cross` elaborating to `Vec 3 [m] -> Vec 3 [m/s] -> Vec 3 [m^2]`).
+  pure (substOnce m t, args)
 
 applyArgs :: TTerm n -> [Arg] -> TTerm n
 applyArgs = foldl TTyApp
@@ -335,8 +377,11 @@ infer look p ctx = \case
             TFun param r -> unify (i : p) param a >> go (i + 1) r rest
             _ -> failAt p ("primitive " <> name <> " applied to too many arguments")
     result <- go (0 :: Int) t (map fst typed)
+    -- The arguments may have fixed the shapes a pending product constraint
+    -- was waiting for; solve now so later errors print resolved types.
+    solvePending
     pure (result, TPrimApp name t (map snd typed))
-  Lit l@(LTensor dims _) -> pure (TTensor (shapeOfDims dims), TLit l)
+  Lit l@(LTensor dims _) -> pure (TTensor (shapeOfDims dims) dimOne, TLit l)
   Lit l@(LBool _) -> pure (TBool, TLit l)
   Lam h body -> do
     a <- freshType
@@ -367,18 +412,21 @@ infer look p ctx = \case
     pure (tt, TIf c' t' e')
   Pow b n -> do
     (tb, b') <- infer look (0 : p) ctx b
-    unify (0 : p) numT tb
-    pure (numT, TPow b' n)
+    d <- freshDim
+    unify (0 : p) (numD d) tb
+    pure (numD (dimPow (fromIntegral n) d), TPow b' n)
   Noise k n -> pure (vecT (LLit (fromIntegral n)), TNoise k n)
   Uncertain k x e -> do
+    d <- freshDim
     (tx, x') <- infer look (0 : p) ctx x
-    unify (0 : p) numT tx
+    unify (0 : p) (numD d) tx
     (te, e') <- infer look (1 : p) ctx e
-    unify (1 : p) numT te
-    pure (numT, TUncertain k x' e')
+    unifyMsg (1 : p) (numD d) te "the uncertainty must have the dimension of the value"
+    pure (numD d, TUncertain k x' e')
   Pack ts -> do
     elemShape <- freshShape
-    let elemT = TTensor elemShape
+    elemDim <- freshDim
+    let elemT = TTensor elemShape elemDim
     ts' <-
       zipWithM
         (\i t -> do
@@ -387,25 +435,26 @@ infer look p ctx = \case
            pure t')
         [0 ..]
         ts
-    pure (TTensor (SCons (LLit (length ts)) elemShape), TPack ts')
+    pure (TTensor (SCons (LLit (length ts)) elemShape) elemDim, TPack ts')
   Proj t i -> do
     (tt0, t') <- infer look (0 : p) ctx t
     tt <- resolve tt0
     ty <- case tt of
-      TTensor (SCons (LLit n) rest)
-        | i < n -> pure (TTensor rest)
+      TTensor (SCons (LLit n) rest) d
+        | i < n -> pure (TTensor rest d)
         | otherwise -> failAt p ("position " <> tshow i <> " is out of range for a vector of length " <> tshow n)
-      TTensor (SCons l rest) -> do
+      TTensor (SCons l rest) d -> do
         atLeast <- freshLen (i + 1)
         unifyLen p l atLeast
-        pure (TTensor rest)
-      TTensor SNil -> failAt p ("cannot project ." <> tshow i <> " from a number")
+        pure (TTensor rest d)
+      TTensor SNil _ -> failAt p ("cannot project ." <> tshow i <> " from a number")
       -- Rank unknown so far: it must be at least one.
       _ -> do
         atLeast <- freshLen (i + 1)
         rest <- freshShape
-        unify (0 : p) tt (TTensor (SCons atLeast rest))
-        pure (TTensor rest)
+        d <- freshDim
+        unify (0 : p) tt (TTensor (SCons atLeast rest) d)
+        pure (TTensor rest d)
     pure (ty, TProj t' i)
   Cycle {} -> failAt p "a cycle cannot appear inside an expression"
   where
@@ -430,17 +479,21 @@ primType p name argc = do
       s1 <- freshShape
       s2 <- freshShape
       s3 <- freshShape
+      d1 <- freshDim
+      d2 <- freshDim
       defer p (Append s1 s2 s3)
-      pure (TFun (TTensor s1) (TFun (TTensor s2) (TTensor s3)))
+      pure (TFun (TTensor s1 d1) (TFun (TTensor s2 d2) (TTensor s3 (dimMul d1 d2))))
     "dot" -> do
       s1 <- freshShape
       n <- freshLen 0
       s2 <- freshShape
       left <- freshShape
       s3 <- freshShape
+      d1 <- freshDim
+      d2 <- freshDim
       defer p (Append s1 (SCons n SNil) left)
       defer p (Append s1 s2 s3)
-      pure (TFun (TTensor left) (TFun (TTensor (SCons n s2)) (TTensor s3)))
+      pure (TFun (TTensor left d1) (TFun (TTensor (SCons n s2) d2) (TTensor s3 (dimMul d1 d2))))
     _ | name == "eq" || name == "ne" -> do
       a <- freshType
       defer p (EqInstance a)

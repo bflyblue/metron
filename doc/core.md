@@ -225,6 +225,41 @@ constructors' types enforce the structural ones; tests pin the rest.
   erasing the type forms gives back the Core.
 - **Erasure is semantics-preserving.** The evaluator may ignore every type form.
 
+### What the hash depends on
+
+A definition's identity is the hash of its Core. That makes the hash a
+function of three things, not one:
+
+1. what the user wrote;
+2. the **desugaring rules** that turn it into Core (design §2.9), including
+   small canonicalisations such as "negating a constant is a negative
+   constant" or "a bracket of constants is one constant";
+3. the **canonical encoding** (design §6.1) and the set of primitive names.
+
+Only the first is the user's. The other two are part of the trusted base, and a
+change to either re-identifies every stored definition it touches: a definition
+containing `-3` had one hash before negative constants were canonical and has
+another after. Nothing is persisted yet, so today such a change costs nothing.
+Once the codebase lives on disk and iapetus depends on stable hashes, every
+desugaring or encoding change is a migration of stored definitions and their
+history.
+
+This is the asymmetry that makes a small, stable Core matter: library
+definitions can be versioned by the codebase itself, since a new version is a
+new hash and the old one stays reachable; primitives, desugaring rules and the
+encoding cannot, because they are the ground the hashes stand on. The slogan
+"the surface language is free to change" is true of the *phases*, which read
+Core and never the surface, and false of the *hashes*, which encode the
+translation.
+
+Before persistence lands (design §10, item 6) one of three policies has to be
+chosen and written down: freeze the desugaring rules and encoding behind a
+version number, with any change being a numbered migration; store the original
+source beside each hash so definitions can be re-desugared and re-hashed; or
+treat migrations as a routine, tooled operation. Until then, desugaring changes
+are made freely but each one is listed in the changelog as a hash-affecting
+change.
+
 ## 7. Changing Core
 
 Any proposal to add, remove or change a constructor goes through this test
