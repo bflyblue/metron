@@ -65,7 +65,7 @@ renderResolveError = \case
 -- | Free names resolve to whatever the codebase currently binds.
 resolverFor :: Codebase -> Resolver
 resolverFor cb n =
-  (\r@(Reference h i) -> Resolution (h, i) (isUnitRef r cb) (isScaleRef r cb))
+  (\(Reference h i) -> Resolution (h, i) (isUnitName n cb) (isScaleName n cb))
     <$> lookupName n cb
 
 typeLookupFor :: Codebase -> TypeLookup
@@ -121,7 +121,7 @@ enterComponent cb = \case
         ref = Reference h Nothing
         cb' =
           bindName b.name.text ref (addTerm h term (preferLint schemes linted) typed cb)
-    pure (markKind b.kind ref cb')
+    pure (markKind b.kind b.name.text cb')
   CyclicSCC bs -> enterCycle cb bs
 
 -- | Inference and lint must agree; lint is the authority if they ever differ.
@@ -161,7 +161,7 @@ enterCycle cb bs = do
           bindMember acc (i, b) =
             let ref = Reference h (Just i)
                 acc' = bindName b.name.text ref acc
-             in markKind b.kind ref acc'
+             in markKind b.kind b.name.text acc'
       pure (foldl bindMember cb' (zip [0 ..] sorted))
  where
   desugarOne ::
@@ -229,9 +229,13 @@ storeTerm h term cb = do
   linted <- lintClosed (typeLookupFor cb) typed
   pure (addTerm h term (preferLint schemes linted) typed cb)
 
--- | Record what a binding declared besides its value.
-markKind :: S.BindKind -> Reference -> Codebase -> Codebase
-markKind kind ref cb = case kind of
-  S.Plain -> cb
-  S.Unit -> markUnit ref cb
-  S.ScaleDecl -> markScale ref cb
+{- | Record what a binding declared besides its value.
+| Record what a binding declared besides its value. A plain `let` clears
+any unit or scale flag the name carried: `let g = 9.81 m/s^2` is a
+quantity even though `g` was the gram.
+-}
+markKind :: S.BindKind -> Text -> Codebase -> Codebase
+markKind kind n cb = case kind of
+  S.Plain -> clearFlags n cb
+  S.Unit -> markUnit n cb
+  S.ScaleDecl -> markScale n cb

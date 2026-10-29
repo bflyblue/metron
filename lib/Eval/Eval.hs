@@ -70,8 +70,9 @@ reference, and whether a reference was declared a display unit.
 -}
 data Runtime = Runtime
   { typedOf :: Hash -> Maybe (TTerm Z)
-  , isUnit :: Hash -> Maybe Int -> Bool
-  , isScale :: Hash -> Maybe Int -> Bool
+  , unitName :: Hash -> Maybe Int -> Text -> Maybe Text
+  -- ^ given a reference and the name written for it, the unit name it is a unit under, if any (design §3.2.12)
+  , scaleName :: Hash -> Maybe Int -> Text -> Maybe Text
   }
 
 data EvalError
@@ -104,7 +105,7 @@ data Site = Site {definition :: Hash, path :: [Int]}
 
 -- | A factor of a display unit: a declared unit by reference, or a base unit.
 data UnitAtom
-  = UnitRef Hash (Maybe Int)
+  = UnitNamed Text
   | UnitBase Text
   deriving stock (Eq, Ord, Show)
 
@@ -173,7 +174,7 @@ eval cfg rt = go
   go :: Site -> Env m -> TTerm m -> Thunk
   go site env = \case
     TVr i -> lookupEnv i env
-    TRef h mi -> case rt.typedOf h of
+    TRef h mi (Hint written) -> case rt.typedOf h of
       Nothing -> Left (UnknownRef h)
       Just t -> do
         v <- case mi of
@@ -184,9 +185,10 @@ eval cfg rt = go
               Nothing -> Left (BadCycleIndex i)
             _ -> Left (BadCycleIndex i)
         -- A declared unit is its own display unit (design §3.2.12).
-        if rt.isUnit h mi
-          then asUnit (UnitRef h mi) v
-          else if rt.isScale h mi then asScale (UnitRef h mi) v else Right v
+        case (rt.unitName h mi written, rt.scaleName h mi written) of
+          (Just u, _) -> asUnit (UnitNamed u) v
+          (_, Just s) -> asScale (UnitNamed s) v
+          _ -> Right v
     TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
     TLit (LTensor dims rs) -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
     TLit (LBool b) -> Right (VBool b)

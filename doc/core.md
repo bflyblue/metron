@@ -267,7 +267,10 @@ The policy, now that stores exist (design §7.4):
   another version. Opening an old store then means a numbered migration:
   decode with the old decoder, re-encode, map every old hash to its new one,
   rewrite the references in dependency order (the `propagate` machinery), and
-  rewrite the log. None is written yet, since no store predates format 1.
+  rewrite the log. The first, format 1 to 2 (a written name after each
+  reference), changed no hashes and so needed only the term files rewritten.
+  Hints are the one thing in the storage encoding that is not in the hash,
+  which is what made it cheap.
 - **Primitives are append-only, and their types only tighten knowingly.** A
   stored term names its primitives by text, so a primitive may be added but
   never renamed or removed without a migration. A primitive's type may change

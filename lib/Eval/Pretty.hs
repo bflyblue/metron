@@ -203,8 +203,8 @@ renderValueWith namer scale showMagnitude = \case
 
 -- | The current name of a unit or scale atom.
 atomNameWith :: RefNamer -> UnitAtom -> Text
-atomNameWith namer = \case
-  UnitRef h i -> namer h i
+atomNameWith _ = \case
+  UnitNamed n -> n
   UnitBase u -> u
 
 {- | What a tensor prints as: its shape, its magnitudes in the display unit
@@ -257,7 +257,7 @@ originName :: RefNamer -> Origin -> Text
 originName namer = \case
   Tagged l i -> l <> (if i == 0 then "" else "." <> tshow i)
   Declared h path i ->
-    namer h Nothing
+    namer h Nothing ""
       <> (if null path then "" else " @" <> T.intercalate "." (map tshow path))
       <> (if i == 0 then "" else "." <> tshow i)
   Builtin name -> name
@@ -343,7 +343,7 @@ renderNested showElem dims xs = case dims of
 {- | How to print a reference: the codebase decides between a current name,
 a stale @name#hash@, and a bare @#hash@ (design §7.2).
 -}
-type RefNamer = Hash -> Maybe Int -> Text
+type RefNamer = Hash -> Maybe Int -> Text -> Text
 
 {- | Print a term as surface syntax, given names for the variables in scope
 (innermost first). Binder hints become names; de Bruijn indices make
@@ -355,7 +355,7 @@ renderTerm namer = go 0
   go :: Int -> Vec m Text -> Term m -> Text
   go prec ctx t = case t of
     Var i -> lookupVar i ctx
-    Ref h idx -> namer h idx
+    Ref h idx (Hint written) -> namer h idx written
     Lit (LTensor [] [r])
       | r < 0 -> paren (prec > 8) (renderRational 20 r)
       | otherwise -> renderRational 20 r

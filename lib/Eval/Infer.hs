@@ -498,12 +498,12 @@ infer look p ctx = \case
   Var i -> do
     (t, args) <- instantiate (lookupCtx i ctx)
     pure (t, applyArgs (TVr i) args)
-  Ref h idx -> case look h of
+  Ref h idx hint -> case look h of
     Nothing -> failAt p "reference to a definition with no stored type"
     Just schemes -> case nth (fromMaybe 0 idx) schemes of
       Just sc -> do
         (t, args) <- instantiate sc
-        pure (t, applyArgs (TRef h idx) args)
+        pure (t, applyArgs (TRef h idx hint) args)
       Nothing -> failAt p "reference to a cycle member that does not exist"
   PrimApp name args -> do
     t <- primType p name (length args)
@@ -694,7 +694,7 @@ zonk s = go
   go :: TTerm m -> TTerm m
   go = \case
     TVr i -> TVr i
-    TRef h i -> TRef h i
+    TRef h i hint -> TRef h i hint
     TPrimApp p ty args -> TPrimApp p (applyType s ty) (map go args)
     TLit l -> TLit l
     TLam h ty b -> TLam h (applyType s ty) (go b)

@@ -766,9 +766,18 @@ named units with exponents, a scale factor and a dimension. Where display units
 come from:
 
 - A definition declared with `unit` instead of `let` is a display unit:
-  `unit km = 1000 * m`. The declaration is label-level metadata in the codebase,
-  like a name, not part of the term or its hash, and it follows the name through
-  `:update`. Evaluating a reference to a declared unit yields its value tagged
+  `unit km = 1000 * m`. The declaration is a property of the **name**, label-level
+  metadata in the codebase like the binding itself, not part of the term or its
+  hash. Two names may share one hash and differ here: `unit dozen = 12` and
+  `let eggs = 12` are one term, `3 dozen` prints as `3 dozen` and `eggs + 1` is
+  `13`, and `Bq` and `Hz` are both `1/s` yet each prints as written. What makes
+  this possible is that every reference in Core carries the name the author
+  wrote as a hint, ignored by the hash like a binder's name but kept in the store,
+  and the evaluator asks whether *that* name is a unit. A `let` that rebinds a
+  unit name (`let g = 9.81 m/s^2`) makes it a quantity; `:alias` of a unit makes
+  the alias a unit; `:unname` removes the flag. If the written name has since been
+  moved or removed, any current unit name of the same reference stands in, so a
+  renamed unit prints under its new name. Evaluating a reference to a declared unit yields its value tagged
   with itself, so `5 km` prints `5 km` and `1 km to m` prints `1000 m`. The seven
   base units are units by construction. A `let`-bound quantity is not a unit:
   `let g = 9.81 m / s^2` prints as `9.81 m s^-2`, and so do values computed from
@@ -784,9 +793,6 @@ come from:
   `5003 m`. Projection, packing, negation, `abs`, `transpose` and
   `⋆` keep the unit; every other operation drops it.
 - `x to u` replaces the display unit with `u`'s. `to` is shape-polymorphic.
-- Two units with identical definitions are one definition with two names
-  (content addressing) and print under one of them; the prelude therefore
-  defines `Bq` as `1 * Hz` and `Sv` as `1 * Gy`, so each keeps its own identity.
 
 The rule for which unit a result prints in, in order: an explicit `to` wins;
 otherwise the written units, carried and simplified as above (dimensionless
@@ -1494,7 +1500,9 @@ SHA-256 of the encoding, displayed as a base32hex prefix: `#a3f9k`.
 | 0x0A | `Noise k l n` | one byte kind (0 bound, 1 stat), label, varint `n` |
 | 0x0B | `Uncertain k l x err` | one byte kind, label, `x`, `err` |
 
-A label is one byte (0 owner, 1 tag) and the text. The owner stamp is the
+A label is one byte (0 owner, 1 tag) and the text. In the *storage* encoding
+(§7.4) every `Ref` is followed by the name the author wrote, and every binder
+by its name hint; the canonical encoding, and so the hash, has neither. The owner stamp is the
 name of the enclosing definition (§3.2.4), so the hash of a definition that
 declares uncertainty depends on its name; nothing else in the hash does.
 | 0x0C | `Pack ts` | varint count, each `t` |
@@ -1668,14 +1676,16 @@ eval --codebase DIR …    use an explicit store
 A codebase on disk is a directory:
 
 ```
-format             "eval codebase 1": the storage format version
+format             "eval codebase 2": the storage format version
 terms/<hex hash>   one term per file: the canonical encoding of 6.1 with each
-                   binder's name hint written after its tag, so :view keeps
-                   the author's names; the hash is recomputed on load and checked
+                   binder's name hint after its tag and each reference's written
+                   name after it, so :view keeps the author's names and units are
+                   decided by the name used; the hash is recomputed on load
 names.log          append-only, one event per line:
                      <unix time> bind <name> <hex hash>[.<i>]
                      <unix time> unname <name>
-                     <unix time> unit <hex hash>[.<i>]
+                     <unix time> unit <name>
+                     <unix time> scale <name>
 history            the REPL's line history
 ```
 
@@ -1702,6 +1712,12 @@ dependencies before dependents, then the log lines, so an interrupted session
 never leaves a name pointing at a missing term. A term that fails to decode,
 fails to typecheck, or is named but missing is reported as a note at start and
 skipped; the rest loads.
+
+Format 1 stores (no written names after references, unit flags on
+references) are migrated in place on first open: every term file is decoded by
+the old rules and rewritten, with empty hints, and old `unit <hash>` lines in
+the log flag every name then bound to that hash. Hashes do not change, so the
+log and the names stay valid.
 
 ### 7.5 Scratch, add, update, upgrade
 
@@ -1889,13 +1905,6 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
-- A `unit` declaration marks a *reference*, so any definition with the same
-  body is the same unit: `let x = 1` is `rad`, and `x + 2` prints `3 rad`. The
-  honest fix is for the use site to decide: give `Ref` a name hint (ignored by
-  the hash, like binder hints) and let the evaluator ask whether the name
-  written was declared a unit. Then `5 km` prints `km` because `km` was
-  written, and `let d = 1000 * m` is never a unit. A Core field, not a
-  constructor; decide before the store fills up.
 - Comparison operators beyond the certain `<` and `==` (§3.2.9): possible
   comparisons `<?` and `=?` ("consistent with", at `k` sigma for statistical
   nudges), tolerance equality `a ≈ b within t`, enclosure containment, and the

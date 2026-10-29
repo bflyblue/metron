@@ -166,3 +166,12 @@
   `5003 m` (was: the left operand's). Design §3.2.12 states the display rule
   in order: `to` wins; else the written units, simplified; else base units.
   Products are never renamed to a named unit.
+- Units and scales are names, not references (design §3.2.12). Every `Ref`
+  in Core carries the name the author wrote as a hint, ignored by the hash
+  like binder hints and kept in the store, and the evaluator asks whether
+  that name was declared a unit. `unit dozen = 12` and `let eggs = 12`
+  share a hash yet `3 dozen` and `eggs + 1` print `3 dozen` and `13`; `Bq`
+  and `Hz` are both `1/s` again; a `let` that rebinds a unit name makes it a
+  quantity; `:alias` of a unit is a unit; a renamed unit prints under its new
+  name. Storage format 2; format-1 stores migrate in place on first open.
+  Hashes are unchanged.

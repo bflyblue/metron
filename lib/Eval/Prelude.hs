@@ -31,16 +31,14 @@ derived =
   , ("T", "V * s / m^2")
   , ("H", "V * s / A")
   , ("Wb", "V * s")
-  , -- Units with the same definition would be one definition with two names
-    -- (content addressing), and would print under one of them. Where two units
-    -- are the same quantity under different names, one is defined through the
-    -- other so that each keeps its own identity and prints as itself.
+  , -- Two units may share a definition (Bq and Hz are both 1/s): a unit is
+    -- a name, and a value prints under the name it was written with.
     ("sr", "rad^2")
   , ("lm", "cd * sr")
   , ("lx", "lm / m^2")
-  , ("Bq", "1 * Hz")
+  , ("Bq", "1 / s")
   , ("Gy", "J / kg")
-  , ("Sv", "1 * Gy")
+  , ("Sv", "J / kg")
   , ("kat", "mol / s")
   , ("g", "kg / 1000")
   , ("L", "(m / 10)^3")

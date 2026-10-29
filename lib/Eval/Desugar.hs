@@ -276,7 +276,7 @@ headApp path ctx hd x args = case lookupCtx x ctx of
   Nothing -> do
     bound <- asks (\env -> (.ref) <$> env.resolve x)
     case bound of
-      Just (h, idx) -> applyAll path ctx (\_ -> pure (Ref h idx)) args
+      Just (h, idx) -> applyAll path ctx (\_ -> pure (Ref h idx (Hint x))) args
       -- noise n and gauss n take a literal count (design §3.2.5): the
       -- number of nudges is part of the type.
       Nothing

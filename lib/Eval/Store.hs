@@ -51,7 +51,7 @@ newtype Store = Store {dir :: FilePath}
 
 -- | Bumped whenever the storage encoding changes; see core.md on hash stability.
 formatVersion :: Int
-formatVersion = 1
+formatVersion = storageVersion
 
 {- | The store to use: the directory given, else a @.eval@ directory found by
 walking up from the working directory, else the user store under
@@ -86,20 +86,39 @@ openStore d = do
       pure (Right (Store d))
     else do
       line <- T.strip <$> TIO.readFile formatFile
-      pure
-        $ if line == formatLine formatVersion
-          then Right (Store d)
-          else
-            Left
-              ( T.pack d
-                  <> " is not an eval codebase of format "
-                  <> tshow formatVersion
-                  <> " (found \""
-                  <> line
-                  <> "\"); see core.md on migrations"
-              )
+      if line == formatLine formatVersion
+        then pure (Right (Store d))
+        else
+          if line == formatLine (1 :: Int)
+            then migrate1to2 >> pure (Right (Store d))
+            else
+              pure
+                ( Left
+                    ( T.pack d
+                        <> " is not an eval codebase of format "
+                        <> tshow formatVersion
+                        <> " (found \""
+                        <> line
+                        <> "\"); see core.md on migrations"
+                    )
+                )
  where
   formatLine v = "eval codebase " <> tshow v
+  -- Format 2 added the written name after each reference (design §7.4).
+  -- Hashes are unchanged, so every term file is rewritten in place with
+  -- empty hints and the log is kept; the loader reads its unit lines by
+  -- reference as well as by name.
+  migrate1to2 = do
+    files <- listDirectory (d </> "terms")
+    mapM_
+      ( \file -> do
+          raw <- BS.readFile (d </> "terms" </> file)
+          case decodeStoredV 1 raw of
+            Right t -> BS.writeFile (d </> "terms" </> file) (encodeStored t)
+            Left _ -> pure ()
+      )
+      files
+    TIO.writeFile (d </> "format") (formatLine formatVersion <> "\n")
 
 {- | Load the store on top of a codebase (the prelude's): decode every term,
 check and add them dependencies first, then replay the log. Problems are
@@ -165,10 +184,10 @@ loadStore store base = do
                   : notes
               )
     [_, "unname", name] -> (unbindName name cb, notes)
-    [_, "unit", target]
-      | Just r <- parseRef target -> (markUnit r cb, notes)
-    [_, "scale", target]
-      | Just r <- parseRef target -> (markScale r cb, notes)
+    -- Units and scales are names (design §3.2.12). A format-1 log flagged a
+    -- reference; every name then bound to it is flagged.
+    [_, "unit", target] -> (flagNames markUnit target cb, notes)
+    [_, "scale", target] -> (flagNames markScale target cb, notes)
     [] -> (cb, notes)
     _ -> (cb, ("names.log:" <> tshow lineNo <> ": unreadable line, skipped") : notes)
 
@@ -194,12 +213,9 @@ sync store old new = do
         | name <- Map.keys (Map.difference old.names new.names)
         ]
       units =
-        [ stamp <> " unit " <> refText r
-        | r <- Set.toList (Set.difference new.units old.units)
-        ]
+        [stamp <> " unit " <> n | n <- Set.toList (Set.difference new.units old.units)]
       scales =
-        [ stamp <> " scale " <> refText r
-        | r <- Set.toList (Set.difference new.scales old.scales)
+        [ stamp <> " scale " <> n | n <- Set.toList (Set.difference new.scales old.scales)
         ]
       entries = binds ++ unnames ++ units ++ scales
   unless (null entries)
@@ -217,6 +233,11 @@ sync store old new = do
             BS.writeFile path (encodeStored t)
             pure written'
           _ -> pure (Set.insert h written)
+
+flagNames :: (Text -> Codebase -> Codebase) -> Text -> Codebase -> Codebase
+flagNames mark target cb = case parseRef target of
+  Just r -> foldr mark cb (namesOf r cb)
+  Nothing -> mark target cb
 
 refText :: Reference -> Text
 refText r = hashHex r.hash <> maybe "" (\i -> "." <> tshow i) r.index

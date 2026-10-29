@@ -132,7 +132,11 @@ run defs t = do
   v <-
     first
       (T.pack . show)
-      (evalClosed defaultConfig (Runtime typedOf (\_ _ -> False) (\_ _ -> False)) typed)
+      ( evalClosed
+          defaultConfig
+          (Runtime typedOf (\_ _ _ -> Nothing) (\_ _ _ -> Nothing))
+          typed
+      )
   first (T.pack . show) (render v)
 
 runClosed :: Term Z -> Either Text Text
@@ -163,7 +167,9 @@ coreTests =
                 alphaEq c1 c3 @?= False
     , testCase "refs collects hashes"
         $ refs
-          (Lam "f" (App v0 (Ref (h "abc") Nothing) +. Ref (h "def") (Just 1)) :: Term Z)
+          ( Lam "f" (App v0 (Ref (h "abc") Nothing "") +. Ref (h "def") (Just 1) "") ::
+              Term Z
+          )
           @?= Set.fromList [h "abc", h "def"]
     , testCase "primitive arities" $ do
         primArity "add" @?= Just 2
@@ -249,9 +255,9 @@ evalTests =
         $ runClosed (Proj (Pack [num 1, num 2]) 2)
           @?= Left "type error: position 2 is out of range for a vector of length 2"
     , testCase "ref to a plain definition"
-        $ run [(h "k", num 5)] (Ref (h "k") Nothing +. num 1) @?= Right "6"
+        $ run [(h "k", num 5)] (Ref (h "k") Nothing "" +. num 1) @?= Right "6"
     , testCase "unknown ref"
-        $ runClosed (Ref (h "nope") Nothing)
+        $ runClosed (Ref (h "nope") Nothing "")
           @?= Left "type error: reference to a definition with no stored type"
     , testCase "self-recursion through a cycle: factorial"
         $ let
@@ -264,7 +270,7 @@ evalTests =
                   (v0 *. App v1 (v0 -. num 1))
             defs = [(h "fact", Cycle (VCons "fact" VNil) (VCons fact VNil))]
            in
-            run defs (App (Ref (h "fact") (Just 0)) (num 10)) @?= Right "3628800"
+            run defs (App (Ref (h "fact") (Just 0) "") (num 10)) @?= Right "3628800"
     , testCase "mutual recursion through a cycle: even and odd"
         $ let
             -- members: 0 = even, 1 = odd. Inside a Lam, v0 is n, v1 is even,
@@ -279,11 +285,11 @@ evalTests =
               ]
            in
             do
-              run defs (App (Ref (h "eo") (Just 0)) (num 10)) @?= Right "true"
-              run defs (App (Ref (h "eo") (Just 1)) (num 10)) @?= Right "false"
+              run defs (App (Ref (h "eo") (Just 0) "") (num 10)) @?= Right "true"
+              run defs (App (Ref (h "eo") (Just 1) "") (num 10)) @?= Right "false"
     , testCase "bad cycle index is a static error"
         $ let defs = [(h "c", Cycle (VCons "a" VNil) (VCons (num 1) VNil))]
-           in run defs (Ref (h "c") (Just 3))
+           in run defs (Ref (h "c") (Just 3) "")
                 @?= Left "type error: reference to a cycle member that does not exist"
     , testCase "a zero-width ± is exact"
         $ runClosed (Uncertain Bound (Owner "") (num 1) (num 0)) @?= Right "1"
@@ -301,7 +307,7 @@ elabText src = do
   pure typed
 
 showCore :: TTerm Z -> Text
-showCore = renderTTerm (\_ _ -> "#ref") VNil
+showCore = renderTTerm (\_ _ _ -> "#ref") VNil
 
 tcoreTests :: TestTree
 tcoreTests =
@@ -685,7 +691,8 @@ desugarTests =
                 if n == "k" then Just (Resolution (h "kay", Nothing) False False) else Nothing
            in case parseExpr "k + 1"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
-                Right (t, _) -> assertBool (show t) (alphaEq t (Ref (h "kay") Nothing +. num 1 :: Term Z))
+                Right (t, _) ->
+                  assertBool (show t) (alphaEq t (Ref (h "kay") Nothing "" +. num 1 :: Term Z))
                 Left err -> assertFailure (T.unpack err)
     , testCase "codebase names shadow primitives"
         $ let resolver n =
@@ -695,7 +702,9 @@ desugarTests =
            in case parseExpr "sqrt 4"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
                 Right (t, _) ->
-                  assertBool (show t) (alphaEq t (App (Ref (h "mine") Nothing) (num 4) :: Term Z))
+                  assertBool
+                    (show t)
+                    (alphaEq t (App (Ref (h "mine") Nothing "") (num 4) :: Term Z))
                 Left err -> assertFailure (T.unpack err)
     ]
 
@@ -1328,7 +1337,7 @@ blankHints = go
   go :: Term m -> Term m
   go = \case
     Var i -> Var i
-    Ref hh i -> Ref hh i
+    Ref hh i hint -> Ref hh i hint
     PrimApp p as -> PrimApp p (map go as)
     Lit l -> Lit l
     Lam _ b -> Lam "q" (go b)
@@ -1361,7 +1370,7 @@ typedSource = Source (snd <$> genProgram) (`counterexample` False)
 showProgram :: S.Expr -> String
 showProgram e = case desugarClosed noResolver e of
   Left err -> T.unpack (renderDesugarError err) <> "\n" <> show e
-  Right (t, _) -> T.unpack (renderTerm (\_ _ -> "#") VNil t)
+  Right (t, _) -> T.unpack (renderTerm (\_ _ _ -> "#") VNil t)
 
 -- | Desugar and elaborate, handing failures to the source.
 withElaborated ::
@@ -1389,7 +1398,7 @@ pipelineProperties src =
       $ forProgram src
       $ \e ->
         withElaborated src e $ \t _ ->
-          let printed = renderTerm (\_ _ -> "#") VNil t
+          let printed = renderTerm (\_ _ _ -> "#") VNil t
            in counterexample (T.unpack printed)
                 $ case parseExpr printed
                   >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
@@ -1405,7 +1414,7 @@ pipelineProperties src =
       $ forProgram src
       $ \e ->
         withElaborated src e $ \t _ ->
-          case parseExpr (renderTerm (\_ _ -> "#") VNil t)
+          case parseExpr (renderTerm (\_ _ _ -> "#") VNil t)
             >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
             Left err -> counterexample (T.unpack err) False
             Right (t', _) ->
@@ -1418,7 +1427,7 @@ pipelineProperties src =
         withElaborated src e $ \_ (_, typed) ->
           case evalClosed
             defaultConfig
-            (Runtime (const Nothing) (\_ _ -> False) (\_ _ -> False))
+            (Runtime (const Nothing) (\_ _ _ -> Nothing) (\_ _ _ -> Nothing))
             typed
             >>= render of
             Left (Internal msg) -> counterexample (T.unpack msg) False
@@ -1976,6 +1985,45 @@ affineTests =
         case evalP ":budget M_earth" of
           Right (_ : _ : row : _) -> T.isInfixOf "σ      G" row && T.isInfixOf "100% of σ²" row @? T.unpack row
           other -> assertFailure (show other)
+    , testCase "a unit is a name: a quantity sharing its hash is not one" $ do
+        runLinesP ["let x = 1", "x + 2"] @?= Right ["3"]
+        runLinesP
+          [ "unit dozen = 12"
+          , "let eggs = 12"
+          , "3 dozen"
+          , "eggs + 1"
+          , ":hash dozen"
+          , ":hash eggs"
+          ]
+          @?= Right ["3 dozen", "13", "#" <> dozenHash, "#" <> dozenHash]
+        case runLinesP ["let x = 1", "5 x"] of
+          Left err -> T.isInfixOf "`x` is not a unit" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        -- Bq and Hz are one definition and two units; each prints as written.
+        runLinesP ["5 Bq", "5 Hz", "1 Bq == 1 Hz"] @?= Right ["5 Bq", "5 Hz", "true"]
+    , testCase "a let that rebinds a unit name makes it a quantity"
+        $ runLinesP ["let g = 9.81 m / s^2", "g * (2 s)^2", "2 g"]
+          @?= Left
+            "error at 1:3\n  2 g\n    ^\n  `g` is not a unit: a value next to a literal must be a unit (5 km, 3 (m/s)); write the `*`"
+    , testCase
+        "an alias of a unit is a unit, and a renamed unit prints under its new name"
+        $ runLinesP
+          [ ":alias klick km"
+          , "5 klick"
+          , "let d = 5 km"
+          , ":add"
+          , ":unname km"
+          , "d"
+          , ":view d"
+          ]
+          @?= Right
+            [ "`klick` now also names #" <> kmHash
+            , "5 klick"
+            , "added d"
+            , "removed the label `km`"
+            , "5 klick"
+            , "d = 5 * klick"
+            ]
     , testCase "points: scales, .+ and .-, printing on the written scale" $ do
         evalP "20 degC" @?= Right ["20 degC"]
         evalP "20 °C .+ 5 K" @?= Right ["25 degC"]
@@ -2272,7 +2320,7 @@ storeTests =
         writeFile (dir </> "format") "eval codebase 99\n"
         opened <- openStore dir
         case opened of
-          Left err -> T.isInfixOf "format 1" err @? T.unpack err
+          Left err -> T.isInfixOf "is not an eval codebase of format" err @? T.unpack err
           Right _ -> assertFailure "opened a store of another format"
     ]
  where
@@ -2306,3 +2354,19 @@ storeTests =
     go s acc (l : rest) = do
       (s', outs) <- feed s l
       go s' (outs : acc) rest
+
+{- | The short hash a prelude or scratch name prints as, for tests that
+compare against @:hash@ output without pinning digests.
+-}
+hashShownAs :: [Text] -> Text -> Text
+hashShownAs setup n = case runLinesP (setup ++ [":hash " <> n]) of
+  Right outs | Just out <- lastMay outs -> T.drop 1 out
+  other -> error ("hashShownAs: " <> show other)
+ where
+  lastMay xs = if null xs then Nothing else Just (last xs)
+
+dozenHash :: Text
+dozenHash = hashShownAs ["unit dozen = 12"] "dozen"
+
+kmHash :: Text
+kmHash = hashShownAs [] "km"

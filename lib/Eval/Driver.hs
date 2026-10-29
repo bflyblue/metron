@@ -138,8 +138,8 @@ runtimeOf :: Codebase -> Runtime
 runtimeOf cb =
   Runtime
     { typedOf = (`lookupTyped` cb)
-    , isUnit = \h i -> isUnitRef (Reference h i) cb
-    , isScale = \h i -> isScaleRef (Reference h i) cb
+    , unitName = \h i written -> unitNameFor (Reference h i) written cb
+    , scaleName = \h i written -> scaleNameFor (Reference h i) written cb
     }
 
 {- | Desugar, typecheck, elaborate and lint an expression against a codebase.
@@ -211,8 +211,8 @@ command session src = \case
     pure [ty]
   ["edit", n] -> keep $ withName n $ \r ->
     let keyword
-          | isUnitRef r cb = "unit "
-          | isScaleRef r cb = "scale "
+          | isUnitName n cb = "unit "
+          | isScaleName n cb = "scale "
           | otherwise = "let "
      in (\body -> [keyword <> n <> " = " <> body]) <$> viewReference cb r
   ["lint", n] -> keep $ withName n $ \r -> case lookupTyped r.hash cb of
@@ -236,10 +236,14 @@ command session src = \case
     r : rs -> pure ((showReference r <> "  (current)") : map showReference rs)
   ["view", n] -> keep $ withName n $ \r -> (: []) . ((n <> " = ") <>) <$> viewReference cb r
   ["dependents", n] -> keep $ withName n $ \r -> pure (dependents r.hash cb)
+  -- An alias of a unit or scale is one too.
   ["alias", new, old] -> withName' old $ \r ->
-    commit
-      (bindName new r cb)
-      ["`" <> new <> "` now also names " <> showReference r]
+    let flagged =
+          (if isUnitName old cb then markUnit new else id)
+            . (if isScaleName old cb then markScale new else id)
+     in commit
+          (flagged (bindName new r cb))
+          ["`" <> new <> "` now also names " <> showReference r]
   ["unname", n] -> withName' n $ \_ -> commit (unbindName n cb) ["removed the label `" <> n <> "`"]
   _ ->
     Left
@@ -259,7 +263,7 @@ command session src = \case
     e <- parseExpr (T.unwords rest)
     evalValue cfg cb (T.unwords rest) e
   -- Nudges declared in the expression itself are labelled "input".
-  inputNamer h h' i = if h' == h then "input" else refNamer cb h' i
+  inputNamer h h' i written = if h' == h then "input" else refNamer cb h' i written
   commit cb' outs = Right (session{codebase = cb', staging = cb'}, outs)
   withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n cb)
   withName' n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n session.codebase)
@@ -450,9 +454,11 @@ vecMapIndexed f = go 0
 
 -- | A current name, else a stale @name#hash@, else a bare @#hash@.
 refNamer :: Codebase -> RefNamer
-refNamer cb h idx =
+refNamer cb h idx written =
   let r = Reference h idx
    in case namesOf r cb of
+        -- The name the author wrote, while it still points here; else any current name.
+        ns | written `elem` ns -> written
         n : _ -> n
         [] -> case historicalNamesOf r cb of
           n : _ -> n <> showReference r

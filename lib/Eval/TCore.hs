@@ -31,7 +31,7 @@ are identified by number and bound by 'TTyLam' with their kind.
 -}
 data TTerm (n :: Nat) where
   TVr :: Fin n -> TTerm n
-  TRef :: Hash -> Maybe Int -> TTerm n
+  TRef :: Hash -> Maybe Int -> Hint -> TTerm n
   -- | A saturated primitive at a specific type (an instance of 'primScheme').
   TPrimApp :: Text -> Type -> [TTerm n] -> TTerm n
   TLit :: Lit -> TTerm n
@@ -189,7 +189,7 @@ lint ::
   (Hash -> Maybe [Scheme]) -> Vec n Scheme -> TTerm n -> Either Text Scheme
 lint look ctx = \case
   TVr i -> Right (lookupCtx i ctx)
-  TRef h idx -> case look h of
+  TRef h idx _ -> case look h of
     Nothing -> Left "reference to a definition with no stored type"
     Just schemes ->
       maybe
@@ -471,13 +471,14 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
 {- | Print Typed Core with every annotation visible: @Λt0. \(x : t0) -> x@,
 @f @Num 1@, @let g : Vec (n1 + 1) -> Num = … in …@.
 -}
-renderTTerm :: (Hash -> Maybe Int -> Text) -> Vec n Text -> TTerm n -> Text
+renderTTerm ::
+  (Hash -> Maybe Int -> Text -> Text) -> Vec n Text -> TTerm n -> Text
 renderTTerm namer = go 0
  where
   go :: Int -> Vec m Text -> TTerm m -> Text
   go prec ctx = \case
     TVr i -> lookupCtx i ctx
-    TRef h idx -> namer h idx
+    TRef h idx (Hint written) -> namer h idx written
     TPrimApp p _ [] -> p
     TPrimApp p _ args -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
     TLit (LTensor [] [r]) -> showD r

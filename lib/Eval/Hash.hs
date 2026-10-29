@@ -14,6 +14,8 @@ module Eval.Hash (
   -- * Storage
   encodeStored,
   decodeStored,
+  decodeStoredV,
+  storageVersion,
   hashHex,
   hashFromHex,
 ) where
@@ -63,7 +65,11 @@ enc ph hint depth = \case
   Var i
     | ph, finToInt i >= depth -> word8 0x10
     | otherwise -> word8 0x00 <> varint (fromIntegral (finToInt i))
-  Ref (Hash h) idx -> word8 0x01 <> byteString h <> varint (maybe 0 (fromIntegral . (+ 1)) idx)
+  Ref (Hash h) idx name ->
+    word8 0x01
+      <> byteString h
+      <> varint (maybe 0 (fromIntegral . (+ 1)) idx)
+      <> hint name
   PrimApp p args -> word8 0x02 <> text p <> foldMap (enc ph hint depth) args
   Lit (LTensor dims rs) ->
     word8 0x03
@@ -163,9 +169,20 @@ base32hex (Hash bs) = T.pack (go (BS.unpack bs))
 are entered, so the result is well-scoped by construction; an index that
 escapes its scope, an unknown tag or a placeholder is an error.
 -}
+
+-- | The storage encoding version this build writes (design §7.4).
+storageVersion :: Int
+storageVersion = 2
+
 decodeStored :: ByteString -> Either Text (Term Z)
-decodeStored bs = do
-  (t, end) <- runDec (term DZ) bs 0
+decodeStored = decodeStoredV storageVersion
+
+{- | Decode a term written by a given storage version. Version 1 wrote no
+name hint after a reference.
+-}
+decodeStoredV :: Int -> ByteString -> Either Text (Term Z)
+decodeStoredV version bs = do
+  (t, end) <- runDec (term (version >= 2) DZ) bs 0
   if end == BS.length bs
     then Right t
     else Left ("trailing bytes after the term at offset " <> T.pack (show end))
@@ -263,8 +280,8 @@ decLabel =
 decHint :: Dec Hint
 decHint = Hint <$> decText
 
-term :: Depth n -> Dec (Term n)
-term d =
+term :: Bool -> Depth n -> Dec (Term n)
+term refHints d =
   byte >>= \case
     0x00 -> do
       i <- decVarint
@@ -275,34 +292,36 @@ term d =
     0x01 -> do
       h <- bytes 32
       idx <- decVarint
-      pure (Ref (Hash h) (if idx == 0 then Nothing else Just (fromIntegral idx - 1)))
+      name <- if refHints then decHint else pure (Hint "")
+      pure
+        (Ref (Hash h) (if idx == 0 then Nothing else Just (fromIntegral idx - 1)) name)
     0x02 -> do
       p <- decText
       case primArity p of
         Nothing -> failDec ("unknown primitive " <> p)
-        Just n -> PrimApp p <$> traverse (const (term d)) [1 .. n]
+        Just n -> PrimApp p <$> traverse (const (term refHints d)) [1 .. n]
     0x03 -> do
       rank <- decVarint
       dims <- traverse (const (fromIntegral <$> decVarint)) [1 .. rank]
       rs <- traverse (const ((%) <$> decSint <*> decVarint)) [1 .. product dims]
       pure (Lit (LTensor dims rs))
     0x04 -> Lit . LBool . (== 1) <$> byte
-    0x05 -> Lam <$> decHint <*> term (DS d)
-    0x06 -> App <$> term d <*> term d
-    0x07 -> Let <$> decHint <*> term d <*> term (DS d)
-    0x08 -> If <$> term d <*> term d <*> term d
-    0x09 -> Pow <$> term d <*> decSint
+    0x05 -> Lam <$> decHint <*> term refHints (DS d)
+    0x06 -> App <$> term refHints d <*> term refHints d
+    0x07 -> Let <$> decHint <*> term refHints d <*> term refHints (DS d)
+    0x08 -> If <$> term refHints d <*> term refHints d <*> term refHints d
+    0x09 -> Pow <$> term refHints d <*> decSint
     0x0A -> Noise <$> decKind <*> decLabel <*> decVarint
-    0x0B -> Uncertain <$> decKind <*> decLabel <*> term d <*> term d
+    0x0B -> Uncertain <$> decKind <*> decLabel <*> term refHints d <*> term refHints d
     0x0C -> do
       n <- decVarint
-      Pack <$> traverse (const (term d)) [1 .. n]
+      Pack <$> traverse (const (term refHints d)) [1 .. n]
     0x0E -> do
       k <- decVarint
       hints <- traverse (const decHint) [1 .. k]
       case vecFromList hints of
-        SomeVec hs -> Cycle hs <$> vecTraverse (const (term (depthPlus hs d))) hs
-    0x0F -> Proj <$> term d <*> (fromIntegral <$> decVarint)
+        SomeVec hs -> Cycle hs <$> vecTraverse (const (term refHints (depthPlus hs d))) hs
+    0x0F -> Proj <$> term refHints d <*> (fromIntegral <$> decVarint)
     0x10 -> failDec "a placeholder cannot be stored"
     tag -> failDec ("unknown term tag " <> T.pack (show tag))
 

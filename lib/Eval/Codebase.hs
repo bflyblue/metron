@@ -9,9 +9,12 @@ module Eval.Codebase (
   bindName,
   unbindName,
   markUnit,
-  isUnitRef,
+  isUnitName,
+  unitNameFor,
   markScale,
-  isScaleRef,
+  isScaleName,
+  clearFlags,
+  scaleNameFor,
   lookupName,
   lookupTerm,
   lookupTypes,
@@ -49,8 +52,8 @@ data Codebase = Codebase
   -- ^ types and Typed Core, recomputable (design §5.2, §5.3)
   , names :: Map Text Reference
   , history :: Map Text [Reference] -- newest first
-  , units :: Set.Set Reference
-  , scales :: Set.Set Reference
+  , units :: Set.Set Text
+  , scales :: Set.Set Text
   {- ^ definitions declared with @scale@ (design §3.6)
   ^ definitions declared with @unit@ (design §3.2.12); label-level metadata like names
   -}
@@ -59,17 +62,46 @@ data Codebase = Codebase
 emptyCodebase :: Codebase
 emptyCodebase = Codebase Map.empty Map.empty Map.empty Map.empty Set.empty Set.empty
 
-markUnit :: Reference -> Codebase -> Codebase
-markUnit r cb = cb{units = Set.insert r cb.units}
+{- | Declare a name a display unit (design §3.2.12). Units are names, not
+references: two names for one hash can be a unit and a plain quantity.
+-}
+markUnit :: Text -> Codebase -> Codebase
+markUnit n cb = cb{units = Set.insert n cb.units}
 
-isUnitRef :: Reference -> Codebase -> Bool
-isUnitRef r cb = Set.member r cb.units
+isUnitName :: Text -> Codebase -> Bool
+isUnitName n cb = Set.member n cb.units
 
-markScale :: Reference -> Codebase -> Codebase
-markScale r cb = cb{scales = Set.insert r cb.scales}
+markScale :: Text -> Codebase -> Codebase
+markScale n cb = cb{scales = Set.insert n cb.scales}
 
-isScaleRef :: Reference -> Codebase -> Bool
-isScaleRef r cb = Set.member r cb.scales
+isScaleName :: Text -> Codebase -> Bool
+isScaleName n cb = Set.member n cb.scales
+
+clearFlags :: Text -> Codebase -> Codebase
+clearFlags n cb = cb{units = Set.delete n cb.units, scales = Set.delete n cb.scales}
+
+{- | The unit name a reference is used under: the written name when it is a
+unit that still points at this reference, else any current unit name of
+the reference (so a renamed unit prints under its new name), else none.
+-}
+unitNameFor :: Reference -> Text -> Codebase -> Maybe Text
+unitNameFor = nameUnder isUnitName
+
+scaleNameFor :: Reference -> Text -> Codebase -> Maybe Text
+scaleNameFor = nameUnder isScaleName
+
+nameUnder ::
+  (Text -> Codebase -> Bool) -> Reference -> Text -> Codebase -> Maybe Text
+nameUnder flagged r written cb
+  -- The written name still points here: it alone decides, so `let eggs = 12`
+  -- is a quantity even if `unit dozen = 12` shares its hash.
+  | Map.lookup written cb.names == Just r =
+      if flagged written cb then Just written else Nothing
+  -- The written name has moved or gone (a renamed unit): any current unit
+  -- name of the reference stands in.
+  | otherwise = case [n | n <- namesOf r cb, flagged n cb] of
+      n : _ -> Just n
+      [] -> Nothing
 
 {- | Store a term with its types and Typed Core under its hash. A no-op if
 already present.
@@ -107,9 +139,16 @@ bindName n r cb
         , history = Map.insertWith (\new old -> new ++ old) n [r] cb.history
         }
 
--- | Remove a label. The term and the name's history stay.
+{- | Remove a label. The term and the name's history stay.
+| Remove a label, and with it any unit or scale declaration it carried.
+-}
 unbindName :: Text -> Codebase -> Codebase
-unbindName n cb = cb{names = Map.delete n cb.names}
+unbindName n cb =
+  cb
+    { names = Map.delete n cb.names
+    , units = Set.delete n cb.units
+    , scales = Set.delete n cb.scales
+    }
 
 lookupName :: Text -> Codebase -> Maybe Reference
 lookupName n cb = Map.lookup n cb.names

@@ -178,7 +178,7 @@ data Term (n :: Nat) where
   {- | Another definition by content hash, with a cycle index when the
   referenced term is a 'Cycle'.
   -}
-  Ref :: Hash -> Maybe Int -> Term n
+  Ref :: Hash -> Maybe Int -> Hint -> Term n
   {- | A saturated primitive application: exactly 'primArity' arguments.
   Overloading is unresolved here: @PrimApp "add"@ is the overloaded
   addition.
@@ -220,7 +220,7 @@ alphaEq = go
  where
   go :: Term a -> Term b -> Bool
   go (Var i) (Var j) = finToInt i == finToInt j
-  go (Ref h i) (Ref h' i') = h == h' && i == i'
+  go (Ref h i _) (Ref h' i' _) = h == h' && i == i'
   go (PrimApp p as) (PrimApp q bs) = p == q && goList as bs
   go (Lit l) (Lit l') = l == l'
   go (Lam _ b) (Lam _ b') = go b b'
@@ -242,7 +242,7 @@ alphaEq = go
 refs :: Term n -> Set Hash
 refs = \case
   Var _ -> Set.empty
-  Ref h _ -> Set.singleton h
+  Ref h _ _ -> Set.singleton h
   PrimApp _ as -> foldMap refs as
   Lit _ -> Set.empty
   Lam _ b -> refs b
@@ -260,7 +260,7 @@ refs = \case
 refsWithIndex :: Term n -> Set (Hash, Maybe Int)
 refsWithIndex = \case
   Var _ -> Set.empty
-  Ref h i -> Set.singleton (h, i)
+  Ref h i _ -> Set.singleton (h, i)
   PrimApp _ as -> foldMap refsWithIndex as
   Lit _ -> Set.empty
   Lam _ b -> refsWithIndex b
@@ -284,7 +284,7 @@ rewriteRefs f = go
   go :: Term m -> Term m
   go = \case
     Var i -> Var i
-    Ref h i -> maybe (Ref h i) (uncurry Ref) (f h i)
+    Ref h i hint -> maybe (Ref h i hint) (\(h', i') -> Ref h' i' hint) (f h i)
     PrimApp p as -> PrimApp p (map go as)
     Lit l -> Lit l
     Lam h b -> Lam h (go b)
