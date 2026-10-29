@@ -1,0 +1,36 @@
+cabal-version:   3.12
+name:            eval
+version:         0.1.0.0
+-- synopsis:
+-- description:
+license:
+author:          Shaun Sharples
+maintainer:      shaun.sharples@gmail.com
+-- copyright:
+category:        Web
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+common common
+  ghc-options:        -Wall
+  default-language:   GHC2024
+  default-extensions:
+    DuplicateRecordFields
+    NoFieldSelectors
+    OverloadedRecordDot
+    OverloadedStrings
+
+-- library
+--   import:         common
+--   hs-source-dirs: lib
+--   -- exposed-modules:  ModuleX
+--   build-depends:  base ^>=4.21.0.0
+
+executable eval
+  import:         common
+  main-is:        Main.hs
+  hs-source-dirs: src
+  ghc-options:    -O -threaded -feager-blackholing
+  -- other-modules:    ModuleX
+  build-depends:
+    , base ^>=4.21.0.0
