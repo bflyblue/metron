@@ -72,6 +72,8 @@ test-suite eval-test
     , bytestring
     , containers
     , eval
+    , QuickCheck
     , tasty
     , tasty-hunit
+    , tasty-quickcheck
     , text

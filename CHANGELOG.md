@@ -40,3 +40,10 @@
 - `==`/`/=` are the one overloaded primitive, over tensors and `Bool`, via an
   instance constraint on the same solver; comparing functions is a static
   error. `within`/`sigma` are the prefix names of `±`/`±σ`.
+- Property tests over random surface programs: inference ⇒ lint with equal
+  types, printed Core re-parses alpha-equivalent, hashes ignore hints and
+  survive printing, linted terms never hit an internal error, inference is
+  deterministic. They found and fixed two things: a binder hint shadowing a
+  free name printed ambiguously (binders are now freshened), and `-3`
+  desugaring differently from a negative literal (negation of a constant is
+  now the negative constant).

@@ -324,7 +324,7 @@ in surface notation.
 | `a ± b` | `uncertain bound a b` |
 | `a ±σ b` | `uncertain stat a b` |
 | `a to u` | `to a u`, keeping `u`'s term as the display hint |
-| `-x` | `neg x` |
+| `-x` | `neg x`; but `-3`, or `-` applied to any constant tensor, is the negative constant itself, so a negative literal has one nominal form |
 | `if c then a else b` | `if c a b` (a primitive form, lazy in both branches) |
 | `[a, b, c]` | `vec [a, b, c]`; `[[…], […]]` to `mat` |
 | `x ^ n` | `pow x n`, `n` an integer literal |

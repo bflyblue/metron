@@ -115,7 +115,14 @@ desugar path ctx e = do
       S.Infix f ->
         desugar path ctx (S.Expr e.span (S.App (S.Expr e.span (S.App (S.Expr a.span (S.Var f)) a)) b))
       _ -> prim (opPrim op) [a, b]
-    S.Neg a -> prim "neg" [a]
+    -- Negating a constant is a negative constant, so that `-3` and a literal
+    -- negative three are one term with one hash (core.md §6: constants are
+    -- canonical). Anything else is the primitive.
+    S.Neg a -> do
+      a' <- desugar (0 : path) ctx a
+      pure $ case a' of
+        Lit (LTensor dims rs) -> Lit (LTensor dims (map negate rs))
+        _ -> PrimApp "neg" [a']
     S.Pow a n -> (`Pow` n) <$> desugar (0 : path) ctx a
     S.SectionL op a ->
       -- (op a)  =  \x -> x op a

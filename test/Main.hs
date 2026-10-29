@@ -21,11 +21,12 @@ import Eval.Pretty
 import Eval.Syntax qualified as S
 import Test.Tasty
 import Test.Tasty.HUnit
+import Test.Tasty.QuickCheck
 
 main :: IO ()
 main =
   defaultMain
-    (testGroup "eval" [coreTests, evalTests, tcoreTests, lexerTests, parserTests, desugarTests, hashTests, prettyTests, endToEndTests, codebaseTests, typeTests, soundnessTests, productTests])
+    (testGroup "eval" [coreTests, evalTests, tcoreTests, lexerTests, parserTests, desugarTests, hashTests, prettyTests, endToEndTests, codebaseTests, typeTests, soundnessTests, productTests, propertyTests])
 
 -- Term-building helpers -------------------------------------------------
 
@@ -899,4 +900,148 @@ productTests =
         evalText "outer 2 [1, 2]" @?= Right ["[2, 4]"]
         evalText "[1, 2] `dot` [3, 4]" @?= Right ["11"]
         evalText "within 5 1 == (5 ± 1)" @?= Left "not implemented: ±: affine arithmetic is not implemented yet"
+    ]
+
+-- Properties ----------------------------------------------------------------------
+--
+-- Random surface programs are pushed through the whole pipeline. These pin
+-- the invariants of core.md §9: whatever inference accepts, lint accepts;
+-- printed Core re-parses to an alpha-equivalent term; hashes ignore hints;
+-- evaluation of a linted term never reports an internal error.
+
+noSpan :: S.Span
+noSpan = S.Span (S.Pos 1 1) (S.Pos 1 1)
+
+mk :: S.Node -> S.Expr
+mk = S.Expr noSpan
+
+-- | A random expression over a scope of bound names. Literals are small
+-- integers and halves so that printed numbers re-parse exactly.
+genExpr :: [Text] -> Int -> Gen S.Expr
+genExpr scope size
+  | size <= 0 = leaf
+  | otherwise =
+      frequency
+        [ (3, leaf)
+        , (3, binary)
+        , (2, do
+             n <- name
+             b <- genExpr (n : scope) (size - 1)
+             pure (mk (S.Lam [S.Name noSpan n] b)))
+        , (2, mk <$> (S.App <$> sub <*> sub))
+        , (2, do
+             n <- name
+             e <- sub
+             b <- genExpr (n : scope) (size - 1)
+             pure (mk (S.Let (S.Name noSpan n) [] e b)))
+        , (1, mk <$> (S.If <$> sub <*> sub <*> sub))
+        , (1, mk . S.Neg <$> sub)
+        , (1, do
+             k <- choose (2, 3)
+             mk . S.Vec <$> vectorOf k sub)
+        , (1, do
+             k <- choose (2, 3)
+             i <- choose (0, k - 1)
+             es <- vectorOf k sub
+             pure (mk (S.Proj (mk (S.Vec es)) i)))
+        , (1, (\e n -> mk (S.Pow e n)) <$> sub <*> choose (0, 3))
+        ]
+  where
+    sub = genExpr scope (size `div` 2)
+    name = elements ["x", "y", "z", "f", "g"]
+    leaf =
+      frequency $
+        [ (4, mk . S.Num . fromInteger <$> choose (-3, 9))
+        , (1, mk . S.Num <$> elements [1 / 2, 3 / 2, 1 / 4])
+        , (1, mk . S.Bool <$> arbitrary)
+        ]
+          ++ [(3, mk . S.Var <$> elements scope) | not (null scope)]
+    binary = do
+      op <-
+        elements
+          [S.Add, S.Sub, S.Outer, S.Dot, S.EMul, S.EDiv, S.Div, S.Eq, S.Ne, S.Lt, S.Le, S.Gt, S.Ge, S.And, S.Or, S.PlusMinus Bound]
+      mk <$> (S.BinOp op <$> sub <*> sub)
+
+-- | Every hint replaced by a fixed one: alpha-equivalent to the input.
+blankHints :: Term n -> Term n
+blankHints = go
+  where
+    go :: Term m -> Term m
+    go = \case
+      Var i -> Var i
+      Ref hh i -> Ref hh i
+      PrimApp p as -> PrimApp p (map go as)
+      Lit l -> Lit l
+      Lam _ b -> Lam "q" (go b)
+      App f a -> App (go f) (go a)
+      Let _ e b -> Let "q" (go e) (go b)
+      If c t e -> If (go c) (go t) (go e)
+      Pow t n -> Pow (go t) n
+      Noise k n -> Noise k n
+      Uncertain k x e -> Uncertain k (go x) (go e)
+      Pack ts -> Pack (map go ts)
+      Proj t i -> Proj (go t) i
+      Cycle hs bs -> Cycle (vecMap (const "q") hs) (vecMap go bs)
+
+-- | The Core of an expression that desugars and typechecks.
+wellTyped :: S.Expr -> Maybe (Term Z)
+wellTyped e = case desugarClosed noResolver e of
+  Left _ -> Nothing
+  Right (t, _) -> case elaborateClosed (const Nothing) t of
+    Left _ -> Nothing
+    Right _ -> Just t
+
+propertyTests :: TestTree
+propertyTests =
+  testGroup
+    "properties"
+    [ testProperty "whatever inference accepts, lint accepts with the same type" $
+        forAll (genExpr [] 5) $ \e ->
+          case desugarClosed noResolver e of
+            Left _ -> discard
+            Right (t, _) -> case elaborateClosed (const Nothing) t of
+              Left _ -> discard
+              Right (schemes, typed) -> lintClosed (const Nothing) typed === Right schemes
+    , -- Only well-typed terms: an ill-typed one such as a number applied to
+      -- a number has no surface spelling because of the quantity rule, and
+      -- `:view` only ever prints stored, checked definitions.
+      testProperty "printed Core re-parses to an alpha-equivalent term" $
+        forAll (genExpr [] 5) $ \e ->
+          case wellTyped e of
+            Nothing -> discard
+            Just t ->
+              let printed = renderTerm (\_ _ -> "#") VNil t
+               in counterexample (T.unpack printed) $
+                    case parseExpr printed >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
+                      Left err -> counterexample (T.unpack err) False
+                      Right (t', _) -> counterexample (show t') (alphaEq t t')
+    , testProperty "hashes ignore hints" $
+        forAll (genExpr [] 5) $ \e ->
+          case desugarClosed noResolver e of
+            Left _ -> discard
+            Right (t, _) -> hashTerm (blankHints t) === hashTerm t
+    , testProperty "the hash is stable across printing" $
+        forAll (genExpr [] 5) $ \e ->
+          case wellTyped e of
+            Nothing -> discard
+            Just t ->
+              case parseExpr (renderTerm (\_ _ -> "#") VNil t) >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
+                Left _ -> property False
+                Right (t', _) -> hashTerm t' === hashTerm t
+    , testProperty "evaluating a linted term never reports an internal error" $
+        forAll (genExpr [] 5) $ \e ->
+          case desugarClosed noResolver e of
+            Left _ -> discard
+            Right (t, _) -> case elaborateClosed (const Nothing) t of
+              Left _ -> discard
+              Right (_, typed) -> case evalClosed defaultConfig (const Nothing) typed >>= render of
+                Left (Internal msg) -> counterexample (T.unpack msg) False
+                Left (UnknownRef _) -> property False
+                Left (BadCycleIndex _) -> property False
+                _ -> property True
+    , testProperty "inference is deterministic" $
+        forAll (genExpr [] 5) $ \e ->
+          case desugarClosed noResolver e of
+            Left _ -> discard
+            Right (t, _) -> fmap fst (elaborateClosed (const Nothing) t) === fmap fst (elaborateClosed (const Nothing) t)
     ]

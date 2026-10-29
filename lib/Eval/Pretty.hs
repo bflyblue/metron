@@ -85,10 +85,13 @@ renderTerm namer = go 0
       Lit (LTensor dims rs) -> renderNested (renderRational 20) dims rs
       Lit (LBool True) -> "true"
       Lit (LBool False) -> "false"
-      Lam (Hint h) b -> paren (prec > 0) ("\\" <> h <> " -> " <> go 0 (VCons h ctx) b)
+      Lam (Hint h) b ->
+        let h' = freshen h ctx
+         in paren (prec > 0) ("\\" <> h' <> " -> " <> go 0 (VCons h' ctx) b)
       App f a -> paren (prec > 10) (go 10 ctx f <> " " <> go 11 ctx a)
       Let (Hint h) e b ->
-        paren (prec > 0) ("let " <> h <> " = " <> go 0 ctx e <> " in " <> go 0 (VCons h ctx) b)
+        let h' = freshen h ctx
+         in paren (prec > 0) ("let " <> h' <> " = " <> go 0 ctx e <> " in " <> go 0 (VCons h' ctx) b)
       If c th el ->
         paren (prec > 0) ("if " <> go 0 ctx c <> " then " <> go 0 ctx th <> " else " <> go 0 ctx el)
       Pow b n -> paren (prec > 9) (go 10 ctx b <> "^" <> T.pack (show n))
@@ -119,6 +122,16 @@ renderTerm namer = go 0
         _ -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
 
     paren b s = if b then "(" <> s <> ")" else s
+
+    -- A hint that is already in scope would capture an outer variable the
+    -- body may still refer to, so the printed binder gets a prime (or a
+    -- name if the hint is blank). De Bruijn indices make the term itself
+    -- unambiguous; this keeps the printed text so.
+    freshen :: Text -> Vec m Text -> Text
+    freshen h ctx
+      | T.null h = freshen "x" ctx
+      | h `elem` vecToList ctx = freshen (h <> "'") ctx
+      | otherwise = h
 
     lookupVar :: Fin m -> Vec m Text -> Text
     lookupVar i ctx = case (i, ctx) of
