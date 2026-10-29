@@ -44,21 +44,22 @@ import Eval.Core
 import Eval.Dimension
 import Eval.TCore
 
-{- | Evaluation parameters: the number of digits printed, and the number of
-standard deviations a comparison must clear to be decided (design §3.2.9).
+{- | Evaluation parameters: the number of significant digits printed, and the
+number of standard deviations a comparison must clear to be decided (design
+§3.2.9).
 -}
 data Config = Config
-  { scale :: Int
+  { precision :: Int
   , sigma :: Int
   }
   deriving stock (Show)
 
 defaultConfig :: Config
-defaultConfig = Config{scale = 20, sigma = 3}
+defaultConfig = Config{precision = 20, sigma = 3}
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
 precisionOf :: Config -> Precision
-precisionOf cfg = cfg.scale + 4
+precisionOf cfg = cfg.precision + 4
 
 {- | What the evaluator needs from the codebase: the Typed Core behind a
 reference, and whether a reference was declared a display unit.

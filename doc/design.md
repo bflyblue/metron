@@ -563,21 +563,21 @@ any operation.
 
 Midpoints are rounded to `p` digits after every nonlinear operation, with the
 rounding error accounted for (§3.2.7), so denominators never grow without bound.
-This is the approach of the Arb library. `p` is `scale` plus guard digits
-(default `scale + 4`). A value is therefore a pure function of the term and `p`.
-Exact values are never rounded, and linear operations (`+`, `-`, scaling by an
-exact value) never round, which is what keeps cancellation exact.
+This is the approach of the Arb library. `p` is the `precision` setting plus
+guard digits (default `precision + 4`). A value is therefore a pure function of
+the term and `p`. Exact values are never rounded, and linear operations (`+`, `-`,
+scaling by an exact value) never round, which is what keeps cancellation exact.
 
-"`p` digits" means an error of at most `10^-p` **absolute and** `10^-p`
-**relative, whichever is tighter**. A value of size one or more keeps `p` decimal
-places, as in bc, so the printer's promise about certain digits holds; a value
-below one keeps `p` significant digits. Magnitudes live in SI base units, where
-Planck's constant is `6.6e-34` and `G` is `6.7e-11`; with a purely absolute `p`,
-`sqrt` of a quantity near `1e-34` would keep three significant digits. Every
-series is summed to a tolerance scaled by the size of its result (the sine of a
-tiny angle relative to the angle, `sinh` by its own series near zero rather than
-the cancelling difference of exponentials), and midpoint rounding follows the same
-rule.
+"`p` digits" means `p` **significant digits**: an error of at most `10^-p`
+relative to the value. This is the meaning scientists and engineers give the word
+(and SQL, BigDecimal and Mathematica: *precision* is significant digits,
+*scale* or *accuracy* is decimal places), not bc's `scale`. Magnitudes live in SI
+base units, where Planck's constant is `6.6e-34` and `G` is `6.7e-11`; with an
+absolute `p`, `sqrt` of a quantity near `1e-34` would keep three significant
+digits. Every series is summed to a tolerance scaled by the size of its result
+(the sine of a tiny angle relative to the angle, `sinh` by its own series near
+zero rather than the cancelling difference of exponentials), and midpoint rounding
+follows the same rule.
 
 #### 3.2.9 Comparison
 
@@ -587,7 +587,7 @@ cancels, and collapses it to `mid`, a bound radius `r` and a standard deviation
 `:set sigma k` (default 3); otherwise evaluation fails with
 
 ```
-cannot decide a < b at scale 20, sigma 3: a - b is 1e-5 ± 3e-21 (bound) ±σ 4e-6
+cannot decide comparison at sigma 3: the difference is 1e-5 ± 3e-21 ±σ 4e-6
 ```
 
 So a comparison that depends on statistical inputs is decided at a stated
@@ -600,13 +600,13 @@ re-evaluating at higher `p` is a roadmap item; it can tighten `r`, never `σ`.
 #### 3.2.10 Printing
 
 A value prints in its display unit (§3.2.12), followed by its unit. Exact values
-print in full, or truncated at `scale` digits with `…` when the decimal repeats.
+print in full, or truncated at `precision` significant digits with `…` when the
+decimal goes on (the integer part is always complete).
 An affine value is collapsed to a midpoint, a bound radius `r = Σ_bound|cᵢ| +
 slack`, and a standard deviation `σ = √(Σ_stat cᵢ²)`, then printed as follows:
 
-- `σ = 0` and `r` below the last printed digit (`10^-scale`, or `10^-scale`
-  relative for values below one, which print in scientific notation): print
-  `scale` digits of the midpoint and `…`, zeros included. Every printed digit is
+- `σ = 0` and `r` below the last printed digit: print `precision` significant
+  digits of the midpoint and `…`, zeros included. Every printed digit is
   correct to within one unit in the last place, because the enclosure is narrower
   than that place.
 - `σ = 0` otherwise: print `mid ± r`, with `r` rounded to two significant digits
@@ -1493,7 +1493,7 @@ Inspection
 :unname name       remove the label; the term stays
 
 Session
-:set scale n       output digits; also sets working precision (3.2.8)
+:set precision n   significant digits printed; working precision is n + 4 (3.2.8)
 :set sigma k       confidence multiplier for comparisons on statistical values (3.2.9)
 :set unicode on    pretty-print with unicode spellings (2.8); off for ASCII
 :exact e           raw rational, or midpoint and nudge list
@@ -1686,7 +1686,7 @@ tuned, and compilation is a later milestone.
    functions on rationals, lifting by linearisation), all transcendental
    builtins, hash-named nudges with kinds, `±`, `±σ`, `noise` and `gauss` with
    definition-site identity, compaction and slack, certain-digit printing,
-   `:exact`, `:budget`, `:set scale/sigma`, CODATA `G` and the derived masses in
+   `:exact`, `:budget`, `:set precision/sigma`, CODATA `G` and the derived masses in
    the prelude. Status: done. Remaining from this item: precision refinement
    for undecidable comparisons (item 8) and `e` as a constant (left out for now:
    `e` is the eccentricity in most orbital code).
@@ -1741,7 +1741,7 @@ tuned, and compilation is a later milestone.
 
 ## 12. Worked scenario: iapetus
 
-An illustrative session with `:set scale 6` for brevity. Numbers are rounded for
+An illustrative session with `:set precision 6` for brevity. Numbers are rounded for
 the page; the real output follows the printing rules of §3.2.10 exactly.
 
 ```
@@ -1773,7 +1773,7 @@ Num [m] -> Num [m] -> Num [m s^-1]
 > :type rotz
 Num 1 -> Mat 3 3 1
 > rotz (90 deg) * [1, 0, 0] km
-[0.000000…, 1.000000…, 0] km            -- radii ~1e-10, below 10^-scale
+[0.000000…, 1.000000…, 0] km            -- radii ~1e-10, below the last printed digit
 > let t = 45 deg ± 0.001 in rotz t * [1, 0, 0] km
 [0.7071 ± 0.0007, 0.7071 ± 0.0007, 0] km
 > let t = 45 deg ± 0.001 in norm (rotz t * [1, 0, 0] km)

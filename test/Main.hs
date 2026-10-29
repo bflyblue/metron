@@ -766,7 +766,7 @@ endToEndTests =
           ["let fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)", "fib 20"]
           @?= Right ["6765"]
     , testCase "transcendentals print their certain digits"
-        $ evalText "sqrt 2" @?= Right ["1.41421356237309504880…"]
+        $ evalText "sqrt 2" @?= Right ["1.4142135623730950488…"]
     , testCase "parse error mentions the position"
         $ case evalText "1 +" of
           Left err -> T.isInfixOf "1:4" err @? T.unpack err
@@ -1459,7 +1459,7 @@ preludeTests =
         evalP "3 h + 30 min" @?= Right ["3.5 h"]
         evalP "30 min + 3 h" @?= Right ["210 min"]
         evalP "1 L to m^3" @?= Right ["0.001 m^3"]
-        evalP "1 AU / c to s" @?= Right ["499.00478383615641191347… s"]
+        evalP "1 AU / c to s" @?= Right ["499.00478383615641191… s"]
     , testCase "constants are exact where SI defines them so"
         $ evalP "c" @?= Right ["299792458 m s^-1"]
     , testCase "cross is the Hodge dual of the wedge" $ do
@@ -1494,12 +1494,12 @@ displayTests =
         evalP "5 km + 3 m" @?= Right ["5.003 km"]
         evalP "3 m + 5 km" @?= Right ["5003 m"]
     , testCase "to converts for display" $ do
-        evalP "5 km / h to m / s" @?= Right ["1.38888888888888888888… m s^-1"]
-        evalP "1 AU / c to min" @?= Right ["8.31674639726927353189… min"]
+        evalP "5 km / h to m / s" @?= Right ["1.3888888888888888888… m s^-1"]
+        evalP "1 AU / c to min" @?= Right ["8.3167463972692735318… min"]
         evalP "90 min to h" @?= Right ["1.5 h"]
     , testCase "a user-declared unit"
         $ runLinesP ["unit furlong = 201.168 * m", "1 km to furlong", "8 furlong to km"]
-          @?= Right ["4.97096953789867175693… furlong", "1.609344 km"]
+          @?= Right ["4.9709695378986717569… furlong", "1.609344 km"]
     , testCase "let-bound quantities are not units, their components are"
         $ runLinesP ["let g = 9.81 m / s^2", "g * (2 s)^2"] @?= Right ["39.24 m"]
     , testCase "the display unit must match the dimension or base units are used"
@@ -1545,13 +1545,13 @@ affineTests =
         evalText "6.62607015e-34" @?= Right ["6.62607015e-34"]
     , testCase "certain digits of approximations end in an ellipsis, zeros included" $ do
         evalText "sin 1" @?= Right ["0.84147098480789650665…"]
-        evalText "pi" @?= Right ["3.14159265358979323846…"]
-        evalText "exp 1" @?= Right ["2.71828182845904523536…"]
+        evalText "pi" @?= Right ["3.1415926535897932384…"]
+        evalText "exp 1" @?= Right ["2.7182818284590452353…"]
         evalText "log 2" @?= Right ["0.69314718055994530941…"]
-        evalText "tan (pi/4)" @?= Right ["1.00000000000000000000…"]
-        evalText "sqrt 2 * sqrt 2" @?= Right ["2.00000000000000000000…"]
-        evalText "exp (-80)" @?= Right ["1.80485138784541517231…e-35"]
-        evalText "sinh 1e-20" @?= Right ["1.00000000000000000000…e-20"]
+        evalText "tan (pi/4)" @?= Right ["1.0000000000000000000…"]
+        evalText "sqrt 2 * sqrt 2" @?= Right ["2.0000000000000000000…"]
+        evalText "exp (-80)" @?= Right ["1.8048513878454151723…e-35"]
+        evalText "sinh 1e-20" @?= Right ["1.0000000000000000000…e-20"]
     , testCase "the same operation twice gives the same nudge, so it cancels" $ do
         evalText "sin 1 - sin 1" @?= Right ["0"]
         evalText "let x = 5 ± 0.1 in x - x" @?= Right ["0"]
@@ -1566,11 +1566,12 @@ affineTests =
         evalText "let n = noise 1 in n.0 * n.0" @?= Right ["0.5 ± 0.5"]
         evalText "let x = 5 ± 0.1 in x * x" @?= Right ["25 ± 1"]
     , testCase
-        "standard uncertainties keep the σ marker and show a bound when it matters" $ do
-        evalText "6.67430e-11 ±σ 1.5e-15" @?= Right ["6.67430e-11 ±σ 1.5e-15"]
-        evalText "(6.67430e-11 ±σ 1.5e-15) * (2 ± 0.1)"
-          @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12)"]
-        evalText "(1 ±σ 0.1) * (1 ±σ 0.1)" @?= Right ["1.00 ±σ 0.14 (bound 0.01)"]
+        "standard uncertainties keep the σ marker and show a bound when it matters"
+        $ do
+          evalText "6.67430e-11 ±σ 1.5e-15" @?= Right ["6.67430e-11 ±σ 1.5e-15"]
+          evalText "(6.67430e-11 ±σ 1.5e-15) * (2 ± 0.1)"
+            @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12)"]
+          evalText "(1 ±σ 0.1) * (1 ±σ 0.1)" @?= Right ["1.00 ±σ 0.14 (bound 0.01)"]
     , testCase "noise and gauss are vectors of unit nudges" $ do
         evalText "noise 2" @?= Right ["[0 ± 1, 0 ± 1]"]
         evalText "gauss 1" @?= Right ["[0 ±σ 1]"]
@@ -1580,7 +1581,7 @@ affineTests =
           Right out -> assertFailure (show out)
     , testCase "tiny magnitudes keep their significant digits" $ do
         evalText "sqrt (1e-68 * (1 ± 1e-10))" @?= Right ["1.00000000000e-34 ± 5e-45"]
-        evalText "sin 1e-20" @?= Right ["1.00000000000000000000…e-20"]
+        evalText "sin 1e-20" @?= Right ["1.0000000000000000000…e-20"]
     , testCase "comparisons are decided only when the enclosures separate" $ do
         evalText "5 ± 0.1 < 6" @?= Right ["true"]
         evalText "let x = 5 ± 0.1 in x == x" @?= Right ["true"]
@@ -1606,13 +1607,13 @@ affineTests =
         evalText "sqrt (0 ± 1)" @?= Left "error: sqrt of a value that may be negative"
         evalText "log 0" @?= Left "error: log of a value that may be zero or negative"
         evalText "1 / (1 ± 2)" @?= Left "error: division by zero"
-        evalText "asin 1" @?= Right ["1.57079632679489661923…"]
+        evalText "asin 1" @?= Right ["1.5707963267948966192…"]
     , testCase "abs, atan2 and the hyperbolics" $ do
         evalText "abs (0 ± 1)" @?= Right ["0.5 ± 0.5"]
         evalText "abs ((5 ± 0.1) - 7)" @?= Right ["2.0 ± 0.1"]
         evalText "atan2 1 1" @?= Right ["0.78539816339744830961…"]
-        evalText "atan2 (-1) (-1)" @?= Right ["-2.35619449019234492884…"]
-        evalText "acos 0" @?= Right ["1.57079632679489661923…"]
+        evalText "atan2 (-1) (-1)" @?= Right ["-2.3561944901923449288…"]
+        evalText "acos 0" @?= Right ["1.5707963267948966192…"]
         evalText "cosh 0" @?= Right ["1"]
         evalText "tanh 1" @?= Right ["0.76159415595576488811…"]
     , testCase "linear algebra over enclosures" $ do
@@ -1627,12 +1628,12 @@ affineTests =
           @?= Left "error: cannot decide inverse of a matrix whose enclosure may be singular"
         evalText "det [[0, 0], [0, 0]]" @?= Right ["0"]
         evalText "norm [3, 4]" @?= Right ["5"]
-        evalText "norm [1, 1, 1]" @?= Right ["1.73205080756887729352…"]
-    , testCase ":set scale changes the digits printed and the working precision" $ do
-        runLines [":set scale 5", "pi", "1/3", "5 ± 0.1"]
-          @?= Right ["3.14159…", "0.33333…", "5.0 ± 0.1"]
-        runLines [":set scale 40", "pi"]
-          @?= Right ["3.1415926535897932384626433832795028841971…"]
+        evalText "norm [1, 1, 1]" @?= Right ["1.7320508075688772935…"]
+    , testCase ":set precision changes the digits printed and the working precision" $ do
+        runLines [":set precision 5", "pi", "1/3", "5 ± 0.1"]
+          @?= Right ["3.1415…", "0.33333…", "5.0 ± 0.1"]
+        runLines [":set precision 40", "pi"]
+          @?= Right ["3.141592653589793238462643383279502884197…"]
     , testCase ":exact shows the midpoint, the nudges and their origins" $ do
         evalText ":exact 2 ± 0.1" @?= Right ["2 + 0.1·e[bound, input]"]
         runLines ["let x = 5 ± 0.1", ":exact x"] @?= Right ["5 + 0.1·e[bound, x]"]
@@ -1658,9 +1659,9 @@ affineTests =
           other -> assertFailure (show other)
     , testCase "angles: deg is a unit built on pi" $ do
         evalP "90 deg" @?= Right ["90 deg"]
-        evalP "90 deg to rad" @?= Right ["1.57079632679489661923… rad"]
-        evalP "sin (90 deg)" @?= Right ["1.00000000000000000000…"]
-        evalP "1 arcsec to deg" @?= Right ["0.00027777777777777777… deg"]
+        evalP "90 deg to rad" @?= Right ["1.5707963267948966192… rad"]
+        evalP "sin (90 deg)" @?= Right ["1.0000000000000000000…"]
+        evalP "1 arcsec to deg" @?= Right ["0.00027777777777777777777… deg"]
     , testCase "sqrt of a dimension that is not a square is a type error, not a loop"
         $ case evalP "sqrt (1 kg)" of
           Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err

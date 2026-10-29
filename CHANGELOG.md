@@ -79,11 +79,11 @@
   error bounds from rational series; `norm`, `det` and `inverse`; `±`, `±σ`,
   `noise n`, `gauss n` with definition-site identity; comparisons and integer
   rounding fail with "cannot decide" instead of guessing (`:set sigma k`);
-  certain-digit printing (`sin 1` is `0.84147098480789650665…`, `5 ± 0.1`,
+  certain-digit printing (`sin 1` is `0.84147098480789650665…`, `pi` is `3.1415926535897932384…`, `5 ± 0.1`,
   `G` is `6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2`), `:exact`, `:budget`,
-  `:set scale n`. Working precision is `scale + 4` digits, absolute or
-  relative whichever is tighter, so Planck-scale quantities keep their
-  digits. Prelude: `G` with its CODATA σ, `M_earth` and `M_sun` derived from
+  `:set precision n`. Precision means significant digits (not bc's decimal
+  places); working precision is `precision + 4`, so Planck-scale quantities
+  keep their digits. Prelude: `G` with its CODATA σ, `M_earth` and `M_sun` derived from
   the nominal `GM` values, `deg`, `arcmin`, `arcsec`. Fixed: unifying `d^2`
   with a non-square dimension (`sqrt (1 kg)`) looped forever; it is now a
   type error.

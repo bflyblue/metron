@@ -7,11 +7,10 @@ remainder, series truncation and rounding.
 
 All arithmetic is exact rational arithmetic. The working precision @p@
 decides how far series are summed and where midpoints are rounded, and
-every rounding is accounted for in slack. "@p@ digits" means an error of
-at most @10^-p@ absolute /and/ @10^-p@ relative, whichever is tighter
-(design §3.2.8): a value above one keeps @p@ decimal places, a value below
-one keeps @p@ significant digits, so quantities stored in SI base units
-at the scale of Planck's constant lose nothing.
+every rounding is accounted for. "@p@ digits" means @p@ significant digits:
+an error of at most @10^-p@ relative to the value (design §3.2.8), so
+quantities stored in SI base units at the size of Planck's constant keep
+as many digits as quantities near one.
 -}
 module Eval.Affine (
   -- * Magnitudes
@@ -372,11 +371,11 @@ decimalExponent r
  where
   a = abs r
 
-{- | The exponent of the last digit kept at @p@ digits: @-p@ for values of
-size one or more, @p@ significant digits below that.
+{- | The exponent of the last of @p@ significant digits of a value:
+@precisionExponent 3 123.4 = 0@, @precisionExponent 3 0.01234 = -4@.
 -}
 precisionExponent :: Precision -> Rational -> Int
-precisionExponent p r = min 0 (decimalExponent r) - p
+precisionExponent p r = decimalExponent r - p + 1
 
 -- | Round to a multiple of @10^e@.
 roundAt :: Int -> Rational -> Rational

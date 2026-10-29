@@ -118,7 +118,10 @@ renderResolveErrorWith sources src = \case
 evalExpr :: Config -> Codebase -> Text -> S.Expr -> Either Text Text
 evalExpr cfg cb src e = do
   (_, v) <- evalValue cfg cb src e
-  either (Left . renderEvalError) Right (renderValue (refNamer cb) cfg.scale v)
+  either
+    (Left . renderEvalError)
+    Right
+    (renderValue (refNamer cb) cfg.precision v)
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design
@@ -167,8 +170,10 @@ checkExpr cb src e = do
 
 command :: Session -> Text -> [Text] -> Either Text (Session, [Text])
 command session src = \case
-  ["set"] -> keep (Right ["scale " <> tshow cfg.scale, "sigma " <> tshow cfg.sigma])
-  ["set", "scale", n] -> setting n (\k -> cfg{scale = k}) "scale must be a non-negative integer"
+  ["set"] ->
+    keep (Right ["precision " <> tshow cfg.precision, "sigma " <> tshow cfg.sigma])
+  ["set", "precision", n] ->
+    setting n (\k -> cfg{precision = k}) "precision must be a non-negative integer"
   ["set", "sigma", n] -> setting n (\k -> cfg{sigma = k}) "sigma must be a non-negative integer"
   -- The raw magnitudes (design §3.2.10): midpoint, nudges, slack.
   ("exact" : rest) -> keep $ do
@@ -179,16 +184,17 @@ command session src = \case
         Right
         ( renderValueWith
             (inputNamer h)
-            cfg.scale
-            (renderExact (inputNamer h) cfg.scale)
+            cfg.precision
+            (renderExact (inputNamer h) cfg.precision)
             v
         )
   -- The error budget (design §3.2.6) of a scalar, or of the sum of a
   -- tensor's components.
   ("budget" : rest) -> keep $ do
     (h, v) <- evalOf rest
-    case displayParts (inputNamer h) cfg.scale v of
-      Right (_, xs, units) -> pure (renderBudget (inputNamer h) cfg.scale units (foldr addM (Exact 0) xs))
+    case displayParts (inputNamer h) cfg.precision v of
+      Right (_, xs, units) ->
+        pure (renderBudget (inputNamer h) cfg.precision units (foldr addM (Exact 0) xs))
       Left (Internal _) -> Left "budget: not a number"
       Left err -> Left (renderEvalError err)
   ["add"] -> add session
@@ -233,7 +239,7 @@ command session src = \case
     Left
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
           <> "          :view name  :core name  :hash name  :names #hash  :history name  :dependents name  :alias new old  :unname name\n"
-          <> "          :exact expr  :budget expr  :set [scale n | sigma k]"
+          <> "          :exact expr  :budget expr  :set [precision n | sigma k]"
       )
  where
   cb = session.staging

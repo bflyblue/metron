@@ -26,10 +26,10 @@ import Eval.Eval
 
 -- Numbers ------------------------------------------------------------------------
 
-{- | @renderRational scale r@: an exact value in full, or truncated at
-@scale@ digits with @…@ when the expansion goes on. Values below @10^-4@
-are written in scientific notation with @scale@ significant digits, so a
-Planck-scale quantity is not a row of zeros.
+{- | @renderRational precision r@: an exact value in full, or truncated at
+@precision@ significant digits with @…@ when the expansion goes on. The
+integer part is always complete. Values below @10^-4@ are written in
+scientific notation, so a Planck-scale quantity is not a row of zeros.
 -}
 renderRational :: Int -> Rational -> Text
 renderRational scale = renderDecimal scale False
@@ -45,7 +45,8 @@ renderDecimal scale approx r
        in renderDecimal scale approx (r / 10 ^^ e) <> "e" <> tshow e
   | otherwise =
       let (whole, frac) = properFraction r :: (Integer, Rational)
-          (digits, exact) = fractionDigits scale frac
+          -- Significant digits left for the fraction after the integer part.
+          (digits, exact) = fractionDigits (max 0 (scale - decimalExponent r - 1)) frac
        in tshow whole
             <> (if null digits then "" else "." <> T.pack digits)
             <> (if exact && not approx then "" else "…")
@@ -74,8 +75,9 @@ fractionDigitsOf n frac
 {- | Print a magnitude at a scale (design §3.2.10). An affine value is
 collapsed to a midpoint, a bound radius @r@ and a standard deviation @σ@:
 
-* @σ = 0@ and @r@ below the last printed digit: @scale@ digits of the
-  midpoint and @…@, each correct to within one unit in the last place;
+* @σ = 0@ and @r@ below the last printed digit: @precision@ significant
+  digits of the midpoint and @…@, each correct to within one unit in the
+  last place;
 * @σ = 0@ otherwise: @mid ± r@, @r@ to two significant digits and the
   midpoint to the same position;
 * @σ > 0@: @mid ±σ σ@ the same way, then @(bound r)@ unless @r@ is
@@ -88,7 +90,7 @@ renderMagnitude scale = \case
   m ->
     let c = collapse m
         sigma = sigmaOf (scale + 4) c
-        lastDigit = min 0 (decimalExponent c.mid) - scale
+        lastDigit = decimalExponent c.mid - scale + 1
      in if sigma == 0 && c.bound < 10 ^^ lastDigit
           then renderDecimal scale True c.mid
           else
