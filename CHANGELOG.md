@@ -71,3 +71,25 @@
   `1 AU / c to min` converts. The prelude declares its units with `unit`; `Bq`
   and `Sv` are defined through `Hz` and `Gy` so identical definitions do not
   merge their names.
+- Type-directed program generator for the property tests (`test/Gen.hs`):
+  every program is built from a chosen closed type (numbers, tensors to rank
+  three, dimensions, Bool, functions), so none is discarded; it covers
+  polymorphic lets used at two types, products, contractions, wedge, star,
+  sections, composition and units, and pins operands whose rank inference
+  could not see so that defaulting never changes the intended type. A new
+  property checks the generator itself (the intended type is an instance of
+  the inferred scheme); the six pipeline properties run over both
+  generators. Building and running it found, and this fixes, five bugs in
+  `lib/`: a let inside an
+  operand of `*`, `@` or `==` defaulted that operator's constraint
+  (`[1, 2] * (let y = 1 in [3])` was rejected); a let generalised variables a
+  pending product constraint tied to the enclosing scope
+  (`\k -> let g = \v -> k * v in g [1, 2]` was typed `Num d -> Tensor s d`,
+  and lint then rejected its uses); generalisation flipped an inverted
+  dimension variable in the scheme but not in the elaborated term (lint
+  rejected the let); sections and composition printed the desugarer's binder
+  names (`\§s0 -> …`), which do not re-parse; and `neg 3` printed as `-3`,
+  a different term. Also fixed: a dimension equation with no integer
+  solution, `sqrt (1 m)`, looped in Kennedy's Euclid step instead of failing.
+  No hashes change; some definitions' stored types do (the second bug's were
+  unsound).

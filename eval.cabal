@@ -69,6 +69,8 @@ test-suite eval-test
   type:           exitcode-stdio-1.0
   hs-source-dirs: test
   main-is:        Main.hs
+  other-modules:
+    , Gen
   build-depends:
     , base ^>=4.21.0.0
     , bytestring

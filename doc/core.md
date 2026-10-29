@@ -330,15 +330,21 @@ Core is small so that it can be made correct, and these are the means:
   alpha-equivalent term; hashing is stable across that round trip; encoding
   decodes (once the decoder exists) to an alpha-equivalent term; cycle hashes
   are independent of entry order; alpha-equivalent terms hash equal.
-  *Known weakness:* the generator builds programs blindly, so about three in
-  four are ill-typed and discarded before they reach lint or the evaluator,
-  and the survivors skew small and simple. The pass counts are honest about
-  what ran, not strong evidence about deep shapes (nested polymorphic lets,
-  products inside recursion, dimensioned tensors). The planned fix is a
-  type-directed generator that builds each program from a chosen type, so
-  every case is well-typed and the type space, now including shapes and
-  dimensions, is explored on purpose. Worth doing before affine arithmetic
-  adds another kind of value to cover.
+  The properties run over two generators. The blind one builds programs
+  without regard to types, so about seven in ten are ill-typed and
+  discarded; it stays because it reaches shapes no typing rule suggests. The
+  type-directed one (`test/Gen.hs`) builds each program from a chosen closed
+  type, so none is discarded and the type space (shapes to rank three,
+  dimensions, functions, polymorphic lets used at two types, products and
+  contractions) is explored on purpose; a further property checks that the
+  type each program was built for is an instance of the type inferred for
+  it. Defaulting (§4.2 of the design) is the one place well-typed by
+  construction needs care: the generator tracks which operands inference can
+  see the rank of, and makes an unseen one visible (`e + 0 [m]`) unless the
+  default is what was meant. Building it and its first runs found six bugs
+  in inference and the printer (see the changelog). *Known gaps:* no recursion (`Cycle`) and
+  no codebase references are generated, and affine arithmetic is only typed,
+  never evaluated.
 - **Unit tests pin the special forms**: laziness of `If` and of `and`/`or`,
   saturation, projection bounds, cycle knot-tying.
 - **One place per concern.** Each constructor appears in exactly one `case` in

@@ -19,7 +19,7 @@ module Eval.Infer
 import Control.Monad (foldM, forM_, unless, zipWithM)
 import Control.Monad.State.Strict (StateT, get, gets, modify', put, runStateT)
 import Control.Monad.Trans.Class (lift)
-import Data.List (nubBy)
+import Data.List (isSuffixOf, nubBy)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -73,7 +73,7 @@ elaborateClosed look term = do
                unify [i] v t
                pure body')
             (vecZip3 (indices bodies) bodies vars)
-        settle VNil
+        settle [] VNil
         schemes <- mapM (generalise VNil) (vecToList vars)
         s <- gets (.subst)
         let quantified = nubBy (\a b -> fst a == fst b) (concat [vs | Forall vs _ <- schemes])
@@ -81,7 +81,7 @@ elaborateClosed look term = do
         pure (schemes, TCycle quantified members bodies')
       _ -> do
         (t, tt) <- infer look [] VNil term
-        settle VNil
+        settle [] VNil
         sc@(Forall vs _) <- generalise VNil t
         pure ([sc], abstractOver vs tt)
 
@@ -220,12 +220,22 @@ unifyDim p d1 d2 = solve (dimDiv d1 d2)
           let d' = if x0 < 0 then dimInv d else d
               x = abs x0
               others = [(a, k) | (a, k) <- dimAtoms d', a /= DVar v]
-          if all (\(_, k) -> k `mod` x == 0) others
+              divides (_, k) = k `mod` x == 0
+              isVar (a, _) = case a of
+                DVar _ -> True
+                Base _ -> False
+          if all divides others
             then bindVar p v (ADim (dimFromAtoms [(a, negate (k `div` x)) | (a, k) <- others]))
-            else do
-              v' <- freshDim
-              bindVar p v (ADim (dimMul v' (dimFromAtoms [(a, negate (k `div` x)) | (a, k) <- others])))
-              solve d'
+            -- Only base exponents fail to divide: no integer solution (design
+            -- §4.4, case 2), and the Euclid step would substitute `v := v'`
+            -- forever.
+            else
+              if all divides (filter isVar others)
+                then failAt p ("dimensions differ by " <> renderDim d)
+                else do
+                  v' <- freshDim
+                  bindVar p v (ADim (dimMul v' (dimFromAtoms [(a, negate (k `div` x)) | (a, k) <- others])))
+                  solve d'
 
 -- Constraints ----------------------------------------------------------------------
 
@@ -281,15 +291,18 @@ solveOne p = \case
 -- to be quantified cannot wait: default them (design §4.2). The unknown-rank
 -- operand of a product is taken to be a scalar; an unknown equality type is
 -- taken to be `Num`. Constraints that mention variables of the enclosing
--- context stay pending.
-settle :: Vec n Scheme -> Infer ()
-settle ctx = do
+-- context stay pending, and so do constraints created outside the term being
+-- generalised (the path given is that term's): the product around
+-- @[1, 2] * (let y = 1 in [3])@ is not the inner let's to default.
+settle :: Path -> Vec n Scheme -> Infer ()
+settle here ctx = do
   solvePending
   s <- gets (.subst)
   let envVars = concat [map fst (freeVars (applyType s b)) | Forall _ b <- vecToList ctx]
       touchesEnv c = any (`elem` envVars) (constraintVars (applyC s c))
+      outside p = not (here `isSuffixOf` p)
   st <- get
-  let (stay, dflt) = partitionWith (touchesEnv . snd) st.pending
+  let (stay, dflt) = partitionWith (\(p, c) -> outside p || touchesEnv c) st.pending
   put st {pending = stay}
   forM_ (reverse dflt) $ \(p, c) -> case applyC s c of
     Append s1 _ _ -> unifyShape p s1 SNil >> defer p c
@@ -297,43 +310,59 @@ settle ctx = do
   solvePending
   where
     partitionWith f xs = (filter f xs, filter (not . f) xs)
-    applyC s = \case
-      Append a b c -> Append (applyShape s a) (applyShape s b) (applyShape s c)
-      EqInstance t -> EqInstance (applyType s t)
-    constraintVars = \case
-      Append a b c -> map fst (concatMap (freeVars . (`TTensor` dimOne)) [a, b, c])
-      EqInstance t -> map fst (freeVars t)
+
+applyC :: Subst -> Constraint -> Constraint
+applyC s = \case
+  Append a b c -> Append (applyShape s a) (applyShape s b) (applyShape s c)
+  EqInstance t -> EqInstance (applyType s t)
+
+constraintVars :: Constraint -> [VarId]
+constraintVars = \case
+  Append a b c -> map fst (concatMap (freeVars . (`TTensor` dimOne)) [a, b, c])
+  EqInstance t -> map fst (freeVars t)
 
 -- Generalisation and instantiation ---------------------------------------------------
 
-generalise :: Vec n Scheme -> Type -> Infer Scheme
-generalise ctx t = do
-  s <- gets (.subst)
-  let t' = applyType s t
-      envVars = concat [map fst (freeVars (applyType s b)) | Forall _ b <- vecToList ctx]
-      quantified = filter ((`notElem` envVars) . fst) (freeVars t')
-  pure (Forall quantified (positiveDims quantified t'))
-
--- | Kennedy's algorithm may solve for the inverse of a variable, giving
+-- | Quantify the variables of a type that are free in neither the context
+-- nor a constraint still pending: such a constraint ties its variables to
+-- the context (or to a term outside this one), and quantifying them would
+-- cut that tie, as in @\k -> let g = \v -> k * v in g [1, 2]@, which once
+-- typed its result as any shape at all.
+--
+-- Kennedy's algorithm may solve for the inverse of a variable, giving
 -- @Num [d^-2] -> Num [d^-3]@ where @Num [d^2] -> Num [d^3]@ means the same
 -- scheme. A quantified dimension variable that only appears with negative
--- exponents is replaced by its inverse.
-positiveDims :: [(VarId, Kind)] -> Type -> Type
-positiveDims quantified t = foldr flipIfNegative t [v | (v, KDim) <- quantified]
+-- exponents is replaced by the inverse of a fresh one, through the
+-- substitution, so that the elaborated term (zonked with it) and the scheme
+-- agree.
+generalise :: Vec n Scheme -> Type -> Infer Scheme
+generalise ctx t = do
+  (t0, quantified0) <- candidates
+  forM_ (negativeOnly quantified0 t0) $ \v -> do
+    w <- freshDim
+    bindVar [] v (ADim (dimInv w))
+  (t', quantified) <- candidates
+  pure (Forall quantified t')
   where
-    flipIfNegative v ty
-      | not (null (exponents v ty)) && all (< 0) (exponents v ty) = rewrite v ty
-      | otherwise = ty
+    candidates = do
+      s <- gets (.subst)
+      pending <- gets (.pending)
+      let t' = applyType s t
+          envVars =
+            concat [map fst (freeVars (applyType s b)) | Forall _ b <- vecToList ctx]
+              ++ concatMap (constraintVars . applyC s . snd) pending
+      pure (t', filter ((`notElem` envVars) . fst) (freeVars t'))
+
+-- | The quantified dimension variables that occur only with negative
+-- exponents.
+negativeOnly :: [(VarId, Kind)] -> Type -> [VarId]
+negativeOnly quantified t = [v | (v, KDim) <- quantified, let ks = exponents v t, not (null ks), all (< 0) ks]
+  where
     exponents v = \case
       TBool -> []
       TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
       TFun a b -> exponents v a ++ exponents v b
       TVar _ -> []
-    rewrite v = \case
-      TBool -> TBool
-      TTensor sh d -> TTensor sh (substDimVar v (dimInv (dimVar v)) d)
-      TFun a b -> TFun (rewrite v a) (rewrite v b)
-      TVar w -> TVar w
 
 -- | Replace the quantified variables by fresh ones and return the arguments
 -- used, for the explicit type applications. This is a one-shot renaming, not
@@ -399,7 +428,7 @@ infer look p ctx = \case
     pure (r, TApp f' a')
   Let h e body -> do
     (te, e') <- infer look (0 : p) ctx e
-    settle ctx
+    settle (0 : p) ctx
     sc@(Forall vs _) <- generalise ctx te
     (tb, body') <- infer look (1 : p) (VCons sc ctx) body
     pure (tb, TLet h sc (abstractOver vs e') body')
