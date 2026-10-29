@@ -3,12 +3,14 @@ module Main (main) where
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Eval.Affine
+import Eval.Affine hiding (DivideByZero)
 import Eval.Core
 import Eval.Desugar
+import Eval.Dimension (DimAtom (..), dimAtoms, isDimOne)
 import Eval.Driver
 import Eval.Eval
 import Eval.Hash
@@ -21,6 +23,7 @@ import Eval.Pretty
 import Eval.Syntax qualified as S
 import Eval.TCore
 import Eval.Type
+import Gen (exprDepth, genProgram, instanceOf)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -1272,79 +1275,201 @@ blankHints = go
     Proj t i -> Proj (go t) i
     Cycle hs bs -> Cycle (vecMap (const "q") hs) (vecMap go bs)
 
--- | The Core of an expression that desugars and typechecks.
-wellTyped :: S.Expr -> Maybe (Term Z)
-wellTyped e = case desugarClosed noResolver e of
-  Left _ -> Nothing
+-- | Where property-test programs come from, and what to do with one that
+-- does not typecheck: the blind generator's are discarded, the typed
+-- generator's are failures.
+data Source = Source
+  { programs :: Gen S.Expr
+  , rejected :: String -> Property
+  }
+
+blindSource :: Source
+blindSource = Source (genExpr [] 5) (const discard)
+
+typedSource :: Source
+typedSource = Source (snd <$> genProgram) (`counterexample` False)
+
+-- | A program as printed Core, for counterexamples.
+showProgram :: S.Expr -> String
+showProgram e = case desugarClosed noResolver e of
+  Left err -> T.unpack (renderDesugarError err) <> "\n" <> show e
+  Right (t, _) -> T.unpack (renderTerm (\_ _ -> "#") VNil t)
+
+-- | Desugar and elaborate, handing failures to the source.
+withElaborated :: Source -> S.Expr -> (Term Z -> ([Scheme], TTerm Z) -> Property) -> Property
+withElaborated src e k = case desugarClosed noResolver e of
+  Left err -> src.rejected (T.unpack (renderDesugarError err))
   Right (t, _) -> case elaborateClosed (const Nothing) t of
-    Left _ -> Nothing
-    Right _ -> Just t
+    Left err -> src.rejected ("type error: " <> T.unpack err.message)
+    Right r -> k t r
+
+forProgram :: Source -> (S.Expr -> Property) -> Property
+forProgram src = forAllShow src.programs showProgram
+
+-- | The invariants of core.md §9 over programs from one source.
+pipelineProperties :: Source -> [TestTree]
+pipelineProperties src =
+  [ testProperty "whatever inference accepts, lint accepts with the same type" $
+      forProgram src $ \e ->
+        withElaborated src e $ \_ (schemes, typed) -> lintClosed (const Nothing) typed === Right schemes
+  , -- Only well-typed terms: an ill-typed one such as a number applied to
+    -- a number has no surface spelling because of the quantity rule, and
+    -- `:view` only ever prints stored, checked definitions.
+    testProperty "printed Core re-parses to an alpha-equivalent term" $
+      forProgram src $ \e ->
+        withElaborated src e $ \t _ ->
+          let printed = renderTerm (\_ _ -> "#") VNil t
+           in counterexample (T.unpack printed) $
+                case parseExpr printed >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
+                  Left err -> counterexample (T.unpack err) False
+                  Right (t', _) -> counterexample (fromMaybe "" (firstDifference t t')) (alphaEq t t')
+  , testProperty "hashes ignore hints" $
+      forProgram src $ \e ->
+        case desugarClosed noResolver e of
+          Left err -> src.rejected (T.unpack (renderDesugarError err))
+          Right (t, _) -> hashTerm (blankHints t) === hashTerm t
+  , testProperty "the hash is stable across printing" $
+      forProgram src $ \e ->
+        withElaborated src e $ \t _ ->
+          case parseExpr (renderTerm (\_ _ -> "#") VNil t) >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
+            Left err -> counterexample (T.unpack err) False
+            Right (t', _) -> counterexample (fromMaybe "" (firstDifference t t')) (hashTerm t' === hashTerm t)
+  , testProperty "evaluating a linted term never reports an internal error" $
+      forProgram src $ \e ->
+        withElaborated src e $ \_ (_, typed) ->
+          case evalClosed defaultConfig (Runtime (const Nothing) (\_ _ -> False)) typed >>= render of
+            Left (Internal msg) -> counterexample (T.unpack msg) False
+            Left (UnknownRef _) -> property False
+            Left (BadCycleIndex _) -> property False
+            Left err -> label (evalOutcome err) True
+            Right _ -> label "value" True
+  , testProperty "inference is deterministic" $
+      forProgram src $ \e ->
+        case desugarClosed noResolver e of
+          Left err -> src.rejected (T.unpack (renderDesugarError err))
+          Right (t, _) -> fmap fst (elaborateClosed (const Nothing) t) === fmap fst (elaborateClosed (const Nothing) t)
+  ]
+  where
+    evalOutcome = \case
+      DivideByZero -> "division by zero"
+      Unsupported _ -> "not implemented"
+      _ -> "other error"
 
 propertyTests :: TestTree
 propertyTests =
   testGroup
     "properties"
-    [ testProperty "whatever inference accepts, lint accepts with the same type"
-        $ forAll (genExpr [] 5)
-        $ \e ->
-          case desugarClosed noResolver e of
-            Left _ -> discard
-            Right (t, _) -> case elaborateClosed (const Nothing) t of
-              Left _ -> discard
-              Right (schemes, typed) -> lintClosed (const Nothing) typed === Right schemes
-    , -- Only well-typed terms: an ill-typed one such as a number applied to
-      -- a number has no surface spelling because of the quantity rule, and
-      -- `:view` only ever prints stored, checked definitions.
-      testProperty "printed Core re-parses to an alpha-equivalent term"
-        $ forAll (genExpr [] 5)
-        $ \e ->
-          case wellTyped e of
-            Nothing -> discard
-            Just t ->
-              let printed = renderTerm (\_ _ -> "#") VNil t
-               in counterexample (T.unpack printed)
-                    $ case parseExpr printed
-                      >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
-                      Left err -> counterexample (T.unpack err) False
-                      Right (t', _) -> counterexample (show t') (alphaEq t t')
-    , testProperty "hashes ignore hints"
-        $ forAll (genExpr [] 5)
-        $ \e ->
-          case desugarClosed noResolver e of
-            Left _ -> discard
-            Right (t, _) -> hashTerm (blankHints t) === hashTerm t
-    , testProperty "the hash is stable across printing"
-        $ forAll (genExpr [] 5)
-        $ \e ->
-          case wellTyped e of
-            Nothing -> discard
-            Just t ->
-              case parseExpr (renderTerm (\_ _ -> "#") VNil t)
-                >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
-                Left _ -> property False
-                Right (t', _) -> hashTerm t' === hashTerm t
-    , testProperty "evaluating a linted term never reports an internal error"
-        $ forAll (genExpr [] 5)
-        $ \e ->
-          case desugarClosed noResolver e of
-            Left _ -> discard
-            Right (t, _) -> case elaborateClosed (const Nothing) t of
-              Left _ -> discard
-              Right (_, typed) -> case evalClosed defaultConfig (Runtime (const Nothing) (\_ _ -> False)) typed
-                >>= render of
-                Left (Internal msg) -> counterexample (T.unpack msg) False
-                Left (UnknownRef _) -> property False
-                Left (BadCycleIndex _) -> property False
-                _ -> property True
-    , testProperty "inference is deterministic"
-        $ forAll (genExpr [] 5)
-        $ \e ->
-          case desugarClosed noResolver e of
-            Left _ -> discard
-            Right (t, _) ->
-              fmap fst (elaborateClosed (const Nothing) t)
-                === fmap fst (elaborateClosed (const Nothing) t)
+    [ testGroup "blind programs" (pipelineProperties blindSource)
+    , testGroup
+        "typed programs"
+        ( testProperty "the generator's programs have the type they were built for" generatorProperty
+            : pipelineProperties typedSource
+        )
     ]
+
+-- | The typed generator checks itself: inference succeeds on every program
+-- and the type it was built for is an instance of the inferred scheme.
+-- Coverage is tabulated from the elaborated term, so it reports what
+-- inference saw, not what the generator meant.
+generatorProperty :: Property
+generatorProperty =
+  forAllShow genProgram (\(ty, e) -> T.unpack (renderType ty) <> "\n" <> showProgram e) $ \(ty, e) ->
+    withElaborated typedSource e $ \_ (schemes, typed) ->
+      case schemes of
+        [sc] ->
+          tabulate "target" [targetKind ty]
+            . tabulate "depth" [bucket (exprDepth e)]
+            . foldr (\(name, present) k -> classify present name . k) id (features typed)
+            $ counterexample ("built for " <> T.unpack (renderType ty) <> ", inferred " <> T.unpack (renderScheme sc)) (instanceOf sc ty)
+        _ -> counterexample "more than one scheme" False
+  where
+    bucket d
+      | d < 5 = "1-4"
+      | d < 10 = "5-9"
+      | d < 15 = "10-14"
+      | d < 20 = "15-19"
+      | otherwise = "20+"
+    targetKind = \case
+      TBool -> "Bool"
+      TFun _ _ -> "function"
+      TTensor sh d ->
+        (case rankOf sh of
+          0 -> "Num"
+          1 -> "Vec"
+          2 -> "Mat"
+          _ -> "rank 3")
+          <> (if isDimOne d then "" else " with a dimension")
+      TVar _ -> "variable"
+
+rankOf :: Shape -> Int
+rankOf = \case
+  SNil -> 0
+  SCons _ rest -> 1 + rankOf rest
+  SVar _ -> 0
+
+-- | What an elaborated program exercises: polymorphic lets, dimensioned
+-- tensors, higher ranks, higher-order functions.
+features :: TTerm Z -> [(String, Bool)]
+features typed =
+  [ ("polymorphic let", polyLets typed > 0)
+  , ("dimensioned tensor of rank >= 1", any dimensionedTensor tys)
+  , ("dimensioned value", any dimensioned tys)
+  , ("rank >= 2", any ((>= 2) . tensorRank) tys)
+  , ("higher-order function", any higherOrder tys)
+  ]
+  where
+    tys = annotations typed
+    dimensioned = \case
+      TTensor _ d -> any isBase (dimAtoms d)
+      TFun a b -> dimensioned a || dimensioned b
+      _ -> False
+    dimensionedTensor = \case
+      TTensor (SCons _ _) d -> any isBase (dimAtoms d)
+      TFun a b -> dimensionedTensor a || dimensionedTensor b
+      _ -> False
+    isBase = \case
+      (Base _, _) -> True
+      _ -> False
+    tensorRank = \case
+      TTensor sh _ -> rankOf sh
+      TFun a b -> max (tensorRank a) (tensorRank b)
+      _ -> 0
+    higherOrder = \case
+      TFun (TFun _ _) _ -> True
+      TFun _ b -> higherOrder b
+      _ -> False
+
+-- | Let binders generalised over at least one variable.
+polyLets :: TTerm n -> Int
+polyLets = \case
+  TLet _ (Forall vs _) e b -> (if null vs then 0 else 1) + polyLets e + polyLets b
+  TLam _ _ b -> polyLets b
+  TApp f a -> polyLets f + polyLets a
+  TIf c t e -> polyLets c + polyLets t + polyLets e
+  TPrimApp _ _ as -> sum (map polyLets as)
+  TPow b _ -> polyLets b
+  TUncertain _ x e -> polyLets x + polyLets e
+  TPack ts -> sum (map polyLets ts)
+  TProj t _ -> polyLets t
+  TTyLam _ _ b -> polyLets b
+  TTyApp b _ -> polyLets b
+  _ -> 0
+
+-- | Every type annotation in an elaborated term.
+annotations :: TTerm n -> [Type]
+annotations = \case
+  TPrimApp _ ty as -> ty : concatMap annotations as
+  TLam _ ty b -> ty : annotations b
+  TApp f a -> annotations f ++ annotations a
+  TLet _ (Forall _ ty) e b -> ty : annotations e ++ annotations b
+  TIf c t e -> annotations c ++ annotations t ++ annotations e
+  TPow b _ -> annotations b
+  TUncertain _ x e -> annotations x ++ annotations e
+  TPack ts -> concatMap annotations ts
+  TProj t _ -> annotations t
+  TTyLam _ _ b -> annotations b
+  TTyApp b arg -> (case arg of AType t -> [t]; _ -> []) ++ annotations b
+  _ -> []
 
 -- Units and dimensions --------------------------------------------------------------
 
@@ -1382,10 +1507,24 @@ unitTests =
         typeOfText "\\x -> sqrt (x * x)" @?= Right "Num d -> Num d"
         typeOfText "\\a b -> atan2 a b" @?= Right "Num d -> Num d -> Num"
         typeOfText "\\x y -> x < y" @?= Right "Num d -> Num d -> Bool"
-    , testCase "Kennedy's Euclid step: non-divisible exponents"
-        $ typeOfText "\\f -> sqrt (f * f * f)" @?= Right "Num [d^2] -> Num [d^3]"
-    , testCase "an uncertainty must share the value's dimension"
-        $ case evalText "3 m ± 1 s" of
+    , testCase "Kennedy's Euclid step: non-divisible exponents" $
+        typeOfText "\\f -> sqrt (f * f * f)" @?= Right "Num [d^2] -> Num [d^3]"
+    , -- `d^2 = m` has no solution; the Euclid step used to substitute
+      -- `d := d'` forever. Found while checking how the type-directed
+      -- generator's negative powers print.
+      localOption (mkTimeout 5000000) $
+        testCase "a dimension equation with no integer solution is an error, not a loop" $ do
+          case evalText "sqrt (1 m)" of
+            Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err
+            Right v -> assertFailure (show v)
+          case evalText "let f x = x^2 + 1 m" of
+            Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err
+            Right v -> assertFailure (show v)
+          case evalText "\\x -> x ^ -2 * [1, 2] to s" of
+            Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err
+            Right v -> assertFailure (show v)
+    , testCase "an uncertainty must share the value's dimension" $
+        case evalText "3 m ± 1 s" of
           Left err -> T.isInfixOf "dimension of the value" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "to keeps the value for now"
@@ -1414,6 +1553,65 @@ lintRegressionTests =
     , testCase "a stored polymorphic definition instantiates at several dimensions"
         $ runLines ["let sq x = x * x", ":add", "sq (3 m)", "sq (2 s)", ":type sq"]
           @?= Right ["added sq", "9 m^2", "4 s^2", "Num d -> Num [d^2]"]
+    , -- Found while designing the type-directed generator, whose pinning
+      -- rules lean on how pending constraints meet a let. `k * v` leaves a product
+      -- constraint pending because `k` belongs to the enclosing lambda; the
+      -- let used to generalise `v`'s shape and the result shape anyway, so
+      -- `g [1, 2]` came out as `Tensor s` and inference accepted programs
+      -- that lint then rejected.
+      testCase "a let does not generalise variables a pending product constraint ties to the scope" $ do
+        typeOfText "\\k -> let g = \\v -> k * v in g [1, 2]" @?= Right "Num d -> Vec 2 d"
+        case evalText "((\\k -> let g = \\v -> k * v in g [1, 2]) 3) + [1, 2, 3]" of
+          Left err -> T.isInfixOf "lengths differ" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        evalText "(\\k -> let g = \\v -> k * v in g [1, 2]) 3" @?= Right ["[3, 6]"]
+    , -- Found by the type-directed generator. A let inside an operand of a
+      -- product or of `==` settled the operator's own constraint, created
+      -- outside the let, and defaulted its operand to a scalar.
+      testCase "a let defaults only the constraints of its own right-hand side" $ do
+        typeOfText "[1, 2] * (let y = 1 in [3])" @?= Right "Mat 2 1"
+        typeOfText "(let y = 1 in [3]) * [1, 2]" @?= Right "Mat 1 2"
+        typeOfText "[[1, 2]] @ (let y = 1 in [3, 4])" @?= Right "Vec 1"
+        typeOfText "[1, 2] == (let y = 1 in [3, 4])" @?= Right "Bool"
+        typeOfText "(\\x -> x * [1, 2]) (let y = 1 in [3, 4])" @?= Right "Mat 2 2"
+        evalText "[1, 2] * (let y = 1 in [3])" @?= Right ["[[3], [6]]"]
+    , -- Found by the type-directed generator: sections and composition bind
+      -- names the desugarer makes up (`§s0`), which printed as they were
+      -- and did not re-parse.
+      testCase "printed Core never shows the desugarer's own binder names" $ do
+        runLines ["let inc = (+ 1)", ":view inc"] @?= Right ["inc = \\x -> x + 1"]
+        runLines ["let comp f g = f . g", ":view comp"] @?= Right ["comp = \\f -> \\g -> \\x -> f (g x)"]
+        runLines ["let k = \\x -> (+ x)", ":view k"] @?= Right ["k = \\x -> \\x' -> x' + x"]
+    , -- Found by the type-directed generator. Generalisation turned a
+      -- dimension variable that only occurs inverted, `d^-1`, into `d` in the
+      -- scheme but not in the elaborated term, so lint saw a let annotated
+      -- `Num d -> Num d` bound to `Num [d^-1] -> Num [d^-1]`.
+      testCase "a dimension variable flipped at generalisation is flipped in the term too" $ do
+        typeOfText "\\x -> let k = \\w -> if true then x else 1 / w in x" @?= Right "Num d -> Num d"
+        evalText "let g = \\x -> let k = \\w -> if true then x else 1 / w in x in g (2 m)" @?= Right ["2 m"]
+    , -- The members of a cycle share one set of quantified variables, so a
+      -- variable is flipped only when it is inverted in every member; flipping
+      -- it member by member gave schemes that disagreed with lint's.
+      testCase "a cycle's inferred schemes agree with lint's when a dimension is inverted" $
+        let -- Inside a member's lambda: v0 is its argument, v1 is f, v2 is g.
+            f' = Lam "x" (If (v0 ==. v0) (bool True) (App v2 (num 1 /. v0)))
+            g' = Lam "y" (If (v0 ==. v0) (bool True) (App v1 (num 1 /. v0)))
+            cycle' = Cycle (VCons "f" (VCons "g" VNil)) (VCons f' (VCons g' VNil))
+         in case elaborateClosed (const Nothing) cycle' of
+              Left err -> assertFailure (T.unpack err.message)
+              Right (schemes, typed) -> do
+                let closed (Forall vs t) = all ((`elem` map fst vs) . fst) (freeVars t)
+                all closed schemes @? show schemes
+                map renderScheme <$> lintClosed (const Nothing) typed @?= Right (map renderScheme schemes)
+    , -- Found by the type-directed generator. `neg 0` (the primitive applied
+      -- to a constant) printed as `-0`, which reads back as the constant
+      -- zero: a different term with a different hash.
+      testCase "the negation primitive applied to a constant prints as an application" $ do
+        runLines ["let k = neg 3", ":view k"] @?= Right ["k = neg 3"]
+        runLines ["let k = neg [1, -2]", ":view k"] @?= Right ["k = neg [1, -2]"]
+        runLines ["let k = neg (-3)", ":view k"] @?= Right ["k = neg (-3)"]
+        runLines ["let k = -3", ":view k"] @?= Right ["k = -3"]
+        runLines ["let k x = -x", ":view k"] @?= Right ["k = \\x -> -x"]
     ]
 
 -- Prelude ----------------------------------------------------------------------------
@@ -1725,3 +1923,24 @@ affineTests =
       Builtin _ -> 0
   -- Double arithmetic is only good to about 1e-15 relative.
   near z t = abs (t - midpoint z) <= radius z + abs t * 1e-12 + 1e-300
+
+-- | Where two terms stop being alpha-equivalent: the outermost differing
+-- subterms, for counterexamples.
+firstDifference :: Term n -> Term n -> Maybe String
+firstDifference a b
+  | alphaEq a b = Nothing
+  | otherwise = case (a, b) of
+      (PrimApp p as, PrimApp q bs) | p == q, length as == length bs -> firstOf (zipWith firstDifference as bs)
+      (Lam _ x, Lam _ y) -> firstDifference x y
+      (App f x, App g y) -> firstOf [firstDifference f g, firstDifference x y]
+      (Let _ e x, Let _ f y) -> firstOf [firstDifference e f, firstDifference x y]
+      (If c t e, If c' t' e') -> firstOf [firstDifference c c', firstDifference t t', firstDifference e e']
+      (Pow x n, Pow y m) | n == m -> firstDifference x y
+      (Pack xs, Pack ys) | length xs == length ys -> firstOf (zipWith firstDifference xs ys)
+      (Proj x i, Proj y j) | i == j -> firstDifference x y
+      _ -> here
+  where
+    here = Just ("first difference:\n  " <> show a <> "\nvs\n  " <> show b)
+    firstOf ds = case catMaybes ds of
+      [] -> here
+      d : _ -> Just d

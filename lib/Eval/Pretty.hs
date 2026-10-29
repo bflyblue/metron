@@ -364,6 +364,9 @@ renderTerm namer = go 0
             N -> (lvl + 1, lvl + 1)
        in paren (prec > lvl) (go lp ctx a <> " " <> sym <> " " <> go rp ctx b)
     _ -> case (p, args) of
+      -- `-3` reads back as the constant minus three (core.md §6), so the
+      -- primitive applied to a constant keeps its name.
+      ("neg", [a@(Lit _)]) -> paren (prec > 10) ("neg " <> go 11 ctx a)
       ("neg", [a]) -> paren (prec > 8) ("-" <> go 9 ctx a)
       (_, []) -> p
       _ -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
@@ -372,11 +375,13 @@ renderTerm namer = go 0
 
   -- A hint that is already in scope would capture an outer variable the
   -- body may still refer to, so the printed binder gets a prime (or a
-  -- name if the hint is blank). De Bruijn indices make the term itself
-  -- unambiguous; this keeps the printed text so.
+  -- name if the hint is blank, or one the desugarer made up for a section
+  -- or a composition, `§s0`, which is not an identifier). De Bruijn
+  -- indices make the term itself unambiguous; this keeps the printed text
+  -- so.
   freshen :: Text -> Vec m Text -> Text
   freshen h ctx
-    | T.null h = freshen "x" ctx
+    | T.null h || "§" `T.isPrefixOf` h = freshen "x" ctx
     | h `elem` vecToList ctx = freshen (h <> "'") ctx
     | otherwise = h
 
