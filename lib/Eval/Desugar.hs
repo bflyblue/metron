@@ -1,21 +1,22 @@
--- | Surface AST to Core (design §2.9), with a provenance table (§4.7).
---
--- Desugaring is total and local: no step needs type information. Bound
--- variables become de Bruijn indices through a context of names; primitives
--- become saturated 'PrimApp' nodes, eta-expanded when used with too few
--- arguments; operators, sections, composition and the quantity rule all
--- reduce to these. Every Core node records the span of the surface node that
--- produced it, keyed by its path from the root.
-module Eval.Desugar
-  ( Path
-  , Provenance
-  , Resolver
-  , noResolver
-  , DesugarError (..)
-  , desugarClosed
-  , desugarIn
-  , renderDesugarError
-  ) where
+{- | Surface AST to Core (design §2.9), with a provenance table (§4.7).
+
+Desugaring is total and local: no step needs type information. Bound
+variables become de Bruijn indices through a context of names; primitives
+become saturated 'PrimApp' nodes, eta-expanded when used with too few
+arguments; operators, sections, composition and the quantity rule all
+reduce to these. Every Core node records the span of the surface node that
+produced it, keyed by its path from the root.
+-}
+module Eval.Desugar (
+  Path,
+  Provenance,
+  Resolver,
+  noResolver,
+  DesugarError (..),
+  desugarClosed,
+  desugarIn,
+  renderDesugarError,
+) where
 
 import Control.Monad (zipWithM)
 import Control.Monad.Reader (ReaderT, asks, runReaderT)
@@ -23,6 +24,7 @@ import Control.Monad.State.Strict (StateT, modify', runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core
@@ -35,15 +37,20 @@ type Provenance = Map Path S.Span
 
 data DesugarError
   = UnknownName S.Span Text
+  | -- | a special form applied to the wrong kind of argument
+    BadSpecialForm S.Span Text
   deriving stock (Eq, Show)
 
 renderDesugarError :: DesugarError -> Text
 renderDesugarError = \case
-  UnknownName sp n ->
-    T.pack (show sp.from.line) <> ":" <> T.pack (show sp.from.col) <> ": unknown name `" <> n <> "`"
+  UnknownName sp n -> at sp ("unknown name `" <> n <> "`")
+  BadSpecialForm sp msg -> at sp msg
+ where
+  at sp msg = T.pack (show sp.from.line) <> ":" <> T.pack (show sp.from.col) <> ": " <> msg
 
--- | How free names resolve to codebase references (hash and optional cycle
--- index). Names bound locally shadow these; these shadow primitives.
+{- | How free names resolve to codebase references (hash and optional cycle
+index). Names bound locally shadow these; these shadow primitives.
+-}
 type Resolver = Text -> Maybe (Hash, Maybe Int)
 
 noResolver :: Resolver
@@ -58,7 +65,8 @@ desugarClosed :: Resolver -> S.Expr -> Either DesugarError (Term Z, Provenance)
 desugarClosed = (`desugarIn` VNil)
 
 -- | Desugar under a context of already-bound names (innermost first).
-desugarIn :: Resolver -> Ctx n -> S.Expr -> Either DesugarError (Term n, Provenance)
+desugarIn ::
+  Resolver -> Ctx n -> S.Expr -> Either DesugarError (Term n, Provenance)
 desugarIn resolve ctx e = runStateT (runReaderT (desugar [] ctx e) resolve) Map.empty
 
 failWith :: DesugarError -> M a
@@ -74,8 +82,9 @@ lookupCtx x = \case
     | x == y -> Just FZ
     | otherwise -> FS <$> lookupCtx x ys
 
--- | A name that no user identifier can clash with, for binders the desugarer
--- introduces.
+{- | A name that no user identifier can clash with, for binders the desugarer
+introduces.
+-}
 fresh :: Text -> Int -> Text
 fresh tag j = "§" <> tag <> T.pack (show j)
 
@@ -103,7 +112,10 @@ desugar path ctx e = do
         <$> lams (0 : path) ctx rhs.span params rhs
         <*> desugar (1 : path) (VCons n.text ctx) body
     S.If c t f ->
-      If <$> desugar (0 : path) ctx c <*> desugar (1 : path) ctx t <*> desugar (2 : path) ctx f
+      If
+        <$> desugar (0 : path) ctx c
+        <*> desugar (1 : path) ctx t
+        <*> desugar (2 : path) ctx f
     S.BinOp op a b -> case op of
       S.PlusMinus k -> Uncertain k <$> desugar (0 : path) ctx a <*> desugar (1 : path) ctx b
       S.To -> prim "to" [a, b]
@@ -111,13 +123,25 @@ desugar path ctx e = do
         -- f ∘ g  =  \x -> f (g x)
         let x = fresh "c" 0
             var = S.Expr e.span (S.Var x)
-         in desugar path ctx (synthLam e.span x (S.Expr e.span (S.App a (S.Expr e.span (S.App b var)))))
+         in desugar
+              path
+              ctx
+              (synthLam e.span x (S.Expr e.span (S.App a (S.Expr e.span (S.App b var)))))
       S.Infix f ->
-        desugar path ctx (S.Expr e.span (S.App (S.Expr e.span (S.App (S.Expr a.span (S.Var f)) a)) b))
+        desugar
+          path
+          ctx
+          (S.Expr e.span (S.App (S.Expr e.span (S.App (S.Expr a.span (S.Var f)) a)) b))
       -- The cross product is a prelude definition, not a primitive, so its
       -- operator resolves through the name like a backticked function.
       S.Cross ->
-        desugar path ctx (S.Expr e.span (S.App (S.Expr e.span (S.App (S.Expr e.span (S.Var "cross")) a)) b))
+        desugar
+          path
+          ctx
+          ( S.Expr
+              e.span
+              (S.App (S.Expr e.span (S.App (S.Expr e.span (S.Var "cross")) a)) b)
+          )
       _ -> prim (opPrim op) [a, b]
     -- Negating a constant is a negative constant, so that `-3` and a literal
     -- negative three are one term with one hash (core.md §6: constants are
@@ -131,43 +155,51 @@ desugar path ctx e = do
     S.SectionL op a ->
       -- (op a)  =  \x -> x op a
       let x = fresh "s" 0
-       in desugar path ctx (synthLam e.span x (S.Expr e.span (S.BinOp op (S.Expr e.span (S.Var x)) a)))
+       in desugar
+            path
+            ctx
+            (synthLam e.span x (S.Expr e.span (S.BinOp op (S.Expr e.span (S.Var x)) a)))
     S.SectionR a op ->
       -- (a op)  =  \x -> a op x
       let x = fresh "s" 0
-       in desugar path ctx (synthLam e.span x (S.Expr e.span (S.BinOp op a (S.Expr e.span (S.Var x)))))
+       in desugar
+            path
+            ctx
+            (synthLam e.span x (S.Expr e.span (S.BinOp op a (S.Expr e.span (S.Var x)))))
     -- A bracket literal whose elements are all constants of one shape folds
     -- into a single constant; otherwise it is a construction (core.md §5).
     S.Vec es -> do
       elems <- zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
       pure (foldConstant elems)
     S.Proj a i -> (`Proj` i) <$> desugar (0 : path) ctx a
-  where
-    prim p args = PrimApp p <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
-    synthLam sp x body = S.Expr sp (S.Lam [S.Name sp x] body)
+ where
+  prim p args = PrimApp p <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
+  synthLam sp x body = S.Expr sp (S.Lam [S.Name sp x] body)
 
 -- | @[Lit, Lit, …]@ of one shape becomes one 'Lit' of the stacked shape.
 foldConstant :: [Term n] -> Term n
 foldConstant elems = case traverse constant elems of
-  Just ((dims, _) : rest) | all ((== dims) . fst) rest ->
-    Lit (LTensor (length elems : dims) (concatMap snd (constants elems)))
+  Just ((dims, _) : rest)
+    | all ((== dims) . fst) rest ->
+        Lit (LTensor (length elems : dims) (concatMap snd (constants elems)))
   _ -> Pack elems
-  where
-    constant = \case
-      Lit (LTensor dims rs) -> Just (dims, rs)
-      _ -> Nothing
-    constants = foldr (\e acc -> maybe acc (: acc) (constant e)) []
+ where
+  constant = \case
+    Lit (LTensor dims rs) -> Just (dims, rs)
+    _ -> Nothing
+  constants = foldr (\e acc -> maybe acc (: acc) (constant e)) []
 
 -- | The head and arguments of an application spine.
 spine :: S.Expr -> (S.Expr, [S.Expr])
 spine = go []
-  where
-    go acc e = case e.node of
-      S.App f a -> go (a : acc) f
-      _ -> (e, acc)
+ where
+  go acc e = case e.node of
+    S.App f a -> go (a : acc) f
+    _ -> (e, acc)
 
--- | A name in head position applied to arguments: a bound variable, a
--- primitive (saturated, eta-expanded, or over-applied), or unknown.
+{- | A name in head position applied to arguments: a bound variable, a
+primitive (saturated, eta-expanded, or over-applied), or unknown.
+-}
 headApp :: Path -> Ctx n -> S.Expr -> Text -> [S.Expr] -> M (Term n)
 headApp path ctx hd x args = case lookupCtx x ctx of
   Just i -> applyAll path ctx (\_ -> pure (Var i)) args
@@ -175,24 +207,46 @@ headApp path ctx hd x args = case lookupCtx x ctx of
     bound <- asks (\resolve -> resolve x)
     case bound of
       Just (h, idx) -> applyAll path ctx (\_ -> pure (Ref h idx)) args
+      -- noise n and gauss n take a literal count (design §3.2.5): the
+      -- number of nudges is part of the type.
+      Nothing
+        | Just k <- lookup x [("noise", Bound), ("gauss", Stat)] -> case args of
+            [a] | S.Num n <- a.node, denominator n == 1, n >= 0 -> pure (Noise k (numerator n))
+            _ ->
+              failWith
+                ( BadSpecialForm
+                    hd.span
+                    (x <> " takes one argument, a literal natural number: the count of nudges")
+                )
       Nothing -> case specialForm x of
         Nothing -> failWith (UnknownName hd.span x)
         Just (arity, Builder build)
           | length args == arity -> saturated path ctx build args
-          | length args < arity -> eta path ctx hd.span (Builder build) args (arity - length args)
+          | length args < arity ->
+              eta path ctx hd.span (Builder build) args (arity - length args)
           | otherwise ->
-              applyAll path ctx (\p -> saturated p ctx build (take arity args)) (drop arity args)
+              applyAll
+                path
+                ctx
+                (\p -> saturated p ctx build (take arity args))
+                (drop arity args)
 
--- | A node constructor that works in any scope, so that eta-expansion can
--- apply it under the binders it introduces.
+{- | A node constructor that works in any scope, so that eta-expansion can
+apply it under the binders it introduces.
+-}
 newtype Builder = Builder (forall m. [Term m] -> Term m)
 
--- | Names that build a Core node when saturated: every primitive, plus the
--- surface names of the uncertainty operators (design §2.9).
+{- | Names that build a Core node when saturated: every primitive, plus the
+surface names of the uncertainty operators (design §2.9).
+-}
 specialForm :: Text -> Maybe (Int, Builder)
 specialForm = \case
-  "within" -> Just (2, Builder (\case [a, b] -> Uncertain Bound a b; _ -> error "within: arity"))
-  "sigma" -> Just (2, Builder (\case [a, b] -> Uncertain Stat a b; _ -> error "sigma: arity"))
+  "within" ->
+    Just
+      (2, Builder (\case [a, b] -> Uncertain Bound a b; _ -> error "within: arity"))
+  "sigma" ->
+    Just
+      (2, Builder (\case [a, b] -> Uncertain Stat a b; _ -> error "sigma: arity"))
   p -> (\arity -> (arity, Builder (PrimApp p))) <$> primArity p
 
 saturated :: Path -> Ctx n -> ([Term n] -> Term n) -> [S.Expr] -> M (Term n)
@@ -207,22 +261,23 @@ applyAll path ctx mkHead = \case
     a <- desugar (1 : path) ctx (last args)
     pure (App f a)
 
--- | Eta-expand a primitive applied to too few arguments:
--- @add 1@ becomes @\x -> add 1 x@. The supplied arguments are desugared
--- under the new binders; they cannot mention the fresh names, so no shifting
--- is needed.
+{- | Eta-expand a primitive applied to too few arguments:
+@add 1@ becomes @\x -> add 1 x@. The supplied arguments are desugared
+under the new binders; they cannot mention the fresh names, so no shifting
+is needed.
+-}
 eta :: Path -> Ctx n -> S.Span -> Builder -> [S.Expr] -> Int -> M (Term n)
 eta path0 ctx0 sp (Builder build) args missing = go 0 path0 ctx0
-  where
-    go :: Int -> Path -> Ctx m -> M (Term m)
-    go j path ctx
-      | j == missing = do
-          supplied <- zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
-          let vars = [Var v | k <- [0 .. missing - 1], Just v <- [lookupCtx (fresh "eta" k) ctx]]
-          pure (build (supplied ++ vars))
-      | otherwise = do
-          record path sp
-          Lam (Hint "x") <$> go (j + 1) (0 : path) (VCons (fresh "eta" j) ctx)
+ where
+  go :: Int -> Path -> Ctx m -> M (Term m)
+  go j path ctx
+    | j == missing = do
+        supplied <- zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
+        let vars = [Var v | k <- [0 .. missing - 1], Just v <- [lookupCtx (fresh "eta" k) ctx]]
+        pure (build (supplied ++ vars))
+    | otherwise = do
+        record path sp
+        Lam (Hint "x") <$> go (j + 1) (0 : path) (VCons (fresh "eta" j) ctx)
 
 -- | Lambdas over a list of parameters, then the body.
 lams :: Path -> Ctx n -> S.Span -> [S.Name] -> S.Expr -> M (Term n)

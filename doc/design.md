@@ -552,16 +552,32 @@ shares are quoted as fractions of `σ²`:
 A long computation accumulates nudges. When a value carries more than `N` nudges
 (default 64), the smallest coefficients are folded into `slack`, which is a plain
 worst-case radius. This is always correct and slightly loose: the folded nudges
-can no longer cancel. Rounding error from midpoint arithmetic also goes into
-`slack`. Slack never shrinks under any operation.
+can no longer cancel. Statistical nudges are never folded: a σ must not quietly
+become a bound. Rounding error from midpoint arithmetic does **not** go into
+slack: it joins the fresh nudge of the operation that did the rounding, whose id
+is content-addressed (§3.2.4), so two evaluations of the same operation round
+the same way and `sin 1 - sin 1` is still exactly `0`. Slack never shrinks under
+any operation.
 
 #### 3.2.8 Working precision
 
-Midpoints are rounded to `p` decimal digits after every operation, with the
-rounding error added to slack, so denominators never grow without bound. This is
-the approach of the Arb library. `p` is `scale` plus guard digits (default
-`scale + 4`). A value is therefore a pure function of the term and `p`. Exact
-values are never rounded.
+Midpoints are rounded to `p` digits after every nonlinear operation, with the
+rounding error accounted for (§3.2.7), so denominators never grow without bound.
+This is the approach of the Arb library. `p` is `scale` plus guard digits
+(default `scale + 4`). A value is therefore a pure function of the term and `p`.
+Exact values are never rounded, and linear operations (`+`, `-`, scaling by an
+exact value) never round, which is what keeps cancellation exact.
+
+"`p` digits" means an error of at most `10^-p` **absolute and** `10^-p`
+**relative, whichever is tighter**. A value of size one or more keeps `p` decimal
+places, as in bc, so the printer's promise about certain digits holds; a value
+below one keeps `p` significant digits. Magnitudes live in SI base units, where
+Planck's constant is `6.6e-34` and `G` is `6.7e-11`; with a purely absolute `p`,
+`sqrt` of a quantity near `1e-34` would keep three significant digits. Every
+series is summed to a tolerance scaled by the size of its result (the sine of a
+tiny angle relative to the angle, `sinh` by its own series near zero rather than
+the cancelling difference of exponentials), and midpoint rounding follows the same
+rule.
 
 #### 3.2.9 Comparison
 
@@ -588,13 +604,22 @@ print in full, or truncated at `scale` digits with `…` when the decimal repeat
 An affine value is collapsed to a midpoint, a bound radius `r = Σ_bound|cᵢ| +
 slack`, and a standard deviation `σ = √(Σ_stat cᵢ²)`, then printed as follows:
 
-- `σ = 0` and `r < 10^-scale`: print `scale` digits of the midpoint and `…`. Every
-  printed digit is guaranteed, because the enclosure is narrower than the last one.
-- `σ = 0` otherwise: print `mid ± r`, with the midpoint rounded to the position of
-  `r`'s leading digit and `r` to two significant digits.
-- `σ > 0`: print `mid ±σ σ`, rounded the same way, followed by `(bound r)` when
-  `r` is not negligible against `σ`. The `σ` marker is never omitted, so a 1σ band
-  can never be mistaken for a certainty.
+- `σ = 0` and `r` below the last printed digit (`10^-scale`, or `10^-scale`
+  relative for values below one, which print in scientific notation): print
+  `scale` digits of the midpoint and `…`, zeros included. Every printed digit is
+  correct to within one unit in the last place, because the enclosure is narrower
+  than that place.
+- `σ = 0` otherwise: print `mid ± r`, with `r` rounded to two significant digits
+  (one when the second is zero) and the midpoint to the position of `r`'s last
+  digit. The rounding of the midpoint is folded into `r` first, so the printed
+  band still encloses the value.
+- `σ > 0`: print `mid ±σ σ` the same way, followed by `(bound r)` when `r` is at
+  least a hundredth of `σ`; the midpoint goes to the last digit of the coarser of
+  the two. The `σ` marker is never omitted, so a 1σ band can never be mistaken for
+  a certainty.
+
+Values below `10^-4` print in scientific notation (`6.62607015e-34`), uncertain
+or not, so a Planck-scale quantity is not a row of zeros.
 
 ```
 > 1/3
@@ -606,17 +631,26 @@ slack`, and a standard deviation `σ = √(Σ_stat cᵢ²)`, then printed as fol
 > 5 ± 0.1
 5.0 ± 0.1
 > (5 ± 0.1) * (5 ± 0.1)
-25.0 ± 1.0
+25 ± 1
+> let x = 5 ± 0.1 in x * x
+25 ± 1
 > G
 6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2
 > G * (2 ± 0.1)
 1.335e-10 ±σ 3e-15 (bound 6.7e-12) m^3 kg^-1 s^-2
+> sqrt 2 * sqrt 2 == 2
+error: cannot decide comparison at sigma 3: the difference is 1.0e-24 ± 1.04e-24
 > :exact sin 1
-0.841470984807896506652502321630 + 1e-30·e[bound, sin: series @ p=24]  ± 2e-31
+0.84147098480789650665… + 2.432250…e-34·e[bound, sin]
+> :exact 2 ± 0.1
+2 + 0.1·e[bound, input]
 ```
 
-`:exact e` shows the raw rational, or the midpoint, the nudge list with kinds, and
-the slack.
+`:exact e` shows the raw rational, or the midpoint, the nudge list with kinds and
+origins (a definition's current name, `input` for the expression itself, or the
+builtin), and the slack. `sqrt 2 * sqrt 2 == 2` can never be decided by any
+finite-precision arithmetic; the idiom for computed values is an explicit
+tolerance, `abs (a - b) < 1e-9`, which the enclosure then decides rigorously.
 
 #### 3.2.11 Units and dimensions at runtime
 
@@ -642,10 +676,14 @@ and the accepted units iapetus needs: `min h day year` (Julian, 365.25 day), `AU
 `deg arcmin arcsec`, `L`, `t`. The prefix table is generated into `prelude.ev` by a
 small program, not typed by hand.
 
-Astronomical and physical constants (`G`, `M_sun`, `M_earth`, `R_earth`) are
-prelude definitions **with `±σ`** taken from CODATA and IAU standard
-uncertainties, so uncertainty is present by default, carries the statistical kind,
-and `:budget` can name it. CODATA publishes 1σ values, which are not hard bounds;
+Measured constants are prelude definitions **with `±σ`** taken from CODATA
+standard uncertainties, so uncertainty is present by default, carries the
+statistical kind, and `:budget` can name it: `G = (6.67430e-11 ±σ 1.5e-15) m^3
+/ (kg s^2)` (CODATA 2018). The masses are derived, `M_earth = GM_earth / G` and
+`M_sun = GM_sun / G`, from the exact IAU nominal `GM` values, so their
+uncertainty is G's and the budget says so (`5.97217e24 ±σ 1.3e20 kg`). Angles:
+`unit deg = pi / 180 * rad`, `arcmin`, `arcsec`, so `90 deg` prints as itself
+and `sin (90 deg)` is `1.00000000000000000000…`. CODATA publishes 1σ values, which are not hard bounds;
 shipping them under `±` would let a 68% band print as a certainty, so the prelude
 never does that. Exact-by-definition constants (`c`, `h`, `k_B`, `N_A`, `e_charge`
 since SI 2019; IAU *nominal* `GM_earth`, `R_earth_nominal`) ship as exact rationals
@@ -1644,15 +1682,19 @@ tuned, and compilation is a later milestone.
    because the daily calculator needs `km/h to m/s` before it needs `sin`.
    Status: done. `unit` declarations, the generated prelude, display units
    through products and sums, and `to`.
-3. **Affine magnitudes.** `Affine` and `Transcendental`, all transcendental
+3. **Affine magnitudes.** `Eval.Affine` (magnitudes, rigorous elementary
+   functions on rationals, lifting by linearisation), all transcendental
    builtins, hash-named nudges with kinds, `±`, `±σ`, `noise` and `gauss` with
-   definition-site identity,
-   compaction and slack, certain-digit printing, `:exact`, `:budget`, CODATA and
-   IAU constants in the prelude.
+   definition-site identity, compaction and slack, certain-digit printing,
+   `:exact`, `:budget`, `:set scale/sigma`, CODATA `G` and the derived masses in
+   the prelude. Status: done. Remaining from this item: precision refinement
+   for undecidable comparisons (item 8) and `e` as a constant (left out for now:
+   `e` is the eccentricity in most orbital code).
 4. **Tensors.** Shape-indexed types, the product operators and their shape
    constraints, literals and printing: done. Remaining: `norm`, `inverse`,
-   `det` kernels (with affine arithmetic), `covariance`, `:covariance`,
-   `cholesky`, and `contract`/`permute` for ranks above two.
+   `det` kernels: done (Gaussian elimination with pivots whose enclosure
+   excludes zero). Remaining: `covariance`, `:covariance`, `cholesky`, `±` on
+   tensors (§3.4), and `contract`/`permute` for ranks above two.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans.
@@ -1671,6 +1713,12 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
+- Comparison operators beyond the certain `<` and `==` (§3.2.9): possible
+  comparisons `<?` and `=?` ("consistent with", at `k` sigma for statistical
+  nudges), tolerance equality `a ≈ b within t`, enclosure containment, and the
+  accessors `mid`, `bound`, `sigma` that let a user write any policy. A
+  three-valued boolean that flows into `if` is ruled out. The accessors are the
+  cheapest and the most general, so they come first.
 - Keep `h` for hour, given `h` is also the hecto prefix in compound names like
   `hPa`? (The prefix only ever appears attached to a unit, so there is no lexical
   clash, but readers may stumble.)

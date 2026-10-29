@@ -1,54 +1,68 @@
--- | A direct, environment-passing, call-by-need evaluator over Typed Core
--- (design §8). Type abstractions and applications are erased. Because terms
--- have been inferred and linted, the remaining type-error cases are
--- unreachable; they exist to keep the pattern matches total and are reported
--- as internal errors.
---
--- Tensors are one runtime shape: a flat row-major buffer of element thunks
--- beside the list of lengths, a dimension vector, and an optional display
--- unit (design §3.2.12). A number is the rank-zero case with a buffer of
--- one. Magnitudes are always in SI base units; the display unit says how to
--- print them. The dimension vector and the display unit exist only for
--- printing: types are checked before evaluation.
-module Eval.Eval
-  ( Value (..)
-  , Closure (..)
-  , Elem
-  , Thunk
-  , EvalError (..)
-  , Config (..)
-  , defaultConfig
-  , Runtime (..)
-  , UnitAtom (..)
-  , UnitHint (..)
-  , eval
-  , evalClosed
-  , apply
-  , scalar
-  , render
-  ) where
+{- | A direct, environment-passing, call-by-need evaluator over Typed Core
+(design §8). Type abstractions and applications are erased. Because terms
+have been inferred and linted, the remaining type-error cases are
+unreachable; they exist to keep the pattern matches total and are reported
+as internal errors.
+
+Tensors are one runtime shape: a flat row-major buffer of element thunks
+beside the list of lengths, a dimension vector, and an optional display
+unit (design §3.2.12). A number is the rank-zero case with a buffer of
+one. Elements are magnitudes (design §3.2): exact rationals, or affine
+forms once an approximation or a declared uncertainty has entered.
+Magnitudes are always in SI base units; the display unit says how to
+print them. The dimension vector and the display unit exist only for
+printing: types are checked before evaluation.
+-}
+module Eval.Eval (
+  Value (..),
+  Closure (..),
+  Elem,
+  Thunk,
+  EvalError (..),
+  Config (..),
+  defaultConfig,
+  precisionOf,
+  Runtime (..),
+  UnitAtom (..),
+  UnitHint (..),
+  Site (..),
+  eval,
+  evalClosed,
+  evalAt,
+  apply,
+  scalar,
+  render,
+) where
 
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector (Vector)
 import Data.Vector qualified as V
+import Eval.Affine
 import Eval.Core
 import Eval.Dimension
 import Eval.TCore
 
--- | Evaluation parameters. Nothing uses 'scale' yet; it is threaded now so
--- that affine arithmetic (design §3.2.8) slots in without a signature change.
+{- | Evaluation parameters: the number of digits printed, and the number of
+standard deviations a comparison must clear to be decided (design §3.2.9).
+-}
 data Config = Config
   { scale :: Int
+  , sigma :: Int
   }
   deriving stock (Show)
 
 defaultConfig :: Config
-defaultConfig = Config {scale = 20}
+defaultConfig = Config{scale = 20, sigma = 3}
 
--- | What the evaluator needs from the codebase: the Typed Core behind a
--- reference, and whether a reference was declared a display unit.
+-- | Working precision: the scale plus guard digits (design §3.2.8).
+precisionOf :: Config -> Precision
+precisionOf cfg = cfg.scale + 4
+
+{- | What the evaluator needs from the codebase: the Typed Core behind a
+reference, and whether a reference was declared a display unit.
+-}
 data Runtime = Runtime
   { typedOf :: Hash -> Maybe (TTerm Z)
   , isUnit :: Hash -> Maybe Int -> Bool
@@ -56,20 +70,31 @@ data Runtime = Runtime
 
 data EvalError
   = DivideByZero
+  | -- | a function applied to an enclosure that leaves its domain
+    Domain Text
+  | -- | a comparison or integer rounding the enclosure cannot settle
+    Undecided Text
   | UnknownRef Hash
   | BadCycleIndex Int
   | Unsupported Text
-  -- | Unreachable for linted terms.
-  | Internal Text
+  | -- | Unreachable for linted terms.
+    Internal Text
   deriving stock (Eq, Show)
 
 type Thunk = Either EvalError Value
 
 -- | A tensor element, lazily.
-type Elem = Either EvalError Rational
+type Elem = Either EvalError Magnitude
 
 -- | The environment for a term in scope @n@.
 type Env n = Vec n Thunk
+
+{- | Where a node sits: the enclosing top-level definition and the path of
+child indices down to it, innermost first. Declared uncertainty takes its
+identity from here (design §3.2.4). Erased type nodes do not count, so
+the path is the Core path and survives re-elaboration.
+-}
+data Site = Site {definition :: Hash, path :: [Int]}
 
 -- | A factor of a display unit: a declared unit by reference, or a base unit.
 data UnitAtom
@@ -77,12 +102,14 @@ data UnitAtom
   | UnitBase Text
   deriving stock (Eq, Ord, Show)
 
--- | How to print a value: the unit atoms with exponents, the unit's
--- magnitude in base units, and its dimension (which must match the value's
--- for the hint to be used).
+{- | How to print a value: the unit atoms with exponents, the unit's
+magnitude in base units, and its dimension (which must match the value's
+for the hint to be used).
+-}
 data UnitHint = UnitHint
-  { atoms :: [(UnitAtom, Int)] -- ^ in order of first appearance, so @V A@ prints as written
-  , factor :: Rational
+  { atoms :: [(UnitAtom, Int)]
+  -- ^ in order of first appearance, so @V A@ prints as written
+  , factor :: Magnitude
   , dim :: Dim
   }
   deriving stock (Eq, Show)
@@ -93,96 +120,122 @@ data Value
   | VBool Bool
   | VClosure Closure
 
--- | A function value: a body under one binder, closed over its environment.
-data Closure = forall n. Closure (Env n) (TTerm (S n))
+{- | A function value: a body under one binder, closed over its environment
+and its site.
+-}
+data Closure = forall n. Closure Site (Env n) (TTerm (S n))
 
--- | Evaluate a closed term.
+-- | Evaluate a closed term that belongs to no definition.
 evalClosed :: Config -> Runtime -> TTerm Z -> Thunk
-evalClosed cfg rt = eval cfg rt VNil
+evalClosed cfg rt = evalAt cfg rt (Hash mempty)
 
-eval :: Config -> Runtime -> Env n -> TTerm n -> Thunk
+-- | Evaluate a closed term as the body of the definition with the given hash.
+evalAt :: Config -> Runtime -> Hash -> TTerm Z -> Thunk
+evalAt cfg rt h = eval cfg rt (Site h []) VNil
+
+eval :: Config -> Runtime -> Site -> Env n -> TTerm n -> Thunk
 eval cfg rt = go
-  where
-    go :: Env m -> TTerm m -> Thunk
-    go env = \case
-      TVr i -> lookupEnv i env
-      TRef h mi -> case rt.typedOf h of
-        Nothing -> Left (UnknownRef h)
-        Just t -> do
-          v <- case mi of
-            Nothing -> go VNil t
-            Just i -> case t of
-              TCycle _ _ bodies -> case vecIndex i (cycleMembers VNil bodies) of
-                Just member -> member
-                Nothing -> Left (BadCycleIndex i)
-              _ -> Left (BadCycleIndex i)
-          -- A declared unit is its own display unit (design §3.2.12).
-          if rt.isUnit h mi then asUnit (UnitRef h mi) v else Right v
-      TPrimApp p _ args -> runPrim cfg rt p (map (go env) args)
-      TLit (LTensor dims rs) -> Right (VTensor dims dimOne Nothing (V.fromList (map Right rs)))
-      TLit (LBool b) -> Right (VBool b)
-      TLam _ _ body -> Right (VClosure (Closure env body))
-      TApp f a -> do
-        fv <- go env f
-        apply cfg rt fv (go env a)
-      TLet _ _ e body -> go (VCons (go env e) env) body
-      TIf c t e -> do
-        cv <- go env c
-        case cv of
-          VBool True -> go env t
-          VBool False -> go env e
-          _ -> Left (Internal "if: condition is not a boolean")
-      TPow t n -> do
-        (x, d, hint) <- scalarFull =<< go env t
-        if x == 0 && n < 0
-          then Left DivideByZero
-          else
-            Right
-              (VTensor [] (dimPow (fromIntegral n) d) (hintPow (fromIntegral n) <$> hint) (V.singleton (Right (x ^^ n))))
-      TNoise _ _ -> Left (Unsupported "noise: affine arithmetic is not implemented yet")
-      TUncertain {} -> Left (Unsupported "±: affine arithmetic is not implemented yet")
-      -- Stack the component buffers; the shapes agree by lint. A component
-      -- that fails to evaluate becomes a block of failing elements of the
-      -- shape the other components have, so an error in one component is
-      -- only raised when that component is used. The first component's
-      -- display unit is kept.
-      TPack ts ->
-        let results = map (tensor <=< go env) ts
-            known = [(dims, d, hint) | Right (dims, d, hint, _) <- results]
-         in case (results, known) of
-              ([], _) -> Right (VTensor [0] dimOne Nothing V.empty)
-              (_, (dims, d, hint) : _) ->
-                let block = \case
-                      Right (_, _, _, buf) -> buf
-                      Left err -> V.replicate (product dims) (Left err)
-                 in Right (VTensor (length results : dims) d hint (V.concat (map block results)))
-              (Left err : _, []) -> Left err
-              (Right _ : _, []) -> Left (Internal "unreachable: a tensor with no shape")
-      -- Slice out component i: a view, not a copy.
-      TProj t i -> do
-        (dims, d, hint, buf) <- tensor =<< go env t
-        case dims of
-          k : rest
-            | i < k ->
-                let stride = product rest
-                 in Right (VTensor rest d hint (V.slice (i * stride) stride buf))
-          _ -> Left (Internal ("projection ." <> tshow i <> " out of range"))
-      -- Erasure.
-      TTyLam _ _ b -> go env b
-      TTyApp b _ -> go env b
-      -- A cycle is not itself a value; it is reached through @TRef h (Just i)@.
-      TCycle {} -> Left (BadCycleIndex (-1))
+ where
+  p = precisionOf cfg
 
-    -- Knot-tying: every member is evaluated in an environment that already
-    -- contains all the members. 'vecMap' and 'vecAppend' inspect only the
-    -- spine, so the recursion is productive.
-    cycleMembers :: Env m -> Vec k (TTerm (Plus k m)) -> Vec k Thunk
-    cycleMembers env bodies = members
-      where
-        members = vecMap (go (vecAppend members env)) bodies
+  go :: Site -> Env m -> TTerm m -> Thunk
+  go site env = \case
+    TVr i -> lookupEnv i env
+    TRef h mi -> case rt.typedOf h of
+      Nothing -> Left (UnknownRef h)
+      Just t -> do
+        v <- case mi of
+          Nothing -> go (Site h []) VNil t
+          Just i -> case t of
+            TCycle _ _ bodies -> case vecIndex i (cycleMembers h VNil bodies) of
+              Just member -> member
+              Nothing -> Left (BadCycleIndex i)
+            _ -> Left (BadCycleIndex i)
+        -- A declared unit is its own display unit (design §3.2.12).
+        if rt.isUnit h mi then asUnit (UnitRef h mi) v else Right v
+    TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
+    TLit (LTensor dims rs) -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
+    TLit (LBool b) -> Right (VBool b)
+    TLam _ _ body -> Right (VClosure (Closure (child 0) env body))
+    TApp f a -> do
+      fv <- go (child 0) env f
+      apply cfg rt fv (go (child 1) env a)
+    TLet _ _ e body -> go (child 1) (VCons (go (child 0) env e) env) body
+    TIf c t e -> do
+      cv <- go (child 0) env c
+      case cv of
+        VBool True -> go (child 1) env t
+        VBool False -> go (child 2) env e
+        _ -> Left (Internal "if: condition is not a boolean")
+    TPow t n -> do
+      (x, d, hint) <- scalarFull =<< go (child 0) env t
+      r <- arith (powM p x n)
+      Right (num (dimPow (fromIntegral n) d) (hintPow p (fromIntegral n) =<< hint) r)
+    -- Fresh unit nudges, one per component (design §3.2.5).
+    TNoise k n ->
+      let count = fromInteger n
+       in Right
+            ( VTensor
+                [count]
+                dimOne
+                Nothing
+                ( V.generate
+                    count
+                    (\i -> Right (unitNoise k site.definition (reverse site.path) i))
+                )
+            )
+    TUncertain k x e -> do
+      (xv, d, hint) <- scalarFull =<< go (child 0) env x
+      (ev, _, _) <- scalarFull =<< go (child 1) env e
+      Right (num d hint (uncertain k site.definition (reverse site.path) 0 xv ev))
+    -- Stack the component buffers; the shapes agree by lint. A component
+    -- that fails to evaluate becomes a block of failing elements of the
+    -- shape the other components have, so an error in one component is
+    -- only raised when that component is used. The first component's
+    -- display unit is kept.
+    TPack ts ->
+      let results = zipWith (\i t -> tensor =<< go (child i) env t) [0 ..] ts
+          known = [(dims, d, hint) | Right (dims, d, hint, _) <- results]
+       in case (results, known) of
+            ([], _) -> Right (VTensor [0] dimOne Nothing V.empty)
+            (_, (dims, d, hint) : _) ->
+              let block = \case
+                    Right (_, _, _, buf) -> buf
+                    Left err -> V.replicate (product dims) (Left err)
+               in Right (VTensor (length results : dims) d hint (V.concat (map block results)))
+            (Left err : _, []) -> Left err
+            (Right _ : _, []) -> Left (Internal "unreachable: a tensor with no shape")
+    -- Slice out component i: a view, not a copy.
+    TProj t i -> do
+      (dims, d, hint, buf) <- tensor =<< go (child 0) env t
+      case dims of
+        k : rest
+          | i < k ->
+              let stride = product rest
+               in Right (VTensor rest d hint (V.slice (i * stride) stride buf))
+        _ -> Left (Internal ("projection ." <> tshow i <> " out of range"))
+    -- Erasure.
+    TTyLam _ _ b -> go site env b
+    TTyApp b _ -> go site env b
+    -- A cycle is not itself a value; it is reached through @TRef h (Just i)@.
+    TCycle{} -> Left (BadCycleIndex (-1))
+   where
+    child i = site{path = i : site.path}
 
-(<=<) :: (b -> Either e c) -> (a -> Either e b) -> a -> Either e c
-(f <=< g) x = g x >>= f
+  -- Knot-tying: every member is evaluated in an environment that already
+  -- contains all the members. 'vecMap' and 'vecAppend' inspect only the
+  -- spine, so the recursion is productive.
+  cycleMembers :: Hash -> Env m -> Vec k (TTerm (Plus k m)) -> Vec k Thunk
+  cycleMembers h env bodies = members
+   where
+    members = vecMapIndexed (\i -> go (Site h [i]) (vecAppend members env)) bodies
+
+vecMapIndexed :: forall a b k. (Int -> a -> b) -> Vec k a -> Vec k b
+vecMapIndexed f = walk 0
+ where
+  walk :: forall m. Int -> Vec m a -> Vec m b
+  walk _ VNil = VNil
+  walk i (VCons x xs) = VCons (f i x) (walk (i + 1) xs)
 
 tshow :: (Show a) => a -> Text
 tshow = T.pack . show
@@ -195,12 +248,20 @@ lookupEnv i env = case (i, env) of
 -- | Apply a function value to an argument thunk.
 apply :: Config -> Runtime -> Value -> Thunk -> Thunk
 apply cfg rt f arg = case f of
-  VClosure (Closure env body) -> eval cfg rt (VCons arg env) body
+  VClosure (Closure site env body) -> eval cfg rt site (VCons arg env) body
   _ -> Left (Internal "application of a non-function")
+
+arith :: Either ArithError a -> Either EvalError a
+arith = either (Left . convert) Right
+ where
+  convert = \case
+    Eval.Affine.DivideByZero -> Eval.Eval.DivideByZero
+    Eval.Affine.Domain msg -> Eval.Eval.Domain msg
+    Eval.Affine.Undecided msg -> Eval.Eval.Undecided msg
 
 -- Values ---------------------------------------------------------------------------
 
-num :: Dim -> Maybe UnitHint -> Rational -> Value
+num :: Dim -> Maybe UnitHint -> Magnitude -> Value
 num d hint r = VTensor [] d hint (V.singleton (Right r))
 
 tensor :: Value -> Either EvalError ([Int], Dim, Maybe UnitHint, Vector Elem)
@@ -209,10 +270,10 @@ tensor = \case
   _ -> Left (Internal "expected a tensor")
 
 -- | The one element of a rank-zero tensor.
-scalar :: Value -> Either EvalError Rational
+scalar :: Value -> Either EvalError Magnitude
 scalar v = (\(x, _, _) -> x) <$> scalarFull v
 
-scalarFull :: Value -> Either EvalError (Rational, Dim, Maybe UnitHint)
+scalarFull :: Value -> Either EvalError (Magnitude, Dim, Maybe UnitHint)
 scalarFull = \case
   VTensor [] d hint buf | V.length buf == 1 -> (\x -> (x, d, hint)) <$> V.head buf
   _ -> Left (Internal "expected a number")
@@ -222,8 +283,9 @@ bool = \case
   VBool b -> Right b
   _ -> Left (Internal "expected a boolean")
 
--- | Make a scalar value its own display unit. Forces its magnitude, which
--- for a unit definition is a constant.
+{- | Make a scalar value its own display unit. Forces its magnitude, which
+for a unit definition is a constant.
+-}
 asUnit :: UnitAtom -> Value -> Thunk
 asUnit atom = \case
   VTensor [] d _ buf | V.length buf == 1 -> do
@@ -233,22 +295,42 @@ asUnit atom = \case
 
 -- Display units ----------------------------------------------------------------------
 
-hintMul :: UnitHint -> UnitHint -> UnitHint
-hintMul a b = UnitHint (filter ((/= 0) . snd) (foldl merge a.atoms b.atoms)) (a.factor * b.factor) (dimMul a.dim b.dim)
-  where
-    merge acc (atom, k)
-      | any ((== atom) . fst) acc = [(x, if x == atom then j + k else j) | (x, j) <- acc]
-      | otherwise = acc ++ [(atom, k)]
+hintMul :: Precision -> UnitHint -> UnitHint -> UnitHint
+hintMul p a b =
+  UnitHint
+    (filter ((/= 0) . snd) (foldl merge a.atoms b.atoms))
+    (mulM p a.factor b.factor)
+    (dimMul a.dim b.dim)
+ where
+  merge acc (atom, k)
+    | any ((== atom) . fst) acc =
+        [(x, if x == atom then j + k else j) | (x, j) <- acc]
+    | otherwise = acc ++ [(atom, k)]
 
-hintInv :: UnitHint -> UnitHint
-hintInv a = UnitHint [(x, negate k) | (x, k) <- a.atoms] (recip a.factor) (dimInv a.dim)
+-- | A unit whose magnitude may be zero has no inverse; the hint is dropped.
+hintInv :: Precision -> UnitHint -> Maybe UnitHint
+hintInv p a =
+  (\f -> UnitHint [(x, negate k) | (x, k) <- a.atoms] f (dimInv a.dim))
+    <$> either (const Nothing) Just (recipM p a.factor)
 
-hintPow :: Int -> UnitHint -> UnitHint
-hintPow k a = UnitHint (filter ((/= 0) . snd) [(x, j * k) | (x, j) <- a.atoms]) (a.factor ^^ k) (dimPow k a.dim)
+hintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
+hintPow p k a =
+  ( \f ->
+      UnitHint
+        (filter ((/= 0) . snd) [(x, j * k) | (x, j) <- a.atoms])
+        f
+        (dimPow k a.dim)
+  )
+    <$> either (const Nothing) Just (powM p a.factor (fromIntegral k))
 
--- | The display unit of a product or quotient of two values: combine when
--- both have one, keep the one that exists otherwise.
-combine :: (UnitHint -> UnitHint -> UnitHint) -> Maybe UnitHint -> Maybe UnitHint -> Maybe UnitHint
+{- | The display unit of a product or quotient of two values: combine when
+both have one, keep the one that exists otherwise.
+-}
+combine ::
+  (UnitHint -> UnitHint -> UnitHint) ->
+  Maybe UnitHint ->
+  Maybe UnitHint ->
+  Maybe UnitHint
 combine f (Just a) (Just b) = Just (f a b)
 combine _ (Just a) Nothing = Just a
 combine _ Nothing (Just b) = Just b
@@ -256,54 +338,88 @@ combine _ Nothing Nothing = Nothing
 
 -- Primitives -------------------------------------------------------------------------
 
--- | Run a saturated primitive. Arguments are in source order and are forced
--- only as the primitive needs them; elementwise operations stay lazy per
--- element. Dimensions follow the rules of design §4.3, display units those
--- of §3.2.12.
+{- | Run a saturated primitive. Arguments are in source order and are forced
+only as the primitive needs them; elementwise operations stay lazy per
+element. Dimensions follow the rules of design §4.3, display units those
+of §3.2.12, magnitudes those of §3.2.
+-}
 runPrim :: Config -> Runtime -> Text -> [Thunk] -> Thunk
-runPrim cfg rt p args = case (p, args) of
-  (unit, []) | Just b <- baseUnit unit -> Right (num (dimBase b) (Just (UnitHint [(UnitBase unit, 1)] 1 (dimBase b))) 1)
+runPrim cfg rt prim args = case (prim, args) of
+  (unit, [])
+    | Just b <- baseUnit unit ->
+        Right
+          ( num
+              (dimBase b)
+              (Just (UnitHint [(UnitBase unit, 1)] (Exact 1) (dimBase b)))
+              (Exact 1)
+          )
   -- Sum: the left operand's display unit wins.
-  ("add", [a, b]) -> elementwise2 (+) const (\x y -> combine const x y) a b
-  ("sub", [a, b]) -> elementwise2 (-) const (\x y -> combine const x y) a b
-  ("neg", [a]) -> elementwise1 negate a
-  ("abs", [a]) -> elementwise1 abs a
-  ("emul", [a, b]) -> elementwise2 (*) dimMul (combine hintMul) a b
-  ("ediv", [a, b]) -> do
-    (dims, d1, h1, xs) <- tensor =<< a
-    (_, d2, h2, ys) <- tensor =<< b
-    Right (VTensor dims (dimDiv d1 d2) (combine hintMul h1 (hintInv <$> h2)) (V.zipWith (\x y -> x >>= \x' -> y >>= divide x') xs ys))
+  ("add", [a, b]) -> elementwise2 (pureOp addM) const (combine const) a b
+  ("sub", [a, b]) -> elementwise2 (pureOp subM) const (combine const) a b
+  ("neg", [a]) -> elementwise1 negM a
+  ("abs", [a]) -> elementwise1 (absM p) a
+  ("emul", [a, b]) -> elementwise2 (pureOp (mulM p)) dimMul (combine (hintMul p)) a b
+  ("ediv", [a, b]) ->
+    elementwise2
+      (\x y -> arith (divM p x y))
+      dimDiv
+      (\h1 h2 -> combine (hintMul p) h1 (hintInv p =<< h2))
+      a
+      b
   -- Tensor product: ranks add, dimensions multiply, every pair of elements
   -- multiplied.
   ("outer", [a, b]) -> do
     (d1, dim1, h1, xs) <- tensor =<< a
     (d2, dim2, h2, ys) <- tensor =<< b
-    Right (VTensor (d1 ++ d2) (dimMul dim1 dim2) (combine hintMul h1 h2) (V.concatMap (\x -> V.map (\y -> (*) <$> x <*> y) ys) xs))
+    Right
+      ( VTensor
+          (d1 ++ d2)
+          (dimMul dim1 dim2)
+          (combine (hintMul p) h1 h2)
+          (V.concatMap (\x -> V.map (\y -> mulM p <$> x <*> y) ys) xs)
+      )
   -- Contracting product: the left operand's last index against the right
   -- operand's first.
   ("dot", [a, b]) -> do
     (dl, dim1, h1, xs) <- tensor =<< a
     (dr, dim2, h2, ys) <- tensor =<< b
     case (reverse dl, dr) of
-      (n : d1rev, n' : d2) | n == n' ->
-        let d1 = reverse d1rev
-            stride2 = product d2
-            rows = product d1
-            element k =
-              let (i, j) = k `divMod` stride2
-               in sum <$> sequence [(*) <$> (xs V.! (i * n + c)) <*> (ys V.! (c * stride2 + j)) | c <- [0 .. n - 1]]
-         in Right (VTensor (d1 ++ d2) (dimMul dim1 dim2) (combine hintMul h1 h2) (V.generate (rows * stride2) element))
+      (n : d1rev, n' : d2)
+        | n == n' ->
+            let d1 = reverse d1rev
+                stride2 = product d2
+                rows = product d1
+                element k =
+                  let (i, j) = k `divMod` stride2
+                   in sumM
+                        <$> sequence
+                          [ mulM p <$> (xs V.! (i * n + c)) <*> (ys V.! (c * stride2 + j))
+                          | c <- [0 .. n - 1]
+                          ]
+             in Right
+                  ( VTensor
+                      (d1 ++ d2)
+                      (dimMul dim1 dim2)
+                      (combine (hintMul p) h1 h2)
+                      (V.generate (rows * stride2) element)
+                  )
       _ -> Left (Internal "dot: operand shapes do not contract")
   ("div", [a, b]) -> do
     (dims, d1, h1, xs) <- tensor =<< a
     (k, d2, h2) <- scalarFull =<< b
-    Right (VTensor dims (dimDiv d1 d2) (combine hintMul h1 (hintInv <$> h2)) (V.map (\x -> x >>= (`divide` k)) xs))
+    Right
+      ( VTensor
+          dims
+          (dimDiv d1 d2)
+          (combine (hintMul p) h1 (hintInv p =<< h2))
+          (V.map (\x -> x >>= \x' -> arith (divM p x' k)) xs)
+      )
   ("eq", [a, b]) -> VBool <$> equal a b
   ("ne", [a, b]) -> VBool . not <$> equal a b
-  ("lt", [a, b]) -> compareWith (<) a b
-  ("le", [a, b]) -> compareWith (<=) a b
-  ("gt", [a, b]) -> compareWith (>) a b
-  ("ge", [a, b]) -> compareWith (>=) a b
+  ("lt", [a, b]) -> compareWith (== LT) a b
+  ("le", [a, b]) -> compareWith (/= GT) a b
+  ("gt", [a, b]) -> compareWith (== GT) a b
+  ("ge", [a, b]) -> compareWith (/= LT) a b
   -- Lazy in the second argument.
   ("and", [a, b]) -> do
     x <- bool =<< a
@@ -312,9 +428,57 @@ runPrim cfg rt p args = case (p, args) of
     x <- bool =<< a
     if x then Right (VBool True) else VBool <$> (bool =<< b)
   ("not", [a]) -> VBool . not <$> (bool =<< a)
-  ("floor", [a]) -> num dimOne Nothing . fromInteger . floor <$> (scalar =<< a)
-  ("ceil", [a]) -> num dimOne Nothing . fromInteger . ceiling <$> (scalar =<< a)
-  ("round", [a]) -> num dimOne Nothing . fromInteger . round <$> (scalar =<< a)
+  ("floor", [a]) -> dimensionless (arith . floorM) a
+  ("ceil", [a]) -> dimensionless (arith . ceilM) a
+  ("round", [a]) -> dimensionless (arith . roundM) a
+  -- Elementary functions (design §3.2.2). Their arguments are dimensionless
+  -- by type, except sqrt, which halves the dimension.
+  ("sqrt", [a]) -> do
+    (x, d, _) <- scalarFull =<< a
+    r <- arith (sqrtM p x)
+    d2 <-
+      maybe
+        (Left (Internal "sqrt of a dimension that is not a square"))
+        Right
+        (dimRoot 2 d)
+    Right (num d2 Nothing r)
+  ("exp", [a]) -> dimensionless (Right . expM p) a
+  ("log", [a]) -> dimensionless (arith . logM p) a
+  ("sin", [a]) -> dimensionless (Right . sinM p) a
+  ("cos", [a]) -> dimensionless (Right . cosM p) a
+  ("tan", [a]) -> dimensionless (arith . tanM p) a
+  ("asin", [a]) -> dimensionless (arith . asinM p) a
+  ("acos", [a]) -> dimensionless (arith . acosM p) a
+  ("atan", [a]) -> dimensionless (Right . atanM p) a
+  ("sinh", [a]) -> dimensionless (Right . sinhM p) a
+  ("cosh", [a]) -> dimensionless (Right . coshM p) a
+  ("tanh", [a]) -> dimensionless (arith . tanhM p) a
+  ("atan2", [a, b]) -> do
+    y <- scalar =<< a
+    x <- scalar =<< b
+    num dimOne Nothing <$> arith (atan2M p y x)
+  ("pi", []) -> Right (num dimOne Nothing (piM p))
+  -- Euclidean norm of a vector.
+  ("norm", [a]) -> do
+    (_, d, _, buf) <- tensor =<< a
+    xs <- sequence (V.toList buf)
+    r <- arith (sqrtM p (sumM [mulM p x x | x <- xs]))
+    Right (num d Nothing r)
+  ("det", [a]) -> do
+    (dims, _, _, buf) <- tensor =<< a
+    case dims of
+      [n, n'] | n == n' -> do
+        rows <- matrixRows n buf
+        num dimOne Nothing <$> arith (determinant p n rows)
+      _ -> Left (Internal "det of a non-square matrix")
+  ("inverse", [a]) -> do
+    (dims, d, _, buf) <- tensor =<< a
+    case dims of
+      [n, n'] | n == n' -> do
+        rows <- matrixRows n buf
+        inv <- arith (invert p n rows)
+        Right (VTensor [n, n] (dimInv d) Nothing (V.fromList (map Right (concat inv))))
+      _ -> Left (Internal "inverse of a non-square matrix")
   -- Wedge product: the antisymmetrised outer product, (a ∧ b)ⱼₖ = aⱼbₖ − aₖbⱼ,
   -- stored as an ordinary matrix. Entries are thunks, so a consumer that
   -- reads three of the nine (the 3D Hodge star) computes only those.
@@ -327,8 +491,18 @@ runPrim cfg rt p args = case (p, args) of
           ( VTensor
               [n, n]
               (dimMul dim1 dim2)
-              (combine hintMul h1 h2)
-              (V.generate (n * n) (\k -> let (j, i) = k `divMod` n in (\x y x' y' -> x * y - x' * y') <$> (xs V.! j) <*> (ys V.! i) <*> (xs V.! i) <*> (ys V.! j)))
+              (combine (hintMul p) h1 h2)
+              ( V.generate
+                  (n * n)
+                  ( \k ->
+                      let (j, i) = k `divMod` n
+                       in (\x y x' y' -> subM (mulM p x y) (mulM p x' y'))
+                            <$> (xs V.! j)
+                            <*> (ys V.! i)
+                            <*> (xs V.! i)
+                            <*> (ys V.! j)
+                  )
+              )
           )
       _ -> Left (Internal "wedge of non-vectors")
   -- 3D Hodge star of a bivector: (⋆M) = (M₁₂, M₂₀, M₀₁).
@@ -340,12 +514,20 @@ runPrim cfg rt p args = case (p, args) of
   ("transpose", [a]) -> do
     (dims, d, hint, buf) <- tensor =<< a
     case dims of
-      [r, c] -> Right (VTensor [c, r] d hint (V.generate (r * c) (\k -> let (j, i) = k `divMod` r in buf V.! (i * c + j))))
+      [r, c] ->
+        Right
+          ( VTensor
+              [c, r]
+              d
+              hint
+              (V.generate (r * c) (\k -> let (j, i) = k `divMod` r in buf V.! (i * c + j)))
+          )
       _ -> Left (Internal "transpose of a non-matrix")
   ("vmap", [f, a]) -> do
     fv <- f
     (dims, d, _, buf) <- tensor =<< a
-    let results = V.map (\x -> apply cfg rt fv (Right (VTensor [] d Nothing (V.singleton x)))) buf
+    let results =
+          V.map (\x -> apply cfg rt fv (Right (VTensor [] d Nothing (V.singleton x)))) buf
     -- The result dimension is a property of the function; read it off the
     -- first element, or keep the input's for an empty tensor.
     outDim <-
@@ -360,37 +542,139 @@ runPrim cfg rt p args = case (p, args) of
     (_, _, uh) <- scalarFull =<< u
     Right (VTensor dims d uh buf)
   _
-    | primArity p == Just (length args) -> Left (Unsupported (p <> ": not implemented yet"))
-    | otherwise -> Left (Internal ("primitive " <> p <> " is unknown or applied to the wrong number of arguments"))
-  where
-    elementwise1 op a = do
-      (dims, d, hint, buf) <- tensor =<< a
-      Right (VTensor dims d hint (V.map (fmap op) buf))
-    elementwise2 op dimOp hintOp a b = do
-      (dims, d1, h1, xs) <- tensor =<< a
-      (_, d2, h2, ys) <- tensor =<< b
-      Right (VTensor dims (dimOp d1 d2) (hintOp h1 h2) (V.zipWith (\x y -> op <$> x <*> y) xs ys))
-    divide x y = if y == 0 then Left DivideByZero else Right (x / y)
-    compareWith op a b = do
-      x <- scalar =<< a
-      y <- scalar =<< b
-      Right (VBool (op x y))
-    -- Tensors of one shape (lint agrees) or two booleans: the equality
-    -- instances of design §4.2.
-    equal a b = do
-      x <- a
-      y <- b
-      case (x, y) of
-        (VTensor _ _ _ xs, VTensor _ _ _ ys) -> do
-          xs' <- sequence (V.toList xs)
-          ys' <- sequence (V.toList ys)
-          Right (xs' == ys')
-        (VBool m, VBool n) -> Right (m == n)
-        _ -> Left (Internal "==: operands are not both tensors or both booleans")
+    | primArity prim == Just (length args) ->
+        Left (Unsupported (prim <> ": not implemented yet"))
+    | otherwise ->
+        Left
+          ( Internal
+              ( "primitive "
+                  <> prim
+                  <> " is unknown or applied to the wrong number of arguments"
+              )
+          )
+ where
+  p = precisionOf cfg
+  pureOp op x y = Right (op x y)
+  elementwise1 op a = do
+    (dims, d, hint, buf) <- tensor =<< a
+    Right (VTensor dims d hint (V.map (fmap op) buf))
+  elementwise2 op dimOp hintOp a b = do
+    (dims, d1, h1, xs) <- tensor =<< a
+    (_, d2, h2, ys) <- tensor =<< b
+    Right
+      ( VTensor
+          dims
+          (dimOp d1 d2)
+          (hintOp h1 h2)
+          (V.zipWith (\x y -> do x' <- x; y' <- y; op x' y') xs ys)
+      )
+  -- A scalar function whose result is a bare dimensionless number.
+  dimensionless f a = do
+    x <- scalar =<< a
+    num dimOne Nothing <$> f x
+  compareWith decide a b = do
+    x <- scalar =<< a
+    y <- scalar =<< b
+    VBool . decide <$> arith (compareM cfg.sigma p x y)
+  -- Tensors of one shape (lint agrees) or two booleans: the equality
+  -- instances of design §4.2. Tensors are equal when every component is
+  -- decided equal (design §3.2.9).
+  equal a b = do
+    x <- a
+    y <- b
+    case (x, y) of
+      (VTensor _ _ _ xs, VTensor _ _ _ ys) -> do
+        xs' <- sequence (V.toList xs)
+        ys' <- sequence (V.toList ys)
+        and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
+      (VBool m, VBool n) -> Right (m == n)
+      _ -> Left (Internal "==: operands are not both tensors or both booleans")
+  matrixRows n buf = do
+    xs <- sequence (V.toList buf)
+    pure (chunks n xs)
+  chunks n xs
+    | null xs = []
+    | otherwise = let (r, rest) = splitAt n xs in r : chunks n rest
 
--- | A plain rendering for tests. Forces every element. Rationals print as
--- @n/d@ in base units and dimensions are omitted; decimal output with units
--- is "Eval.Pretty"'s job.
+sumM :: [Magnitude] -> Magnitude
+sumM = foldl' addM (Exact 0)
+
+-- Linear algebra ----------------------------------------------------------------------
+
+{- | A usable pivot: the entry of largest midpoint among those whose
+enclosure excludes zero, by row position.
+-}
+pivotIn :: Int -> [Magnitude] -> Maybe Int
+pivotIn from column =
+  case [(abs (midpoint x), i) | (i, x) <- zip [0 ..] column, i >= from, excludesZero x] of
+    [] -> Nothing
+    cands -> Just (snd (maximum cands))
+ where
+  excludesZero x = midpoint x - radius x > 0 || midpoint x + radius x < 0
+
+singular :: Text -> [Magnitude] -> ArithError
+singular what column
+  | all (== Exact 0) column = Eval.Affine.Domain (what <> " of a singular matrix")
+  | otherwise =
+      Eval.Affine.Undecided (what <> " of a matrix whose enclosure may be singular")
+
+-- | Determinant by Gaussian elimination with partial pivoting on midpoints.
+determinant :: Precision -> Int -> [[Magnitude]] -> Either ArithError Magnitude
+determinant p n = go 0 (Exact 1)
+ where
+  go k acc rows
+    | k == n = Right acc
+    | otherwise =
+        let column = map (!! k) rows
+         in case pivotIn 0 column of
+              Nothing
+                | all (== Exact 0) column -> Right (Exact 0)
+                | otherwise -> Left (singular "det" column)
+              Just i -> do
+                let pivotRow = rows !! i
+                    others = [r | (j, r) <- zip [0 ..] rows, j /= i]
+                    pv = pivotRow !! k
+                    -- Moving row i to the front is i transpositions.
+                    sign = if even i then 1 else -1
+                reduced <- mapM (eliminate k pivotRow pv) others
+                go (k + 1) (scaleM sign (mulM p acc pv)) reduced
+  eliminate k pivotRow pv r = do
+    f <- divM p (r !! k) pv
+    pure (zipWith (\a b -> subM a (mulM p f b)) r pivotRow)
+
+-- | Inverse by Gauss-Jordan elimination on the augmented matrix.
+invert :: Precision -> Int -> [[Magnitude]] -> Either ArithError [[Magnitude]]
+invert p n rows0 =
+  go
+    0
+    [ r ++ [if i == j then Exact 1 else Exact 0 | j <- [0 .. n - 1]]
+    | (i, r) <- zip [0 ..] rows0
+    ]
+ where
+  go k rows
+    | k == n = Right (map (drop n) rows)
+    | otherwise =
+        let column = map (!! k) rows
+         in case pivotIn k column of
+              Nothing -> Left (singular "inverse" (drop k column))
+              Just i -> do
+                let swapped = [rows !! swap j | j <- [0 .. n - 1]]
+                    swap j
+                      | j == k = i
+                      | j == i = k
+                      | otherwise = j
+                    pivotRow = swapped !! k
+                    pv = pivotRow !! k
+                normalised <- mapM (\x -> divM p x pv) pivotRow
+                let eliminate r = let f = r !! k in zipWith (\a b -> subM a (mulM p f b)) r normalised
+                go
+                  (k + 1)
+                  [if j == k then normalised else eliminate r | (j, r) <- zip [0 ..] swapped]
+
+{- | A plain rendering for tests. Forces every element. Exact magnitudes
+print as @n/d@ in base units, affine ones as an approximate @mid±r@, and
+dimensions are omitted; decimal output with units is "Eval.Pretty"'s job.
+-}
 render :: Value -> Either EvalError Text
 render = \case
   VTensor dims _ _ buf -> do
@@ -399,17 +683,24 @@ render = \case
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
-  where
-    frac r
-      | denominator r == 1 = tshow (numerator r)
-      | otherwise = tshow (numerator r) <> "/" <> tshow (denominator r)
-    nested dims rs = case dims of
-      [] -> maybe "[]" frac (headMay rs)
-      [_] -> brackets (map frac rs)
-      d : rest ->
-        let stride = product rest
-         in brackets [nested rest (take stride (drop (i * stride) rs)) | i <- [0 .. d - 1]]
-    brackets xs = "[" <> T.intercalate ", " xs <> "]"
-    headMay = \case
-      x : _ -> Just x
-      [] -> Nothing
+ where
+  magnitude = \case
+    Exact r -> frac r
+    m ->
+      let c = collapse m
+       in tshow (fromRational c.mid :: Double)
+            <> "±"
+            <> tshow (fromRational (c.bound + sigmaOf 6 c) :: Double)
+  frac r
+    | denominator r == 1 = tshow (numerator r)
+    | otherwise = tshow (numerator r) <> "/" <> tshow (denominator r)
+  nested dims rs = case dims of
+    [] -> maybe "[]" magnitude (headMay rs)
+    [_] -> brackets (map magnitude rs)
+    d : rest ->
+      let stride = product rest
+       in brackets [nested rest (take stride (drop (i * stride) rs)) | i <- [0 .. d - 1]]
+  brackets xs = "[" <> T.intercalate ", " xs <> "]"
+  headMay = \case
+    x : _ -> Just x
+    [] -> Nothing

@@ -71,3 +71,19 @@
   `1 AU / c to min` converts. The prelude declares its units with `unit`; `Bq`
   and `Sv` are defined through `Hz` and `Gy` so identical definitions do not
   merge their names.
+- Affine arithmetic (design §3.2): tensor elements are now magnitudes, exact
+  rationals or affine forms `mid + Σ cᵢ·eᵢ ± slack` whose nudges have a kind
+  (bound or 1σ) and a content-addressed identity, so `x - x`, `sin 1 - sin 1`
+  and `y / y` are exactly `0`, `0` and `1`. All elementary functions (`sqrt
+  exp log sin cos tan asin acos atan atan2 sinh cosh tanh pi`) with rigorous
+  error bounds from rational series; `norm`, `det` and `inverse`; `±`, `±σ`,
+  `noise n`, `gauss n` with definition-site identity; comparisons and integer
+  rounding fail with "cannot decide" instead of guessing (`:set sigma k`);
+  certain-digit printing (`sin 1` is `0.84147098480789650665…`, `5 ± 0.1`,
+  `G` is `6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2`), `:exact`, `:budget`,
+  `:set scale n`. Working precision is `scale + 4` digits, absolute or
+  relative whichever is tighter, so Planck-scale quantities keep their
+  digits. Prelude: `G` with its CODATA σ, `M_earth` and `M_sun` derived from
+  the nominal `GM` values, `deg`, `arcmin`, `arcsec`. Fixed: unifying `d^2`
+  with a non-square dimension (`sqrt (1 kg)`) looped forever; it is now a
+  type error.

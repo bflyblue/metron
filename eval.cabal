@@ -24,6 +24,7 @@ library
   import:          common
   hs-source-dirs:  lib
   exposed-modules:
+    , Eval.Affine
     , Eval.Codebase
     , Eval.Core
     , Eval.Desugar
