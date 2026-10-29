@@ -1568,20 +1568,40 @@ eval --codebase DIR …    use an explicit store
 A codebase on disk is a directory:
 
 ```
-terms/<hash>       canonical bytes from 6.1
-types/<hash>       the inferred scheme, text
-names.log          append-only: timestamp, name, ref (or "unname")
+format             "eval codebase 1": the storage format version
+terms/<hex hash>   one term per file: the canonical encoding of 6.1 with each
+                   binder's name hint written after its tag, so :view keeps
+                   the author's names; the hash is recomputed on load and checked
+names.log          append-only, one event per line:
+                     <unix time> bind <name> <hex hash>[.<i>]
+                     <unix time> unname <name>
+                     <unix time> unit <hex hash>[.<i>]
+history            the REPL's line history
 ```
+
+Types and Typed Core are not stored; they are recomputed on load by
+typechecking and linting each term, dependencies first (cheap: the prelude's
+700 definitions take 30 ms). Terms are only ever added, so two stores never
+conflict on terms; the log is the one thing with order, and merging two stores
+is concatenating their logs and sorting by time, last writer winning per name.
 
 The user store lives at `$XDG_DATA_HOME/eval/` and is what the daily calculator
 uses. A project-local `.eval/` directory, found by walking up from the current
-directory, shadows the user store; iapetus commits its `.eval/` to git. Because
-terms are hash-addressed they never conflict on merge. Only `names.log` needs a
-merge rule: last writer wins per name, by timestamp.
+directory, shadows the user store, and `--codebase DIR` names one explicitly;
+`--no-codebase` runs in memory. iapetus commits its `.eval/` to git.
 
-The prelude is loaded at start as an ordinary binding group, so unit definitions
-and constants are hashed, viewable and rebindable like user code. Its refs are
-stable across machines because its source is fixed.
+The prelude is entered at the start of every session as an ordinary binding
+group, in memory, and the store's log is replayed on top of it. Prelude
+*bindings* are therefore never written: a user who rebinds `c` keeps that
+binding across sessions, and a prelude that changes `G` rebinds `G` on the next
+start while the user's dependents keep pointing at the old hash, which `:todo`
+reports as stale. Prelude *terms* that a stored definition references are
+written beside it, so a store stays self-contained whatever the prelude later
+becomes. Each successful input is written through immediately: new terms first,
+dependencies before dependents, then the log lines, so an interrupted session
+never leaves a name pointing at a missing term. A term that fails to decode,
+fails to typecheck, or is named but missing is reported as a note at start and
+skipped; the rest loads.
 
 ### 7.5 Scratch, add, update, upgrade
 
@@ -1749,7 +1769,9 @@ tuned, and compilation is a later milestone.
    tensors (§3.4), and `contract`/`permute` for ranks above two.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
-   `:` commands, error messages with source spans.
+   `:` commands, error messages with source spans. Status: stores done (§7.4),
+   haskeline with a history file beside the store, `:store`. Remaining:
+   `:covariance`, `:set unicode`, a merge tool for two stores' logs.
 7. **Tuples**, then **lists** with a `case` construct in the core.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
@@ -1765,6 +1787,13 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
+- A `unit` declaration marks a *reference*, so any definition with the same
+  body is the same unit: `let x = 1` is `rad`, and `x + 2` prints `3 rad`. The
+  honest fix is for the use site to decide: give `Ref` a name hint (ignored by
+  the hash, like binder hints) and let the evaluator ask whether the name
+  written was declared a unit. Then `5 km` prints `km` because `km` was
+  written, and `let d = 1000 * m` is never a unit. A Core field, not a
+  constructor; decide before the store fills up.
 - Comparison operators beyond the certain `<` and `==` (§3.2.9): possible
   comparisons `<?` and `=?` ("consistent with", at `k` sigma for statistical
   nudges), tolerance equality `a ≈ b within t`, enclosure containment, and the

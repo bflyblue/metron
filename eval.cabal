@@ -38,6 +38,7 @@ library
     , Eval.Prelude
     , Eval.Pretty
     , Eval.Resolve
+    , Eval.Store
     , Eval.Syntax
     , Eval.TCore
     , Eval.Type
@@ -47,10 +48,13 @@ library
     , bytestring
     , containers
     , cryptohash-sha256
+    , directory
+    , filepath
     , megaparsec
     , mtl
     , parser-combinators
     , text
+    , time
     , transformers
     , unicode-transforms
     , vector
@@ -62,7 +66,10 @@ executable eval
   ghc-options:    -O -threaded -feager-blackholing
   build-depends:
     , base ^>=4.21.0.0
+    , directory
     , eval
+    , filepath
+    , haskeline
     , text
 
 test-suite eval-test
@@ -77,8 +84,11 @@ test-suite eval-test
     , bytestring
     , containers
     , eval
+    , directory
+    , filepath
     , QuickCheck
     , tasty
     , tasty-hunit
     , tasty-quickcheck
     , text
+    , time

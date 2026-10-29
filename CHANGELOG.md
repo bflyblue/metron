@@ -130,3 +130,16 @@
   work as before, but `5 a` for a matrix `a`, `2 pi` and `3 f x` are now
   errors that ask for the `*`. The parser builds a `Scale` node and the
   desugarer, which knows which names were declared units, checks it.
+- Persistence (design §7.4). A codebase is a directory: `format`, one file per
+  term in the storage encoding (canonical bytes plus binder names), and an
+  append-only `names.log` of bind, unname and unit events that is replayed
+  on load; types are recomputed. `eval` uses `--codebase DIR`, else a `.eval`
+  directory above the working directory, else `$XDG_DATA_HOME/eval`;
+  `--no-codebase` runs in memory. The prelude is entered first, in memory,
+  and the log on top, so user rebindings of prelude names persist and prelude
+  changes show up as stale dependents. Every successful input is written
+  through. Decoder for the canonical encoding (`decodeStored`), a
+  property-tested round trip. The REPL uses haskeline with a history file in
+  the store, and `:store` shows which store is in use. core.md records the
+  hash-stability policy: desugaring changes need no migration, encoding and
+  Core changes bump the format number.

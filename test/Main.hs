@@ -7,7 +7,9 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Eval.Affine hiding (DivideByZero)
+import Eval.Codebase (Codebase (..))
 import Eval.Core
 import Eval.Desugar
 import Eval.Dimension (DimAtom (..), dimAtoms, isDimOne)
@@ -20,10 +22,17 @@ import Eval.Lexer qualified as L
 import Eval.Parser
 import Eval.Prelude (preludeNames)
 import Eval.Pretty
+import Eval.Store
 import Eval.Syntax qualified as S
 import Eval.TCore
 import Eval.Type
 import Gen (exprDepth, genProgram, instanceOf)
+import System.Directory (
+  createDirectoryIfMissing,
+  getTemporaryDirectory,
+  removePathForcibly,
+ )
+import System.FilePath ((</>))
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -52,6 +61,7 @@ main =
         , preludeTests
         , displayTests
         , affineTests
+        , storeTests
         ]
     )
 
@@ -2083,3 +2093,133 @@ firstDifference a b
   firstOf ds = case catMaybes ds of
     [] -> here
     d : _ -> Just d
+
+-- Persistence -----------------------------------------------------------------------
+--
+-- Design §7.4: terms by hash in the storage encoding, labels as a replayed
+-- log, the prelude underneath and never stored as bindings.
+
+storeTests :: TestTree
+storeTests =
+  testGroup
+    "store"
+    [ testProperty
+        "the storage encoding round-trips every generated program, hints included"
+        $ forAll (snd <$> genProgram)
+        $ \e -> case desugarClosed noResolver e of
+          Left _ -> discard
+          Right (t, _) -> case decodeStored (encodeStored t) of
+            Left err -> counterexample (T.unpack err) False
+            Right t' ->
+              counterexample
+                (show t')
+                (alphaEq t t' && encodeStored t' == encodeStored t && hashTerm t' == hashTerm t)
+    , testCase "definitions, history, units, labels and cycles survive a reload" $ withTempStore $ \dir -> do
+        s <-
+          persistLines
+            dir
+            [ "let speed = 5 km / h"
+            , "unit furlong = 201.168 * m"
+            , "let r = 10 mm ± 0.01 mm #batch7"
+            , "let even n = if n == 0 then true else odd (n - 1); let odd n = if n == 0 then false else even (n - 1)"
+            , ":add"
+            , "let speed = 6 km / h"
+            , ":update"
+            , ":alias v speed"
+            ]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        Map.keys loaded.codebase.names @?= Map.keys s.codebase.names
+        loaded.codebase.names @?= s.codebase.names
+        loaded.codebase.history @?= s.codebase.history
+        loaded.codebase.units @?= s.codebase.units
+        Map.keysSet s.codebase.terms `Set.isSubsetOf` Map.keysSet loaded.codebase.terms
+          @? "every term came back"
+        linesIn
+          loaded
+          [ "speed"
+          , "v"
+          , ":history speed"
+          , "1 furlong to m"
+          , "r - r"
+          , "even 10"
+          , "odd 10"
+          , ":view r"
+          ]
+          @?= Right
+            [ "6 km h^-1"
+            , "6 km h^-1"
+            , "#lpdo2  (current)"
+            , "#erifi"
+            , "201.168 m"
+            , "0 mm"
+            , "true"
+            , "false"
+            , "r = 10 * mm ± 0.01 * mm #batch7"
+            ]
+    , testCase
+        "the store only holds what the user added, plus the prelude terms those use" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["let d = 3 km", ":add"]
+        (loaded, _) <- reload dir
+        -- km and its definition chain are on disk; a prelude name the user
+        -- never touched is still only in memory from the prelude.
+        Map.size loaded.codebase.terms @?= Map.size withPrelude.codebase.terms + 1
+        linesIn loaded ["d", "G"]
+          @?= Right ["3 km", "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
+    , testCase "a user rebinding of a prelude name wins over the prelude on reload" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["let c = 3e8 m / s", ":update"]
+        (loaded, _) <- reload dir
+        linesIn loaded ["c"] @?= Right ["300000000 m s^-1"]
+    , testCase ":unname persists" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["let x = 1", ":add", ":alias y x", ":unname y"]
+        (loaded, _) <- reload dir
+        Map.member "y" loaded.codebase.names @?= False
+        Map.member "x" loaded.codebase.names @?= True
+    , testCase "a corrupt term file and a dangling name are reported, the rest loads" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["let x = 7", "let y = 11", ":add"]
+        writeFile (dir </> "terms" </> "not-a-hash") "junk"
+        appendFile
+          (dir </> "names.log")
+          "1 bind z 0000000000000000000000000000000000000000000000000000000000000000\n"
+        (loaded, notes) <- reload dir
+        length notes @?= 2
+        linesIn loaded ["x + y"] @?= Right ["18"]
+    , testCase "a store of another format is refused" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["let x = 1", ":add"]
+        writeFile (dir </> "format") "eval codebase 99\n"
+        opened <- openStore dir
+        case opened of
+          Left err -> T.isInfixOf "format 1" err @? T.unpack err
+          Right _ -> assertFailure "opened a store of another format"
+    ]
+ where
+  withTempStore :: (FilePath -> IO a) -> IO a
+  withTempStore k = do
+    tmp <- getTemporaryDirectory
+    stamp <- getPOSIXTime
+    let dir = tmp </> ("eval-test-" <> show (round (stamp * 1000000) :: Integer))
+    createDirectoryIfMissing True dir
+    r <- k dir
+    removePathForcibly dir
+    pure r
+  -- Feed lines one at a time, persisting after each, as Main does.
+  persistLines :: FilePath -> [Text] -> IO Session
+  persistLines dir ls = do
+    st <- either (error . T.unpack) id <$> openStore dir
+    let go s [] = pure s
+        go s (l : rest) = case feed s l of
+          Left err -> error (T.unpack err)
+          Right (s', _) -> sync st s.codebase s'.codebase >> go s' rest
+    go withPrelude ls
+  reload :: FilePath -> IO (Session, [Text])
+  reload dir = do
+    st <- either (error . T.unpack) id <$> openStore dir
+    (cb, notes) <- loadStore st withPrelude.codebase
+    pure (withPrelude{codebase = cb, staging = cb}, notes)
+  linesIn :: Session -> [Text] -> Either Text [Text]
+  linesIn s0 = go s0 []
+   where
+    go _ acc [] = Right (concat (reverse acc))
+    go s acc (l : rest) = do
+      (s', outs) <- feed s l
+      go s' (outs : acc) rest

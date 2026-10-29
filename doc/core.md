@@ -252,13 +252,25 @@ encoding cannot, because they are the ground the hashes stand on. The slogan
 Core and never the surface, and false of the *hashes*, which encode the
 translation.
 
-Before persistence lands (design §10, item 6) one of three policies has to be
-chosen and written down: freeze the desugaring rules and encoding behind a
-version number, with any change being a numbered migration; store the original
-source beside each hash so definitions can be re-desugared and re-hashed; or
-treat migrations as a routine, tooled operation. Until then, desugaring changes
-are made freely but each one is listed in the changelog as a hash-affecting
-change.
+The policy, now that stores exist (design §7.4):
+
+- **Desugaring changes need no migration.** A stored term is Core, not
+  source. If `-3` stops desugaring to `neg 3`, the stored `neg 3` is still a
+  valid term with its old hash and keeps working; only a definition typed
+  again gets the new hash, which the codebase treats as a new version like
+  any other. Such changes are still listed in the changelog as hash-affecting,
+  because the same text no longer reproduces the stored hash.
+- **Encoding and Core changes are versioned.** The store carries a format
+  number (`format`, currently 1). Any change to the canonical encoding or to
+  a Core constructor (the label field on `Noise` and `Uncertain` was the last,
+  made before any store existed) bumps it, and the loader refuses a store of
+  another version. Opening an old store then means a numbered migration:
+  decode with the old decoder, re-encode, map every old hash to its new one,
+  rewrite the references in dependency order (the `propagate` machinery), and
+  rewrite the log. None is written yet, since no store predates format 1.
+- **Primitives are append-only.** A stored term names its primitives by
+  text, so a primitive may be added but never renamed or removed without a
+  migration.
 
 ## 7. Changing Core
 

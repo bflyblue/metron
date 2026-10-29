@@ -8,6 +8,7 @@ module Eval.Resolve (
   resolverFor,
   typeLookupFor,
   processGroup,
+  storeTerm,
 ) where
 
 import Data.Foldable (foldlM)
@@ -215,3 +216,14 @@ freeNames = go Set.empty
   opNames = \case
     S.Infix n -> Set.singleton n
     _ -> Set.empty
+
+{- | Enter a Core term that already has its hash, as when loading a store
+(design §7.4): infer, lint and add. The term must only reference hashes the
+codebase already holds, which the loader ensures by ordering.
+-}
+storeTerm :: Hash -> Term Z -> Codebase -> Either Text Codebase
+storeTerm h term cb = do
+  (schemes, typed) <-
+    either (Left . (.message)) Right (elaborateClosed (typeLookupFor cb) term)
+  linted <- lintClosed (typeLookupFor cb) typed
+  pure (addTerm h term (preferLint schemes linted) typed cb)
