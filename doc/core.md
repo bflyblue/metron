@@ -330,6 +330,15 @@ Core is small so that it can be made correct, and these are the means:
   alpha-equivalent term; hashing is stable across that round trip; encoding
   decodes (once the decoder exists) to an alpha-equivalent term; cycle hashes
   are independent of entry order; alpha-equivalent terms hash equal.
+  *Known weakness:* the generator builds programs blindly, so about three in
+  four are ill-typed and discarded before they reach lint or the evaluator,
+  and the survivors skew small and simple. The pass counts are honest about
+  what ran, not strong evidence about deep shapes (nested polymorphic lets,
+  products inside recursion, dimensioned tensors). The planned fix is a
+  type-directed generator that builds each program from a chosen type, so
+  every case is well-typed and the type space, now including shapes and
+  dimensions, is explored on purpose. Worth doing before affine arithmetic
+  adds another kind of value to cover.
 - **Unit tests pin the special forms**: laziness of `If` and of `and`/`or`,
   saturation, projection bounds, cycle knot-tying.
 - **One place per concern.** Each constructor appears in exactly one `case` in
