@@ -1209,10 +1209,11 @@ Typed Core is Core after inference (§4) and *elaboration*. It is explicitly typ
 in the manner of System F and GHC's Core, and it is what the interpreter and the
 compiler consume.
 
-*Status.* Built, without dimension or dictionary forms yet. Inference and
-elaboration are one pass; every elaborated term is checked by `lint`, a plain
-type checker in the role of GHC's Core Lint, before it is stored or evaluated;
-the evaluator runs Typed Core and erases the type and length abstractions;
+*Status.* Built, without dictionary forms yet; dimensions are one more kind of
+the single kinded abstraction form. Inference and elaboration are one pass;
+every elaborated term is checked by `lint`, a plain type checker in the role of
+GHC's Core Lint, before it is stored or evaluated; the evaluator runs Typed Core
+and erases the type, length, shape and dimension abstractions;
 `:core name` prints a definition with all annotations. The point of having it
 now, before it changes evaluation, is the one GHC made: the surface language and
 its sugar will keep changing, and a small explicitly typed core that is checked
