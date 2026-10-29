@@ -1,13 +1,13 @@
 cabal-version:   3.12
 name:            eval
 version:         0.1.0.0
--- synopsis:
+synopsis:        A pure, unit-aware, content-addressed calculator language
 -- description:
 license:
 author:          Shaun Sharples
 maintainer:      shaun.sharples@gmail.com
 -- copyright:
-category:        Web
+category:        Language
 build-type:      Simple
 extra-doc-files: CHANGELOG.md
 
@@ -20,17 +20,58 @@ common common
     OverloadedRecordDot
     OverloadedStrings
 
--- library
---   import:         common
---   hs-source-dirs: lib
---   -- exposed-modules:  ModuleX
---   build-depends:  base ^>=4.21.0.0
+library
+  import:          common
+  hs-source-dirs:  lib
+  exposed-modules:
+    , Eval.Codebase
+    , Eval.Core
+    , Eval.Desugar
+    , Eval.Driver
+    , Eval.Eval
+    , Eval.Hash
+    , Eval.Infer
+    , Eval.Lexer
+    , Eval.Parser
+    , Eval.Pretty
+    , Eval.Resolve
+    , Eval.Syntax
+    , Eval.TCore
+    , Eval.Type
+    , Eval.Update
+  build-depends:
+    , base ^>=4.21.0.0
+    , bytestring
+    , containers
+    , cryptohash-sha256
+    , megaparsec
+    , mtl
+    , parser-combinators
+    , text
+    , transformers
+    , unicode-transforms
+    , vector
 
 executable eval
   import:         common
   main-is:        Main.hs
   hs-source-dirs: src
   ghc-options:    -O -threaded -feager-blackholing
-  -- other-modules:    ModuleX
   build-depends:
     , base ^>=4.21.0.0
+    , eval
+    , text
+
+test-suite eval-test
+  import:         common
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+  build-depends:
+    , base ^>=4.21.0.0
+    , bytestring
+    , containers
+    , eval
+    , tasty
+    , tasty-hunit
+    , text

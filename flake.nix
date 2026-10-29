@@ -25,6 +25,9 @@
         with pkgs.haskell.lib;
         pkgs.haskell.packages.ghc912.override {
           overrides = self: super: {
+            # unicode-data's test suite expects Unicode 15.1 tables; GHC 9.12's
+            # base ships Unicode 16, so the tests fail although the library is fine.
+            unicode-data = dontCheck super.unicode-data;
         }; };
     in
     {
