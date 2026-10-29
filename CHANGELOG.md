@@ -64,3 +64,10 @@
   primitives; `cross` is now a prelude definition `star (wedge a b)` and `×`
   resolves through that name. `∧` therefore no longer spells boolean and,
   which is `&&` only. Units print in the customary order `kg m s …`.
+- Display units: `unit name = e` declares a definition as a display unit
+  (codebase metadata beside names, carried through `:update`); values carry
+  a display unit through products, quotients, powers and sums (left operand
+  wins) and print in it: `5 km / h` is `5 km h^-1`, `3 h + 30 min` is `3.5 h`,
+  `1 AU / c to min` converts. The prelude declares its units with `unit`; `Bq`
+  and `Sv` are defined through `Hz` and `Gy` so identical definitions do not
+  merge their names.

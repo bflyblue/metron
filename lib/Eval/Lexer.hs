@@ -27,7 +27,7 @@ import Text.Megaparsec hiding (Pos, Token, Tokens)
 import Text.Megaparsec.Char
 import Text.Megaparsec.Char.Lexer qualified as L
 
-data Keyword = KLet | KIn | KWhere | KIf | KThen | KElse | KTo | KTrue | KFalse
+data Keyword = KLet | KUnit | KIn | KWhere | KIf | KThen | KElse | KTo | KTrue | KFalse
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 data Token
@@ -170,6 +170,7 @@ identifierOrKeyword = do
   let name = T.cons c rest
   pure $ case name of
     "let" -> TKw KLet
+    "unit" -> TKw KUnit
     "in" -> TKw KIn
     "where" -> TKw KWhere
     "if" -> TKw KIf

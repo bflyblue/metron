@@ -27,7 +27,7 @@ import Test.Tasty.QuickCheck
 main :: IO ()
 main =
   defaultMain
-    (testGroup "eval" [coreTests, evalTests, tcoreTests, lexerTests, parserTests, desugarTests, hashTests, prettyTests, endToEndTests, codebaseTests, typeTests, soundnessTests, productTests, propertyTests, unitTests, lintRegressionTests, preludeTests])
+    (testGroup "eval" [coreTests, evalTests, tcoreTests, lexerTests, parserTests, desugarTests, hashTests, prettyTests, endToEndTests, codebaseTests, typeTests, soundnessTests, productTests, propertyTests, unitTests, lintRegressionTests, preludeTests, displayTests])
 
 -- Term-building helpers -------------------------------------------------
 
@@ -89,7 +89,7 @@ run defs t = do
       typedOf k = snd <$> lookup k elaborated
   (_, typed) <- first (("type error: " <>) . (.message)) (elaborateClosed typesOf t)
   _ <- first ("lint: " <>) (lintClosed typesOf typed)
-  v <- first (T.pack . show) (evalClosed defaultConfig typedOf typed)
+  v <- first (T.pack . show) (evalClosed defaultConfig (Runtime typedOf (\_ _ -> False)) typed)
   first (T.pack . show) (render v)
 
 runClosed :: Term Z -> Either Text Text
@@ -1035,7 +1035,7 @@ propertyTests =
             Left _ -> discard
             Right (t, _) -> case elaborateClosed (const Nothing) t of
               Left _ -> discard
-              Right (_, typed) -> case evalClosed defaultConfig (const Nothing) typed >>= render of
+              Right (_, typed) -> case evalClosed defaultConfig (Runtime (const Nothing) (\_ _ -> False)) typed >>= render of
                 Left (Internal msg) -> counterexample (T.unpack msg) False
                 Left (UnknownRef _) -> property False
                 Left (BadCycleIndex _) -> property False
@@ -1140,16 +1140,19 @@ preludeTests =
         length preludeNames > 600 @? "prelude is unexpectedly small"
     , testCase "derived units are coherent" $ do
         evalP "1 N == 1 kg * m / s^2" @?= Right ["true"]
-        evalP "1 J" @?= Right ["1 kg m^2 s^-2"]
-        evalP "1 V * 1 A" @?= Right ["1 kg m^2 s^-3"]
+        evalP "1 J" @?= Right ["1 J"]
+        evalP "1 J to kg * m^2 / s^2" @?= Right ["1 kg m^2 s^-2"]
+        evalP "1 V * 1 A" @?= Right ["1 V A"]
     , testCase "prefixes" $ do
-        evalP "1 km" @?= Right ["1000 m"]
+        evalP "1 km" @?= Right ["1 km"]
+        evalP "1 km to m" @?= Right ["1000 m"]
         evalP "1 µm == 1 um" @?= Right ["true"]
-        evalP "1 mg" @?= Right ["0.000001 kg"]
-        evalP "1 GHz" @?= Right ["1000000000 s^-1"]
+        evalP "1 mg" @?= Right ["1 mg"]
+        evalP "1 GHz to Hz" @?= Right ["1000000000 Hz"]
     , testCase "accepted units" $ do
-        evalP "3 h + 30 min" @?= Right ["12600 s"]
-        evalP "1 L" @?= Right ["0.001 m^3"]
+        evalP "3 h + 30 min" @?= Right ["3.5 h"]
+        evalP "30 min + 3 h" @?= Right ["210 min"]
+        evalP "1 L to m^3" @?= Right ["0.001 m^3"]
         evalP "1 AU / c to s" @?= Right ["499.00478383615641191347… s"]
     , testCase "constants are exact where SI defines them so" $
         evalP "c" @?= Right ["299792458 m s^-1"]
@@ -1168,5 +1171,36 @@ preludeTests =
           , ":type r × v"
           , "(r × v).2"
           ]
-          @?= Right ["Vec 3 [m^2 s^-1]", "52500000000 m^2 s^-1"]
+          @?= Right ["Vec 3 [m^2 s^-1]", "52500 km^2 s^-1"]
     ]
+
+-- Display units ----------------------------------------------------------------------
+
+displayTests :: TestTree
+displayTests =
+  testGroup
+    "display units"
+    [ testCase "a quantity prints in the unit it was written in" $ do
+        evalP "5 km / h" @?= Right ["5 km h^-1"]
+        evalP "(2 km)^2" @?= Right ["4 km^2"]
+        evalP "[1, 2] km" @?= Right ["[1, 2] km"]
+    , testCase "a sum keeps the left operand's unit" $ do
+        evalP "5 km + 3 m" @?= Right ["5.003 km"]
+        evalP "3 m + 5 km" @?= Right ["5003 m"]
+    , testCase "to converts for display" $ do
+        evalP "5 km / h to m / s" @?= Right ["1.38888888888888888888… m s^-1"]
+        evalP "1 AU / c to min" @?= Right ["8.31674639726927353189… min"]
+        evalP "90 min to h" @?= Right ["1.5 h"]
+    , testCase "a user-declared unit" $
+        runLinesP ["unit furlong = 201.168 * m", "1 km to furlong", "8 furlong to km"]
+          @?= Right ["4.97096953789867175693… furlong", "1.609344 km"]
+    , testCase "let-bound quantities are not units, their components are" $
+        runLinesP ["let g = 9.81 m / s^2", "g * (2 s)^2"] @?= Right ["39.24 m"]
+    , testCase "the display unit must match the dimension or base units are used" $
+        evalP "sqrt (4 km^2)" @?= Left "not implemented: sqrt: not implemented yet"
+    , testCase "units are codebase metadata: a renamed unit prints under its current name" $
+        runLinesP ["unit fathom = 1.8288 * m", ":add", "2 fathom", ":alias fm fathom", ":unname fathom", "2 fm"]
+          @?= Right ["added fathom", "2 fathom", "`fm` now also names " <> hashOfFathom, "removed the label `fathom`", "2 fm"]
+    ]
+  where
+    hashOfFathom = either (const "?") (T.concat . drop 1) (runLinesP ["unit fathom = 1.8288 * m", ":add", ":hash fathom"])

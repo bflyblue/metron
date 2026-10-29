@@ -121,7 +121,16 @@ program :: Parser [Statement]
 program = P.many (tok TSep) *> P.sepEndBy statement (P.some (tok TSep))
 
 statement :: Parser Statement
-statement = letStatement P.<|> SExpr <$> expr
+statement = letStatement P.<|> unitStatement P.<|> SExpr <$> expr
+
+-- | @unit name = expr@: a definition that is also a display unit.
+unitStatement :: Parser Statement
+unitStatement = do
+  s <- kw KUnit
+  n <- name
+  _ <- tok TEquals
+  e <- expr
+  pure (SLet (Binding (spanUnion s e.span) n [] e True))
 
 -- | @let b@ as a definition (optionally with @where@), or @let b in e@ as an
 -- expression statement. Both start the same way, so they share a prefix.
@@ -138,7 +147,7 @@ letStatement = do
         wh <- P.optional whereClause
         let body' = maybe b.body (foldr wrapWhere b.body) wh
             sp = foldr (spanUnion . (.span)) (spanUnion s b.span) (maybe [] id wh)
-        pure (SLet (Binding sp b.name b.params body'))
+        pure (SLet (Binding sp b.name b.params body' False))
     ]
   where
     wrapWhere wb acc = Expr (spanUnion wb.span acc.span) (Let wb.name wb.params wb.body acc)
@@ -149,7 +158,7 @@ binding = do
   ps <- P.many name
   _ <- tok TEquals
   e <- expr
-  pure (Binding (spanUnion n.span e.span) n ps e)
+  pure (Binding (spanUnion n.span e.span) n ps e False)
 
 whereClause :: Parser [Binding]
 whereClause = kw KWhere *> P.sepBy1 binding (tok TSep) <* tok TBlockEnd

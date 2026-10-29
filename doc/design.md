@@ -138,7 +138,8 @@ f 3 4                           -- a bare expression: evaluate and print
 
 A `let` without `in` at the top level *proposes* a definition: it goes into the
 scratch (§7.5), where it is checked, hashed and usable by later expressions but
-not stored. `:add` and `:update` move scratch definitions into the codebase (§7).
+not stored. `unit name = e` is the same with the name additionally marked as a
+display unit (§3.2.12). `:add` and `:update` move scratch definitions into the codebase (§7).
 Within one input a name may be defined only once, as in a Haskell module; across
 REPL inputs a pending definition is replaced by a newer one.
 
@@ -658,18 +659,34 @@ Everything else, including component access out of range, is caught statically
 
 #### 3.2.12 Display units
 
-Values print in SI base units factored (`m s^-2`) unless they carry a *display
-hint*. Rules:
+Magnitudes are always stored in SI base units. Values print in base units
+factored (`m s^-2`) unless they carry a *display unit*, which is a product of
+named units with exponents, a scale factor and a dimension. Where display units
+come from:
 
-- A quantity literal sets the hint: `5 km` prints as `5 km`.
-- `*` and `/` combine hints syntactically: `5 km / h` prints as `5 km/h`.
-- `+` and `-` keep the left operand's hint.
-- Every other operation drops the hint; the result prints in base units.
-- `x to u` overrides the hint with `u`, which must have the same dimension.
-  `to` is overloaded over `Num`, `Vec` and `Mat`.
+- A definition declared with `unit` instead of `let` is a display unit:
+  `unit km = 1000 * m`. The declaration is label-level metadata in the codebase,
+  like a name, not part of the term or its hash, and it follows the name through
+  `:update`. Evaluating a reference to a declared unit yields its value tagged
+  with itself, so `5 km` prints `5 km` and `1 km to m` prints `1000 m`. The seven
+  base units are units by construction. A `let`-bound quantity is not a unit:
+  `let g = 9.81 m / s^2` prints as `9.81 m s^-2`, and so do values computed from
+  it.
+- `*`, `·`, `⊙`, `∧` and `^` combine display units by multiplying them; `/` and
+  `⊘` divide; `5 km / h` prints as `5 km h^-1` and `(2 km)^2` as `4 km^2`. Unit
+  names keep the order they were written in, so `1 V * 1 A` prints as `1 V A`.
+- `+` and `-` keep the left operand's unit: `5 km + 3 m` is `5.003 km`,
+  `3 m + 5 km` is `5003 m`. Projection, packing, negation, `abs`, `transpose` and
+  `⋆` keep the unit; every other operation drops it.
+- `x to u` replaces the display unit with `u`'s. `to` is shape-polymorphic.
+- Two units with identical definitions are one definition with two names
+  (content addressing) and print under one of them; the prelude therefore
+  defines `Bq` as `1 * Hz` and `Sv` as `1 * Gy`, so each keeps its own identity.
 
-The hint is the *core term* of the unit expression, so it is rendered with current
-names and survives name changes like any other reference.
+A display unit whose dimension does not match the value's is ignored and base
+units are printed, so the rule can never show a wrong number. Units print by
+current name through the same resolution as `:view`, so a renamed unit prints
+under its new name.
 
 ### 3.3 Vectors, matrices and tensors
 
@@ -1625,8 +1642,8 @@ tuned, and compilation is a later milestone.
 2. **Dimensions.** `Dimension` module, Kennedy unifier, base-unit builtins, prelude
    generator, `to`, display hints, quantity printing. Before affine arithmetic,
    because the daily calculator needs `km/h to m/s` before it needs `sin`.
-   Status: type system, base units and base-unit printing done; prelude,
-   display hints and `to` remaining.
+   Status: done. `unit` declarations, the generated prelude, display units
+   through products and sums, and `to`.
 3. **Affine magnitudes.** `Affine` and `Transcendental`, all transcendental
    builtins, hash-named nudges with kinds, `±`, `±σ`, `noise` and `gauss` with
    definition-site identity,

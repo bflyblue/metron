@@ -29,13 +29,17 @@ derived =
   , ("T", "V * s / m^2")
   , ("H", "V * s / A")
   , ("Wb", "V * s")
+  -- Units with the same definition would be one definition with two names
+  -- (content addressing), and would print under one of them. Where two units
+  -- are the same quantity under different names, one is defined through the
+  -- other so that each keeps its own identity and prints as itself.
   , ("rad", "1")
-  , ("sr", "1")
+  , ("sr", "1 * rad")
   , ("lm", "cd")
   , ("lx", "lm / m^2")
-  , ("Bq", "1 / s")
+  , ("Bq", "1 * Hz")
   , ("Gy", "J / kg")
-  , ("Sv", "J / kg")
+  , ("Sv", "1 * Gy")
   , ("kat", "mol / s")
   , ("g", "kg / 1000")
   , ("L", "(m / 10)^3")
@@ -88,12 +92,13 @@ algebra =
 preludeSource :: Text
 preludeSource =
   T.unlines $
-    [def n e | (n, e) <- derived]
-      ++ [def (p <> u) ("10^" <> T.pack (show k) <> " * " <> u) | (p, k) <- prefixes, u <- prefixable, p <> u /= "kg"]
+    [unitDef n e | (n, e) <- derived]
+      ++ [unitDef (p <> u) ("10^" <> T.pack (show k) <> " * " <> u) | (p, k) <- prefixes, u <- prefixable, p <> u /= "kg"]
       ++ [def n e | (n, e) <- constants]
       ++ [def n e | (n, e) <- algebra]
   where
     def n e = "let " <> n <> " = " <> e
+    unitDef n e = "unit " <> n <> " = " <> e
 
 -- | Every name the prelude defines.
 preludeNames :: [Text]

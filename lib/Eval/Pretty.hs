@@ -42,15 +42,32 @@ fractionDigits n frac
           (more, exact) = fractionDigits (n - 1) rest
        in (intToDigit (fromInteger d) : more, exact)
 
-renderValue :: Int -> Value -> Either EvalError Text
-renderValue scale = \case
-  VTensor dims d buf -> do
+-- | Print a value. A tensor with a display unit whose dimension matches
+-- prints its magnitudes in that unit (design §3.2.12); otherwise in SI base
+-- units. Unit names go through the namer so that a renamed unit prints under
+-- its current name.
+renderValue :: RefNamer -> Int -> Value -> Either EvalError Text
+renderValue namer scale = \case
+  VTensor dims d hint buf -> do
     rs <- sequence (V.toList buf)
-    let units = renderUnits d
-    pure (renderNested (renderRational scale) dims rs <> (if T.null units then "" else " " <> units))
+    let (scaled, units) = case hint of
+          Just h
+            | h.dim == d, h.factor /= 0 -> (map (/ h.factor) rs, renderHint h)
+          _ -> (rs, renderUnits d)
+    pure (renderNested (renderRational scale) dims scaled <> (if T.null units then "" else " " <> units))
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
+  where
+    -- Positive exponents first, otherwise in the order the units appeared.
+    renderHint h =
+      T.unwords
+        [ atomName a <> (if k == 1 then "" else "^" <> T.pack (show k))
+        | (a, k) <- filter ((> 0) . snd) h.atoms ++ filter ((< 0) . snd) h.atoms
+        ]
+    atomName = \case
+      UnitRef h i -> namer h i
+      UnitBase u -> u
 
 -- | Print a flat row-major buffer as nested brackets according to its shape.
 renderNested :: (a -> Text) -> [Int] -> [a] -> Text

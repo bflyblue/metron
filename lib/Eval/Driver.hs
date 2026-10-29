@@ -94,8 +94,11 @@ renderResolveErrorWith sources src = \case
 evalExpr :: Config -> Codebase -> Text -> S.Expr -> Either Text Text
 evalExpr cfg cb src e = do
   (typed, _) <- checkExpr cb src e
-  v <- either (Left . renderEvalError) Right (evalClosed cfg (`lookupTyped` cb) typed)
-  either (Left . renderEvalError) Right (renderValue cfg.scale v)
+  v <- either (Left . renderEvalError) Right (evalClosed cfg (runtimeOf cb) typed)
+  either (Left . renderEvalError) Right (renderValue (refNamer cb) cfg.scale v)
+
+runtimeOf :: Codebase -> Runtime
+runtimeOf cb = Runtime {typedOf = (`lookupTyped` cb), isUnit = \h i -> isUnitRef (Reference h i) cb}
 
 -- | Desugar, typecheck, elaborate and lint an expression against a codebase.
 -- Returns the Typed Core and the printed type.

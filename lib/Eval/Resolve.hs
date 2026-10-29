@@ -84,7 +84,9 @@ enterComponent cb = \case
     (schemes, typed) <- either (Left . typeErrorIn b prov) Right (elaborateClosed (typeLookupFor cb) term)
     linted <- either (Left . LintFailure b.name) Right (lintClosed (typeLookupFor cb) typed)
     let h = hashTerm term
-    pure (bindName b.name.text (Reference h Nothing) (addTerm h term (preferLint schemes linted) typed cb))
+        ref = Reference h Nothing
+        cb' = bindName b.name.text ref (addTerm h term (preferLint schemes linted) typed cb)
+    pure (if b.isUnit then markUnit ref cb' else cb')
   CyclicSCC bs -> enterCycle cb bs
 
 -- | Inference and lint must agree; lint is the authority if they ever differ.
@@ -101,7 +103,6 @@ enterCycle :: Codebase -> [S.Binding] -> Either ResolveError Codebase
 enterCycle cb bs = do
   ordering <- mapM (\b -> (,b) <$> placeholderHashOf bs b) bs
   let sorted = map snd (sortOn fst ordering)
-      memberNames = map (.name.text) sorted
   case vecFromList sorted of
     SomeVec members -> do
       let ctx = vecAppend (vecMap (.name.text) members) VNil
@@ -113,7 +114,11 @@ enterCycle cb bs = do
       (schemes, typed) <- either (Left . cycleTypeError sorted provs) Right (elaborateClosed (typeLookupFor cb) cycleTerm)
       linted <- either (Left . LintFailure (headName sorted)) Right (lintClosed (typeLookupFor cb) typed)
       let cb' = addTerm h cycleTerm (preferLint schemes linted) typed cb
-      pure (foldl (\acc (i, n) -> bindName n (Reference h (Just i)) acc) cb' (zip [0 ..] memberNames))
+          bindMember acc (i, b) =
+            let ref = Reference h (Just i)
+                acc' = bindName b.name.text ref acc
+             in if b.isUnit then markUnit ref acc' else acc'
+      pure (foldl bindMember cb' (zip [0 ..] sorted))
   where
     desugarMember :: Vec k Text -> S.Binding -> Either ResolveError (Term k, Provenance)
     desugarMember ctx b = either (Left . Desugar) Right (desugarIn (resolverFor cb) ctx (asLambda b))

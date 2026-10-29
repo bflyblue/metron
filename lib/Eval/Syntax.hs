@@ -86,8 +86,11 @@ data Node
   | Proj Expr Int
   deriving stock (Eq, Show)
 
--- | A top-level or @where@ binding: @name params = body@.
-data Binding = Binding {span :: Span, name :: Name, params :: [Name], body :: Expr}
+-- | A top-level or @where@ binding: @name params = body@. A binding declared
+-- with @unit@ instead of @let@ is a display unit (design §3.2.12): the
+-- codebase remembers that about the name, and values computed from it print
+-- in terms of it.
+data Binding = Binding {span :: Span, name :: Name, params :: [Name], body :: Expr, isUnit :: Bool}
   deriving stock (Eq, Show)
 
 data Statement

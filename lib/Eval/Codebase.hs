@@ -7,6 +7,8 @@ module Eval.Codebase
   , addTerm
   , bindName
   , unbindName
+  , markUnit
+  , isUnitRef
   , lookupName
   , lookupTerm
   , lookupTypes
@@ -41,10 +43,17 @@ data Codebase = Codebase
   , derived :: Map Hash ([Scheme], TTerm Z) -- ^ types and Typed Core, recomputable (design §5.2, §5.3)
   , names :: Map Text Reference
   , history :: Map Text [Reference] -- newest first
+  , units :: Set.Set Reference -- ^ definitions declared with @unit@ (design §3.2.12); label-level metadata like names
   }
 
 emptyCodebase :: Codebase
-emptyCodebase = Codebase Map.empty Map.empty Map.empty Map.empty
+emptyCodebase = Codebase Map.empty Map.empty Map.empty Map.empty Set.empty
+
+markUnit :: Reference -> Codebase -> Codebase
+markUnit r cb = cb {units = Set.insert r cb.units}
+
+isUnitRef :: Reference -> Codebase -> Bool
+isUnitRef r cb = Set.member r cb.units
 
 -- | Store a term with its types and Typed Core under its hash. A no-op if
 -- already present.
