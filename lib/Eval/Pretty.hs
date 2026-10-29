@@ -148,7 +148,7 @@ binary :: Text -> Maybe (Text, Int, Assoc)
 binary = \case
   "outer" -> Just ("*", 7, L)
   "dot" -> Just ("·", 7, L)
-  "cross" -> Just ("×", 7, N)
+  "wedge" -> Just ("∧", 7, L)
   "emul" -> Just ("⊙", 7, L)
   "ediv" -> Just ("⊘", 7, L)
   "div" -> Just ("/", 7, L)

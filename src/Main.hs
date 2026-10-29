@@ -30,15 +30,23 @@ main = do
       hPutStrLn stderr "usage: eval ['expr' | -f file | -i]"
       exitFailure
 
+-- | Every session starts with the prelude loaded.
+startSession :: IO Session
+startSession = case preludeSession of
+  Left err -> TIO.hPutStrLn stderr ("internal error: the prelude does not load:\n" <> err) >> exitFailure
+  Right s -> pure s
+
 runOnce :: Text -> IO ()
-runOnce src = case feed defaultConfig emptySession src of
-  Left err -> TIO.hPutStrLn stderr err >> exitFailure
-  Right (_, outs) -> mapM_ TIO.putStrLn outs
+runOnce src = do
+  session <- startSession
+  case feed defaultConfig session src of
+    Left err -> TIO.hPutStrLn stderr err >> exitFailure
+    Right (_, outs) -> mapM_ TIO.putStrLn outs
 
 repl :: IO ()
 repl = do
   hSetBuffering stdout NoBuffering
-  loop emptySession
+  startSession >>= loop
   where
     loop session = do
       putStr "> "

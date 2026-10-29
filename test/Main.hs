@@ -17,6 +17,7 @@ import Eval.Type
 import Eval.Lexer hiding (TNum, TProj)
 import Eval.Lexer qualified as L
 import Eval.Parser
+import Eval.Prelude (preludeNames)
 import Eval.Pretty
 import Eval.Syntax qualified as S
 import Test.Tasty
@@ -26,7 +27,7 @@ import Test.Tasty.QuickCheck
 main :: IO ()
 main =
   defaultMain
-    (testGroup "eval" [coreTests, evalTests, tcoreTests, lexerTests, parserTests, desugarTests, hashTests, prettyTests, endToEndTests, codebaseTests, typeTests, soundnessTests, productTests, propertyTests, unitTests, lintRegressionTests])
+    (testGroup "eval" [coreTests, evalTests, tcoreTests, lexerTests, parserTests, desugarTests, hashTests, prettyTests, endToEndTests, codebaseTests, typeTests, soundnessTests, productTests, propertyTests, unitTests, lintRegressionTests, preludeTests])
 
 -- Term-building helpers -------------------------------------------------
 
@@ -284,7 +285,7 @@ lexerTests =
     , testCase "keywords and identifiers" $
         toks "let x' = true in x'" @?= Right [TKw KLet, TIdent "x'", TEquals, TKw KTrue, TKw KIn, TIdent "x'"]
     , testCase "unicode operators map to canonical tokens" $
-        toks "λx → x ⊗ 2 ÷ 3 ≤ 4 ∧ ¬false"
+        toks "λx → x ⊗ 2 ÷ 3 ≤ 4 && ¬false"
           @?= Right [TLambda, TIdent "x", TArrow, TIdent "x", TOp "*", L.TNum 2, TOp "/", L.TNum 3, TOp "<=", L.TNum 4, TOp "&&", TIdent "not", TKw KFalse]
     , testCase "plus-minus spellings" $
         toks "a ± 1 ±σ 2 +- 3 +-s 4"
@@ -543,7 +544,7 @@ endToEndTests =
     , testCase "repeating decimal" $ evalText "2/3" @?= Right ["0.66666666666666666666…"]
     , testCase "lambda" $ evalText "(\\x y -> x * y + 1) 3 4" @?= Right ["13"]
     , testCase "unicode lambda and operators" $ evalText "(λx → x ⊗ 2) 21" @?= Right ["42"]
-    , testCase "if with booleans" $ evalText "if 1 < 2 ∧ ¬false then 10 else 20" @?= Right ["10"]
+    , testCase "if with booleans" $ evalText "if 1 < 2 && ¬false then 10 else 20" @?= Right ["10"]
     , testCase "superscript power" $ evalText "2³ + 2⁻¹" @?= Right ["8.5"]
     , testCase "section" $ evalText "(+ 1) 41" @?= Right ["42"]
     , testCase "projection" $ evalText "[1, 2, 3].1 + [[1, 2], [3, 4]].1.0" @?= Right ["5"]
@@ -553,7 +554,7 @@ endToEndTests =
         evalText "[[1, 2], [3, 4]] == [[1, 2], [3, 4]]" @?= Right ["true"]
     , testCase "tensor primitives" $ do
         evalText "dot [1, 2, 3] [4, 5, 6]" @?= Right ["32"]
-        evalText "cross [1, 0, 0] [0, 1, 0]" @?= Right ["[0, 0, 1]"]
+        evalP "cross [1, 0, 0] [0, 1, 0]" @?= Right ["[0, 0, 1]"]
         evalText "transpose [[1, 2], [3, 4]]" @?= Right ["[[1, 3], [2, 4]]"]
         evalText "vmap (\\x -> x * 2) [[1, 2], [3, 4]]" @?= Right ["[[2, 4], [6, 8]]"]
     , testCase "a rank-three tensor" $
@@ -787,7 +788,7 @@ typeTests =
     , testCase "length-polymorphic primitives" $ do
         typeOfText "dot" @?= Right "Vec n d -> Tensor (n : s) d1 -> Tensor s [d d1]"
         typeOfText "transpose" @?= Right "Mat n m d -> Mat m n d"
-        typeOfText "cross" @?= Right "Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
+        typeOfTextP "cross" @?= Right "Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
     , testCase "recursive definitions get types" $
         runLines ["let fact n = if n == 0 then 1 else n * fact (n - 1)", ":type fact"] @?= Right ["Num -> Num"]
     , testCase "mutually recursive definitions get types" $
@@ -881,9 +882,9 @@ productTests =
         evalText "[[1, 2], [3, 4]] @ [[0, 1], [1, 0]]" @?= Right ["[[2, 1], [4, 3]]"]
         evalText "[[[1, 2], [3, 4]], [[5, 6], [7, 8]]] @ [1, 0]" @?= Right ["[[1, 3], [5, 7]]"]
     , testCase "cross product, both spellings" $ do
-        evalText "[1, 0, 0] × [0, 1, 0]" @?= Right ["[0, 0, 1]"]
-        evalText "[1, 0, 0] >< [0, 1, 0]" @?= Right ["[0, 0, 1]"]
-        evalText "cross [0, 1, 0] [1, 0, 0]" @?= Right ["[0, 0, -1]"]
+        evalP "[1, 0, 0] × [0, 1, 0]" @?= Right ["[0, 0, 1]"]
+        evalP "[1, 0, 0] >< [0, 1, 0]" @?= Right ["[0, 0, 1]"]
+        evalP "cross [0, 1, 0] [1, 0, 0]" @?= Right ["[0, 0, -1]"]
     , testCase "elementwise product and division" $ do
         evalText "[1, 2] ⊙ [3, 4]" @?= Right ["[3, 8]"]
         evalText "[1, 2] .* [3, 4]" @?= Right ["[3, 8]"]
@@ -1102,10 +1103,70 @@ lintRegressionTests =
   testGroup
     "lint regressions"
     [ testCase "instantiation renames quantified variables simultaneously" $ do
-        typeOfText "\\a b -> a >< b" @?= Right "Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
-        evalText "[1, 0, 0] m >< ([0, 1, 0] m / s)" @?= Right ["[0, 0, 1] m^2 s^-1"]
+        typeOfTextP "\\a b -> a >< b" @?= Right "Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
+        evalP "[1, 0, 0] m >< ([0, 1, 0] m / s)" @?= Right ["[0, 0, 1] m^2 s^-1"]
         evalText "[1, 2] m ⊙ [3, 4] s" @?= Right ["[3, 8] m s"]
     , testCase "a stored polymorphic definition instantiates at several dimensions" $
         runLines ["let sq x = x * x", ":add", "sq (3 m)", "sq (2 s)", ":type sq"]
           @?= Right ["added sq", "9 m^2", "4 s^2", "Num d -> Num [d^2]"]
+    ]
+
+-- Prelude ----------------------------------------------------------------------------
+
+withPrelude :: Session
+withPrelude = either (error . T.unpack) id preludeSession
+
+evalP :: Text -> Either Text [Text]
+evalP src = snd <$> feed defaultConfig withPrelude src
+
+runLinesP :: [Text] -> Either Text [Text]
+runLinesP = go withPrelude []
+  where
+    go _ acc [] = Right (concat (reverse acc))
+    go s acc (l : ls) = do
+      (s', outs) <- feed defaultConfig s l
+      go s' (outs : acc) ls
+
+typeOfTextP :: Text -> Either Text Text
+typeOfTextP src = runLinesP [":type " <> src] >>= \case
+  [t] -> Right t
+  other -> Left (T.pack (show other))
+
+preludeTests :: TestTree
+preludeTests =
+  testGroup
+    "prelude"
+    [ testCase "the prelude loads and defines its names" $
+        length preludeNames > 600 @? "prelude is unexpectedly small"
+    , testCase "derived units are coherent" $ do
+        evalP "1 N == 1 kg * m / s^2" @?= Right ["true"]
+        evalP "1 J" @?= Right ["1 kg m^2 s^-2"]
+        evalP "1 V * 1 A" @?= Right ["1 kg m^2 s^-3"]
+    , testCase "prefixes" $ do
+        evalP "1 km" @?= Right ["1000 m"]
+        evalP "1 µm == 1 um" @?= Right ["true"]
+        evalP "1 mg" @?= Right ["0.000001 kg"]
+        evalP "1 GHz" @?= Right ["1000000000 s^-1"]
+    , testCase "accepted units" $ do
+        evalP "3 h + 30 min" @?= Right ["12600 s"]
+        evalP "1 L" @?= Right ["0.001 m^3"]
+        evalP "1 AU / c to s" @?= Right ["499.00478383615641191347… s"]
+    , testCase "constants are exact where SI defines them so" $
+        evalP "c" @?= Right ["299792458 m s^-1"]
+    , testCase "cross is the Hodge dual of the wedge" $ do
+        runLinesP [":view cross"] @?= Right ["cross = \\a -> \\b -> star (a ∧ b)"]
+        evalP "[1, 2, 3] × [4, 5, 6] == star ([1, 2, 3] ∧ [4, 5, 6])" @?= Right ["true"]
+        -- Contracting ε's last index first gives b × a, so the arguments swap.
+        evalP "(ε @ [0, 1, 0]) @ [1, 0, 0]" @?= Right ["[0, 0, 1]"]
+    , testCase "wedge works in any dimension" $ do
+        typeOfTextP "\\a b -> a /\\ b" @?= Right "Vec n d -> Vec n d1 -> Mat n n [d d1]"
+        evalP "[1, 0] ∧ [0, 1]" @?= Right ["[[0, 1], [-1, 0]]"]
+    , testCase "an orbital calculation with units end to end" $
+        runLinesP
+          [ "let r = [7000, 0, 0] km"
+          , "let v = [0, 7.5, 0] km / s"
+          , ":type r × v"
+          , "(r × v).2"
+          ]
+          @?= Right ["Vec 3 [m^2 s^-1]", "52500000000 m^2 s^-1"]
     ]

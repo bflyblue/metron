@@ -204,7 +204,8 @@ symbol =
     , string ">=" $> TOp ">="
     , string "≥" $> TOp ">="
     , string "&&" $> TOp "&&"
-    , string "∧" $> TOp "&&"
+    , string "/\\" $> TOp "/\\"
+    , string "∧" $> TOp "/\\"
     , string "||" $> TOp "||"
     , string "∨" $> TOp "||"
     , string "∘" $> TOp "."
@@ -229,6 +230,7 @@ symbol =
     , oneOf ("\\λ" :: String) $> TLambda
     , char '√' $> TSqrt
     , char '¬' $> TIdent "not"
+    , char '⋆' $> TIdent "star"
     , char '°' $> TIdent "deg"
     , char '′' $> TIdent "arcmin"
     , char '″' $> TIdent "arcsec"

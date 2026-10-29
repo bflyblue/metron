@@ -56,3 +56,11 @@
   instance matching uses a one-shot substitution, fixing a namespace clash
   between a scheme's ids and inference's. Display units and the prelude are
   next.
+- Prelude: derived SI units, the 24 prefixes on every prefixable unit,
+  accepted units (min h day year L t g AU), exact SI-2019 and IAU nominal
+  constants, the Levi-Civita tensor, generated from `Eval.Prelude` and entered
+  into every session as one binding group (about 700 definitions, ~30 ms).
+- Wedge product `∧`/`/\` (`wedge`) and 3D Hodge star `⋆` (`star`) as
+  primitives; `cross` is now a prelude definition `star (wedge a b)` and `×`
+  resolves through that name. `∧` therefore no longer spells boolean and,
+  which is `&&` only. Units print in the customary order `kg m s …`.

@@ -307,7 +307,8 @@ primArity = \case
   "atan2" -> Just 2
   "to" -> Just 2
   "dot" -> Just 2
-  "cross" -> Just 2
+  "wedge" -> Just 2
+  "star" -> Just 1
   "norm" -> Just 1
   "transpose" -> Just 1
   "inverse" -> Just 1

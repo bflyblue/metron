@@ -122,9 +122,18 @@ renderUnits d
 renderUnitsWith :: (Int -> Text) -> Dim -> Text
 renderUnitsWith varName d = T.unwords (map atom (sortOn order (dimAtoms d)))
   where
-    -- Base dimensions first in SI order, then variables; positive exponents
-    -- before negative so that @m s^-2@ reads naturally.
-    order (a, k) = (k < 0, a)
+    -- Positive exponents before negative, and within each the customary
+    -- order @kg m s A K mol cd@ (so a joule is @kg m^2 s^-2@), variables last.
+    order (a, k) = (k < 0, rank a)
+    rank = \case
+      Base M -> 0 :: Int
+      Base L -> 1
+      Base T -> 2
+      Base I -> 3
+      Base Θ -> 4
+      Base N -> 5
+      Base J -> 6
+      DVar v -> 7 + v
     atom (a, k) = name a <> (if k == 1 then "" else "^" <> T.pack (show k))
     name = \case
       Base b -> baseSymbol b

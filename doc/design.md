@@ -284,7 +284,9 @@ so a plain keyboard is never a barrier, and the pretty-printer can emit either.
 | `⊘` | `./` | elementwise division; name `ediv` |
 | `÷` | `/` | division by a scalar; name `div` |
 | `≤` `≥` `≠` | `<=` `>=` `/=` | comparison |
-| `∧` `∨` `¬` | `&&` `\|\|` `not` | boolean |
+| `∨` `¬` | `\|\|` `not` | boolean or, not; boolean and is `&&` only, because `∧` is the wedge product |
+| `∧` | `/\` | wedge (exterior) product; name `wedge` |
+| `⋆` | `star` | 3D Hodge star, prefix; name `star` |
 | `±` | `+-` | declared hard bound |
 | `±σ` | `+-s` | declared standard uncertainty (1σ) |
 | `√` | `sqrt` | prefix: `√x`, `√(a² + b²)` |
@@ -700,7 +702,9 @@ Operators, each with one type (§4.2):
 | `+`, `-` | `add`, `sub` | elementwise on tensors of one shape | same `δ` |
 | `*`, `⊗` | `outer` | tensor product; ranks add; scalar scaling is the rank-zero case | `δ₁·δ₂` |
 | `·`, `@` | `dot` | contracting product: last index of the left with first of the right; dot, Mat·Vec, Mat·Mat | `δ₁·δ₂` |
-| `×`, `><` | `cross` | cross product of 3-vectors | `δ₁·δ₂` |
+| `∧`, `/\` | `wedge` | wedge product: the oriented plane of two vectors, any dimension | `δ₁·δ₂` |
+| `⋆` | `star` | 3D Hodge star: a bivector to its normal vector | same `δ` |
+| `×`, `><` | `cross` | 3D cross product, defined in the prelude as `star (wedge a b)`; there is no binary cross product in other dimensions, the general tool is contraction with the Levi-Civita tensor `ε`: `a × b = (ε · b) · a` | `δ₁·δ₂` |
 | `⊙`, `.*` | `emul` | elementwise product | `δ₁·δ₂` |
 | `⊘`, `./` | `ediv` | elementwise division | `δ₁/δ₂` |
 | `/` | `div` | division by a scalar | `δ₁/δ₂` |
@@ -921,7 +925,9 @@ operator with one type (core.md, "Operators across ranks"):
 ```
 (*) (⊗)  outer : Tensor s1 δ1 -> Tensor s2 δ2 -> Tensor (s1 ++ s2) [δ1 δ2]   -- tensor product; scalar scaling is the rank-zero case
 (·) (@)  dot   : Tensor (s1 ++ [n]) δ1 -> Tensor (n : s2) δ2 -> Tensor (s1 ++ s2) [δ1 δ2]   -- contracting product: dot, Mat·Vec, Mat·Mat
-(×) (><) cross : Vec 3 δ1 -> Vec 3 δ2 -> Vec 3 [δ1 δ2]
+(∧) (/\) wedge : Vec n δ1 -> Vec n δ2 -> Mat n n [δ1 δ2]                       -- antisymmetrised outer product; the general binary product of vectors
+(⋆)      star  : Mat 3 3 δ -> Vec 3 δ                                          -- 3D Hodge dual
+(×) (><) cross : Vec 3 δ1 -> Vec 3 δ2 -> Vec 3 [δ1 δ2]                         -- prelude: cross a b = star (wedge a b)
 (⊙) (.*) emul  : Tensor s δ1 -> Tensor s δ2 -> Tensor s [δ1 δ2]               -- elementwise
 (⊘) (./) ediv  : Tensor s δ1 -> Tensor s δ2 -> Tensor s [δ1 / δ2]
 (/) (÷)  div   : Tensor s δ1 -> Num δ2 -> Tensor s [δ1 / δ2]                   -- division by a scalar
@@ -1638,7 +1644,10 @@ tuned, and compilation is a later milestone.
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
    (re-evaluate at higher `p`); type annotations; user data types; mixed-dimension matrices, which
    unlocks joint state covariance as a value; ball-plus-zonotope enclosures for
-   radial bounds; non-SI and affine-offset units (°C); compilation for long
+   radial bounds; non-SI and affine-offset units (°C); rewrite rules that
+   fuse `star (wedge a b)` back into a hand-coded 3D cross kernel and notice
+   when only part of a product is consumed (laziness already avoids the
+   arithmetic, not the allocation); compilation for long
    propagations.
 
 ---

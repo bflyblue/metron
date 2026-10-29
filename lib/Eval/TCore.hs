@@ -106,7 +106,10 @@ primScheme name = case name of
   "not" -> mono (TFun TBool TBool)
   "pi" -> mono numT
   "to" -> Just (Forall [sv, dv] (TFun sd (TFun (numD d) sd)))
-  "cross" -> Just (Forall [dv, d2v] (TFun (vecD three d) (TFun (vecD three d2) (vecD three (dimMul d d2)))))
+  -- The wedge product is the general binary product of vectors; the 3D
+  -- cross product is `star (wedge a b)` and lives in the prelude.
+  "wedge" -> Just (Forall [nv, dv, d2v] (TFun (vecD n d) (TFun (vecD n d2) (matD n n (dimMul d d2)))))
+  "star" -> Just (Forall [dv] (TFun (matD three three d) (vecD three d)))
   "norm" -> Just (Forall [nv, dv] (TFun (vecD n d) (numD d)))
   "transpose" -> Just (Forall [nv, mv, dv] (TFun (matD n m d) (matD m n d)))
   "inverse" -> Just (Forall [nv, dv] (TFun (matD n n d) (matD n n (dimInv d))))

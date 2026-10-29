@@ -9,6 +9,7 @@
 module Eval.Driver
   ( Session (..)
   , emptySession
+  , preludeSession
   , feed
   ) where
 
@@ -25,6 +26,7 @@ import Eval.Eval
 import Eval.Hash (showHash)
 import Eval.Infer qualified as I
 import Eval.Parser (parseExpr, parseProgram)
+import Eval.Prelude (preludeSource)
 import Eval.Pretty
 import Eval.Resolve
 import Eval.Syntax qualified as S
@@ -41,6 +43,15 @@ data Session = Session
 
 emptySession :: Session
 emptySession = Session emptyCodebase [] Map.empty emptyCodebase
+
+-- | A session with the prelude (design §3.2.11) entered and added, as every
+-- interactive session starts. Fails only if the prelude itself does not
+-- check, which is a build error.
+preludeSession :: Either Text Session
+preludeSession = do
+  (s, _) <- feed defaultConfig emptySession preludeSource
+  (s', _) <- feed defaultConfig s ":add"
+  pure s'
 
 -- | Parse and run one input (a line, a file). Returns the new session and
 -- the lines to print, or the first error.

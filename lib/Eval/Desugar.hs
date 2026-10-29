@@ -114,6 +114,10 @@ desugar path ctx e = do
          in desugar path ctx (synthLam e.span x (S.Expr e.span (S.App a (S.Expr e.span (S.App b var)))))
       S.Infix f ->
         desugar path ctx (S.Expr e.span (S.App (S.Expr e.span (S.App (S.Expr a.span (S.Var f)) a)) b))
+      -- The cross product is a prelude definition, not a primitive, so its
+      -- operator resolves through the name like a backticked function.
+      S.Cross ->
+        desugar path ctx (S.Expr e.span (S.App (S.Expr e.span (S.App (S.Expr e.span (S.Var "cross")) a)) b))
       _ -> prim (opPrim op) [a, b]
     -- Negating a constant is a negative constant, so that `-3` and a literal
     -- negative three are one term with one hash (core.md §6: constants are
@@ -235,6 +239,7 @@ opPrim = \case
   S.Outer -> "outer"
   S.Dot -> "dot"
   S.Cross -> "cross"
+  S.Wedge -> "wedge"
   S.EMul -> "emul"
   S.EDiv -> "ediv"
   S.Div -> "div"

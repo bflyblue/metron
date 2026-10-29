@@ -254,15 +254,27 @@ runPrim cfg look p args = case (p, args) of
   ("floor", [a]) -> num dimOne . fromInteger . floor <$> (scalar =<< a)
   ("ceil", [a]) -> num dimOne . fromInteger . ceiling <$> (scalar =<< a)
   ("round", [a]) -> num dimOne . fromInteger . round <$> (scalar =<< a)
-  ("cross", [a, b]) -> do
-    (_, dim1, xs) <- tensor =<< a
+  -- Wedge product: the antisymmetrised outer product, (a ∧ b)ⱼₖ = aⱼbₖ − aₖbⱼ,
+  -- stored as an ordinary matrix. Entries are thunks, so a consumer that
+  -- reads three of the nine (the 3D Hodge star) computes only those.
+  ("wedge", [a, b]) -> do
+    (da, dim1, xs) <- tensor =<< a
     (_, dim2, ys) <- tensor =<< b
-    xs' <- sequence (V.toList xs)
-    ys' <- sequence (V.toList ys)
-    case (xs', ys') of
-      ([x0, x1, x2], [y0, y1, y2]) ->
-        Right (VTensor [3] (dimMul dim1 dim2) (V.fromList (map Right [x1 * y2 - x2 * y1, x2 * y0 - x0 * y2, x0 * y1 - x1 * y0])))
-      _ -> Left (Internal "cross of non-3-vectors")
+    case da of
+      [n] ->
+        Right
+          ( VTensor
+              [n, n]
+              (dimMul dim1 dim2)
+              (V.generate (n * n) (\k -> let (j, i) = k `divMod` n in (\x y x' y' -> x * y - x' * y') <$> (xs V.! j) <*> (ys V.! i) <*> (xs V.! i) <*> (ys V.! j)))
+          )
+      _ -> Left (Internal "wedge of non-vectors")
+  -- 3D Hodge star of a bivector: (⋆M) = (M₁₂, M₂₀, M₀₁).
+  ("star", [a]) -> do
+    (dims, d, buf) <- tensor =<< a
+    case dims of
+      [3, 3] -> Right (VTensor [3] d (V.fromList [buf V.! 5, buf V.! 6, buf V.! 1]))
+      _ -> Left (Internal "star of a non-3x3 matrix")
   ("transpose", [a]) -> do
     (dims, d, buf) <- tensor =<< a
     case dims of

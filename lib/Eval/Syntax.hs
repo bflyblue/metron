@@ -41,7 +41,8 @@ data Op
   | Sub
   | Outer -- ^ @*@, @⊗@: tensor product, including scalar scaling
   | Dot -- ^ @·@, @@@: contracting product
-  | Cross -- ^ @×@
+  | Cross -- ^ @×@, @><@: the 3D cross product, a prelude definition
+  | Wedge -- ^ @∧@, @/\@: the wedge (exterior) product
   | EMul -- ^ @⊙@, @.*@: elementwise product
   | EDiv -- ^ @⊘@, @./@: elementwise division
   | Div -- ^ @/@: division by a scalar
