@@ -21,6 +21,7 @@ import Data.Text qualified as T
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
+import Eval.Desugar qualified as D
 import Eval.Hash
 import Eval.Infer
 import Eval.Syntax qualified as S
@@ -102,7 +103,10 @@ enterComponent :: Codebase -> SCC S.Binding -> Either ResolveError Codebase
 enterComponent cb = \case
   AcyclicSCC b -> do
     (term, prov) <-
-      either (Left . Desugar) Right (desugarClosed (resolverFor cb) (asLambda b))
+      either
+        (Left . Desugar)
+        Right
+        (desugarDefinition b.name.text (resolverFor cb) (asLambda b))
     (schemes, typed) <-
       either
         (Left . typeErrorIn b prov)
@@ -135,7 +139,7 @@ enterCycle cb bs = do
   case vecFromList sorted of
     SomeVec members -> do
       let ctx = vecAppend (vecMap (.name.text) members) VNil
-      desugared <- vecTraverse (desugarMember ctx) members
+      desugared <- vecTraverse (desugarOne ctx) members
       let bodies = vecMap fst desugared
           provs = vecToList (vecMap snd desugared)
           cycleTerm = Cycle (vecMap (Hint . (.name.text)) members) bodies
@@ -157,14 +161,18 @@ enterCycle cb bs = do
              in if b.isUnit then markUnit ref acc' else acc'
       pure (foldl bindMember cb' (zip [0 ..] sorted))
  where
-  desugarMember ::
+  desugarOne ::
     Vec k Text -> S.Binding -> Either ResolveError (Term k, Provenance)
-  desugarMember ctx b = either (Left . Desugar) Right (desugarIn (resolverFor cb) ctx (asLambda b))
+  desugarOne ctx b =
+    either
+      (Left . Desugar)
+      Right
+      (D.desugarMember b.name.text (resolverFor cb) ctx (asLambda b))
 
   placeholderHashOf :: [S.Binding] -> S.Binding -> Either ResolveError Hash
   placeholderHashOf group b = case vecFromList (map (.name.text) group) of
     SomeVec ns -> do
-      (t, _) <- desugarMember (vecAppend ns VNil) b
+      (t, _) <- desugarOne (vecAppend ns VNil) b
       pure (placeholderHash t)
 
   -- Inside a cycle the error path starts with the member index.
@@ -187,6 +195,7 @@ freeNames = go Set.empty
  where
   go bound e = case e.node of
     S.Num _ -> Set.empty
+    S.Labelled _ a -> go bound a
     S.Bool _ -> Set.empty
     S.Var x -> if x `Set.member` bound then Set.empty else Set.singleton x
     S.Lam ns b -> go (foldr (Set.insert . (.text)) bound ns) b

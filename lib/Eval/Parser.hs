@@ -218,6 +218,7 @@ opExpr = makeExprParser term table
       ]
     , [InfixL (binop Add <$ opTok "+"), InfixL (binop Sub <$ opTok "-")]
     , [InfixN plusMinus]
+    , [Postfix labelP]
     ,
       [ InfixN (binop Eq <$ opTok "==")
       , InfixN (binop Ne <$ opTok "/=")
@@ -244,6 +245,9 @@ opExpr = makeExprParser term table
   plusMinus = do
     (_, k) <- match "±" (\case TPlusMinus k -> Just k; _ -> Nothing)
     pure (binop (PlusMinus k))
+  labelP = do
+    (sp, l) <- match "#label" (\case THashLabel l -> Just l; _ -> Nothing)
+    pure (\e -> Expr (spanUnion e.span sp) (Labelled l e))
 
 binop :: Op -> Expr -> Expr -> Expr
 binop o a b = Expr (spanUnion a.span b.span) (BinOp o a b)

@@ -59,8 +59,8 @@ enc ph depth = \case
   Let _ e b -> word8 0x07 <> enc ph depth e <> enc ph (depth + 1) b
   If c t e -> word8 0x08 <> enc ph depth c <> enc ph depth t <> enc ph depth e
   Pow t n -> word8 0x09 <> enc ph depth t <> sint n
-  Noise k n -> word8 0x0A <> kind k <> varint n
-  Uncertain k x e -> word8 0x0B <> kind k <> enc ph depth x <> enc ph depth e
+  Noise k l n -> word8 0x0A <> kind k <> label l <> varint n
+  Uncertain k l x e -> word8 0x0B <> kind k <> label l <> enc ph depth x <> enc ph depth e
   Pack ts -> word8 0x0C <> varint (fromIntegral (length ts)) <> foldMap (enc ph depth) ts
   Cycle _ bodies ->
     let k = vecLength bodies
@@ -72,6 +72,9 @@ enc ph depth = \case
   kind = \case
     Bound -> word8 0
     Stat -> word8 1
+  label = \case
+    Owner t -> word8 0 <> text t
+    Tag t -> word8 1 <> text t
   text t =
     let bs = TE.encodeUtf8 t
      in varint (fromIntegral (BS.length bs)) <> byteString bs

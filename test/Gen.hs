@@ -260,6 +260,7 @@ exprDepth e =
     S.If c t f -> maximum (map exprDepth [c, t, f])
     S.BinOp _ a b -> max (exprDepth a) (exprDepth b)
     S.Neg a -> exprDepth a
+    S.Labelled _ a -> exprDepth a
     S.Pow a _ -> exprDepth a
     S.SectionL _ a -> exprDepth a
     S.SectionR a _ -> exprDepth a

@@ -31,6 +31,8 @@ module Eval.Core (
   Hash (..),
   Hint (..),
   NudgeKind (..),
+  Label (..),
+  renderLabel,
   Lit (..),
   Term (..),
   alphaEq,
@@ -138,6 +140,25 @@ uncertainty.
 data NudgeKind = Bound | Stat
   deriving stock (Eq, Ord, Show)
 
+{- | Who a declared uncertainty belongs to (design §3.2.4). The desugarer
+stamps every @±@, @ and @ with the name of the definition it is
+written in, so two definitions with identical bodies are different terms
+and therefore different measurements; the nudge's identity is still the
+definition hash and the path. A @#label@ written by the user is a global
+identity instead: every @±@ with that label and midpoint is one unknown,
+wherever it appears. Only a tag is printed; the owner stamp is implied by
+the binding.
+-}
+data Label
+  = Owner Text
+  | Tag Text
+  deriving stock (Eq, Ord, Show)
+
+renderLabel :: Label -> Text
+renderLabel = \case
+  Owner _ -> ""
+  Tag t -> " #" <> t
+
 {- | A constant. A tensor literal carries its shape and its values flat in
 row-major order; a number is the rank-zero case. The boolean alternative is
 the last special-cased constant (core.md §5).
@@ -173,9 +194,9 @@ data Term (n :: Nat) where
   -- | @e ^ n@ with a literal integer exponent.
   Pow :: Term n -> Integer -> Term n
   -- | @noise n@ or @gauss n@: @n@ fresh unit nudges as a dimensionless vector.
-  Noise :: NudgeKind -> Integer -> Term n
-  -- | @x ± err@ or @x ±σ err@.
-  Uncertain :: NudgeKind -> Term n -> Term n -> Term n
+  Noise :: NudgeKind -> Label -> Integer -> Term n
+  -- | @x ± err@ or @x ±σ err@, with its owner or tag.
+  Uncertain :: NudgeKind -> Label -> Term n -> Term n -> Term n
   {- | @[a, b, c]@: stack @k@ tensors of shape @s@ into one of shape @k : s@.
   A literal whose elements are all constants is folded into 'Lit' by the
   desugarer, so the two never describe the same value.
@@ -207,8 +228,8 @@ alphaEq = go
   go (Let _ e b) (Let _ e' b') = go e e' && go b b'
   go (If c t e) (If c' t' e') = go c c' && go t t' && go e e'
   go (Pow t n) (Pow t' n') = n == n' && go t t'
-  go (Noise k n) (Noise k' n') = k == k' && n == n'
-  go (Uncertain k x e) (Uncertain k' x' e') = k == k' && go x x' && go e e'
+  go (Noise k l n) (Noise k' l' n') = k == k' && l == l' && n == n'
+  go (Uncertain k l x e) (Uncertain k' l' x' e') = k == k' && l == l' && go x x' && go e e'
   go (Pack as) (Pack bs) = goList as bs
   go (Proj t i) (Proj t' i') = i == i' && go t t'
   go (Cycle _ bs) (Cycle _ bs') = goList (vecToList bs) (vecToList bs')
@@ -229,8 +250,8 @@ refs = \case
   Let _ e b -> refs e <> refs b
   If c t e -> refs c <> refs t <> refs e
   Pow t _ -> refs t
-  Noise _ _ -> Set.empty
-  Uncertain _ x e -> refs x <> refs e
+  Noise{} -> Set.empty
+  Uncertain _ _ x e -> refs x <> refs e
   Pack ts -> foldMap refs ts
   Proj t _ -> refs t
   Cycle _ bs -> foldMap refs (vecToList bs)
@@ -247,8 +268,8 @@ refsWithIndex = \case
   Let _ e b -> refsWithIndex e <> refsWithIndex b
   If c t e -> refsWithIndex c <> refsWithIndex t <> refsWithIndex e
   Pow t _ -> refsWithIndex t
-  Noise _ _ -> Set.empty
-  Uncertain _ x e -> refsWithIndex x <> refsWithIndex e
+  Noise{} -> Set.empty
+  Uncertain _ _ x e -> refsWithIndex x <> refsWithIndex e
   Pack ts -> foldMap refsWithIndex ts
   Proj t _ -> refsWithIndex t
   Cycle _ bs -> foldMap refsWithIndex (vecToList bs)
@@ -271,8 +292,8 @@ rewriteRefs f = go
     Let h e b -> Let h (go e) (go b)
     If c t e -> If (go c) (go t) (go e)
     Pow t n -> Pow (go t) n
-    Noise k n -> Noise k n
-    Uncertain k x e -> Uncertain k (go x) (go e)
+    Noise k l n -> Noise k l n
+    Uncertain k l x e -> Uncertain k l (go x) (go e)
     Pack ts -> Pack (map go ts)
     Proj t i -> Proj (go t) i
     Cycle hs bs -> Cycle hs (vecMap go bs)

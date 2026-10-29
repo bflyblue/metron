@@ -276,7 +276,7 @@ evalTests =
            in run defs (Ref (h "c") (Just 3))
                 @?= Left "type error: reference to a cycle member that does not exist"
     , testCase "a zero-width ± is exact"
-        $ runClosed (Uncertain Bound (num 1) (num 0)) @?= Right "1"
+        $ runClosed (Uncertain Bound (Owner "") (num 1) (num 0)) @?= Right "1"
     ]
 
 -- Typed Core ---------------------------------------------------------------------
@@ -494,6 +494,7 @@ data Tree
   | SL S.Op Tree
   | SR Tree S.Op
   | Vc [Tree]
+  | Lb Text Tree
   | Pj Tree Int
   deriving stock (Eq, Show)
 
@@ -512,6 +513,7 @@ shape e = case e.node of
   S.SectionL o a -> SL o (shape a)
   S.SectionR a o -> SR (shape a) o
   S.Vec es -> Vc (map shape es)
+  S.Labelled l a -> Lb l (shape a)
   S.Proj a i -> Pj (shape a) i
 
 parserTests :: TestTree
@@ -1297,8 +1299,8 @@ blankHints = go
     Let _ e b -> Let "q" (go e) (go b)
     If c t e -> If (go c) (go t) (go e)
     Pow t n -> Pow (go t) n
-    Noise k n -> Noise k n
-    Uncertain k x e -> Uncertain k (go x) (go e)
+    Noise k l n -> Noise k l n
+    Uncertain k l x e -> Uncertain k l (go x) (go e)
     Pack ts -> Pack (map go ts)
     Proj t i -> Proj (go t) i
     Cycle hs bs -> Cycle (vecMap (const "q") hs) (vecMap go bs)
@@ -1506,7 +1508,7 @@ polyLets = \case
   TIf c t e -> polyLets c + polyLets t + polyLets e
   TPrimApp _ _ as -> sum (map polyLets as)
   TPow b _ -> polyLets b
-  TUncertain _ x e -> polyLets x + polyLets e
+  TUncertain _ _ x e -> polyLets x + polyLets e
   TPack ts -> sum (map polyLets ts)
   TProj t _ -> polyLets t
   TTyLam _ _ b -> polyLets b
@@ -1522,7 +1524,7 @@ annotations = \case
   TLet _ (Forall _ ty) e b -> ty : annotations e ++ annotations b
   TIf c t e -> annotations c ++ annotations t ++ annotations e
   TPow b _ -> annotations b
-  TUncertain _ x e -> annotations x ++ annotations e
+  TUncertain _ _ x e -> annotations x ++ annotations e
   TPack ts -> concatMap annotations ts
   TProj t _ -> annotations t
   TTyLam _ _ b -> annotations b
@@ -1933,6 +1935,46 @@ affineTests =
         evalP "90 deg to rad" @?= Right ["1.5707963267948966192… rad"]
         evalP "sin (90 deg)" @?= Right ["1.0000000000000000000…"]
         evalP "1 arcsec to deg" @?= Right ["0.00027777777777777777777… deg"]
+    , testCase "identical definitions are different measurements; a - a still cancels" $ do
+        runLines
+          ["let a = 5 ± 0.1", "let b = 5 ± 0.1", "a - b", "a - a", "a - 2 * a + a"]
+          @?= Right ["0.0 ± 0.2", "0", "0"]
+        case runLines ["let a = 5 ± 0.1", "let b = 5 ± 0.1", ":hash a", ":hash b"] of
+          Right [ha, hb] -> ha /= hb @? "a and b share a hash"
+          other -> assertFailure (show other)
+    , testCase
+        "the owner stamp is implied: :view prints no label and the text round-trips"
+        $ runLines ["let a = 5 ± 0.1", ":view a"] @?= Right ["a = 5 ± 0.1"]
+    , testCase "a function-level tolerance is one unknown per input"
+        $ runLines ["let f x = x ± 0.01", "f 2 - f 2", "f 2 - f 3"]
+          @?= Right ["0", "-1.00 ± 0.02"]
+    , testCase "a #label names the unknown: shared across definitions and values" $ do
+        runLines ["let a = 5 ± 0.1 #s7", "let b = 5 ± 0.1 #s7", "a - b"] @?= Right ["0"]
+        runLines ["let a = 5.0 ± 0.1 #s7", "let b = 5.2 ± 0.1 #s7", "a - b", "a + b"]
+          @?= Right ["-0.2", "10.2 ± 0.2"]
+        evalText "(5 ± 0.1 #s7) - (5 ± 0.1 #s7)" @?= Right ["0"]
+        evalText "(5 ± 0.1 #s7) - (5 ± 0.1 #s8)" @?= Right ["0.0 ± 0.2"]
+        evalText "(noise 2 #n) - (noise 2 #n)" @?= Right ["[0, 0]"]
+    , testCase "labels print, parse and hash" $ do
+        parseShape "5 ± 0.1 #s7"
+          @?= Right (Lb "s7" (O (S.PlusMinus Bound) (N 5) (N (1 / 10))))
+        parseShape "x == 5 ± 0.1 #s7"
+          @?= Right (O S.Eq (V "x") (Lb "s7" (O (S.PlusMinus Bound) (N 5) (N (1 / 10)))))
+        runLines ["let a = 5 ± 0.1 #s7", ":view a"] @?= Right ["a = 5 ± 0.1 #s7"]
+        case runLines ["let a = 5 ± 0.1 #s7", "let b = 5 ± 0.1", ":hash a", ":hash b"] of
+          Right [ha, hb] -> ha /= hb @? "tag and owner share a hash"
+          other -> assertFailure (show other)
+        case evalText "5 #s7" of
+          Left err -> T.isInfixOf "labels nothing here" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase ":budget names tagged and owned nudges"
+        $ runLines ["let span = (10 ± 0.01 #left) + (10 ± 0.01 #right)", ":budget span"]
+          @?= Right
+            [ "20.00 ± 0.02"
+            , "  kind   source  contribution  share"
+            , "  bound  left    0.01          50% of bound"
+            , "  bound  right   0.01          50% of bound"
+            ]
     , testCase "sqrt of a dimension that is not a square is a type error, not a loop"
         $ case evalP "sqrt (1 kg)" of
           Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err
@@ -1942,20 +1984,21 @@ affineTests =
           let x =
                 uncertain
                   Bound
-                  (Hash "x")
-                  []
-                  0
+                  (Declared (Hash "x") [] 0)
                   (Exact (fromIntegral (a :: Int)))
                   (Exact (fromIntegral (c :: Int) / 7))
               y0 =
                 uncertain
                   Bound
-                  (Hash "x")
-                  []
-                  0
+                  (Declared (Hash "x") [] 0)
                   (Exact (fromIntegral (b :: Int)))
                   (Exact (fromIntegral (d :: Int) / 7))
-              y = uncertain Bound (Hash "y") [] 0 y0 (Exact (fromIntegral (f :: Int) / 11))
+              y =
+                uncertain
+                  Bound
+                  (Declared (Hash "y") [] 0)
+                  y0
+                  (Exact (fromIntegral (f :: Int) / 11))
               -- x and y share the nudge at site x (same midpoint-free id
               -- only when a == b; either way the check must hold).
               at = pointOf [(Hash "x", e1), (Hash "y", e2)]
@@ -1967,9 +2010,7 @@ affineTests =
               x =
                 uncertain
                   Bound
-                  (Hash "x")
-                  []
-                  0
+                  (Declared (Hash "x") [] 0)
                   (Exact r)
                   (Exact (r / fromIntegral (2 + abs (k :: Int))))
               v = pointOf [(Hash "x", e1)] x
@@ -1992,6 +2033,7 @@ affineTests =
     m@(Affine mid _ _) -> mid + sum [c * eOf n | (c, n) <- nudges m]
    where
     eOf n = case n.origin of
+      Tagged _ _ -> 0
       Declared site _ _ -> maybe 0 (\e -> toRational (max (-1) (min 1 e))) (lookup site es)
       Builtin _ -> 0
   -- Double arithmetic is only good to about 1e-15 relative.

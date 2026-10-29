@@ -41,8 +41,8 @@ data TTerm (n :: Nat) where
   TLet :: Hint -> Scheme -> TTerm n -> TTerm (S n) -> TTerm n
   TIf :: TTerm n -> TTerm n -> TTerm n -> TTerm n
   TPow :: TTerm n -> Integer -> TTerm n
-  TNoise :: NudgeKind -> Integer -> TTerm n
-  TUncertain :: NudgeKind -> TTerm n -> TTerm n -> TTerm n
+  TNoise :: NudgeKind -> Label -> Integer -> TTerm n
+  TUncertain :: NudgeKind -> Label -> TTerm n -> TTerm n -> TTerm n
   TPack :: [TTerm n] -> TTerm n
   TProj :: TTerm n -> Int -> TTerm n
   -- | Abstraction over a type-level variable of the given kind.
@@ -263,8 +263,8 @@ lint look ctx = \case
     case tb of
       TTensor SNil d -> mono (TTensor SNil (dimPow (fromIntegral n) d))
       _ -> Left "power of a non-number"
-  TNoise _ k -> mono (vecT (LLit (fromIntegral k)))
-  TUncertain _ x e -> do
+  TNoise _ _ k -> mono (vecT (LLit (fromIntegral k)))
+  TUncertain _ _ x e -> do
     tx <- monoOf x
     te <- monoOf e
     case tx of
@@ -490,12 +490,16 @@ renderTTerm namer = go 0
         (prec > 0)
         ("if " <> go 0 ctx c <> " then " <> go 0 ctx t <> " else " <> go 0 ctx e)
     TPow b n -> paren (prec > 9) (go 10 ctx b <> "^" <> T.pack (show n))
-    TNoise Bound k -> "noise " <> T.pack (show k)
-    TNoise Stat k -> "gauss " <> T.pack (show k)
-    TUncertain k x e ->
+    TNoise Bound l k -> "noise " <> T.pack (show k) <> renderLabel l
+    TNoise Stat l k -> "gauss " <> T.pack (show k) <> renderLabel l
+    TUncertain k l x e ->
       paren
         (prec > 5)
-        (go 6 ctx x <> (if k == Bound then " ± " else " ±σ ") <> go 6 ctx e)
+        ( go 6 ctx x
+            <> (if k == Bound then " ± " else " ±σ ")
+            <> go 6 ctx e
+            <> renderLabel l
+        )
     TPack ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
     TProj b i -> go 11 ctx b <> "." <> T.pack (show i)
     TTyLam v k b -> paren (prec > 0) ("Λ" <> varName v k <> ". " <> go 0 ctx b)

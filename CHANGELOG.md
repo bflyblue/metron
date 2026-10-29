@@ -112,3 +112,13 @@
   `[[1, 2], [3, 4]]`, `[1; 2]` is a 2×1 matrix. Elements stay comma
   separated. Two literals side by side (`5 4 3`, `2 [1, 2]`) are now a parse
   error asking for the multiplication; the quantity rule is for `5 m/s`.
+- Measurement identity (design §3.2.4). Every `±`, `±σ`, `noise` and `gauss`
+  now carries a label in Core: the desugarer stamps the name of the enclosing
+  definition, so `let a = 5 ± 0.1` and `let b = 5 ± 0.1` are different terms
+  and independent measurements (`a - b` is `0.0 ± 0.2`, `a - a` is `0`); the
+  stamp is not printed and the text round-trips. A written `#label` names the
+  unknown itself, shared across definitions and midpoints: `5.0 ± 0.1 #s7`
+  and `5.2 ± 0.1 #s7` differ by exactly `0.2`. Labels show as the source in
+  `:budget`. **Hash-affecting**: every definition containing declared
+  uncertainty changes hash (its name is now part of it), and the encoding of
+  `Noise` and `Uncertain` gains a label field.

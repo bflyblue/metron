@@ -305,9 +305,12 @@ Applying the test to the roadmap, in order:
   literal. `Vec`, `Mat` and `Proj` stay built in because the length index is
   beyond an ordinary data declaration.
 - **Affine arithmetic, units, printing, covariance.** Runtime and prelude work.
-  No Core change; `Noise` and `Uncertain` already existed for it, and affine
-  arithmetic landed without touching Core: `Eval.Affine` sits entirely under
-  the evaluator's elements.
+  `Noise` and `Uncertain` already existed for it, and the arithmetic itself
+  landed without touching Core: `Eval.Affine` sits entirely under the
+  evaluator's elements. One field was added afterwards: the label (owner
+  stamp or `#tag`, design §3.2.4) on both nodes, because measurement identity
+  is part of a term's meaning and so must be in the hash. It is the one place
+  a definition's hash depends on its name.
 - **Persistence.** The encoding is the on-disk format already. The decoder
   must reconstruct a well-scoped term from bytes, which is a scope check, not
   a Core change.

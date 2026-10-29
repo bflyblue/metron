@@ -92,6 +92,8 @@ data Node
     SectionL Op Expr
   | -- | @(e op)@, meaning @\x -> e op x@.
     SectionR Expr Op
+  | -- | @e #label@: a global identity for the measurement @e@ declares (§3.2.4).
+    Labelled Text Expr
   | -- | A bracket literal; nesting gives higher ranks.
     Vec [Expr]
   | -- | @e.i@ with a literal position.

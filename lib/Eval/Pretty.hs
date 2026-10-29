@@ -229,6 +229,7 @@ kindName = \case
 
 originName :: RefNamer -> Origin -> Text
 originName namer = \case
+  Tagged l i -> l <> (if i == 0 then "" else "." <> tshow i)
   Declared h path i ->
     namer h Nothing
       <> (if null path then "" else " @" <> T.intercalate "." (map tshow path))
@@ -336,12 +337,16 @@ renderTerm namer = go 0
         (prec > 0)
         ("if " <> go 0 ctx c <> " then " <> go 0 ctx th <> " else " <> go 0 ctx el)
     Pow b n -> paren (prec > 9) (go 10 ctx b <> "^" <> tshow n)
-    Noise Bound n -> "noise " <> tshow n
-    Noise Stat n -> "gauss " <> tshow n
-    Uncertain k x e ->
+    Noise Bound l n -> "noise " <> tshow n <> renderLabel l
+    Noise Stat l n -> "gauss " <> tshow n <> renderLabel l
+    Uncertain k l x e ->
       paren
         (prec > 5)
-        (go 6 ctx x <> (if k == Bound then " ± " else " ±σ ") <> go 6 ctx e)
+        ( go 6 ctx x
+            <> (if k == Bound then " ± " else " ±σ ")
+            <> go 6 ctx e
+            <> renderLabel l
+        )
     Pack ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
     Proj b i -> go 11 ctx b <> "." <> tshow i
     Cycle hints bodies ->

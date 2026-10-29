@@ -65,6 +65,8 @@ data Token
     TSup Integer
   | -- | A projection glued to the preceding atom: @v.0@, @m.1.2@.
     TProj Int
+  | -- | @#label@ after a @±@, @noise@ or @gauss@ (§3.2.4).
+    THashLabel Text
   | -- | Statement or binding separator: a @;@, or layout. Inside brackets, a row separator.
     TSep
   | -- | @;;@, @;;;@ …: a separator of rank two or more inside a bracket literal (§2.4).
@@ -128,6 +130,7 @@ tokenBody =
   choice
     [ TNum <$> number
     , superscript
+    , hashLabel
     , identifierOrKeyword
     , symbol
     ]
@@ -178,6 +181,16 @@ superscript = do
     '⁸' -> 8
     '⁹' -> 9
     _ -> 0
+
+-- | @#partA@: a measurement label, spelled like an identifier.
+hashLabel :: Lexer Token
+hashLabel =
+  char '#'
+    *> ( THashLabel
+           <$> takeWhile1P
+             (Just "label")
+             (\x -> (isAlphaNum x && not (isSuperscriptDigit x)) || x == '_' || x == '\'')
+       )
 
 identifierOrKeyword :: Lexer Token
 identifierOrKeyword = do
@@ -377,6 +390,7 @@ showToken = \case
   TSqrt -> "sqrt"
   TSup n -> "^" <> T.pack (show n)
   TProj i -> "." <> T.pack (show i)
+  THashLabel l -> "#" <> l
   TSep -> "newline"
   TSemis n -> T.replicate n ";"
   TBlockEnd -> "end of block"

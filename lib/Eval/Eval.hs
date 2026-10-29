@@ -173,22 +173,19 @@ eval cfg rt = go
       r <- arith (powM p x n)
       Right (num (dimPow (fromIntegral n) d) (hintPow p (fromIntegral n) =<< hint) r)
     -- Fresh unit nudges, one per component (design §3.2.5).
-    TNoise k n ->
+    TNoise k l n ->
       let count = fromInteger n
        in Right
             ( VTensor
                 [count]
                 dimOne
                 Nothing
-                ( V.generate
-                    count
-                    (\i -> Right (unitNoise k site.definition (reverse site.path) i))
-                )
+                (V.generate count (\i -> Right (unitNoise k (originOf site l i))))
             )
-    TUncertain k x e -> do
+    TUncertain k l x e -> do
       (xv, d, hint) <- scalarFull =<< go (child 0) env x
       (ev, _, _) <- scalarFull =<< go (child 1) env e
-      Right (num d hint (uncertain k site.definition (reverse site.path) 0 xv ev))
+      Right (num d hint (uncertain k (originOf site l 0) xv ev))
     -- Stack the component buffers; the shapes agree by lint. A component
     -- that fails to evaluate becomes a block of failing elements of the
     -- shape the other components have, so an error in one component is
@@ -230,6 +227,14 @@ eval cfg rt = go
   cycleMembers h env bodies = members
    where
     members = vecMapIndexed (\i -> go (Site h [i]) (vecAppend members env)) bodies
+
+{- | The identity of a declared nudge (design §3.2.4): where it sits, unless
+it carries a tag.
+-}
+originOf :: Site -> Label -> Int -> Origin
+originOf site l i = case l of
+  Owner _ -> Declared site.definition (reverse site.path) i
+  Tag t -> Tagged t i
 
 vecMapIndexed :: forall a b k. (Int -> a -> b) -> Vec k a -> Vec k b
 vecMapIndexed f = walk 0

@@ -72,8 +72,10 @@ module Eval.Affine (
 
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
+import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Ord (Down (..))
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -92,6 +94,8 @@ newtype NudgeId = NudgeId ByteString
 data Origin
   = -- | a @±@, @±σ@, @noise@ or @gauss@: enclosing definition, path to the node, component
     Declared Hash [Int] Int
+  | -- | the same, written with a @#label@: one unknown wherever the label appears
+    Tagged Text Int
   | -- | an approximation inside a primitive
     Builtin Text
   deriving stock (Eq, Ord, Show)
@@ -140,11 +144,13 @@ midpoint = \case
   Exact r -> r
   Affine m _ _ -> m
 
--- | The nudges with their coefficients, largest first.
+{- | The nudges with their coefficients, largest first; ties by origin, so the
+budget reads the same every time.
+-}
 nudges :: Magnitude -> [(Rational, Nudge)]
 nudges = \case
   Exact _ -> []
-  Affine _ ts _ -> sortOnAbs fst (Map.elems ts)
+  Affine _ ts _ -> sortOn (\(c, n) -> (Down (abs c), n.origin)) (Map.elems ts)
 
 sortOnAbs :: (a -> Rational) -> [a] -> [a]
 sortOnAbs f = foldr ins []
@@ -793,28 +799,31 @@ equalM k p a b = (== EQ) <$> compareM k p a b
 
 -- Declared uncertainty --------------------------------------------------------------------
 
-{- | @x ± e@ / @x ±σ e@ at a definition site (design §3.2.5). The nudge's
-identity is the site and the midpoint; its size is the error's midpoint,
-and any radius the error itself carries goes to slack.
+{- | @x ± e@ / @x ±σ e@ (design §3.2.5). The nudge's identity is its origin
+and the midpoint; its size is the error's midpoint, and any radius the error
+itself carries goes to slack.
 -}
-uncertain ::
-  NudgeKind -> Hash -> [Int] -> Int -> Magnitude -> Magnitude -> Magnitude
-uncertain k site path component x e =
+uncertain :: NudgeKind -> Origin -> Magnitude -> Magnitude -> Magnitude
+uncertain k origin x e =
   let (m, ts, s) = parts x
       size = abs (midpoint e)
-      nid = siteId k site path component m
    in affine
         m
-        (Map.insertWith addCoeff nid (size, Nudge k (Declared site path component)) ts)
+        (Map.insertWith addCoeff (originId k origin m) (size, Nudge k origin) ts)
         (s + radius e)
 
--- | Component @i@ of @noise n@ / @gauss n@: one unit nudge.
-unitNoise :: NudgeKind -> Hash -> [Int] -> Int -> Magnitude
-unitNoise k site path i =
-  affine
-    0
-    (Map.singleton (siteId k site path i 0) (1, Nudge k (Declared site path i)))
-    0
+-- | One component of @noise n@ / @gauss n@: a unit nudge.
+unitNoise :: NudgeKind -> Origin -> Magnitude
+unitNoise k origin = affine 0 (Map.singleton (originId k origin 0) (1, Nudge k origin)) 0
 
-siteId :: NudgeKind -> Hash -> [Int] -> Int -> Rational -> NudgeId
-siteId k (Hash h) path i m = NudgeId (SHA256.hash (h <> TE.encodeUtf8 (tshow (k, path, i, m))))
+{- | Design §3.2.4: an unlabelled nudge is named by its definition, path,
+component and midpoint, so  2@ and  3@ from  f x = x ± 0.01@ are
+independent while two evaluations of  2@ share. A tag names the unknown
+itself, nothing else:  ± r #s7@ is  + r·e_s7@ whatever @ and @ are,
+which is how a systematic error shared by several readings is written.
+-}
+originId :: NudgeKind -> Origin -> Rational -> NudgeId
+originId k origin m = NudgeId . SHA256.hash $ case origin of
+  Declared (Hash h) path i -> h <> TE.encodeUtf8 (tshow (k, path, i, m))
+  Tagged l i -> TE.encodeUtf8 ("#" <> l) <> TE.encodeUtf8 (tshow (k, i))
+  Builtin name -> TE.encodeUtf8 name

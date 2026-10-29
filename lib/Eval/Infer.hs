@@ -500,8 +500,8 @@ infer look p ctx = \case
     d <- freshDim
     unify (0 : p) (numD d) tb
     pure (numD (dimPow (fromIntegral n) d), TPow b' n)
-  Noise k n -> pure (vecT (LLit (fromIntegral n)), TNoise k n)
-  Uncertain k x e -> do
+  Noise k l n -> pure (vecT (LLit (fromIntegral n)), TNoise k l n)
+  Uncertain k l x e -> do
     d <- freshDim
     (tx, x') <- infer look (0 : p) ctx x
     unify (0 : p) (numD d) tx
@@ -511,7 +511,7 @@ infer look p ctx = \case
       (numD d)
       te
       "the uncertainty must have the dimension of the value"
-    pure (numD d, TUncertain k x' e')
+    pure (numD d, TUncertain k l x' e')
   Pack ts -> do
     elemShape <- freshShape
     elemDim <- freshDim
@@ -637,8 +637,8 @@ zonk s = go
     TLet h sc e b -> TLet h (applyScheme s sc) (go e) (go b)
     TIf c t e -> TIf (go c) (go t) (go e)
     TPow b n -> TPow (go b) n
-    TNoise k n -> TNoise k n
-    TUncertain k x e -> TUncertain k (go x) (go e)
+    TNoise k l n -> TNoise k l n
+    TUncertain k l x e -> TUncertain k l (go x) (go e)
     TPack ts -> TPack (map go ts)
     TProj t i -> TProj (go t) i
     TTyLam v k b -> TTyLam v k (go b)

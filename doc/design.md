@@ -206,6 +206,7 @@ From tightest to loosest:
 | 7 | `×`/`><` | none | cross product |
 | 6 | `+` `-` | left | overloaded over Num, Vec, Mat |
 | 5 | `±` `±σ` | none | `value ± bound`, `value ±σ stddev`, see §3.2.5 |
+| 4½ | `#label` | postfix | names the unknown a `±`, `noise` or `gauss` declares, see §3.2.4 |
 | 4 | `==` `/=` `<` `<=` `>` `>=` | none | ordering on Num only |
 | 3 | `&&` | right | |
 | 2 | `\|\|` | right | |
@@ -267,7 +268,8 @@ expr       ::= 'let' name param* '=' expr 'in' expr
              | 'if' expr 'then' expr 'else' expr
              | binary
 binary     ::= operator-precedence parse over 'unary' using the table in 2.5,
-               with `name` as an infix operator at level 9
+               with `name` as an infix operator at level 9, and
+               '#'label as a postfix just below ± (§3.2.4)
 unary      ::= '-' unary | 'sqrt' unary | power
 power      ::= app [ '^' [ '-' ] natural ]
 app        ::= quantity | atom atom*
@@ -335,6 +337,7 @@ in surface notation.
 | `√e` | `sqrt e` |
 | `a + b`, `a * b`, `a · b`, … | `add a b`, `outer a b`, `dot a b`, … (every operator is a saturated application of the primitive of the same name; the names work prefix and in backticks) |
 | `a ± e`, `a ±σ e` | also spelled `within a e`, `sigma a e` |
+| `a ± e #s7` | the same, with the unknown named `s7` (§3.2.4) |
 | `v.2` | `proj v 2` (a node with a literal position, §5.1) |
 | `m.1.2` | `proj (proj m 1) 2` |
 | `a ± b` | `uncertain bound a b` |
@@ -504,10 +507,31 @@ of what created it.
   error.
 - **Declared uncertainty** (`±`, `±σ`, `noise`, `gauss`): `id = hash(kind, hash of
   the enclosing top-level definition, path to the node inside it, component index,
-  midpoint)`.
-  Two different constants `5 ± 0.1` are independent measurements and get
-  different nudges, because they sit at different definition sites. Re-evaluating
-  the same `±` with the same inputs gives the same nudge.
+  midpoint)`. Re-evaluating the same `±` with the same inputs gives the same
+  nudge; `let f x = x ± 0.01` gives `f 2` one unknown and `f 3` another, since
+  the midpoint is part of the identity, and a function's declared tolerance is
+  not one number across all inputs.
+
+  The codebase is content-addressed, so two definitions with identical text
+  would be one definition and therefore one unknown. To keep `let a = 5 ± 0.1`
+  and `let b = 5 ± 0.1` independent, as two parts from one batch are, the
+  desugarer stamps every `±`, `noise` and `gauss` with the **name of the
+  definition it is written in** (`Owner "a"`, a field of the Core node, hence
+  in the hash). The stamp is never printed: `:view a` shows `5 ± 0.1`, and
+  re-adding that text under the name `a` reproduces the same term, while adding
+  it under another name makes a new measurement. An expression typed at the
+  prompt has owner `""` and its own hash as the site. This is a deterministic,
+  text-visible version of Unison's `unique type` salt: the text of a
+  measurement is the whole `let name = body`, not just the body.
+- **Labelled uncertainty**: `x ± r #s7` names the unknown itself. The tag
+  replaces the owner stamp (`Tag "s7"`, also hashed) and the nudge's identity
+  is `hash(kind, label, component)`, with no definition, path or midpoint. So
+  every `±` written `#s7`, in any definition and at any midpoint, is
+  `… + r·e_s7` with one `e_s7`: `5.0 ± 0.1 #s7` and `5.2 ± 0.1 #s7` differ by
+  exactly `0.2`. That is how a systematic error shared by several readings, a
+  sensor offset or a calibration, is written. A label may follow `±`, `±σ`,
+  `noise` or `gauss` only; anywhere else it is an error. The label also names
+  the source in `:budget`.
 
 Each nudge also records an **origin label** for the error budget: the current name
 of the definition that created it (`G`, `M_earth`), or the builtin and reason
@@ -528,6 +552,9 @@ x ±σ err     =  x + err * gauss 1      -- standard uncertainty: σ = err
 ASCII spellings are `+-` and `+-s`. `err` must be exact (or its own radius is
 folded into slack), and both operands must share a dimension. On a vector or
 matrix, both operators apply per component with independent nudges (§3.4).
+
+Add `#label` to name the unknown when several readings share one error
+(§3.2.4): `let r1 = 10 mm ± 0.01 mm #batch7`.
 
 Use `±` for things you can promise: a solver tolerance, a truncated series, a
 manufacturing limit. Use `±σ` for things you measured or looked up with a standard
@@ -1356,8 +1383,12 @@ SHA-256 of the encoding, displayed as a base32hex prefix: `#a3f9k`.
 | 0x07 | `Let e b` | `e`, `b` |
 | 0x08 | `If c t e` | `c`, `t`, `e` |
 | 0x09 | `Pow t n` | `t`, sint `n` |
-| 0x0A | `Noise k n` | one byte kind (0 bound, 1 stat), varint `n` |
-| 0x0B | `Uncertain k x err` | one byte kind, `x`, `err` |
+| 0x0A | `Noise k l n` | one byte kind (0 bound, 1 stat), label, varint `n` |
+| 0x0B | `Uncertain k l x err` | one byte kind, label, `x`, `err` |
+
+A label is one byte (0 owner, 1 tag) and the text. The owner stamp is the
+name of the enclosing definition (§3.2.4), so the hash of a definition that
+declares uncertainty depends on its name; nothing else in the hash does.
 | 0x0C | `Pack ts` | varint count, each `t` |
 | 0x0D | retired | was `MatLit`; never reused |
 | 0x0E | `Cycle ts` | varint count, each `t` |

@@ -14,12 +14,14 @@ module Eval.Desugar (
   noResolver,
   DesugarError (..),
   desugarClosed,
+  desugarDefinition,
+  desugarMember,
   desugarIn,
   renderDesugarError,
 ) where
 
 import Control.Monad (zipWithM)
-import Control.Monad.Reader (ReaderT, asks, runReaderT)
+import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (StateT, modify', runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Map.Strict (Map)
@@ -56,18 +58,36 @@ type Resolver = Text -> Maybe (Hash, Maybe Int)
 noResolver :: Resolver
 noResolver _ = Nothing
 
+{- | What the desugarer reads: how free names resolve, and the label every
+declared uncertainty gets, which is the enclosing definition's name until a
+@#label@ overrides it (design §3.2.4).
+-}
+data Env = Env {resolve :: Resolver, owner :: Label}
+
 -- | Paths are built in reverse (innermost first) and reversed when stored.
-type M = ReaderT Resolver (StateT Provenance (Either DesugarError))
+type M = ReaderT Env (StateT Provenance (Either DesugarError))
 
 type Ctx n = Vec n Text
 
+-- | An expression that belongs to no definition.
 desugarClosed :: Resolver -> S.Expr -> Either DesugarError (Term Z, Provenance)
-desugarClosed = (`desugarIn` VNil)
+desugarClosed = desugarDefinition ""
+
+-- | The body of the definition with the given name.
+desugarDefinition ::
+  Text -> Resolver -> S.Expr -> Either DesugarError (Term Z, Provenance)
+desugarDefinition name resolve = desugarMember name resolve VNil
 
 -- | Desugar under a context of already-bound names (innermost first).
 desugarIn ::
   Resolver -> Ctx n -> S.Expr -> Either DesugarError (Term n, Provenance)
-desugarIn resolve ctx e = runStateT (runReaderT (desugar [] ctx e) resolve) Map.empty
+desugarIn = desugarMember ""
+
+-- | A member of a binding group, by name, under the group's context.
+desugarMember ::
+  Text -> Resolver -> Ctx n -> S.Expr -> Either DesugarError (Term n, Provenance)
+desugarMember name resolve ctx e =
+  runStateT (runReaderT (desugar [] ctx e) (Env resolve (Owner name))) Map.empty
 
 failWith :: DesugarError -> M a
 failWith = lift . lift . Left
@@ -99,7 +119,7 @@ desugar path ctx e = do
       let (hd, args) = spine e
        in case hd.node of
             S.Var x | Nothing <- lookupCtx x ctx -> do
-              bound <- asks (\resolve -> resolve x)
+              bound <- asks (\env -> env.resolve x)
               case bound of
                 -- A codebase name: ordinary application of a reference.
                 Just _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
@@ -117,7 +137,11 @@ desugar path ctx e = do
         <*> desugar (1 : path) ctx t
         <*> desugar (2 : path) ctx f
     S.BinOp op a b -> case op of
-      S.PlusMinus k -> Uncertain k <$> desugar (0 : path) ctx a <*> desugar (1 : path) ctx b
+      S.PlusMinus k ->
+        Uncertain k
+          <$> asks (.owner)
+          <*> desugar (0 : path) ctx a
+          <*> desugar (1 : path) ctx b
       S.To -> prim "to" [a, b]
       S.Compose ->
         -- f ∘ g  =  \x -> f (g x)
@@ -168,6 +192,17 @@ desugar path ctx e = do
             (synthLam e.span x (S.Expr e.span (S.BinOp op a (S.Expr e.span (S.Var x)))))
     -- A bracket literal whose elements are all constants of one shape folds
     -- into a single constant; otherwise it is a construction (core.md §5).
+    -- A #label names the measurement declared by the ± or noise it follows:
+    -- the label replaces the owner for that subtree.
+    S.Labelled l inner
+      | declaresUncertainty inner ->
+          local (\env -> env{owner = Tag l}) (desugar path ctx inner)
+      | otherwise ->
+          failWith
+            ( BadSpecialForm
+                inner.span
+                ("a #label must follow ±, ±σ, noise or gauss; `#" <> l <> "` labels nothing here")
+            )
     S.Vec es -> do
       elems <- zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
       pure (foldConstant elems)
@@ -204,32 +239,37 @@ headApp :: Path -> Ctx n -> S.Expr -> Text -> [S.Expr] -> M (Term n)
 headApp path ctx hd x args = case lookupCtx x ctx of
   Just i -> applyAll path ctx (\_ -> pure (Var i)) args
   Nothing -> do
-    bound <- asks (\resolve -> resolve x)
+    bound <- asks (\env -> env.resolve x)
     case bound of
       Just (h, idx) -> applyAll path ctx (\_ -> pure (Ref h idx)) args
       -- noise n and gauss n take a literal count (design §3.2.5): the
       -- number of nudges is part of the type.
       Nothing
         | Just k <- lookup x [("noise", Bound), ("gauss", Stat)] -> case args of
-            [a] | S.Num n <- a.node, denominator n == 1, n >= 0 -> pure (Noise k (numerator n))
+            [a]
+              | S.Num n <- a.node
+              , denominator n == 1
+              , n >= 0 ->
+                  (\l -> Noise k l (numerator n)) <$> asks (.owner)
             _ ->
               failWith
                 ( BadSpecialForm
                     hd.span
                     (x <> " takes one argument, a literal natural number: the count of nudges")
                 )
-      Nothing -> case specialForm x of
-        Nothing -> failWith (UnknownName hd.span x)
-        Just (arity, Builder build)
-          | length args == arity -> saturated path ctx build args
-          | length args < arity ->
-              eta path ctx hd.span (Builder build) args (arity - length args)
-          | otherwise ->
-              applyAll
-                path
-                ctx
-                (\p -> saturated p ctx build (take arity args))
-                (drop arity args)
+      Nothing ->
+        asks (.owner) >>= \l -> case specialForm l x of
+          Nothing -> failWith (UnknownName hd.span x)
+          Just (arity, Builder build)
+            | length args == arity -> saturated path ctx build args
+            | length args < arity ->
+                eta path ctx hd.span (Builder build) args (arity - length args)
+            | otherwise ->
+                applyAll
+                  path
+                  ctx
+                  (\p -> saturated p ctx build (take arity args))
+                  (drop arity args)
 
 {- | A node constructor that works in any scope, so that eta-expansion can
 apply it under the binders it introduces.
@@ -239,14 +279,14 @@ newtype Builder = Builder (forall m. [Term m] -> Term m)
 {- | Names that build a Core node when saturated: every primitive, plus the
 surface names of the uncertainty operators (design §2.9).
 -}
-specialForm :: Text -> Maybe (Int, Builder)
-specialForm = \case
+specialForm :: Label -> Text -> Maybe (Int, Builder)
+specialForm l = \case
   "within" ->
     Just
-      (2, Builder (\case [a, b] -> Uncertain Bound a b; _ -> error "within: arity"))
+      (2, Builder (\case [a, b] -> Uncertain Bound l a b; _ -> error "within: arity"))
   "sigma" ->
     Just
-      (2, Builder (\case [a, b] -> Uncertain Stat a b; _ -> error "sigma: arity"))
+      (2, Builder (\case [a, b] -> Uncertain Stat l a b; _ -> error "sigma: arity"))
   p -> (\arity -> (arity, Builder (PrimApp p))) <$> primArity p
 
 saturated :: Path -> Ctx n -> ([Term n] -> Term n) -> [S.Expr] -> M (Term n)
@@ -310,3 +350,14 @@ opPrim = \case
   S.PlusMinus _ -> "uncertain"
   S.Compose -> "compose"
   S.Infix n -> n
+
+{- | Whether an expression is one of the forms that declare an uncertainty
+and so can take a @#label@.
+-}
+declaresUncertainty :: S.Expr -> Bool
+declaresUncertainty e = case e.node of
+  S.BinOp (S.PlusMinus _) _ _ -> True
+  S.Labelled _ inner -> declaresUncertainty inner
+  _ -> case spine e of
+    (hd, _ : _) | S.Var x <- hd.node -> x `elem` ["noise", "gauss", "within", "sigma"]
+    _ -> False
