@@ -400,16 +400,14 @@ apply it under the binders it introduces.
 newtype Builder = Builder (forall m. [Term m] -> Term m)
 
 {- | Names that build a Core node when saturated: every primitive, plus the
-surface names of the uncertainty operators (design §2.9).
+surface name @within@ of @±@ (design §2.9). @±σ@ has no prefix name:
+@sigma@ is the accessor of design §3.2.9.
 -}
 specialForm :: Label -> Text -> Maybe (Int, Builder)
 specialForm l = \case
   "within" ->
     Just
       (2, Builder (\case [a, b] -> Uncertain Bound l a b; _ -> error "within: arity"))
-  "sigma" ->
-    Just
-      (2, Builder (\case [a, b] -> Uncertain Stat l a b; _ -> error "sigma: arity"))
   p -> (\arity -> (arity, Builder (PrimApp p))) <$> primArity p
 
 saturated :: Path -> Ctx n -> ([Term n] -> Term n) -> [S.Expr] -> M (Term n)
@@ -486,7 +484,7 @@ declaresUncertainty e = case e.node of
   S.BinOp (S.PlusMinus _) _ _ -> True
   S.Labelled _ inner -> declaresUncertainty inner
   _ -> case spine e of
-    (hd, _ : _) | S.Var x <- hd.node -> x `elem` ["noise", "gauss", "within", "sigma"]
+    (hd, _ : _) | S.Var x <- hd.node -> x `elem` ["noise", "gauss", "within"]
     _ -> False
 
 {- | Whether an expression may follow a literal under the quantity rule
@@ -515,7 +513,7 @@ unitExpr ctx e = case e.node of
         (&&) <$> unitExpr ctx a <*> unitExpr ctx b
   _ -> pure False
  where
-  specialNames = ["noise", "gauss", "within", "sigma"]
+  specialNames = ["noise", "gauss", "within"]
 
 -- | Whether an expression is a free name declared with @scale@ (design §3.6).
 isScaleName :: Ctx n -> S.Expr -> M Bool

@@ -165,8 +165,8 @@ Making `Num` the rank-zero tensor raises the question of which primitives work
 on every tensor. The answer is decided by whether the operation has one meaning
 at every rank:
 
-- **Elementwise, shape-polymorphic**: `+`, `-`, `⊙`, `⊘`, `neg`, `abs`, `vmap`,
-  and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
+- **Elementwise, shape-polymorphic**: `+`, `-`, `⊙`, `⊘`, `neg`, `abs`, `mid`,
+  `bound`, `sigma`, `vmap`, and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
   flat buffer. Scalars are the rank-zero instance of the same path.
 - **Products that change rank**: `*` (the tensor product, `s1 ++ s2`) and `·` (the
   contracting product, `s1 ++ s2` after removing the paired index). Scalar
