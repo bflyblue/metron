@@ -12,10 +12,14 @@ module Eval.Pretty (
   renderBudget,
   renderNested,
   renderTerm,
+  renderTermIn,
   RefNamer,
+  FieldNamer,
+  Printer (..),
+  plainPrinter,
 ) where
 
-import Data.Char (intToDigit)
+import Data.Char (intToDigit, isAlphaNum)
 import Data.Map.Strict qualified as Map
 import Data.Ratio ((%))
 import Data.Text (Text)
@@ -24,7 +28,7 @@ import Data.Vector qualified as V
 import Eval.Affine hiding (Builtin)
 import Eval.Affine qualified as A
 import Eval.Core
-import Eval.Dimension (renderUnits)
+import Eval.Dimension (Spelling (..), arrowText, exponentText, renderUnitsIn)
 import Eval.Eval
 import Eval.TCore (patternText)
 import Eval.Type (conText)
@@ -161,39 +165,75 @@ tshow = T.pack . show
 
 -- Values --------------------------------------------------------------------------
 
+{- | The field names of a declared constructor (design §2.3): given the type's
+hash, the constructor's index and its arity, a name or 'Nothing' for each
+field in order.
+-}
+type FieldNamer = Hash -> Int -> Int -> [Maybe Text]
+
+{- | What the value printer needs beyond the value: current names for
+references (units, scales, nudge origins) and the field names of records,
+both from the codebase, and the spelling of unit exponents (design §7.3).
+-}
+data Printer = Printer
+  { refName :: RefNamer
+  , fieldNames :: FieldNamer
+  , spelling :: Spelling
+  }
+
+{- | A printer that knows no field names, for callers without a codebase:
+records print positionally, in ASCII.
+-}
+plainPrinter :: RefNamer -> Printer
+plainPrinter namer =
+  Printer
+    { refName = namer
+    , fieldNames = \_ _ n -> replicate n Nothing
+    , spelling = Ascii
+    }
+
 {- | Print a value. A tensor with a display unit whose dimension matches
 prints its magnitudes in that unit (design §3.2.12); otherwise in SI base
 units. Unit names go through the namer so that a renamed unit prints under
 its current name.
 -}
-renderValue :: RefNamer -> Int -> Preferences -> Value -> Either EvalError Text
-renderValue namer scale prefs = renderValueWith namer scale prefs (renderMagnitude scale)
+renderValue :: Printer -> Int -> Preferences -> Value -> Either EvalError Text
+renderValue printer scale prefs = renderValueWith printer scale prefs (renderMagnitude scale)
 
 -- | 'renderValue' with a chosen rendering for each magnitude.
 renderValueWith ::
-  RefNamer ->
+  Printer ->
   Int ->
   Preferences ->
   (Magnitude -> Text) ->
   Value ->
   Either EvalError Text
-renderValueWith namer scale prefs showMagnitude = \case
+renderValueWith printer scale prefs showMagnitude = \case
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
   -- Tuples as written; a list by walking its spine.
   VData (Builtin "Tuple") fields -> do
-    parts <- mapM (>>= renderValueWith namer scale prefs showMagnitude) fields
+    parts <- mapM (>>= recur) fields
     pure ("(" <> T.intercalate ", " parts <> ")")
   v@(VData c _) | c == Builtin "Cons" || c == Builtin "Nil" -> do
     items <- listItems v
-    parts <- mapM (renderValueWith namer scale prefs showMagnitude) items
+    parts <- mapM recur items
     pure ("{" <> T.intercalate ", " parts <> "}")
+  -- A record, when every field of its constructor is named, prints as it is
+  -- built (design §2.3); braces delimit each field, so none needs parentheses.
+  VData c@(UserCon h i) fields
+    | not (null fields)
+    , Just names <- sequence (printer.fieldNames h i (length fields)) -> do
+        parts <- mapM (>>= recur) fields
+        pure
+          ( conText c
+              <> " {"
+              <> T.intercalate ", " (zipWith (\n s -> n <> " = " <> s) names parts)
+              <> "}"
+          )
   VData c fields -> do
-    parts <-
-      mapM
-        (>>= \v -> fieldText v <$> renderValueWith namer scale prefs showMagnitude v)
-        fields
+    parts <- mapM (>>= \v -> fieldText v <$> recur v) fields
     pure (T.unwords (conText c : parts))
   -- A point prints on the scale it was written on (design §3.6): steps from
   -- the origin, then the scale's name; without a scale, as an amount from
@@ -207,26 +247,33 @@ renderValueWith namer scale prefs showMagnitude = \case
             mapM
               (\(x, o) -> divM (scale + 4) (subM x o) s.step)
               (zip xs (V.toList s.origin)) ->
-            renderNested showMagnitude dims steps <> " " <> atomNameWith namer atom
+            renderNested showMagnitude dims steps
+              <> " "
+              <> atomNameWith printer.refName atom
       _ ->
         renderNested showMagnitude dims xs
-          <> (if T.null (renderUnits d) then "" else " " <> renderUnits d)
+          <> unitSuffix d
           <> " (point)"
   VScale s ->
     Right $ case s.name of
-      Just atom -> "scale " <> atomNameWith namer atom
+      Just atom -> "scale " <> atomNameWith printer.refName atom
       Nothing ->
         "scale: step "
           <> showMagnitude s.step
           <> " at "
           <> renderNested showMagnitude s.dims (V.toList s.origin)
-          <> (if T.null (renderUnits s.dim) then "" else " " <> renderUnits s.dim)
+          <> unitSuffix s.dim
   v -> do
-    (dims, scaled, units) <- displayParts namer scale prefs v
+    (dims, scaled, units) <- displayParts printer scale prefs v
     pure
       ( renderNested showMagnitude dims scaled
           <> (if T.null units then "" else " " <> units)
       )
+ where
+  recur = renderValueWith printer scale prefs showMagnitude
+  unitSuffix d = case renderUnitsIn printer.spelling d of
+    "" -> ""
+    units -> " " <> units
 
 -- | The current name of a unit or scale atom.
 atomNameWith :: RefNamer -> UnitAtom -> Text
@@ -238,12 +285,12 @@ atomNameWith _ = \case
 (or in base units), and the unit text. Forces every element.
 -}
 displayParts ::
-  RefNamer ->
+  Printer ->
   Int ->
   Preferences ->
   Value ->
   Either EvalError ([Int], [Magnitude], Text)
-displayParts namer scale prefs = \case
+displayParts printer scale prefs = \case
   VTensor dims d hint buf -> do
     rs <- sequence (V.toList buf)
     -- The display rule of design §3.2.12, in order: a unit chosen with `to`;
@@ -260,13 +307,14 @@ displayParts namer scale prefs = \case
         , midpoint h.factor /= 0
         , Right converted <- mapM (\r -> divM (scale + 4) r h.factor) rs ->
             (dims, converted, renderHint h)
-      _ -> (dims, rs, renderUnits d)
+      _ -> (dims, rs, renderUnitsIn printer.spelling d)
   _ -> Left (Internal "expected a tensor")
  where
   -- Positive exponents first, otherwise in the order the units appeared.
   renderHint h =
     T.unwords
-      [ atomNameWith namer u.atom <> (if u.power == 1 then "" else "^" <> tshow u.power)
+      [ atomNameWith printer.refName u.atom
+          <> (if u.power == 1 then "" else exponentText printer.spelling (toInteger u.power))
       | u <- filter ((> 0) . (.power)) h.atoms ++ filter ((< 0) . (.power)) h.atoms
       ]
 
@@ -389,8 +437,15 @@ type RefNamer = Hash -> Maybe Int -> Text -> Text
 shadowing faithful even when hints repeat.
 -}
 renderTerm :: RefNamer -> Vec n Text -> Term n -> Text
-renderTerm namer = go 0
+renderTerm = renderTermIn Ascii
+
+{- | 'renderTerm' in a chosen spelling (design §7.3): in unicode, @λx → x²@
+for @\\x -> x^2@, and @≤ ≥ ≠ ∨@ for @<= >= /= ||@.
+-}
+renderTermIn :: Spelling -> RefNamer -> Vec n Text -> Term n -> Text
+renderTermIn spelling namer = go 0
  where
+  arrow = arrowText spelling
   go :: Int -> Vec m Text -> Term m -> Text
   go prec ctx t = case t of
     Var i -> lookupVar i ctx
@@ -401,7 +456,8 @@ renderTerm namer = go 0
     Lit (LTensor (dims, rs)) -> renderNested (renderRational 20) dims rs
     Lam (Hint h) b ->
       let h' = freshen h ctx
-       in paren (prec > 0) ("\\" <> h' <> " -> " <> go 0 (VCons h' ctx) b)
+          lambda = if spelling == Unicode then "λ" else "\\"
+       in paren (prec > 0) (lambda <> h' <> arrow <> go 0 (VCons h' ctx) b)
     App f a -> paren (prec > 10) (go 10 ctx f <> " " <> go 11 ctx a)
     Let (Hint h) e b ->
       let h' = freshen h ctx
@@ -433,8 +489,21 @@ renderTerm namer = go 0
       alt (Alt c hs b) =
         let names = freshenAll (vecMap (\(Hint h) -> h) hs) ctx
             ctx' = vecAppend names ctx
-         in patternText c (vecToList names) <> " -> " <> go 0 ctx' b
-    Pow b n -> paren (prec > 9) (go 10 ctx b <> "^" <> tshow n)
+         in patternText c (vecToList names) <> arrow <> go 0 ctx' b
+    -- A superscript must be glued to the atom it raises (§2.8); after
+    -- anything else, a `#label` or a stale `x#hash` included, the power
+    -- keeps its caret.
+    Pow b n ->
+      let base = go 10 ctx b
+          word c = isAlphaNum c || c == '_' || c == '\''
+          glues = case T.unsnoc base of
+            Just (_, c)
+              | c == ')' || c == ']' -> True
+              | word c -> not ("#" `T.isSuffixOf` T.dropWhileEnd word base)
+            _ -> False
+       in paren
+            (prec > 9)
+            (base <> exponentText (if glues then spelling else Ascii) n)
     Noise Bound l n -> "noise " <> tshow n <> renderLabel l
     Noise Stat l n -> "gauss " <> tshow n <> renderLabel l
     Uncertain k l x e ->
@@ -470,7 +539,7 @@ renderTerm namer = go 0
             L -> (lvl, lvl + 1)
             R -> (lvl + 1, lvl)
             N -> (lvl + 1, lvl + 1)
-       in paren (prec > lvl) (go lp ctx a <> " " <> sym <> " " <> go rp ctx b)
+       in paren (prec > lvl) (go lp ctx a <> " " <> spellOp sym <> " " <> go rp ctx b)
     _ -> case (p, args) of
       -- `-3` reads back as the constant minus three (core.md §6), so the
       -- primitive applied to a constant keeps its name.
@@ -480,6 +549,17 @@ renderTerm namer = go 0
       _ -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
 
   paren b s = if b then "(" <> s <> ")" else s
+
+  -- The operators with a unicode spelling the printer does not already use
+  -- (§2.8); `*` stays, since `×` is the cross product.
+  spellOp sym = case spelling of
+    Ascii -> sym
+    Unicode -> case sym of
+      "<=" -> "≤"
+      ">=" -> "≥"
+      "/=" -> "≠"
+      "||" -> "∨"
+      _ -> sym
 
   -- A hint that is already in scope would capture an outer variable the
   -- body may still refer to, so the printed binder gets a prime (or a

@@ -15,7 +15,7 @@ import Eval.Affine qualified as A
 import Eval.Codebase (Codebase (..), lookupTypeName)
 import Eval.Core
 import Eval.Desugar
-import Eval.Dimension (DimAtom (..), dimAtoms, isDimOne)
+import Eval.Dimension (DimAtom (..), Spelling (..), dimAtoms, isDimOne)
 import Eval.Driver
 import Eval.Eval
 import Eval.Hash
@@ -1474,6 +1474,17 @@ pipelineProperties src =
                   >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
                   Left err -> counterexample (T.unpack err) False
                   Right (t', _) -> counterexample (fromMaybe "" (firstDifference t t')) (alphaEq t t')
+  , -- The same in the unicode spelling of `:set unicode on` (design §7.3).
+    testProperty "printed Core in unicode re-parses to an alpha-equivalent term"
+      $ forProgram src
+      $ \e ->
+        withElaborated src e $ \t _ ->
+          let printed = renderTermIn Unicode (\_ _ _ -> "#") VNil t
+           in counterexample (T.unpack printed)
+                $ case parseExpr printed
+                  >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
+                  Left err -> counterexample (T.unpack err) False
+                  Right (t', _) -> counterexample (fromMaybe "" (firstDifference t t')) (alphaEq t t')
   , testProperty "hashes ignore hints"
       $ forProgram src
       $ \e ->
@@ -1890,7 +1901,86 @@ displayTests :: TestTree
 displayTests =
   testGroup
     "display units"
-    [ testCase "a quantity prints in the unit it was written in" $ do
+    [ testCase ":set unicode prints the unicode spellings, which read back" $ do
+        runLinesP [":set"] @?= Right ["precision 20", "sigma 3", "unicode off"]
+        runLinesP [":set unicode on", ":set", ":set unicode off", ":set"]
+          @?= Right
+            [ "precision 20"
+            , "sigma 3"
+            , "unicode on"
+            , "precision 20"
+            , "sigma 3"
+            , "unicode off"
+            ]
+        case runLinesP [":set unicode maybe"] of
+          Left err -> T.isInfixOf "unicode is on or off" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        let defs =
+              [ "let f x = x^2 + 1"
+              , "let g x y = if x <= y then x^-1 else y"
+              , "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m/s]}"
+              ]
+            inputs =
+              [ "9.81 m/s^2"
+              , "5 km / h"
+              , "Body {mass = 5 kg, vel = [0, 0, 1] m/s}"
+              , ":type (\\x -> x, 9.81 m/s^2)"
+              , ":view f"
+              , ":view g"
+              , ":view Body"
+              ]
+            ascii =
+              [ "9.81 m s^-2"
+              , "5 km h^-1"
+              , "Body {mass = 5 kg, vel = [0, 0, 1] m s^-1}"
+              , "(a -> a, Num [m s^-2])"
+              , "f = \\x -> x^2 + 1"
+              , "g = \\x -> \\y -> if x <= y then x^-1 else y"
+              , "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m s^-1]}"
+              ]
+            unicode =
+              [ "9.81 m s⁻²"
+              , "5 km h⁻¹"
+              , "Body {mass = 5 kg, vel = [0, 0, 1] m s⁻¹}"
+              , "(a → a, Num [m s⁻²])"
+              , "f = λx → x² + 1"
+              , "g = λx → λy → if x ≤ y then x⁻¹ else y"
+              , "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m s⁻¹]}"
+              ]
+        runLinesP (defs ++ inputs) @?= Right ascii
+        runLinesP (defs ++ ":set unicode on" : inputs) @?= Right unicode
+        -- Both spellings lex to the same tokens, a superscript power standing
+        -- for its caret form.
+        let caret = concatMap $ \case
+              TSup n -> [TOp "^"] ++ [TOp "-" | n < 0] ++ [L.TNum (fromInteger (abs n))]
+              t -> [t]
+        mapM_
+          (\(a, u) -> (caret <$> toks u) @?= toks a)
+          (zip ascii unicode)
+        -- A superscript is glued only to an atom: after a stale `x#hash`
+        -- (a hash label to the lexer) the power keeps its caret.
+        let power namer k =
+              renderTermIn
+                Unicode
+                (\_ _ _ -> namer)
+                VNil
+                (Pow (Ref selfType Nothing (Hint "x")) k)
+        power "x" (-2) @?= "x⁻²"
+        power "x#a3f9k" 2 @?= "x#a3f9k^2"
+        -- and read back as the same values and definitions
+        runLinesP
+          [ "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m s⁻¹]}"
+          , "9.81 m s⁻²"
+          , "Body {mass = 5 kg, vel = [0, 0, 1] m s⁻¹}"
+          , "let f = λx → x² + 1"
+          , ":view f"
+          ]
+          @?= Right
+            [ "9.81 m s^-2"
+            , "Body {mass = 5 kg, vel = [0, 0, 1] m s^-1}"
+            , "f = \\x -> x^2 + 1"
+            ]
+    , testCase "a quantity prints in the unit it was written in" $ do
         evalP "5 km / h" @?= Right ["5 km h^-1"]
         evalP "(2 km)^2" @?= Right ["4 km^2"]
         evalP "[1, 2] km" @?= Right ["[1, 2] km"]
@@ -3045,7 +3135,7 @@ dataTests =
           @?= Right
             [ "5 kg"
             , "Vec 3 [m]"
-            , "Body (6 kg) ([1, 2, 3] km) ([0, 0, 0] m s^-1)"
+            , "Body {mass = 6 kg, pos = [1, 2, 3] km, vel = [0, 0, 0] m s^-1}"
             , "Body -> Num [kg m^2 s^-2]"
             , "kinetic = \\b -> 0.5 * (case b of Body mass _ _ -> mass) * norm (case b of Body _ _ vel -> vel)^2"
             , "[4001, 5001, 6001] m s^-1"
@@ -3081,17 +3171,66 @@ dataTests =
           "field names need a type with one constructor"
         refused ["data E = E {x :: Num, x :: Num}"] "field `x` appears twice"
         refused [body, "mass"] "is a field; write it after a value"
-        -- field labels can be removed, with their dot; the type then prints positionally
-        runLinesP [body, ":add", ":unname .mass", ":view Body"]
+        -- field labels can be removed, with their dot; the type and its
+        -- values then print positionally, since a record needs every name
+        runLinesP
+          [body, ":add", ":unname .mass", ":view Body", "Body (1 kg) ([0, 0, 0] m)"]
           @?= Right
             [ "added Body"
             , "removed the label `.mass`"
             , "data Body = Body (Num [kg]) (Vec 3 [m])"
+            , "Body (1 kg) ([0, 0, 0] m)"
             ]
         -- a glued .name is a field, so composition needs spaces
         evalP "(sqrt . abs) (-16)" @?= Right ["4"]
         case evalP "(sqrt.abs) (-16)" of
           Left err -> T.isInfixOf "unknown field `abs`" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "record values print with their field names and read back" $ do
+        let decls =
+              [ "data Body = Body {mass :: Num [kg], pos :: Vec 3 [m]}"
+              , "data Pair a b = Pair {first :: a, second :: b}"
+              , "data Maybe a = Nothing | Just a"
+              , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+              ]
+            -- each value as it prints, and as the printed text prints again
+            cases =
+              [
+                ( "Pair {first = Body {mass = 1 kg, pos = [1,2,3] m}, second = Just (Body {mass = -2 kg, pos = [0,0,0] km})}"
+                , "Pair {first = Body {mass = 1 kg, pos = [1, 2, 3] m}, second = Just (Body {mass = -2 kg, pos = [0, 0, 0] km})}"
+                )
+              , -- a record inside a positional constructor keeps its parentheses
+
+                ( "Just (Body {mass = 5 kg, pos = [0,0,0] m})"
+                , "Just (Body {mass = 5 kg, pos = [0, 0, 0] m})"
+                )
+              , -- a positional value inside a record needs none
+
+                ( "Pair {first = Rect (1 m) (2 m), second = Nothing}"
+                , "Pair {first = Rect (1 m) (2 m), second = Nothing}"
+                )
+              ,
+                ( "Pair (Circle (1 m)) (1, 2 m)"
+                , "Pair {first = Circle (1 m), second = (1, 2 m)}"
+                )
+              , ("{Body (5 kg) ([0,0,0] m)}", "{Body {mass = 5 kg, pos = [0, 0, 0] m}}")
+              ,
+                ( "Pair (Pair 1 true) (-3 m s^-2)"
+                , "Pair {first = Pair {first = 1, second = true}, second = -3 m s^-2}"
+                )
+              ]
+        mapM_
+          ( \(src, printed) -> do
+              runLinesP (decls ++ [src]) @?= Right [printed]
+              runLinesP (decls ++ [printed]) @?= Right [printed]
+          )
+          cases
+        -- a type mixing a named constructor with a positional one is refused
+        -- (field names need one constructor), so a record is never partly named
+        -- except by :unname, as above
+        case runLinesP ["data E = A {x :: Num} | B Num"] of
+          Left err ->
+            T.isInfixOf "field names need a type with one constructor" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "declared types: identity is the stamped or structural definition" $ do
         s <-

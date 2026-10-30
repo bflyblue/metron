@@ -34,7 +34,7 @@ import Eval.Affine (
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
-import Eval.Dimension (Dim, dimPow, dimVar, renderDim)
+import Eval.Dimension (Dim, Spelling (..), dimPow, dimVar, renderDimIn)
 import Eval.Eval
 import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
@@ -55,6 +55,7 @@ import Eval.Type (
   TypeDef (..),
   dataConstructors,
   renderScheme,
+  renderSchemeIn,
   renderTypeDef,
  )
 import Eval.Update
@@ -156,7 +157,7 @@ evalExpr cfg prefs cb src e = do
   either
     (Left . renderEvalError)
     Right
-    (renderValue (refNamer cb) cfg.precision prefs v)
+    (renderValue (printerFor cfg cb) cfg.precision prefs v)
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design
@@ -178,9 +179,10 @@ runtimeOf cb =
     }
 
 {- | Desugar, typecheck, elaborate and lint an expression against a codebase.
-Returns the Core, the Typed Core and the printed type.
+Returns the Core, the Typed Core and the type.
 -}
-checkExpr :: Codebase -> Text -> S.Expr -> Either Text (Term Z, TTerm Z, Text)
+checkExpr ::
+  Codebase -> Text -> S.Expr -> Either Text (Term Z, TTerm Z, Maybe Scheme)
 checkExpr cb src e = do
   (term, prov) <-
     either
@@ -194,7 +196,7 @@ checkExpr cb src e = do
       (Left . ("internal error: elaboration produced ill-typed core: " <>))
       Right
       (lintClosed (typeLookupFor cb) typed)
-  pure (term, typed, maybe "" renderScheme (listToMaybe schemes))
+  pure (term, typed, listToMaybe schemes)
  where
   typeErr prov err = case provenanceAt err.path prov of
     Just (sp, hint) -> S.renderSpanError (Just src) sp (withHint hint err.message)
@@ -205,10 +207,20 @@ checkExpr cb src e = do
 command :: Session -> Text -> [Text] -> Either Text (Session, [Text])
 command session src = \case
   ["set"] ->
-    keep (Right ["precision " <> tshow cfg.precision, "sigma " <> tshow cfg.sigma])
+    keep
+      ( Right
+          [ "precision " <> tshow cfg.precision
+          , "sigma " <> tshow cfg.sigma
+          , "unicode " <> (if cfg.unicode then "on" else "off")
+          ]
+      )
   ["set", "precision", n] ->
     setting n (\k -> cfg{precision = k}) "precision must be a non-negative integer"
   ["set", "sigma", n] -> setting n (\k -> cfg{sigma = k}) "sigma must be a non-negative integer"
+  -- Output spelling (design §2.8, §7.3).
+  ["set", "unicode", "on"] -> Right (session{config = cfg{unicode = True}}, [])
+  ["set", "unicode", "off"] -> Right (session{config = cfg{unicode = False}}, [])
+  ["set", "unicode", _] -> Left "unicode is on or off"
   -- Display preferences (design §3.2.12): a unit per exact dimension.
   ["prefer"] ->
     keep
@@ -236,7 +248,14 @@ command session src = \case
           , staging = addPreference text (foldr removePreference cb stale)
           }
     pure
-      (refreshed, ["values of dimension " <> renderDim d <> " print in " <> text])
+      ( refreshed
+      ,
+        [ "values of dimension "
+            <> renderDimIn spelling (\v -> "d" <> tshow v) d
+            <> " print in "
+            <> text
+        ]
+      )
   ("unprefer" : rest) -> do
     let text = T.unwords rest
     if Set.member text cb.preferences
@@ -256,7 +275,7 @@ command session src = \case
         (Left . renderEvalError)
         Right
         ( renderValueWith
-            (inputNamer h)
+            (inputPrinter h)
             cfg.precision
             session.preferred
             (renderExact (inputNamer h) cfg.precision)
@@ -266,7 +285,7 @@ command session src = \case
   -- tensor's components.
   ("budget" : rest) -> keep $ do
     (h, v) <- evalOf rest
-    case displayParts (inputNamer h) cfg.precision session.preferred v of
+    case displayParts (inputPrinter h) cfg.precision session.preferred v of
       Right (_, xs, units) ->
         pure (renderBudget (inputNamer h) cfg.precision units (foldr addM (Exact 0) xs))
       Left (Internal _) -> Left "budget: not a number"
@@ -299,7 +318,7 @@ command session src = \case
             (Left . renderEvalError)
             Right
             ( renderValue
-                (inputNamer h)
+                (inputPrinter h)
                 cfg.precision
                 session.preferred
                 (if null dims then scalarVar else covValue)
@@ -309,7 +328,7 @@ command session src = \case
             (Left . renderEvalError)
             Right
             ( renderValueWith
-                (inputNamer h)
+                (inputPrinter h)
                 cfg.precision
                 session.preferred
                 renderRough
@@ -330,14 +349,14 @@ command session src = \case
   ("type" : rest) -> keep $ do
     e <- parseExpr (T.unwords rest)
     (_, _, ty) <- checkExpr cb (T.unwords rest) e
-    pure [ty]
+    pure [maybe "" (renderSchemeIn spelling) ty]
   ["edit", n] -> keep $ case lookupName n cb of
     Just r ->
       let keyword
             | isUnitName n cb = "unit "
             | isScaleName n cb = "scale "
             | otherwise = "let "
-       in (\body -> [keyword <> n <> " = " <> body]) <$> viewReference cb r
+       in (\body -> [keyword <> n <> " = " <> body]) <$> viewReference spelling cb r
     Nothing -> viewData n
   ["lint", n] -> keep $ withName n $ \r -> case lookupTyped r.hash cb of
     Nothing -> Left ("no typed core for " <> showHash r.hash)
@@ -361,7 +380,7 @@ command session src = \case
     [] -> Left ("unknown name `" <> n <> "`")
     r : rs -> pure ((showReference r <> "  (current)") : map showReference rs)
   ["view", n] -> keep $ case lookupName n cb of
-    Just r -> (: []) . ((n <> " = ") <>) <$> viewReference cb r
+    Just r -> (: []) . ((n <> " = ") <>) <$> viewReference spelling cb r
     Nothing -> viewData n
   ["dependents", n] -> keep $ withName n $ \r -> pure (dependents r.hash cb)
   -- An alias of a unit or scale is one too.
@@ -380,11 +399,12 @@ command session src = \case
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
           <> "          :ls [glob] [--all|--units|--scales|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
           <> "          :history name  :dependents name  :alias new old  :unname name\n"
-          <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k]  :prefer [unit]  :unprefer unit"
+          <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k | unicode on|off]  :prefer [unit]  :unprefer unit"
       )
  where
   cb = session.staging
   cfg = session.config
+  spelling = spellingOf cfg
   keep = fmap (session,)
   tshow = T.pack . show
   setting n adjust err = case reads (T.unpack n) of
@@ -395,6 +415,7 @@ command session src = \case
     evalValue cfg cb (T.unwords rest) e
   -- Nudges declared in the expression itself are labelled "input".
   inputNamer h h' i written = if h' == h then "input" else refNamer cb h' i written
+  inputPrinter h = (printerFor cfg cb){refName = inputNamer h}
   preferenceOf = preferenceHint cfg cb
   commit cb' outs = Right (session{codebase = cb', staging = cb'}, outs)
   withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n cb)
@@ -413,6 +434,7 @@ command session src = \case
     Just (h, def) ->
       pure
         [ renderTypeDef
+            spelling
             h
             n
             [ fromMaybe (showHash h <> "." <> tshow i) (conNameOf h i cb)
@@ -594,16 +616,16 @@ forget n session
 {- | Print the definition behind a reference (design §7.2). Cycle members
 are shown one at a time, with the other members by name.
 -}
-viewReference :: Codebase -> Reference -> Either Text Text
-viewReference cb (Reference h idx) = case lookupTerm h cb of
+viewReference :: Spelling -> Codebase -> Reference -> Either Text Text
+viewReference spelling cb (Reference h idx) = case lookupTerm h cb of
   Nothing -> Left ("missing term " <> showHash h)
   Just t -> case (idx, t) of
-    (Nothing, _) -> Right (renderTerm (refNamer cb) VNil t)
+    (Nothing, _) -> Right (renderTermIn spelling (refNamer cb) VNil t)
     (Just i, Cycle hints bodies) ->
       let memberName j (Hint hint) = fromMaybe hint (listToMaybe (namesOf (Reference h (Just j)) cb))
           ctx = vecAppend (vecMapIndexed memberName hints) VNil
        in case vecIndex i bodies of
-            Just body -> Right (renderTerm (refNamer cb) ctx body)
+            Just body -> Right (renderTermIn spelling (refNamer cb) ctx body)
             Nothing -> Left ("no member " <> T.pack (show i) <> " in " <> showHash h)
     (Just _, _) -> Left (showHash h <> " is not a cycle")
 
@@ -639,6 +661,21 @@ refNamer cb h idx written =
         [] -> case historicalNamesOf r cb of
           n : _ -> n <> showReference r
           [] -> showReference r
+
+{- | How values print in a session: names for references and record fields
+from the codebase, in the configured spelling.
+-}
+printerFor :: Config -> Codebase -> Printer
+printerFor cfg cb =
+  Printer
+    { refName = refNamer cb
+    , fieldNames = \h i arity -> fieldNamesOf h i arity cb
+    , spelling = spellingOf cfg
+    }
+
+-- | The spelling output uses (design §7.3, @:set unicode@).
+spellingOf :: Config -> Spelling
+spellingOf cfg = if cfg.unicode then Unicode else Ascii
 
 renderEvalError :: EvalError -> Text
 renderEvalError = \case
@@ -741,7 +778,7 @@ listNames session args = do
         all (`matchesGlob` n) globs && (not hidePrelude || n `Set.notMember` preludeSet)
       typeOk sc = maybe True (`I.matchesQuery` sc) query
       definitions =
-        [ prefix n <> n <> " : " <> renderScheme sc
+        [ prefix n <> n <> " : " <> renderSchemeIn (spellingOf session.config) sc
         | (n, r) <- sortOn (T.toLower . fst) (Map.toList cb.names)
         , kindOk n
         , nameOk n
@@ -759,7 +796,7 @@ listNames session args = do
             | nameOk n
             , isNothing query
             ]
-              ++ [ c <> " : " <> renderScheme sc
+              ++ [ c <> " : " <> renderSchemeIn (spellingOf session.config) sc
                  | (i, fields) <- zip [0 ..] def.constructors
                  , Just c <- [conNameOf h i cb]
                  , nameOk c
@@ -792,6 +829,7 @@ listNames session args = do
     | otherwise = ""
   declaration h n def =
     renderTypeDef
+      (spellingOf session.config)
       h
       n
       [ fromMaybe (showHash h <> "." <> tshow i) (conNameOf h i cb)

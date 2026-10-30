@@ -212,7 +212,8 @@ would pass four arguments, the metre twice among them (§2.6). A
 `case` takes a value apart one constructor deep, naming the fields in order;
 `_` and variables fill in the constructors not written, as for lists. Values
 print with each compound field in parentheses, `Rect (3 m) (4 m)` and
-`Just (Circle (1 m))`, so that they read back whatever their units.
+`Just (Circle (1 m))`, so that they read back whatever their units; a
+record prints with its field names (below).
 
 A type's identity is its definition: parameter kinds, the constructors' field
 types in order, and the type's name as an owner stamp (§3.2.4), so two users
@@ -248,8 +249,16 @@ is an ordinary data type to Core and to the hash, and `:view` shows the
 `case`. Field names are labels like constructor names, looked up by the
 field alone, so two record types cannot share a field name (the newer
 declaration takes it), and `:unname .mass` removes one. Field names need a
-type with one constructor, so that `b.mass` is total. Values print
-positionally, with each compound field in parentheses.
+type with one constructor, so that `b.mass` is total.
+
+A record value prints as it is built, `Body {mass = 5 kg, pos = [1, 2, 3]
+km, vel = [4, 5, 6] km s^-1}`, which reads back as the same value. The
+braces delimit each field, so no field needs parentheses, and records nest:
+`Pair {first = Body {…}, second = Just (Circle (1 m))}`. The printer sees
+only the constructor's hash and index; the driver gives it the field labels
+from the codebase, as it gives names for references (§7.2). A constructor
+with no fields, or with any field unnamed (after `:unname .mass`), prints
+positionally.
 
 Further sugar, all removed by desugaring (§2.9):
 
@@ -440,6 +449,10 @@ Rules: superscripts bind as `^` does, so `3 m²` is `3 * m^2` by the quantity ru
 A superscript is only a power when it follows an atom without a space; `x ²` is an
 error. `°` and the arc marks attach to the preceding number without a space and
 are unit atoms, so `45° + 30′` works.
+
+The printer emits ASCII by default. `:set unicode on` (§7.3) switches the
+exponents, `->`, `\` and `<= >= /= ||` to their unicode spellings; the
+list there is the exact set.
 
 ### 2.9 Sugar and desugaring
 
@@ -1901,13 +1914,35 @@ Session
 :set sigma k       confidence multiplier for comparisons on statistical values (3.2.9)
 :prefer [unit]     print values of the unit's dimension in it (3.2.12); alone, list preferences
 :unprefer unit     remove that preference
-:set unicode on    pretty-print with unicode spellings (2.8); off for ASCII
+:set unicode on    pretty-print with unicode spellings (2.8); off (the default) for ASCII
+:set               list the settings: precision, sigma, unicode
 :exact e           raw rational, or midpoint and nudge list
 :budget e          error budget (3.2.6)
 :covariance e      covariance (or variance) of the statistical nudges, and the bound box (3.5)
 :load file         enter a file into the scratch as one binding group
 :quit
 ```
+
+With `:set unicode on`, printed values, `:type`, `:view`, `:edit`, `:exact`,
+`:budget`, `:covariance` and the `:prefer` message use these spellings from
+the table in §2.8, and nothing else changes:
+
+| ASCII | Unicode | Where |
+|---|---|---|
+| `^2` `^-1` | `²` `⁻¹` | unit exponents (`9.81 m s⁻²`, `5 km h⁻¹`), dimension brackets in types (`Num [m s⁻²]`), powers in `:view` (`x²`) |
+| `->` | `→` | function types, lambdas and case alternatives |
+| `\` | `λ` | lambdas: `λx → x² + 1` |
+| `<=` `>=` `/=` `\|\|` | `≤` `≥` `≠` `∨` | operators in `:view` |
+
+`*` stays `*`, because `×` is the cross product; `/`, `&&`, `sqrt` and names
+such as `pi` and `deg` keep their ASCII spelling. `√` would change the
+binding (it is a prefix operator, `sqrt` an application), and `π` and `°`
+are names, not syntax. `·`, `∧`, `⊙`, `⊘`, `±` and `±σ` print in unicode
+in both modes, as before. A power whose base does not end in an atom keeps
+its caret, since a superscript must be glued to an atom. Every unicode form
+lexes to the same tokens as its ASCII form, a superscript standing for its
+caret, so output reads back either way. Error messages, `:core` and `:lint`
+stay in ASCII.
 
 ### 7.4 CLI and persistence
 
@@ -2169,16 +2204,16 @@ tuned, and compilation is a later milestone.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),
    haskeline with a history file beside the store, `:store`, `:prefer`,
-   `:covariance`, and `eval --merge OTHER` to merge two stores (§7.4).
-   Remaining: `:set unicode`.
+   `:covariance`, `:set unicode` (§7.3), and `eval --merge OTHER` to merge two
+   stores (§7.4). Nothing remains here.
 7. **Tuples**, then **lists** with a `case` construct in the core. Status: done.
    `Con` and `Case` replaced `If` and the boolean literal (core.md §5). User
    data types (§2.3): done, as the same mechanism with declared constructors,
    kinded parameters inferred from use, self-recursion, owner-stamped or
    structural identity, and persistence in `types/`. Records: done, as field
    labels on one-constructor types with `b.f`, `C {f = e}` and `b {f = e}`
-   desugaring to `case`. Remaining: `==` on declared types, mutually
-   recursive types, record values printing with their field names, and
+   desugaring to `case`; record values print with their field names.
+   Remaining: `==` on declared types, mutually recursive types, and
    re-expressing `Bool`, tuples and lists as prelude declarations.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
@@ -2222,9 +2257,6 @@ tuned, and compilation is a later milestone.
   type may opt out, or give its own equality (a fraction kept as an
   unreduced pair, which structural equality calls unequal to its reduced
   form).
-- Record values print positionally. Printing `Body {mass = 5 kg, …}` needs
-  the field labels at print time, which the hash-only printer does not have;
-  a namer for fields, as for references, would give it.
 - A constructor that takes a prelude unit's name (`data Temp = T …`) unnames
   the tesla silently. Warn, refuse, or keep the newer-label rule?
 

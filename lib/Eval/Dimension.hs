@@ -21,7 +21,12 @@ module Eval.Dimension (
   substDimVar,
   renderDim,
   renderDimWith,
+  renderDimIn,
   renderUnits,
+  renderUnitsIn,
+  Spelling (..),
+  exponentText,
+  arrowText,
   baseSymbol,
 ) where
 
@@ -106,25 +111,68 @@ baseSymbol = \case
   J -> "cd"
   Ang -> "rad"
 
+{- | How printed output spells the constructs that have both an ASCII and a
+unicode spelling (design §2.8, §7.3): @m s^-2@ and @\\x -> x^2@, or
+@m s⁻²@ and @λx → x²@. Either reads back as the same expression.
+-}
+data Spelling = Ascii | Unicode
+  deriving stock (Eq, Show)
+
+{- | An exponent glued to what it raises: @^-2@, or the superscript @⁻²@.
+The exponent 1 is written too; callers leave it out.
+-}
+exponentText :: Spelling -> Integer -> Text
+exponentText spelling k = case spelling of
+  Ascii -> "^" <> T.pack (show k)
+  Unicode -> T.map superscript (T.pack (show k))
+ where
+  superscript = \case
+    '-' -> '⁻'
+    '0' -> '⁰'
+    '1' -> '¹'
+    '2' -> '²'
+    '3' -> '³'
+    '4' -> '⁴'
+    '5' -> '⁵'
+    '6' -> '⁶'
+    '7' -> '⁷'
+    '8' -> '⁸'
+    '9' -> '⁹'
+    c -> c
+
+-- | The arrow of a function type, a lambda or a case alternative, with its spaces.
+arrowText :: Spelling -> Text
+arrowText = \case
+  Ascii -> " -> "
+  Unicode -> " → "
+
 -- | @[m s^-2]@, @[d1 d2^-1]@; the empty dimension renders as @1@.
 renderDim :: Dim -> Text
 renderDim = renderDimWith (\v -> "d" <> T.pack (show v))
 
 renderDimWith :: (Int -> Text) -> Dim -> Text
-renderDimWith varName d
+renderDimWith = renderDimIn Ascii
+
+-- | 'renderDimWith' in a chosen spelling: @[m s⁻²]@ in unicode.
+renderDimIn :: Spelling -> (Int -> Text) -> Dim -> Text
+renderDimIn spelling varName d
   | isDimOne d = "1"
-  | otherwise = "[" <> renderUnitsWith varName d <> "]"
+  | otherwise = "[" <> renderUnitsWith spelling varName d <> "]"
 
 {- | The base units of a concrete dimension as they follow a printed value:
 @m s^-2@; empty when dimensionless.
 -}
 renderUnits :: Dim -> Text
-renderUnits d
-  | isDimOne d = ""
-  | otherwise = renderUnitsWith (\v -> "d" <> T.pack (show v)) d
+renderUnits = renderUnitsIn Ascii
 
-renderUnitsWith :: (Int -> Text) -> Dim -> Text
-renderUnitsWith varName d = T.unwords (map atom (sortOn order (dimAtoms d)))
+-- | 'renderUnits' in a chosen spelling: @m s⁻²@ in unicode.
+renderUnitsIn :: Spelling -> Dim -> Text
+renderUnitsIn spelling d
+  | isDimOne d = ""
+  | otherwise = renderUnitsWith spelling (\v -> "d" <> T.pack (show v)) d
+
+renderUnitsWith :: Spelling -> (Int -> Text) -> Dim -> Text
+renderUnitsWith spelling varName d = T.unwords (map atom (sortOn order (dimAtoms d)))
  where
   -- Positive exponents before negative, and within each the customary
   -- order @kg m s A K mol cd@ (so a joule is @kg m^2 s^-2@), variables last.
@@ -139,7 +187,7 @@ renderUnitsWith varName d = T.unwords (map atom (sortOn order (dimAtoms d)))
     Base J -> 6
     Base Ang -> 7
     DVar v -> 8 + v
-  atom (a, k) = name a <> (if k == 1 then "" else "^" <> T.pack (show k))
+  atom (a, k) = name a <> (if k == 1 then "" else exponentText spelling (toInteger k))
   name = \case
     Base b -> baseSymbol b
     DVar v -> varName v
