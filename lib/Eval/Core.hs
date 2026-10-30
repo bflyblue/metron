@@ -391,6 +391,8 @@ primArity = \case
   "inverse" -> Just 1
   "det" -> Just 1
   "vmap" -> Just 2
+  "indices" -> Just 1
+  "vzipWith" -> Just 3
   "pi" -> Just 0
   -- The seven SI base units (design §3.2.11).
   "m" -> Just 0

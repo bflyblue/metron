@@ -161,6 +161,20 @@ primScheme name = case name of
   "vmap" ->
     Just
       (Forall [sv, dv, d2v] (TFun (TFun (numD d) (numD d2)) (TFun sd (TTensor s d2))))
+  -- The positions of a vector as values, [0, 1, …, n-1]: never consumed as
+  -- positions, so there is still no computed indexing (design §2.10).
+  "indices" -> Just (Forall [nv, dv] (TFun (vecD n d) (vecT n)))
+  -- Elementwise combination of two tensors of one shape, ⊙'s general form.
+  "vzipWith" ->
+    let d3 = dimVar 5
+     in Just
+          ( Forall
+              [sv, dv, d2v, (5, KDim)]
+              ( TFun
+                  (TFun (numD d) (TFun (numD d2) (numD d3)))
+                  (TFun sd (TFun sd2 (TTensor s d3)))
+              )
+          )
   _ -> case baseUnit name of
     Just b -> mono (numD (dimBase b))
     Nothing -> Nothing

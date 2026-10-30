@@ -1171,6 +1171,12 @@ typeTests =
         typeOfText "dot" @?= Right "Vec n d -> Tensor (n : s) d1 -> Tensor s [d d1]"
         typeOfText "transpose" @?= Right "Mat n m d -> Mat m n d"
         typeOfTextP "cross" @?= Right "Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
+    , testCase "indices, vzipWith and vimap (design §3.3)" $ do
+        typeOfText "indices" @?= Right "Vec n d -> Vec n"
+        typeOfText "vzipWith"
+          @?= Right "(Num d -> Num d1 -> Num d2) -> Tensor s d -> Tensor s d1 -> Tensor s d2"
+        typeOfTextP "vimap" @?= Right "(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1"
+        typeOfText "indices ([1, 2] m)" @?= Right "Vec 2"
     , testCase "recursive definitions get types"
         $ runLines ["let fact n = if n == 0 then 1 else n * fact (n - 1)", ":type fact"]
           @?= Right ["Num -> Num"]
@@ -1285,6 +1291,28 @@ productTests =
         evalP "[1, 0, 0] × [0, 1, 0]" @?= Right ["[0, 0, 1]"]
         evalP "[1, 0, 0] >< [0, 1, 0]" @?= Right ["[0, 0, 1]"]
         evalP "cross [0, 1, 0] [1, 0, 0]" @?= Right ["[0, 0, -1]"]
+    , testCase "indices: a vector's positions as exact dimensionless values" $ do
+        evalText "indices [5, 6, 7]" @?= Right ["[0, 1, 2]"]
+        evalText "indices ([5, 6, 7] m)" @?= Right ["[0, 1, 2]"]
+        evalText "indices [5, 6, 7] == [0, 1, 2]" @?= Right ["true"]
+        -- The argument's components are not forced.
+        evalText "indices [1 / 0, 2]" @?= Right ["[0, 1]"]
+        evalText "indices ([1, 2, 3] m) ⊙ ([1, 2, 3] m)" @?= Right ["[0, 2, 6] m"]
+        case evalText "indices [[1, 2], [3, 4]]" of
+          Left err -> T.isInfixOf "expected Vec n d, got Mat 2 2" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "vzipWith combines two tensors of one shape elementwise" $ do
+        evalText "vzipWith (\\a b -> a * b) [1, 2, 3] [4, 5, 6]"
+          @?= Right ["[4, 10, 18]"]
+        evalText "vzipWith (\\a b -> a + b) ([1, 2] m) ([3, 4] m)"
+          @?= Right ["[4, 6] m"]
+        evalText "vzipWith (\\a b -> a * b) [[1, 2], [3, 4]] [[1, 0], [0, 1]]"
+          @?= Right ["[1, 0; 0, 4]"]
+        evalText "bound (vzipWith (\\a b -> a + b) ([1, 2] ± 0.1) [0, 0])"
+          @?= Right ["[0.1, 0.1]"]
+        case evalText "vzipWith (\\a b -> a * b) [1, 2] [1, 2, 3]" of
+          Left err -> T.isInfixOf "lengths differ: 2 and 3" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "elementwise product and division" $ do
         evalText "[1, 2] ⊙ [3, 4]" @?= Right ["[3, 8]"]
         evalText "[1, 2] .* [3, 4]" @?= Right ["[3, 8]"]
@@ -2104,6 +2132,18 @@ preludeTests =
         evalP "[1, 2, 3] × [4, 5, 6] == star ([1, 2, 3] ∧ [4, 5, 6])" @?= Right ["true"]
         -- Contracting ε's last index first gives b × a, so the arguments swap.
         evalP "(ε @ [0, 1, 0]) @ [1, 0, 0]" @?= Right ["[0, 0, 1]"]
+    , testCase "vimap maps with each component's position as a value" $ do
+        evalP "vimap (\\i x -> i * x) [10, 20, 30]" @?= Right ["[0, 20, 60]"]
+        runLinesP ["let v = [1, 2, 3] m", "vimap (\\i x -> x) v == v"]
+          @?= Right ["true"]
+        evalP "vimap (\\i x -> i * x) ([1, 2, 3] m)" @?= Right ["[0, 2, 6] m"]
+        -- The position is a value, not a literal (design §2.10).
+        case evalP "vimap (\\i x -> x ^ i) [1, 2]" of
+          Left err -> T.isInfixOf "expecting - or integer literal" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "let v = [1, 2]\nvimap (\\i x -> v.i) v" of
+          Left err -> T.isInfixOf "unknown field `i`" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "wedge works in any dimension" $ do
         typeOfTextP "\\a b -> a /\\ b" @?= Right "Vec n d -> Vec n d1 -> Mat n n [d d1]"
         evalP "[1, 0] ∧ [0, 1]" @?= Right ["[0, 1; -1, 0]"]
