@@ -2260,21 +2260,29 @@ frame's axes. The decisions:
    `to`, which is the typed conversion between them. Scalar points (`Point
    [K]`) have no axes, so temperature charts are unaffected. This supersedes
    §3.8's base-form storage, which is replaced when this layer is built.
-5. **Literals are anonymous**, so a labelled vector comes only from
-   something that knows its axes: a chart conversion (`coordinates`,
-   `along`), or an explicit `withAxes lvlh v`. An ascription does not coerce
-   axes: an ascription narrows and never relabels (§4.8), so a relabelling
-   is always visible as a function call.
+5. **Literals are polymorphic in their axes** (decided by the owner). An
+   unannotated literal vector gets a fresh axis variable, as an untyped
+   numeric literal does in Haskell, so its frame comes from where it is used:
+   `p .+ [1, 0, 0] m` is along `p`'s axes, `[1, 0, 0] m + v` along `v`'s. A
+   literal has no frame until it is used, so this is not a frame mix-up.
+   `along c v` remains for re-expressing a vector that already has a frame
+   along another chart's axes, which is a rotation and stays visible. The
+   restriction is on named values: functions generalise over axis variables
+   as usual (`let shift p = p .+ [1, 0, 0] m` is "the same frame as `p`"),
+   but a named non-function value does not keep a free axis variable. If
+   nothing in its definition fixes its frame, its axes default to anonymous,
+   so `let offset = [0, 0, 2] m` cannot silently be a body-frame offset in
+   one use and an inertial one in another; it meets a frame through `along`
+   or a signature (`offset :: Vec body [m]`), and the first use against a
+   frame says so. An ascription narrows and never relabels (§4.8).
 6. **Signatures take a constraint clause**: `cross :: Vec a d -> Vec a d1 ->
    Vec a [d d1] where card a ~ 3`. A small grammar addition to §4.8.
 7. **The base axes are named** (decided by the owner). Every chart without
    a parent names its own axis set; a translated child shares its parent's,
-   a rotated child names its own. Literals stay anonymous: anonymous vectors
-   combine with each other freely (`cross [1, 0, 0] [0, 1, 0]`, `norm`), but
-   an anonymous vector meets a frame only through `along c v`, so no vector
-   ever means "whatever frame you are in", and two unrelated root charts
-   (`eci`, a lab bench) never mix without a `to`. A shorter spelling than
-   `along eci [1, 0, 0] m` may come later without changing the meaning.
+   a rotated child names its own. Two unrelated root charts (`eci`, a lab
+   bench) never mix without a `to`. Literals take their frame from use
+   (decision 5); a named value with no frame of its own is anonymous and
+   meets a frame through `along` or a signature.
 8. **Encoding.** The anonymous set of size `k` encodes byte for byte as
    today's length `k`, so stored `data` types and `sig` lines do not change;
    a named set or an axis variable is an appended type tag. No format bump
