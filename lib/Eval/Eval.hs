@@ -30,7 +30,8 @@ module Eval.Eval (
   UnitAtom (..),
   UnitHint (..),
   UnitFactor (..),
-  ScaleHint (..),
+  Chart (..),
+  turned,
   Preferences,
   hintPow,
   hintProduct,
@@ -47,6 +48,7 @@ module Eval.Eval (
 import Control.Monad (foldM, zipWithM)
 import Data.List (nub)
 import Data.Map.Strict (Map)
+import Data.Maybe (isJust)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -146,27 +148,51 @@ data UnitHint = UnitHint
   }
   deriving stock (Eq, Show)
 
-{- | How a point is written and printed (design §3.6): a step unit, an origin
-as an amount from the base origin, and the declared name if any.
+{- | A chart (design §3.6, §3.8): how a point is written and printed. A step
+unit, an origin, the declared name if any, and the three parts a chart
+built by @mkChart3@ or @mkChart4@ may set: the chart its origin and axes are
+given in, the generator its axes are turned by from that chart's, and its
+angular velocity. Points are stored as amounts from the base origin along
+the base axes, so for charts whose axes are all the base axes (no
+generator here or above) a conversion is a change of chart and nothing
+else; 'turned' charts wait for the rotation maths.
 -}
-data ScaleHint = ScaleHint
+data Chart = Chart
   { name :: Maybe UnitAtom
   , step :: Magnitude
   , stepHint :: Maybe UnitHint
   -- ^ the step's own display unit, which differences inherit
   , origin :: Vector Magnitude
-  -- ^ the origin as an amount from the base origin, one magnitude per component
+  {- ^ the origin as an amount from the base origin, one magnitude per
+  component: the parent's origin plus the amount the chart was given at.
+  Under a turned parent, the amount as given, which no use reads until
+  rotation is built
+  -}
   , dims :: [Int]
   , dim :: Dim
+  , parent :: Maybe Chart
+  {- ^ the chart the origin and the generator are given in; 'Nothing' is the
+  implicit base of the dimension. The chart value itself, not a hash: a
+  chart need not be named, and its definition's Core already refers to the
+  parent's by hash
+  -}
+  , generator :: Maybe (Vector Magnitude)
+  -- ^ an antisymmetric @n × n@ matrix, row-major; 'Nothing' is axis-aligned with the parent
+  , spin :: Maybe (Vector Magnitude)
+  -- ^ the angular velocity of a moving chart (design §3.8, phase C): always 'Nothing' for now
   }
   deriving stock (Eq, Show)
+
+-- | A chart with a generator on it or on any chart above it.
+turned :: Chart -> Bool
+turned c = isJust c.generator || maybe False turned c.parent
 
 data Value
   = -- | lengths, dimension, display unit, flat row-major elements in SI base units
     VTensor [Int] Dim (Maybe UnitHint) (Vector Elem)
-  | -- | a point of the affine space over a tensor type: lengths, dimension, the scale it was written on, and its position as an amount from the base origin
-    VPoint [Int] Dim (Maybe ScaleHint) (Vector Elem)
-  | VScale ScaleHint
+  | -- | a point of the affine space over a tensor type: lengths, dimension, the chart it was written on, and its position as an amount from the base origin
+    VPoint [Int] Dim (Maybe Chart) (Vector Elem)
+  | VChart Chart
   | -- | a constructor with its fields as thunks (design §8); a boolean is one, 'VBool'
     VData ConRef [Thunk]
   | VClosure Closure
@@ -217,7 +243,7 @@ eval cfg rt = go
         -- A declared unit is its own display unit (design §3.2.12).
         case (rt.unitName h mi written, rt.scaleName h mi written) of
           (Just u, _) -> asUnit (UnitNamed u) v
-          (_, Just s) -> asScale (UnitNamed s) v
+          (_, Just s) -> asChart (UnitNamed s) v
           _ -> Right v
     TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
     TLit (LTensor (dims, rs)) -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
@@ -300,8 +326,8 @@ eval cfg rt = go
       v <- go (child 0) env t
       case v of
         VTensor dims d hint buf -> slice dims (\rest -> VTensor rest d hint) buf
-        -- A component of a point is a point on the sliced scale (design §3.6).
-        VPoint dims d sc buf -> slice dims (\rest -> VPoint rest d (sliceScale <$> sc)) buf
+        -- A component of a point is a point on the sliced chart (design §3.6).
+        VPoint dims d sc buf -> slice dims (\rest -> VPoint rest d (sliceChart <$> sc)) buf
         _ -> Left (Internal "projection from a non-tensor")
      where
       slice :: [Int] -> ([Int] -> Vector a -> Value) -> Vector a -> Thunk
@@ -311,10 +337,17 @@ eval cfg rt = go
               let stride = product rest
                in Right (mk rest (V.slice (i * stride) stride buf))
         _ -> Left (Internal ("projection ." <> tshow i <> " out of range"))
-      sliceScale sc = case sc.dims of
+      -- The parent is sliced with it, so the sliced origins still add up. A
+      -- generator stays, so that a slice of a turned chart is still refused.
+      sliceChart :: Chart -> Chart
+      sliceChart sc = case sc.dims of
         _ : rest ->
           let stride = product rest
-           in sc{origin = V.slice (i * stride) stride sc.origin, dims = rest}
+           in sc
+                { origin = V.slice (i * stride) stride sc.origin
+                , dims = rest
+                , parent = sliceChart <$> sc.parent
+                }
         [] -> sc
     -- Erasure.
     TTyLam _ _ b -> go site env b
@@ -379,14 +412,14 @@ tensor = \case
   VTensor dims d hint buf -> Right (dims, d, hint, buf)
   _ -> Left (Internal "expected a tensor")
 
-point :: Value -> Either EvalError ([Int], Dim, Maybe ScaleHint, Vector Elem)
+point :: Value -> Either EvalError ([Int], Dim, Maybe Chart, Vector Elem)
 point = \case
   VPoint dims d sc buf -> Right (dims, d, sc, buf)
   _ -> Left (Internal "expected a point")
 
-scaleOf :: Value -> Either EvalError ScaleHint
-scaleOf = \case
-  VScale s -> Right s
+chartOf :: Value -> Either EvalError Chart
+chartOf = \case
+  VChart s -> Right s
   _ -> Left (Internal "expected a chart")
 
 -- | A number or a point: what the comparisons order.
@@ -419,10 +452,10 @@ asUnit atom = \case
     Right (VTensor [] d (Just (UnitHint [UnitFactor atom 1 d x] x d False)) buf)
   v -> Right v
 
--- | Name a scale value after the definition it came from.
-asScale :: UnitAtom -> Value -> Thunk
-asScale atom = \case
-  VScale s -> Right (VScale s{name = Just atom})
+-- | Name a chart value after the definition it came from.
+asChart :: UnitAtom -> Value -> Thunk
+asChart atom = \case
+  VChart s -> Right (VChart s{name = Just atom})
   v -> Right v
 
 -- Display units ----------------------------------------------------------------------
@@ -869,14 +902,31 @@ runPrim cfg rt prim args = case (prim, args) of
     (dims, d, _, buf) <- tensor =<< a
     (_, _, uh) <- scalarFull =<< u
     Right (VTensor dims d ((\h -> h{pinned = True}) <$> uh) buf)
-  -- Points and scales (design §3.6).
-  ("mkScale", [st, o]) -> do
-    (stepM, d, stepHint) <- scalarFull =<< st
-    (odims, _, _, obuf) <- tensor =<< o
-    originM <- sequence obuf
-    Right (VScale (ScaleHint Nothing stepM stepHint originM odims d))
+  -- Points and charts (design §3.6, §3.8).
+  ("mkScale", [st, o]) -> mkChart st o Nothing Nothing
+  -- A chart whose origin is given in a parent chart.
+  ("mkChart3", [st, o, par]) -> do
+    parentChart <- chartOf =<< par
+    mkChart st o (Just parentChart) Nothing
+  -- And whose axes are turned from the parent's by a generator, which must
+  -- be antisymmetric exactly: the transpose is the negation, entry by entry.
+  ("mkChart4", [st, o, par, g]) -> do
+    parentChart <- chartOf =<< par
+    (gdims, _, _, gbuf) <- tensor =<< g
+    gs <- sequence gbuf
+    let n = case gdims of
+          [k, _] -> k
+          _ -> 0
+        entry i j = gs V.! (i * n + j)
+    if and [entry j i == negM (entry i j) | i <- [0 .. n - 1], j <- [i .. n - 1]]
+      then mkChart st o (Just parentChart) (Just gs)
+      else
+        Left
+          ( Eval.Eval.Domain
+              "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
+          )
   ("pointOn", [s, x]) -> do
-    sc <- scaleOf =<< s
+    sc <- unturned =<< chartOf =<< s
     (_, _, _, ks) <- tensor =<< x
     Right
       ( VPoint
@@ -889,7 +939,9 @@ runPrim cfg rt prim args = case (prim, args) of
     (dims, d, sc, buf) <- point =<< pt
     (_, _, _, vs) <- tensor =<< v
     Right (VPoint dims d sc (V.zipWith (\m dv -> addM <$> m <*> dv) buf vs))
-  -- The amount between two points, in the step unit of their common scale.
+  -- The amount between two points, in the step unit of their common chart.
+  -- Points are amounts from the base origin, so across charts of one tree
+  -- (or none) the difference is taken at the common root, the base.
   ("pointSub", [pt, q]) -> do
     (dims, d, sc1, m1) <- point =<< pt
     (_, _, sc2, m2) <- point =<< q
@@ -899,7 +951,7 @@ runPrim cfg rt prim args = case (prim, args) of
     Right (VTensor dims d hint (V.zipWith (\x y -> subM <$> x <*> y) m1 m2))
   ("toScale", [pt, s]) -> do
     (dims, d, _, buf) <- point =<< pt
-    sc <- scaleOf =<< s
+    sc <- unturned =<< chartOf =<< s
     Right (VPoint dims d (Just sc) buf)
   _
     | primArity prim == Just (length args) ->
@@ -914,6 +966,23 @@ runPrim cfg rt prim args = case (prim, args) of
           )
  where
   p = precisionOf cfg
+  -- A chart's origin is stored from the base origin: the parent's origin
+  -- plus the amount it was given at, which is along the parent's axes. Under
+  -- a turned parent that sum needs the rotation, so the amount is kept as
+  -- given and every use of the chart is refused (design §3.8).
+  mkChart st o parentChart gen = do
+    (stepM, d, stepHint) <- scalarFull =<< st
+    (odims, _, _, obuf) <- tensor =<< o
+    amount <- sequence obuf
+    let originM = case parentChart of
+          Just pc | not (turned pc) -> V.zipWith addM pc.origin amount
+          _ -> amount
+    Right
+      (VChart (Chart Nothing stepM stepHint originM odims d parentChart gen Nothing))
+  unturned c
+    | turned c =
+        Left (Unsupported "rotated charts are not yet supported: coming with expm")
+    | otherwise = Right c
   pureOp op x y = Right (op x y)
   elementwise1 op a = do
     (dims, d, hint, buf) <- tensor =<< a
@@ -1076,7 +1145,7 @@ render = \case
     rs <- sequence (V.toList buf)
     pure (nested dims rs)
   VPoint dims _ _ buf -> ("point " <>) . nested dims <$> sequence (V.toList buf)
-  VScale _ -> Right "<chart>"
+  VChart _ -> Right "<chart>"
   VBool True -> Right "true"
   VBool False -> Right "false"
   VData c fields -> do

@@ -1312,7 +1312,7 @@ viewReference ::
 viewReference spelling scope cb (Reference h idx) = case lookupTerm h cb of
   Nothing -> Left ("missing term " <> showHash h)
   Just t -> case (idx, t) of
-    (Nothing, _) -> Right (renderTermIn spelling (refNamer scope cb) VNil t)
+    (Nothing, _) -> Right (renderTermUnits spelling (refNamer scope cb) (unitRef cb) VNil t)
     (Just i, Cycle hints bodies) ->
       let memberName j (Hint hint) =
             shortestName
@@ -1321,7 +1321,7 @@ viewReference spelling scope cb (Reference h idx) = case lookupTerm h cb of
               (fromMaybe hint (listToMaybe (namesOf (Reference h (Just j)) cb)))
           ctx = vecAppend (vecMapIndexed memberName hints) VNil
        in case vecIndex i bodies of
-            Just body -> Right (renderTermIn spelling (refNamer scope cb) ctx body)
+            Just body -> Right (renderTermUnits spelling (refNamer scope cb) (unitRef cb) ctx body)
             Nothing -> Left ("no member " <> T.pack (show i) <> " in " <> showHash h)
     (Just _, _) -> Left (showHash h <> " is not a cycle")
 
@@ -1353,6 +1353,11 @@ vecMapIndexed f = go 0
 {- | A current name, else a stale @name#hash@, else a bare @#hash@, each
 spelled as shortly as the scope allows (design §7.6).
 -}
+
+-- | Whether a reference prints as a unit, for a chart's origin (design §3.8).
+unitRef :: Codebase -> UnitRef
+unitRef cb h idx written = isJust (unitNameFor (Reference h idx) written cb)
+
 refNamer :: S.Scope -> Codebase -> RefNamer
 refNamer scope cb h idx written =
   let r = Reference h idx

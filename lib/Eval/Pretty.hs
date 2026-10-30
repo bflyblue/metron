@@ -13,6 +13,8 @@ module Eval.Pretty (
   renderNested,
   renderTerm,
   renderTermIn,
+  renderTermUnits,
+  UnitRef,
   RefNamer,
   FieldNamer,
   Printer (..),
@@ -23,6 +25,7 @@ module Eval.Pretty (
 import Control.Applicative ((<|>))
 import Data.Char (intToDigit, isAlphaNum)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust)
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -35,7 +38,7 @@ import Eval.Dimension (Spelling (..), arrowText, exponentText, renderUnitsIn)
 import Eval.Eval
 import Eval.Lexer qualified as L
 import Eval.Syntax qualified as S
-import Eval.TCore (patternText)
+import Eval.TCore (baseUnit, patternText)
 import Eval.Type (conText)
 
 -- Numbers ------------------------------------------------------------------------
@@ -262,7 +265,7 @@ renderValueWith printer scale prefs showMagnitude = \case
         renderNested showMagnitude dims xs
           <> unitSuffix d
           <> " (point)"
-  VScale s ->
+  VChart s ->
     Right $ case s.name of
       Just atom -> "chart " <> atomNameWith printer.unitName atom
       Nothing ->
@@ -449,7 +452,21 @@ renderTerm = renderTermIn Ascii
 for @\\x -> x^2@, and @≤ ≥ ≠ ∨@ for @<= >= /= ||@.
 -}
 renderTermIn :: Spelling -> RefNamer -> Vec n Text -> Term n -> Text
-renderTermIn spelling namer = go 0
+renderTermIn spelling namer = renderTermUnits spelling namer (\_ _ _ -> False)
+
+{- | Whether a reference, written under a name, is a declared unit: what the
+printer needs to write a chart's origin as a quantity, @[2, 0, 1] km site@,
+which only reads back when @km@ is a unit (design §3.8).
+-}
+type UnitRef = Hash -> Maybe Int -> Text -> Bool
+
+{- | 'renderTermIn' that knows which references are units. Without that
+knowledge a chart's origin before its parent is parenthesised, which reads
+back the same.
+-}
+renderTermUnits ::
+  Spelling -> RefNamer -> UnitRef -> Vec n Text -> Term n -> Text
+renderTermUnits spelling namer isUnitRef = go 0
  where
   arrow = arrowText spelling
   go :: Int -> Vec m Text -> Term m -> Text
@@ -535,11 +552,26 @@ renderTermIn spelling namer = go 0
 
   prim :: Int -> Vec m Text -> Text -> [Term m] -> Text
   prim prec ctx p args = case (binary p, args) of
-    -- Points and scales read back as they are written (design §3.6).
+    -- Points and charts read back as they are written (design §3.6, §3.8).
     (_, [s, Lit (LTensor ([], [r]))])
       | p == "pointOn" ->
           paren (prec > 10) (renderRational 20 r <> " " <> go 11 ctx s)
     (_, [a, b]) | p == "mkScale" -> paren (prec > 0) (go 1 ctx a <> " at " <> go 1 ctx b)
+    (_, [a, b, c])
+      | p == "mkChart3" ->
+          paren (prec > 0) (go 1 ctx a <> " at " <> origin ctx b <> " " <> go 11 ctx c)
+    (_, [a, b, c, g])
+      | p == "mkChart4" ->
+          paren
+            (prec > 0)
+            ( go 1 ctx a
+                <> " at "
+                <> origin ctx b
+                <> " "
+                <> go 11 ctx c
+                <> " by "
+                <> go 1 ctx g
+            )
     (Just (sym, lvl, assoc), [a, b]) ->
       let (lp, rp) = case assoc of
             L -> (lvl, lvl + 1)
@@ -567,6 +599,28 @@ renderTermIn spelling namer = go 0
       _ -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
 
   paren b s = if b then "(" <> s <> ")" else s
+
+  -- A chart's origin before its parent (design §3.8): a literal and a unit
+  -- read back as a quantity, `[2, 0, 1] km site`; anything else is
+  -- parenthesised, so that the parent stays outside it.
+  origin :: Vec m Text -> Term m -> Text
+  origin ctx = \case
+    PrimApp "outer" [x, u]
+      | literal x
+      , unitAtom u ->
+          go 11 ctx x <> " " <> go 11 ctx u
+    o -> go 11 ctx o
+  literal :: Term m -> Bool
+  literal = \case
+    Lit (LTensor ([], [r])) -> r >= 0
+    Lit (LTensor _) -> True
+    Pack _ -> True
+    _ -> False
+  unitAtom :: Term m -> Bool
+  unitAtom = \case
+    PrimApp u [] -> isJust (baseUnit u)
+    Ref h idx (Hint w) -> isUnitRef h idx w
+    _ -> False
 
   -- The operators with a unicode spelling the printer does not already use
   -- (§2.8); `*` stays, since `×` is the cross product.

@@ -3100,34 +3100,98 @@ affineTests =
           @?= Right ["namespace temperature", "  chart degC = K at 273.15 * K"]
         runLinesP [":edit km"] @?= Right ["namespace si", "  unit km = kilo * metre"]
     , testCase
-        "chart is the keyword, scale its old spelling: one declaration, one hash" $ do
+        "chart is the keyword, scale its old spelling: one declaration, one hash"
+        $ do
+          runLinesP
+            [ "unit mmHg = 133.322 * Pa"
+            , "chart bp = mmHg at 0 mmHg"
+            , "120 bp .+ 10 mmHg"
+            , ":type bp"
+            , ":view bp"
+            , ":ls --charts bp"
+            , "bp"
+            ]
+            @?= Right
+              [ "130 bp"
+              , "Chart [kg m^-1 s^-2]"
+              , "chart bp = mmHg at 0 * mmHg"
+              , "chart bp : Chart [kg m^-1 s^-2]"
+              , "chart bp"
+              ]
+          -- The keyword is a label flag, not part of the hash.
+          let hashOf kw' =
+                runLinesP
+                  ["unit mmHg = 133.322 * Pa", kw' <> " bp = mmHg at 0 mmHg", ":hash bp"]
+          hashOf "chart" @?= hashOf "scale"
+          typeOfTextP "\\c -> (c :: Chart [K])" @?= Right "Chart [K] -> Chart [K]"
+          typeOfTextP "\\c -> (c :: Scale [K])" @?= Right "Chart [K] -> Chart [K]"
+          -- `chart` is a keyword now, not a name.
+          case runLinesP ["let chart = 3"] of
+            Left _ -> pure ()
+            Right v -> assertFailure (show v)
+    , testCase
+        "mkChart3 and mkChart4: a parent, a generator, antisymmetry, the not-yet refusal" $ do
+        let eci = "chart eci = m at [0, 0, 0] m"
+            turn = "[0, -1, 0; 1, 0, 0; 0, 0, 0]"
+        typeOfTextP "mkChart3"
+          @?= Right "Num d -> Tensor s d -> Chart (Tensor s d) -> Chart (Tensor s d)"
+        typeOfTextP "mkChart4"
+          @?= Right "Num d -> Vec n d -> Chart (Vec n d) -> Mat n n -> Chart (Vec n d)"
+        -- The origin is an amount in the parent; points are amounts from the
+        -- base origin, so a difference across the tree is a plain difference.
         runLinesP
-          [ "unit mmHg = 133.322 * Pa"
-          , "chart bp = mmHg at 0 mmHg"
-          , "120 bp .+ 10 mmHg"
-          , ":type bp"
-          , ":view bp"
-          , ":ls --charts bp"
-          , "bp"
+          [ eci
+          , "let site = mkChart3 m ([6378, 0, 0] km) eci"
+          , "pointOn site [1, 2, 3] .- pointOn eci [0, 0, 0]"
+          , "toScale (pointOn eci [6378001, 2, 3]) site"
+          , "site"
           ]
           @?= Right
-            [ "130 bp"
-            , "Chart [kg m^-1 s^-2]"
-            , "chart bp = mmHg at 0 * mmHg"
-            , "chart bp : Chart [kg m^-1 s^-2]"
-            , "chart bp"
+            [ "[6378001, 2, 3] m"
+            , -- an unnamed chart prints its points from the base origin
+              "[6378001, 2, 3] m (point)"
+            , "chart: step 1 at [6378000, 0, 0] m"
             ]
-        -- The keyword is a label flag, not part of the hash.
-        let hashOf kw' =
-              runLinesP
-                ["unit mmHg = 133.322 * Pa", kw' <> " bp = mmHg at 0 mmHg", ":hash bp"]
-        hashOf "chart" @?= hashOf "scale"
-        typeOfTextP "\\c -> (c :: Chart [K])" @?= Right "Chart [K] -> Chart [K]"
-        typeOfTextP "\\c -> (c :: Scale [K])" @?= Right "Chart [K] -> Chart [K]"
-        -- `chart` is a keyword now, not a name.
-        case runLinesP ["let chart = 3"] of
-          Left _ -> pure ()
-          Right v -> assertFailure (show v)
+        -- A generator: exact, or scaled by an approximate angle, is a bivector.
+        runLinesP [eci, "mkChart4 m ([0, 0, 0] m) eci " <> turn]
+          @?= Right ["chart: step 1 at [0, 0, 0] m"]
+        runLinesP [eci, "mkChart4 m ([0, 0, 0] m) eci (" <> turn <> " * pi / 6)"]
+          @?= Right ["chart: step 1 at [0, 0, 0] m"]
+        let refused lines' needle = case runLinesP lines' of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+        refused
+          [eci, "mkChart4 m ([0, 0, 0] m) eci [0, 1, 0; 1, 0, 0; 0, 0, 0]"]
+          "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
+        refused
+          [eci, "mkChart4 m ([0, 0, 0] m) eci [1, 0, 0; 0, 0, 0; 0, 0, 0]"]
+          "must be antisymmetric"
+        -- Converting to a turned chart, or to a chart under one, waits for expm.
+        let notYet = "rotated charts are not yet supported: coming with expm"
+        refused
+          [ eci
+          , "toScale (pointOn eci [1, 2, 3]) (mkChart4 m ([0, 0, 0] m) eci " <> turn <> ")"
+          ]
+          notYet
+        refused
+          [eci, "pointOn (mkChart4 m ([0, 0, 0] m) eci " <> turn <> ") [1, 2, 3]"]
+          notYet
+        refused
+          [ eci
+          , "let lvlh = mkChart4 m ([0, 0, 0] m) eci " <> turn
+          , "pointOn (mkChart3 m ([1, 0, 0] m) lvlh) [1, 2, 3]"
+          ]
+          notYet
+        -- The parent's dimension and shape, and the generator's size, are the child's.
+        refused
+          [eci, "mkChart3 K (0 K) eci"]
+          "expected Chart [K], got Chart (Vec 3 [m])"
+        refused
+          [eci, "mkChart3 m ([1, 2] m) eci"]
+          "expected Chart (Vec 2 [m]), got Chart (Vec 3 [m])"
+        refused
+          [eci, "mkChart4 m ([0, 0, 0] m) eci [0, 1; -1, 0]"]
+          "expected Mat 3 3, got Mat 2 2"
     , testCase "display units of one dimension cancel against each other" $ do
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
         evalP "3 h / min" @?= Right ["180"]

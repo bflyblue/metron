@@ -1778,16 +1778,39 @@ A.
 **Interfaces fixed for the build**, so that the pieces, built by several
 hands, meet:
 
-- The chart value (`Eval.Eval.ScaleHint`, to be renamed `Chart`) gains
-  `parent :: Maybe Hash` (the chart its origin and generator are given in;
-  `Nothing` means the implicit base of the dimension), `generator :: Maybe
-  (Vector Magnitude)` (an antisymmetric `n × n` matrix, row-major; `Nothing`
-  means axis-aligned) and `spin :: Maybe (Vector Magnitude)` (the angular
-  velocity, phase C). The primitive `mkScale step origin` stays for the
-  two-part form; `mkChart step origin parent generator` (arity 4) builds the
-  full value, with the parent passed as a chart value and the generator as a
-  `Mat n n` that must satisfy `B + Bᵀ == 0` exactly, else "the generator of a
-  chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b".
+- **Built.** The chart value (`Eval.Eval.Chart`, once `ScaleHint`; the value
+  constructor `VChart`) has `parent :: Maybe Chart` (the chart its origin and
+  generator are given in; `Nothing` means the implicit base of the
+  dimension), `generator :: Maybe (Vector Magnitude)` (an antisymmetric
+  `n × n` matrix, row-major; `Nothing` means axis-aligned with the parent) and
+  `spin :: Maybe (Vector Magnitude)` (the angular velocity, phase C; always
+  `Nothing` until then). The parent is the parent chart's *value*, not a
+  hash: a chart need not be named (`mkChart3 m o (if x then eci else ecef)` is a
+  value), and the definition's Core already refers to the parent's
+  definition by hash, so the store, `:update` and the chart tree as written
+  need nothing more. `turned c` says whether `c` or any chart above it has a
+  generator. The origin is stored as an amount from the base origin (the
+  parent's origin plus the amount the chart was given at, along the parent's
+  axes), so points stay amounts from the base origin and, for translated
+  charts, `to` and `.-` through the tree are the existing kernels. Three
+  primitives cover the three forms, so that no "no parent" or "no
+  generator" value is needed: `mkScale step origin` (two parts, unchanged,
+  so every chart written before keeps its hash), `mkChart3 step origin
+  parent` and `mkChart4 step origin parent generator`, typed
+  `Num d -> Tensor s d -> Chart s d -> Chart s d` and
+  `Num d -> Vec n d -> Chart [n] d -> Mat n n -> Chart [n] d`: the parent has
+  the child's shape and dimension and the generator is a dimensionless
+  `Mat n n` over the chart's own length, all type errors otherwise.
+  `mkChart4` checks `B + Bᵀ == 0` exactly, entry by entry as `Bⱼᵢ == -Bᵢⱼ`
+  on the affine forms (an approximate angle times an exact bivector passes;
+  a sum `Bᵢⱼ + Bⱼᵢ` would not, since slack never cancels), else "the
+  generator of a chart must be antisymmetric: a bivector, such as rotz θ or
+  a ∧ b". A `by` without a parent is not a form: a turned chart names the
+  chart its axes are turned from. Until `expm` is built, `pointOn` and
+  `toScale` refuse a turned chart, "rotated charts are not yet supported:
+  coming with expm", so no point is ever printed on axes it is not in;
+  phase B replaces that refusal with the rotation, and computes the origin of
+  a chart under a turned parent, which until then holds the amount as given.
 - `expm : Mat n n -> Mat n n` (dimensionless; a rigorous enclosure; Rodrigues
   for a single plane in 3D, the exponential series otherwise). `expm (-B)` is
   the exact inverse of `expm B` for antisymmetric `B`.
@@ -2141,6 +2164,8 @@ asin acos atan : Num 1 -> Num [rad]
 sinh cosh tanh exp log : Num 1 -> Num 1
 atan2       : Num d -> Num d -> Num [rad]
 mkScale     : Num d -> Tensor s d -> Chart s d          -- step, origin (3.6)
+mkChart3    : Num d -> Tensor s d -> Chart s d -> Chart s d                  -- step, origin in the parent, parent (3.8)
+mkChart4    : Num d -> Vec n d -> Chart [n] d -> Mat n n -> Chart [n] d      -- and the generator, antisymmetric, dimensionless (3.8)
 pointOn     : Chart s d -> Tensor s 1 -> Point s d      -- what the quantity rule builds for `20 degC`, `[1, 2, 3] site`
 pointAdd    : Point s d -> Tensor s d -> Point s d      -- `.+`
 pointSub    : Point s d -> Point s d -> Tensor s d      -- `.-`
