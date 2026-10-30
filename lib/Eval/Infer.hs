@@ -695,7 +695,7 @@ infer look p ctx = \case
               (i : p)
               elemT
               tt
-              "every element of a tensor literal must have the same shape"
+              "every element of a tensor literal must have the same shape and dimension"
             pure t'
         )
         [0 ..]
@@ -748,10 +748,8 @@ infer look p ctx = \case
     st <- get
     case runStateT (unify p' expected actual) st of
       Right ((), st') -> put st'
-      Left _ -> do
-        e <- resolve expected
-        a <- resolve actual
-        failAt p' (msg <> ": expected " <> renderType e <> ", got " <> renderType a)
+      -- The unifier's own message names what differs (a length, a dimension).
+      Left (TypeError _ inner) -> failAt p' (msg <> ": " <> inner)
   -- The type of a primitive's last parameter, and the number of lengths a
   -- shape lists before its tail.
   lastParam = \case
