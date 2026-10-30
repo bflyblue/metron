@@ -406,8 +406,9 @@
   the root; `.name` is absolute. A dot chain on a free name is a qualified
   name when its longest prefix names a definition or constructor, else
   field access. A name is never both a label and a namespace. The
-  namespace never reaches a hash: `±` labels and nominal types take the
-  last segment. Names print as Unison prints them, the shortest spelling
+  namespace reaches a hash only through the owner stamps of `±`
+  definitions and nominal types, which are the full path (see below).
+  Names print as Unison prints them, the shortest spelling
   that resolves back. New commands `:namespace [path|.]`, `:uses`,
   `:unuse`, `:rename old new` and `:move name… namespace`; `:alias`,
   `:unname` and `:ls` take a namespace. `:load` keeps a file's `use`s to
@@ -417,8 +418,8 @@
   namespace, as source that `:load` reads back to the same labels and
   hashes. Namespaces become nested `namespace` blocks with root definitions
   outside them; definitions print as `:edit` prints them, spelled for their
-  block (`.km` where the block shadows the root's); prelude definitions are
-  left out; types come first, then terms after what they reference, a
+  block (`.km` where the block shadows a root `km`); the standard library
+  under `std` is left out unless asked for (see below); types come first, then terms after what they reference, a
   cycle's members together. A definition on a version no name points at
   refuses the export. Without a file the source is printed; the pending
   scratch is not exported, and a comment or note says so. New in

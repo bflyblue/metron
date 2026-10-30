@@ -25,7 +25,7 @@ import Eval.Infer (TypeError (..), elaborateClosed)
 import Eval.Lexer hiding (TNum, TProj)
 import Eval.Lexer qualified as L
 import Eval.Parser
-import Eval.Prelude (preludeSource, stdlibCodebase, stdlibNames)
+import Eval.Prelude (preludeSource, stdlibCodebase, stdlibMoved, stdlibNames)
 import Eval.Pretty
 import Eval.Repl qualified as R
 import Eval.Store
@@ -2222,8 +2222,8 @@ seeded :: Session
 seeded = either (error . T.unpack) id seededSession
 
 -- | What a new store is seeded with, and a format-3 store migrated with.
-theSeed :: Seed
-theSeed = either (error . T.unpack) id stdlibSeed
+theSeed :: Either Text Seed
+theSeed = stdlibSeed
 
 evalP :: Text -> Either Text [Text]
 evalP src = snd <$> feed seeded src
@@ -3115,6 +3115,18 @@ storeTests =
             @?= Right ["w = 2 * G#e1bms", "stale: w uses G#e1bms (use :upgrade G)"]
           expecting (linesIn loaded [":upgrade std.G", ":view w"]) $ \outs ->
             last outs @?= "w = 2 * G"
+          -- The old G in std.G's history is the migration's, not the user's:
+          -- a newer library's G still updates it.
+          moved <- either (assertFailure . T.unpack) pure stdlibMoved
+          newer <-
+            either
+              (assertFailure . T.unpack)
+              pure
+              (sessionP [multiline ["namespace std", "  let G = 7"], ":update"])
+          case stdlibUpgrade newer.codebase moved loaded of
+            Left err -> assertFailure (T.unpack err)
+            Right (_, outs) ->
+              any ("updated G #" `T.isPrefixOf`) outs @? show outs
           -- Merged into a store seeded fresh, std.G still ends on the new G.
           let fresh = dir </> "fresh"
           _ <- persistLines fresh []
@@ -5198,7 +5210,7 @@ stdlibTests =
                 , ":update"
                 ]
             )
-        case stdlibUpgrade lib old of
+        case stdlibUpgrade lib [] old of
           Left err -> assertFailure (T.unpack err)
           Right (s, outs) -> do
             ("added std.km" `elem` outs) @? "km added"
@@ -5208,72 +5220,74 @@ stdlibTests =
             linesIn' s ["std.c", "std.gone", "twice", "1 std.km"]
               @?= Right ["5", "3", "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2", "1 std.km"]
     , testCase
-        ":rename and :move re-hash a stamped definition and upgrade its dependents" $ do
-        let hashOf ls n = fmap last (runLinesP (ls ++ [":hash " <> n]))
-        -- A plain definition keeps its hash; a ± one takes its new path's.
-        expecting (runLinesP ["let q = 1", ":add", ":rename q r"]) $ \outs ->
-          last outs @?= "renamed `q` to `r`"
-        expecting
-          ( runLinesP
-              ["let a = 1 ± 0.1", "let b = a * 2", ":add", ":rename a c", "b", ":todo"]
-          )
-          $ \outs -> do
-            case drop 2 outs of
-              renamed : rehashed : upgraded : rest -> do
-                renamed @?= "renamed `a` to `c`"
-                ("re-hashed c #" `T.isPrefixOf` rehashed) @? T.unpack rehashed
-                ("upgraded b #" `T.isPrefixOf` upgraded) @? T.unpack upgraded
-                rest @?= ["2.0 ± 0.2", "nothing to do"]
-              other -> assertFailure (show other)
-        hashOf ["let a = 1 ± 0.1", ":add", ":rename a c"] "c"
-          @?= hashOf ["let c = 1 ± 0.1", ":add"] "c"
-        -- A namespace moved: each stamped member re-hashed, as if entered there.
-        let lab = [multiline ["namespace lab", "  let x = 1 ± 0.1", "  let y = x + 1"], ":add"]
-        expecting (runLinesP (lab ++ [":rename lab field"])) $ \outs ->
-          map (T.takeWhile (/= '#')) (lastN 3 outs)
-            @?= [ "renamed the 2 labels under `lab` to `field`"
-                , "re-hashed field.x "
-                , "re-hashed field.y "
-                ]
-        hashOf (lab ++ [":move lab.x field"]) "field.x"
-          @?= hashOf [multiline ["namespace field", "  let x = 1 ± 0.1"], ":add"] "field.x"
-        -- The library's G: its dependents follow it.
-        expecting (runLinesP [":rename std.G std.Gn", ":todo"]) $ \outs ->
-          map (T.unwords . take 2 . T.words) outs
-            @?= [ "renamed `std.G`"
-                , "re-hashed Gn"
-                , "upgraded M_earth"
-                , "upgraded M_sun"
-                , "nothing to"
-                ]
+        ":rename and :move re-hash a stamped definition and upgrade its dependents"
+        $ do
+          let hashOf ls n = fmap last (runLinesP (ls ++ [":hash " <> n]))
+          -- A plain definition keeps its hash; a ± one takes its new path's.
+          expecting (runLinesP ["let q = 1", ":add", ":rename q r"]) $ \outs ->
+            last outs @?= "renamed `q` to `r`"
+          expecting
+            ( runLinesP
+                ["let a = 1 ± 0.1", "let b = a * 2", ":add", ":rename a c", "b", ":todo"]
+            )
+            $ \outs -> do
+              case drop 2 outs of
+                renamed : rehashed : upgraded : rest -> do
+                  renamed @?= "renamed `a` to `c`"
+                  ("re-hashed c #" `T.isPrefixOf` rehashed) @? T.unpack rehashed
+                  ("upgraded b #" `T.isPrefixOf` upgraded) @? T.unpack upgraded
+                  rest @?= ["2.0 ± 0.2", "nothing to do"]
+                other -> assertFailure (show other)
+          hashOf ["let a = 1 ± 0.1", ":add", ":rename a c"] "c"
+            @?= hashOf ["let c = 1 ± 0.1", ":add"] "c"
+          -- A namespace moved: each stamped member re-hashed, as if entered there.
+          let lab = [multiline ["namespace lab", "  let x = 1 ± 0.1", "  let y = x + 1"], ":add"]
+          expecting (runLinesP (lab ++ [":rename lab field"])) $ \outs ->
+            map (T.takeWhile (/= '#')) (lastN 3 outs)
+              @?= [ "renamed the 2 labels under `lab` to `field`"
+                  , "re-hashed field.x "
+                  , "re-hashed field.y "
+                  ]
+          hashOf (lab ++ [":move lab.x field"]) "field.x"
+            @?= hashOf [multiline ["namespace field", "  let x = 1 ± 0.1"], ":add"] "field.x"
+          -- The library's G: its dependents follow it.
+          expecting (runLinesP [":rename std.G std.Gn", ":todo"]) $ \outs ->
+            map (T.unwords . take 2 . T.words) outs
+              @?= [ "renamed `std.G`"
+                  , "re-hashed Gn"
+                  , "upgraded M_earth"
+                  , "upgraded M_sun"
+                  , "nothing to"
+                  ]
     , testCase
-        ":rename of a nominal type re-hashes it, its users and the types that use it" $ do
-        let shapes =
-              [ "data Shape = Circle (Num [m]) | Square (Num [m])"
-              , "data Wrap = Wrap Shape"
-              , "let size s = case s of Circle r -> r; Square a -> a"
-              , "let one = Wrap (Circle (1 m))"
-              , ":add"
-              ]
-        expecting
-          ( runLinesP
-              ( shapes
-                  ++ [":rename Shape Form", "size (Square (2 m))", "one", ":view Wrap", ":todo"]
-              )
-          )
-          $ \outs -> do
-            let report = takeWhile (/= "2 m") (dropWhile (not . ("renamed" `T.isPrefixOf`)) outs)
-            take 1 report @?= ["renamed `Shape` to `Form`"]
-            sort (map (T.unwords . take 2 . T.words) (drop 1 report))
-              @?= ["re-hashed data", "re-hashed data", "upgraded one", "upgraded size"]
-            lastN 3 outs
-              @?= ["Wrap (Circle (1 m))", "data Wrap = Wrap Form", "nothing to do"]
-        -- The type now has the hash a fresh declaration under the new name has.
-        let typeHash ls n = do
-              s <- sessionP ls
-              pure (lookupTypeName n s.codebase)
-        typeHash (shapes ++ [":rename Shape Form"]) "Form"
-          @?= typeHash ["data Form = Circle (Num [m]) | Square (Num [m])", ":add"] "Form"
+        ":rename of a nominal type re-hashes it, its users and the types that use it"
+        $ do
+          let shapes =
+                [ "data Shape = Circle (Num [m]) | Square (Num [m])"
+                , "data Wrap = Wrap Shape"
+                , "let size s = case s of Circle r -> r; Square a -> a"
+                , "let one = Wrap (Circle (1 m))"
+                , ":add"
+                ]
+          expecting
+            ( runLinesP
+                ( shapes
+                    ++ [":rename Shape Form", "size (Square (2 m))", "one", ":view Wrap", ":todo"]
+                )
+            )
+            $ \outs -> do
+              let report = takeWhile (/= "2 m") (dropWhile (not . ("renamed" `T.isPrefixOf`)) outs)
+              take 1 report @?= ["renamed `Shape` to `Form`"]
+              sort (map (T.unwords . take 2 . T.words) (drop 1 report))
+                @?= ["re-hashed data", "re-hashed data", "upgraded one", "upgraded size"]
+              lastN 3 outs
+                @?= ["Wrap (Circle (1 m))", "data Wrap = Wrap Form", "nothing to do"]
+          -- The type now has the hash a fresh declaration under the new name has.
+          let typeHash ls n = do
+                s <- sessionP ls
+                pure (lookupTypeName n s.codebase)
+          typeHash (shapes ++ [":rename Shape Form"]) "Form"
+            @?= typeHash ["data Form = Circle (Num [m]) | Square (Num [m])", ":add"] "Form"
     ]
  where
   linesIn' s0 = go s0 []

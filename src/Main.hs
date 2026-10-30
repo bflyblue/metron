@@ -76,9 +76,8 @@ format, which is reported.
 -}
 merge :: Options -> FilePath -> IO ()
 merge opts other = do
-  seed <- orFail stdlibSeed
   d <- locateStore opts.storeDir
-  result <- mergeStores seed d other
+  result <- mergeStores stdlibSeed d other
   case result of
     Left err -> TIO.hPutStrLn stderr err >> exitFailure
     Right report -> do
@@ -102,9 +101,8 @@ startSession opts =
   if opts.inMemory
     then (`Live` Nothing) <$> orFail seededSession
     else do
-      seed <- orFail stdlibSeed
       d <- locateStore opts.storeDir
-      opened <- openStore seed d
+      opened <- openStore stdlibSeed d
       case opened of
         Left err -> TIO.hPutStrLn stderr err >> exitFailure
         Right st -> do

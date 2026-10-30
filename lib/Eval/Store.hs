@@ -112,33 +112,34 @@ stdlibSeed :: Either Text Seed
 stdlibSeed = Seed <$> stdlibCodebase <*> stdlibMoved
 
 {- | Create the directory if needed and seed it, or check that an existing
-one is ours, migrating an older format in place.
+one is ours, migrating an older format in place. The seed is only looked
+at to create or migrate a store, so opening a current one never enters
+the library in memory: the store has it.
 -}
-openStore :: Seed -> FilePath -> IO (Either Text Store)
-openStore seed d = do
+openStore :: Either Text Seed -> FilePath -> IO (Either Text Store)
+openStore seeding d = do
   createDirectoryIfMissing True (d </> "terms")
   createDirectoryIfMissing True (d </> "types")
   let formatFile = d </> "format"
   present <- doesFileExist formatFile
   if not present
-    then do
+    then withSeed $ \seed -> do
       -- The format file last, so an interrupted seeding is seeded again.
       seedStore (Store d) seed.library
       TIO.writeFile formatFile (formatLine formatVersion <> "\n")
-      pure (Right (Store d))
     else do
       line <- T.strip <$> TIO.readFile formatFile
       if line == formatLine formatVersion
         then pure (Right (Store d))
         else
           if line == formatLine (1 :: Int)
-            then migrate1to2 >> migrate2to3 >> migrate3to4 >> pure (Right (Store d))
+            then withSeed (\seed -> migrate1to2 >> migrate2to3 >> migrate3to4 seed)
             else
               if line == formatLine (2 :: Int)
-                then migrate2to3 >> migrate3to4 >> pure (Right (Store d))
+                then withSeed (\seed -> migrate2to3 >> migrate3to4 seed)
                 else
                   if line == formatLine (3 :: Int)
-                    then migrate3to4 >> pure (Right (Store d))
+                    then withSeed migrate3to4
                     else
                       pure
                         ( Left
@@ -151,6 +152,9 @@ openStore seed d = do
                             )
                         )
  where
+  withSeed k = case seeding of
+    Left err -> pure (Left ("the standard library does not load:\n" <> err))
+    Right seed -> k seed >> pure (Right (Store d))
   -- Format 2 added the written name after each reference (design §7.4).
   -- Hashes are unchanged, so every term file is rewritten in place with
   -- empty hints and the log is kept; the loader reads its unit lines by
@@ -215,7 +219,7 @@ openStore seed d = do
   -- first, so `:todo` reports the user's term as stale and `:upgrade std.G`
   -- moves it. The current one is bound again at time 1, so a merge with a
   -- store seeded fresh, whose time-0 lines sort first, ends on it too.
-  migrate3to4 = do
+  migrate3to4 seed = do
     old <-
       filterM
         (\(_, r) -> doesFileExist (d </> "terms" </> T.unpack (hashHex r.hash)))
@@ -538,7 +542,8 @@ data MergeReport = MergeReport
 missing; the source must already be a store and is only read, apart from a
 migration to the current format on open, which the notes mention.
 -}
-mergeStores :: Seed -> FilePath -> FilePath -> IO (Either Text MergeReport)
+mergeStores ::
+  Either Text Seed -> FilePath -> FilePath -> IO (Either Text MergeReport)
 mergeStores seed target source = do
   isDir <- doesDirectoryExist source
   hasFormat <- doesFileExist (source </> "format")

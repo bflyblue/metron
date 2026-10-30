@@ -47,7 +47,7 @@ import Eval.Eval
 import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
 import Eval.Parser (parseExpr, parseProgram, parseType)
-import Eval.Prelude (stdlibCodebase, stdlibNamespace)
+import Eval.Prelude (stdlibCodebase, stdlibMoved, stdlibNamespace)
 import Eval.Pretty
 import Eval.Resolve
 import Eval.Syntax qualified as S
@@ -646,7 +646,10 @@ command session src = \case
     [p] -> storeUse (S.Use (unDot p) Nothing)
     [p, "as", a] -> storeUse (S.Use (unDot p) (Just a))
     _ -> Left "usage: :use path [as alias], a use the codebase keeps"
-  ["stdlib", "upgrade"] -> stdlibCodebase >>= \lib -> stdlibUpgrade lib session
+  ["stdlib", "upgrade"] -> do
+    lib <- stdlibCodebase
+    moved <- stdlibMoved
+    stdlibUpgrade lib moved session
   -- The codebase as source (design §7.4); the REPL writes it to a file.
   ("export" : args) ->
     exportRequest session args >>= \case
@@ -1035,14 +1038,18 @@ upgrade n session = case lookupName n session.codebase of
 {- | @:stdlib upgrade@ (design §7.7), a sketch of upgrading a library from a
 newer version of it: the shipped library's labels under @std@ against the
 codebase's. A name the codebase has never had is added. A name still on
-the binding it was seeded with (its history is that one entry) and whose
-shipped version differs is updated, and its dependents are upgraded as
-@:update@ does. A name the user rebound or unnamed is kept: the user's
-choice wins. The codebase cannot know which versions earlier libraries
-shipped, so a name rebound by an earlier upgrade counts as the user's.
+the binding it was seeded with and whose shipped version differs is
+updated, and its dependents are upgraded as @:update@ does. "Still on the
+binding it was seeded with" is read off the history: its one entry, or,
+in a store migrated from format 3, that entry after the reference the old
+root prelude gave the name (the moved references, 'stdlibMoved'). A name
+the user rebound or unnamed is kept: the user's choice wins. The codebase
+cannot know which versions earlier libraries shipped, so a name rebound
+by an earlier upgrade counts as the user's.
 -}
-stdlibUpgrade :: Codebase -> Session -> Either Text (Session, [Text])
-stdlibUpgrade shipped session =
+stdlibUpgrade ::
+  Codebase -> [(Text, Reference)] -> Session -> Either Text (Session, [Text])
+stdlibUpgrade shipped moved session =
   let cb0 = session.codebase
       library =
         [ (n, r)
@@ -1052,12 +1059,15 @@ stdlibUpgrade shipped session =
       added =
         [ (n, r) | (n, r) <- library, isNothing (lookupName n cb0), null (historyOf n cb0)
         ]
+      untouched n = case historyOf n cb0 of
+        _ : older -> all (\r -> (n, r) `elem` moved) older
+        [] -> False
       updated =
         [ (n, old, r)
         | (n, r) <- library
         , Just old <- [lookupName n cb0]
         , old /= r
-        , length (historyOf n cb0) == 1
+        , untouched n
         ]
       kept =
         [ n

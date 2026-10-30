@@ -2900,7 +2900,9 @@ prelude change rebind names behind the user's back. Now:
   sketch, `:stdlib upgrade`: the shipped library's labels under `std`
   against the codebase's. A name the codebase has never had is `added`; a
   name whose binding is still the one it was seeded with (its history is
-  that one entry) and whose shipped version differs is `updated`, and its
+  that one entry, or, in a store migrated from format 3, that entry after
+  the old root prelude's reference the migration recorded) and whose
+  shipped version differs is `updated`, and its
   dependents are upgraded as `:update` does; a name the user rebound or
   unnamed is `kept` (the user's wins). "Never touched" is read off the
   history because the codebase does not know which versions earlier
