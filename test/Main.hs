@@ -4388,6 +4388,15 @@ dataTests =
           @?= map Just [2 .. maxTupleArity]
         tupleArity boolHash @?= Nothing
         builtinDefs pairHash @?= Just pairDef
+        -- Fixed by the declarations and the encoding alone: a change to either
+        -- re-hashes every boolean, tuple and list in every store.
+        map hashHex [boolHash, pairHash, listHash, tupleHash 3]
+          @?= [ "da4c961ee015cf46c8d0b895fc0389167cde6d607e55d99711e5009037fd9f9f"
+              , "eb18ffa4c555a267cf8685c34eddcc91173f39f891d6f8416ad22cc335a622ef"
+              , "6505bc4bf900d90b75c0aebc93ca31d01663e8ac136d080fcb556320b96358f7"
+              , "1ffef3bbc6c59ff71b8b1292db64185e97e96e78ef1002befa2efbf4e746df9e"
+              ]
+        map showHash [boolHash, pairHash, listHash] @?= ["#r969c", "#tccfv", "#ck2ro"]
     , testCase "declared types: what is refused" $ do
         let refused src needle = case runLinesP src of
               Left err -> T.isInfixOf needle err @? T.unpack err
@@ -6228,6 +6237,10 @@ stdlibTests =
               )
           )
           $ \outs -> lastN 3 outs @?= ["true", "(1, true)", "true"]
+        -- A structural type of Bool's shape is Bool.
+        expecting
+          (runLinesP ["structural data Color = Red | Green", "Red", ":type Green"])
+          $ \outs -> lastN 2 outs @?= ["false", "Bool"]
         expectError (runLinesP ["data Bool = Yes | No"]) "`Bool` is a built-in type"
         expectError
           (evalP ("(" <> T.intercalate ", " (replicate 33 "1") <> ")"))

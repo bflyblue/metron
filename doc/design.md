@@ -238,6 +238,12 @@ its type is known from its hash. The standard library names the three under
 `{1}`, and `:view std.List` prints the declaration; renaming or unnaming them
 changes only how a name prints. A user's `structural data Bool = False | True`
 is the same type; `Bool` is otherwise reserved.
+Since a structural type is its shape, any `structural data` of that shape
+is one of these: `structural data Color = Red | Green` is `Bool` (`Red`
+prints `false`), and a structural type of one constructor whose fields are
+its parameters in order, `structural data P a b = P a b` or a record
+`structural data R a b = R {x :: a, y :: b}`, is a tuple and prints as one.
+A nominal `data` declaration is never one of them.
 
 **Declared data types.** A `data` statement declares a type as a sum of
 products, as in Haskell, with parameters of any kind:
