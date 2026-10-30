@@ -526,7 +526,7 @@ command session src = \case
               Just r ->
                 (: []) . ((short ecb full <> " = ") <>) <$> viewReference spelling scope ecb r
               Nothing -> viewData spelling scope cb full
-  ["dependents", n] -> keep $ withName n $ \r -> pure (map (short cb) (dependents r.hash cb))
+  ["dependents", n] -> keep $ withName n $ \r -> pure (map (short cb) (dependents (argIn cb n) r.hash cb))
   -- An alias of a unit or scale is one too; an alias of a namespace aliases
   -- every label under it (design §7.6).
   ["alias", new, old]
@@ -1009,9 +1009,10 @@ update doUpgrade session
             , lookupTypeName n session.codebase /= lookupTypeName n session.staging
             ]
           refmap = Map.fromList [(old, new) | (_, old, new) <- changed]
+          written = Map.fromListWith Set.union [(old, Set.singleton n) | (n, old, _) <- changed]
           result =
             if doUpgrade
-              then propagate refmap session.staging
+              then propagateNamed written refmap session.staging
               else Propagation session.staging [] []
           short = shortestName session.scope result.codebase
           report =
@@ -1059,7 +1060,11 @@ upgrade n session = case lookupName n session.codebase of
   Nothing -> Left ("unknown name `" <> n <> "`")
   Just current ->
     let stale = [r | r <- historyOf n session.codebase, r /= current]
-        result = propagate (Map.fromList [(r, current) | r <- stale]) session.codebase
+        result =
+          propagateNamed
+            (Map.fromList [(r, Set.singleton n) | r <- stale])
+            (Map.fromList [(r, current) | r <- stale])
+            session.codebase
         cb' = result.codebase
         staging' = fromRight cb' (processGroup cb' session.scratch)
      in Right
@@ -1146,7 +1151,11 @@ stdlibUpgrade shipped moved session =
           (\acc (n, r) -> bindName n r acc)
           (foldl (\acc (n, r) -> flagged n (bindName n r acc)) withLabels added)
           [(n, r) | (n, _, r) <- updated]
-      result = propagate (Map.fromList [(old, r) | (_, old, r) <- updated]) cb1
+      result =
+        propagateNamed
+          (Map.fromListWith Set.union [(old, Set.singleton n) | (n, old, _) <- updated])
+          (Map.fromList [(old, r) | (_, old, r) <- updated])
+          cb1
       cb' = result.codebase
       short = shortestName session.scope cb'
    in do
@@ -2000,6 +2009,7 @@ applyEdit target text session = case reconcile of
           , old /= new
           ]
         refmap = Map.fromList [(old, new) | (_, old, new) <- changed]
+        written = Map.fromListWith Set.union [(old, Set.singleton n) | (n, old, _) <- changed]
         dataNames = [d.name.text | S.DData _ d <- decls]
         -- The types the file replaced, and their constructors by name.
         replaced =
@@ -2024,9 +2034,11 @@ applyEdit target text session = case reconcile of
         follows (_, old, new) = case lookupTerm old.hash cb0 of
           Just t ->
             hashTerm
-              ( rewriteRefs
-                  ( \rh ri ->
-                      (\(Reference nh ni) -> (nh, ni)) <$> Map.lookup (Reference rh ri) refmap
+              ( rewriteRefsWritten
+                  ( \rh ri w ->
+                      if appliesTo cb0 written (Reference rh ri) w
+                        then (\(Reference nh ni) -> (nh, ni)) <$> Map.lookup (Reference rh ri) refmap
+                        else Nothing
                   )
                   (restampTerm id newCon t)
               )
@@ -2087,7 +2099,12 @@ applyEdit target text session = case reconcile of
                     ["removed field " <> n]
               _ -> []
           ]
-        result = propagateWith cons refmap (foldr removeKind staged removed)
+        result =
+          propagateScoped
+            (appliesTo cb0 written)
+            cons
+            refmap
+            (foldr removeKind staged removed)
         final = result.codebase
         short = shortestName session.scope final
         -- Dependents of what was removed are left on it.

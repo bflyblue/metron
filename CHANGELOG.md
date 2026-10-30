@@ -551,3 +551,9 @@
   `stdlibAliases`, `stdlibNamespaces`, `stdlibDefaultUses` and
   `isLibraryPath` are new, `stdlibNamespace` and `stdlibAdditions` are
   gone. Design §3.3 no longer lists `identity`, which does not exist.
+- Propagation follows names, not hashes alone (design §7.5). `:update`,
+  `:upgrade`, `:edit`, `:todo` and `:dependents` move or report a dependent
+  only through a reference written under the rebound name, so a user's
+  `unit meter = m`, one term with the library's `si.metre`, can be changed
+  without rescaling every `km`. References with no written name follow as
+  before. `Eval.Update.propagateNamed`/`propagateScoped`, `Core.refsWritten`.

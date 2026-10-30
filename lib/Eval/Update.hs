@@ -12,6 +12,10 @@ module Eval.Update (
   Propagation (..),
   propagate,
   propagateWith,
+  propagateScoped,
+  propagateNamed,
+  Written,
+  appliesTo,
   staleReferences,
   Restamped (..),
   restamp,
@@ -55,8 +59,29 @@ matches a constructor of a replaced type to the new type's constructor
 (design §7.3, @:edit@ of a type). One that no longer checks, as when the
 constructor gained a field, is left on its version and reported.
 -}
+
+{- | The names each old reference is being rebound under: a dependent follows
+the rebinding only through a reference written under one of them (design
+§7.5). A reference written under no name (a format-1 term) always follows.
+-}
+type Written = Map Reference (Set.Set Text)
+
+appliesTo :: Codebase -> Written -> Reference -> Text -> Bool
+appliesTo cb written r w = maybe True (any (writtenAs cb w)) (Map.lookup r written)
+
+{- | Propagation that follows rebindings only through the names they were
+made under.
+-}
+propagateNamed :: Written -> RefMap -> Codebase -> Propagation
+propagateNamed written refmap cb = propagateScoped (appliesTo cb written) Map.empty refmap cb
+
+-- | By hash alone, every written name included: for migrations and re-stamping.
 propagateWith :: ConMap -> RefMap -> Codebase -> Propagation
-propagateWith cons initial cb0 = go cb0 initial (Propagation cb0 [] []) affectedInOrder
+propagateWith = propagateScoped (\_ _ -> True)
+
+propagateScoped ::
+  (Reference -> Text -> Bool) -> ConMap -> RefMap -> Codebase -> Propagation
+propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []) affectedInOrder
  where
   initialHashes = Set.fromList (map (.hash) (Map.keys initial))
   oldTypes = Set.fromList (map fst (Map.keys cons))
@@ -85,7 +110,10 @@ propagateWith cons initial cb0 = go cb0 initial (Propagation cb0 [] []) affected
             ]
         olds' = Set.union olds hs
      in if olds' == olds then olds else closure olds'
-  mentionsAny olds t = any (\(h, _) -> h `Set.member` olds) (Set.toList (refsWithIndex t))
+  mentionsAny olds t =
+    any
+      (\(h, i, w) -> h `Set.member` olds && applies (Reference h i) w)
+      (Set.toList (refsWritten t))
 
   -- Dependencies first.
   affectedInOrder =
@@ -111,8 +139,11 @@ propagateWith cons initial cb0 = go cb0 initial (Propagation cb0 [] []) affected
     Nothing -> go cb refmap acc hs
     Just t ->
       let t' =
-            rewriteRefs
-              ( \rh ri -> (\(Reference nh ni) -> (nh, ni)) <$> Map.lookup (Reference rh ri) refmap
+            rewriteRefsWritten
+              ( \rh ri w ->
+                  if applies (Reference rh ri) w
+                    then (\(Reference nh ni) -> (nh, ni)) <$> Map.lookup (Reference rh ri) refmap
+                    else Nothing
               )
               (restampTerm id newCon t)
           holders = [(n, i) | (n, Reference rh i) <- Map.toList cb.names, rh == h]
@@ -142,10 +173,11 @@ staleReferences cb =
   [ (n, r, m)
   | (n, Reference h _) <- Map.toList cb.names
   , Just t <- [lookupTerm h cb]
-  , (rh, ri) <- Set.toList (refsWithIndex t)
+  , (rh, ri, w) <- Set.toList (refsWritten t)
   , let r = Reference rh ri
   , null (namesOf r cb)
   , m <- historicalNamesOf r cb
+  , writtenAs cb w m
   ]
 
 -- | What re-stamping after a relabelling did (design §7.2).

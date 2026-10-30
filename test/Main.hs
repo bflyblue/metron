@@ -985,6 +985,29 @@ codebaseTests =
           case ls ": Nope" of
             Left err -> T.isInfixOf "unknown type `Nope`" err @? T.unpack err
             Right v -> assertFailure (show v)
+    , testCase
+        "propagation follows a rebinding only through the name it was made under" $ do
+        -- `unit meter = m` is the library's `si.metre` term; changing meter must not
+        -- rescale km, which is written as kilo * metre.
+        let session =
+              [ "unit meter = m"
+              , ":add"
+              , "let d = 3 meter"
+              , ":add"
+              , "unit meter = 2 * m"
+              ]
+        case runLinesP
+          (session ++ [":update", "1 km to m", "d to m", ":todo", ":dependents meter"]) of
+          Left err -> assertFailure (T.unpack err)
+          Right ls -> do
+            filter ("upgraded km" `T.isPrefixOf`) ls @?= []
+            any ("upgraded d " `T.isPrefixOf`) ls @? show ls
+            drop (length ls - 4) ls @?= ["1000 m", "6 m", "nothing to do", "d"]
+        -- :upgrade is scoped the same way: a stale d moves, the library does not
+        case runLinesP
+          (session ++ [":update --no-upgrade", ":upgrade meter", "1 km to m", "d to m"]) of
+          Left err -> assertFailure (T.unpack err)
+          Right ls -> drop (length ls - 2) ls @?= ["1000 m", "6 m"]
     , testCase "scratch definitions are usable before :add"
         $ runLines ["let x = 5", "x + 1"] @?= Right ["6"]
     , testCase "redefining a pending name replaces it with a notice"

@@ -44,6 +44,8 @@ module Eval.Core (
   refs,
   refsWithIndex,
   rewriteRefs,
+  rewriteRefsWritten,
+  refsWritten,
   inlineRef,
   primArity,
 ) where
@@ -525,3 +527,50 @@ inlineRef target replacement = go
 -- | A closed term is a term in any scope: it has no variables to rename.
 closedIn :: Term Z -> Term n
 closedIn = renameTerm (\case {})
+
+{- | Every reference with the name it was written under (the storage hint;
+empty for a term loaded from a format-1 store). Propagation follows a
+rebinding only through references written under the rebound name (design
+§7.5): a user's @meter = m@ and the library's @metre = m@ are one term, but
+@km = kilo * metre@ depends on @metre@, not on @meter@.
+-}
+refsWritten :: Term n -> Set (Hash, Maybe Int, Text)
+refsWritten = \case
+  Var _ -> Set.empty
+  Ref h i (Hint w) -> Set.singleton (h, i, w)
+  PrimApp _ as -> foldMap refsWritten as
+  Lit _ -> Set.empty
+  Lam _ b -> refsWritten b
+  App f a -> refsWritten f <> refsWritten a
+  Let _ e b -> refsWritten e <> refsWritten b
+  Con _ as -> foldMap refsWritten as
+  Case s alts -> refsWritten s <> foldMap (\(Alt _ _ b) -> refsWritten b) alts
+  Pow t _ -> refsWritten t
+  Noise{} -> Set.empty
+  Uncertain _ _ x e -> refsWritten x <> refsWritten e
+  Pack ts -> foldMap refsWritten ts
+  Proj t _ -> refsWritten t
+  Cycle _ bs -> foldMap refsWritten (vecToList bs)
+
+-- | 'rewriteRefs' that also sees the written name, which it keeps.
+rewriteRefsWritten ::
+  (Hash -> Maybe Int -> Text -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
+rewriteRefsWritten f = go
+ where
+  go :: Term m -> Term m
+  go = \case
+    Var i -> Var i
+    Ref h i hint@(Hint w) -> maybe (Ref h i hint) (\(h', i') -> Ref h' i' hint) (f h i w)
+    PrimApp p as -> PrimApp p (map go as)
+    Lit l -> Lit l
+    Lam h b -> Lam h (go b)
+    App a b -> App (go a) (go b)
+    Let h e b -> Let h (go e) (go b)
+    Con c as -> Con c (map go as)
+    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
+    Pow t n -> Pow (go t) n
+    Noise k l n -> Noise k l n
+    Uncertain k l x e -> Uncertain k l (go x) (go e)
+    Pack ts -> Pack (map go ts)
+    Proj t i -> Proj (go t) i
+    Cycle hs bs -> Cycle hs (vecMap go bs)

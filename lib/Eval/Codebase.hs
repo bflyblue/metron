@@ -39,6 +39,7 @@ module Eval.Codebase (
   historicalNamesOf,
   historyOf,
   dependents,
+  writtenAs,
   findByPrefix,
   showReference,
 ) where
@@ -231,14 +232,16 @@ historyOf :: Text -> Codebase -> [Reference]
 historyOf n cb = Map.findWithDefault [] n cb.history
 
 -- | Names whose current definition mentions the given hash.
-dependents :: Hash -> Codebase -> [Text]
-dependents h cb =
+dependents :: Text -> Hash -> Codebase -> [Text]
+dependents name h cb =
   sortOn
     id
     [ n
     | (n, Reference h' _) <- Map.toList cb.names
     , Just t <- [lookupTerm h' cb]
-    , h `Set.member` refs t
+    , any
+        (\(rh, _, w) -> rh == h && (T.null w || w == name))
+        (Set.toList (refsWritten t))
     ]
 
 -- | Hashes in the codebase whose base32hex form starts with a prefix.
@@ -305,3 +308,26 @@ fieldNamesOf h i arity cb =
       [] -> Nothing
   | j <- [0 .. arity - 1]
   ]
+
+{- | Whether a reference written under a name refers to a label (design §7.5):
+the names agree; or the written name is the label's path seen from inside
+its namespace; or the written name is no longer a label at all, in which
+case the reference means whatever its hash is called now (the name was
+renamed or moved, as the library was under @). A written name that still
+exists means that name and no other: a user's @ and the library's
+.metre@ share a term, and a reference written .metre@ is not a
+dependent of @. An empty written name (a format-1 term) agrees with
+every label.
+-}
+writtenAs :: Codebase -> Text -> Text -> Bool
+writtenAs cb written label =
+  T.null written
+    || written == label
+    || ("." <> written) `T.isSuffixOf` label
+    || not (isLabel written)
+ where
+  isLabel n =
+    Map.member n cb.names
+      || Map.member n cb.typeNames
+      || Map.member n cb.conNames
+      || Map.member n cb.fieldNames
