@@ -1667,7 +1667,23 @@ covariance block goes as `R P Rᵀ` (§3.7), and one kernel ("apply `R` on every
 index") serves every rank. Charts form a tree: a chart names the chart its
 origin and axes are given in (`eci` at the root, a library definition), and
 `a to b` goes up to the common ancestor and down, composing at the matrix
-level since two rotations in different planes do not add as bivectors.
+level since two rotations in different planes do not add as bivectors. A
+chart's parent is the chart its origin and axes are given in, written after
+the origin:
+
+```
+chart eci       = m at [0, 0, 0] m                        -- the root for positions
+chart perifocal = m at [0, 0, 0] eci by euler313 Ω i ω    -- rotated, same origin
+chart site      = m at [6378, 0, 0] km eci                -- translated
+chart antenna   = m at [2, 0, 1] m site by rotz (30 deg)  -- relative to site
+```
+
+A chart with no parent is relative to the implicit base of its dimension, as
+every scale is today (absolute zero for temperatures); the parent is a
+reference to a definition, so the chart tree and the namespace tree are
+unrelated, and renaming a chart changes nothing. None of this needs §3.7's
+route A: a rotation is dimensionless and a chart has one dimension on every
+axis, so every conversion stays homogeneous.
 
 **Moving charts and the transport term.** A chart that moves is a function of
 an epoch to a chart, and the epoch is itself a point on a time chart (`unix`,
