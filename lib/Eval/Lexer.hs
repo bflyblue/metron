@@ -43,6 +43,7 @@ data Keyword
   | KTo
   | KTrue
   | KFalse
+  | KData
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 data Token
@@ -59,6 +60,8 @@ data Token
   | TArrow
   | TEquals
   | TBacktick
+  | -- | @|@ between the constructors of a @data@ declaration
+    TBar
   | TLParen
   | TRParen
   | TLBracket
@@ -227,6 +230,7 @@ identifierOrKeyword = do
     "to" -> TKw KTo
     "true" -> TKw KTrue
     "false" -> TKw KFalse
+    "data" -> TKw KData
     "π" -> TIdent "pi"
     _ -> TIdent name
  where
@@ -257,6 +261,7 @@ symbol =
     , string "∧" $> TOp "/\\"
     , string "||" $> TOp "||"
     , string "∨" $> TOp "||"
+    , char '|' $> TBar
     , string "∘" $> TOp "."
     , string ".+" $> TOp ".+"
     , string ".-" $> TOp ".-"
@@ -429,6 +434,7 @@ showToken = \case
   TArrow -> "->"
   TEquals -> "="
   TBacktick -> "`"
+  TBar -> "|"
   TLParen -> "("
   TRParen -> ")"
   TLBracket -> "["

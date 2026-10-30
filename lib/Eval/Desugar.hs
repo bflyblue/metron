@@ -17,6 +17,8 @@ module Eval.Desugar (
   desugarDefinition,
   desugarMember,
   Resolution (..),
+  Resolved (..),
+  ConInfo (..),
   desugarIn,
   renderDesugarError,
 ) where
@@ -25,6 +27,7 @@ import Control.Monad (zipWithM)
 import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (StateT, modify', runStateT)
 import Control.Monad.Trans.Class (lift)
+import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust, isNothing)
@@ -34,6 +37,7 @@ import Data.Text qualified as T
 import Eval.Core
 import Eval.Syntax qualified as S
 import Eval.TCore (baseUnit)
+import Eval.Type (conText)
 
 -- | Child positions from the root of a Core term.
 type Path = [Int]
@@ -62,7 +66,14 @@ index). Names bound locally shadow these; these shadow primitives.
 -}
 data Resolution = Resolution {ref :: (Hash, Maybe Int), isUnit :: Bool, isScale :: Bool}
 
-type Resolver = Text -> Maybe Resolution
+{- | A declared constructor (design §2.3): the reference, its arity, and the
+whole constructor table of its type, for case analysis.
+-}
+data ConInfo = ConInfo {con :: ConRef, arity :: Int, siblings :: [(ConRef, Int)]}
+
+data Resolved = ATerm Resolution | AConstructor ConInfo
+
+type Resolver = Text -> Maybe Resolved
 
 noResolver :: Resolver
 noResolver _ = Nothing
@@ -122,27 +133,35 @@ desugar path ctx e = do
   record path e.span
   case e.node of
     S.Num r -> pure (Lit (LTensor ([], [r])))
-    S.Bool b -> pure (Con (if b then "True" else "False") [])
-    S.Tuple es -> Con "Tuple" <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
+    S.Bool b -> pure (Con (Builtin (if b then "True" else "False")) [])
+    S.Tuple es ->
+      Con (Builtin "Tuple") <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
     S.List es ->
       foldr
-        ( \(i, a) rest -> (\x r -> Con "Cons" [x, r]) <$> desugar (i : path) ctx a <*> rest
+        ( \(i, a) rest -> (\x r -> Con (Builtin "Cons") [x, r]) <$> desugar (i : path) ctx a <*> rest
         )
-        (pure (Con "Nil" []))
+        (pure (Con (Builtin "Nil") []))
         (zip [0 ..] es)
     S.CaseOf scrut alts -> caseOf path ctx e.span scrut alts
     S.Var x -> headApp path ctx e x []
-    S.App f a ->
-      let (hd, args) = spine e
-       in case hd.node of
-            S.Var x | Nothing <- lookupCtx x ctx -> do
-              bound <- asks (\env -> (.ref) <$> env.resolve x)
-              case bound of
-                -- A codebase name: ordinary application of a reference.
-                Just _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
-                -- A primitive (or unknown): saturation and eta rules apply.
-                Nothing -> headApp path ctx hd x args
-            _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
+    S.App _ _ -> do
+      let (hd, args0) = spine e
+      -- The quantity rule (§2.6) inside an application: `Rect 3 m 4 m` passes
+      -- two quantities. A literal argument takes the unit names after it.
+      args <- regroup ctx args0
+      let rebuilt = foldl (\f a -> S.Expr (S.spanUnion f.span a.span) (S.App f a)) hd args
+          chain = case rebuilt.node of
+            S.App f a -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
+            _ -> desugar path ctx rebuilt
+      case hd.node of
+        S.Var x | Nothing <- lookupCtx x ctx -> do
+          bound <- asks (\env -> env.resolve x >>= asTerm)
+          case bound of
+            -- A codebase name: ordinary application of a reference.
+            Just _ -> chain
+            -- A primitive, constructor (or unknown): saturation and eta rules apply.
+            Nothing -> headApp path ctx hd x args
+        _ -> chain
     S.Lam names body -> lams path ctx e.span names body
     S.Let n params rhs body ->
       Let (Hint n.text)
@@ -153,7 +172,7 @@ desugar path ctx e = do
       c' <- desugar (0 : path) ctx c
       t' <- desugar (1 : path) ctx t
       f' <- desugar (2 : path) ctx f
-      pure (Case c' [Alt "False" VNil f', Alt "True" VNil t'])
+      pure (Case c' [Alt (Builtin "False") VNil f', Alt (Builtin "True") VNil t'])
     S.BinOp op a b -> case op of
       S.PlusMinus k ->
         Uncertain k
@@ -166,7 +185,7 @@ desugar path ctx e = do
         prim (if scaleName then "toScale" else "to") [a, b]
       S.PAdd -> prim "pointAdd" [a, b]
       S.Cons ->
-        (\x r -> Con "Cons" [x, r])
+        (\x r -> Con (Builtin "Cons") [x, r])
           <$> desugar (0 : path) ctx a
           <*> desugar (1 : path) ctx b
       S.PSub -> prim "pointSub" [a, b]
@@ -287,9 +306,21 @@ headApp :: Path -> Ctx n -> S.Expr -> Text -> [S.Expr] -> M (Term n)
 headApp path ctx hd x args = case lookupCtx x ctx of
   Just i -> applyAll path ctx (\_ -> pure (Var i)) args
   Nothing -> do
-    bound <- asks (\env -> (.ref) <$> env.resolve x)
-    case bound of
-      Just (h, idx) -> applyAll path ctx (\_ -> pure (Ref h idx (Hint x))) args
+    resolved <- asks (\env -> env.resolve x)
+    case resolved of
+      Just (ATerm r) ->
+        let (h, idx) = r.ref in applyAll path ctx (\_ -> pure (Ref h idx (Hint x))) args
+      -- A declared constructor applies like a primitive: saturated, eta-expanded or over-applied.
+      Just (AConstructor info)
+        | length args == info.arity -> saturated path ctx (Con info.con) args
+        | length args < info.arity ->
+            eta path ctx hd.span (Builder (Con info.con)) args (info.arity - length args)
+        | otherwise ->
+            applyAll
+              path
+              ctx
+              (\p -> saturated p ctx (Con info.con) (take info.arity args))
+              (drop info.arity args)
       -- noise n and gauss n take a literal count (design §3.2.5): the
       -- number of nudges is part of the type.
       Nothing
@@ -431,7 +462,7 @@ unitExpr ctx e = case e.node of
           ( \env ->
               maybe
                 (isJust (baseUnit x) || (isNothing (primArity x) && x `notElem` specialNames))
-                (.isUnit)
+                (maybe False (.isUnit) . asTerm)
                 (env.resolve x)
           )
   S.Pow u _ -> unitExpr ctx u
@@ -447,7 +478,7 @@ isScaleName :: Ctx n -> S.Expr -> M Bool
 isScaleName ctx e = case e.node of
   S.Var x
     | Nothing <- lookupCtx x ctx ->
-        asks (\env -> maybe False (.isScale) (env.resolve x))
+        asks (\env -> maybe False (maybe False (.isScale) . asTerm) (env.resolve x))
   _ -> pure False
 
 {- | A @case@ (design §2.3, §5.1): one alternative per constructor of the
@@ -458,36 +489,39 @@ variable, the scrutinee bound once around the whole case).
 -}
 caseOf ::
   Path -> Ctx n -> S.Span -> S.Expr -> [(S.Pattern, S.Expr)] -> M (Term n)
-caseOf path ctx sp scrut alts = do
-  let explicit = [(c, ns, body, p) | (p@S.Pattern{node = S.PCon c ns}, body) <- alts]
+caseOf path ctx sp scrut alts0 = do
+  alts <- mapM promote alts0
+  let written = [(c, ns, body, p) | (p@S.Pattern{node = S.PCon c ns}, body) <- alts]
       catchAll = [(p, body) | (p, body) <- alts, isCatchAll p.node]
-  table <- case explicit of
+  -- Each constructor pattern names a built-in or a declared constructor; the
+  -- first one fixes the type and so the table of alternatives.
+  explicit <-
+    mapM
+      ( \(c, ns, body, p) -> (\(cr, _) -> (cr, ns, body, p)) <$> conRefFor p c (length ns)
+      )
+      written
+  table <- case written of
     [] ->
       failWith
         ( BadSpecialForm
             sp
-            "a case needs at least one constructor pattern ((a, b), x : xs, {}, true or false) to say which type it analyses"
+            "a case needs at least one constructor pattern ((a, b), x : xs, {}, true, false or a declared constructor) to say which type it analyses"
         )
-    (c, ns, _, p) : _ ->
-      maybe
-        (failWith (BadSpecialForm p.span ("unknown constructor pattern " <> c)))
-        pure
-        (tableFor c (length ns))
-  -- Every written constructor belongs to the type, once, with the right arity.
+    (c, ns, _, p) : _ -> snd <$> conRefFor p c (length ns)
   mapM_
     ( \(c, ns, _, p) -> case lookup c table of
         Nothing ->
           failWith
             ( BadSpecialForm
                 p.span
-                ("pattern " <> c <> " does not belong to the type of the scrutinee")
+                ("pattern " <> conText c <> " does not belong to the type of the scrutinee")
             )
         Just k
           | k /= length ns ->
               failWith
                 ( BadSpecialForm
                     p.span
-                    ("pattern " <> c <> " has " <> T.pack (show k) <> " fields")
+                    ("pattern " <> conText c <> " has " <> T.pack (show k) <> " fields")
                 )
         _ -> pure ()
     )
@@ -496,12 +530,17 @@ caseOf path ctx sp scrut alts = do
       dup = [c | (c, i) <- zip names [0 :: Int ..], c `elem` take i names]
       missing = [c | (c, _) <- table, c `notElem` names]
   mapM_
-    (\c -> failWith (BadSpecialForm sp ("constructor " <> c <> " appears twice")))
+    ( \c ->
+        failWith (BadSpecialForm sp ("constructor " <> conText c <> " appears twice"))
+    )
     (take 1 dup)
   case (missing, catchAll) of
     (_ : _, []) ->
       failWith
-        (BadSpecialForm sp ("case does not cover " <> T.intercalate ", " missing))
+        ( BadSpecialForm
+            sp
+            ("case does not cover " <> T.intercalate ", " (map conText missing))
+        )
     _ -> pure ()
   scrut' <- desugar (0 : path) ctx scrut
   case catchAll of
@@ -511,23 +550,41 @@ caseOf path ctx sp scrut alts = do
         <$> build (VCons v.text ctx) (Var FZ) table explicit catchAll
     _ -> build ctx scrut' table explicit catchAll
  where
+  -- The parser cannot tell a variable from a nullary constructor; a name
+  -- that resolves to a constructor is one.
+  promote (p, body) = case p.node of
+    S.PVar n -> do
+      resolved <- asks (\env -> env.resolve n.text)
+      pure $ case resolved of
+        Just (AConstructor _) -> (S.Pattern p.span (S.PCon n.text []), body)
+        _ -> (p, body)
+    _ -> pure (p, body)
   isCatchAll = \case
     S.PWild -> True
     S.PVar _ -> True
     _ -> False
-  tableFor c k = case c of
-    "True" -> Just [("False", 0), ("True", 0)]
-    "False" -> Just [("False", 0), ("True", 0)]
-    "Tuple" -> Just [("Tuple", k)]
-    "Nil" -> Just [("Nil", 0), ("Cons", 2)]
-    "Cons" -> Just [("Nil", 0), ("Cons", 2)]
-    _ -> Nothing
+  -- A constructor's reference and its type's table of (constructor, arity).
+  conRefFor :: S.Pattern -> Text -> Int -> M (ConRef, [(ConRef, Int)])
+  conRefFor p c k = case c of
+    "True" -> pure (Builtin "True", bools)
+    "False" -> pure (Builtin "False", bools)
+    "Tuple" -> pure (Builtin "Tuple", [(Builtin "Tuple", k)])
+    "Nil" -> pure (Builtin "Nil", lists)
+    "Cons" -> pure (Builtin "Cons", lists)
+    _ -> do
+      resolved <- asks (\env -> env.resolve c)
+      case resolved of
+        Just (AConstructor info) -> pure (info.con, info.siblings)
+        _ -> failWith (BadSpecialForm p.span ("unknown constructor pattern " <> c))
+   where
+    bools = [(Builtin "False", 0), (Builtin "True", 0)]
+    lists = [(Builtin "Nil", 0), (Builtin "Cons", 2)]
   build ::
     forall m.
     Ctx m ->
     Term m ->
-    [(Text, Int)] ->
-    [(Text, [S.Name], S.Expr, S.Pattern)] ->
+    [(ConRef, Int)] ->
+    [(ConRef, [S.Name], S.Expr, S.Pattern)] ->
     [(S.Pattern, S.Expr)] ->
     M (Term m)
   build ctx' scrutTerm table explicit catchAll = do
@@ -536,10 +593,10 @@ caseOf path ctx sp scrut alts = do
   alternative ::
     forall m.
     Ctx m ->
-    [(Text, [S.Name], S.Expr, S.Pattern)] ->
+    [(ConRef, [S.Name], S.Expr, S.Pattern)] ->
     [(S.Pattern, S.Expr)] ->
     Int ->
-    (Text, Int) ->
+    (ConRef, Int) ->
     M (Alt m)
   alternative ctx' explicit catchAll i (c, k) = case [(ns, body) | (c', ns, body, _) <- explicit, c' == c] of
     (ns, body) : _ -> case vecFromList (map (.text) ns) of
@@ -547,4 +604,55 @@ caseOf path ctx sp scrut alts = do
     [] -> case catchAll of
       (_, body) : _ -> case vecFromList (replicate k "_") of
         SomeVec hs -> Alt c (vecMap Hint hs) . weakenBy hs <$> desugar (i : path) ctx' body
-      [] -> failWith (BadSpecialForm sp ("case does not cover " <> c))
+      [] -> failWith (BadSpecialForm sp ("case does not cover " <> conText c))
+
+-- | The term a name resolves to, if it is one.
+asTerm :: Resolved -> Maybe Resolution
+asTerm = \case
+  ATerm r -> Just r
+  AConstructor _ -> Nothing
+
+{- | Group a literal argument with the unit names that follow it into one
+quantity (§2.6): @f 3 m 4 m@ is @f (3 m) (4 m)@. A name bound in scope is
+never a unit here, so @\m -> f 2 m@ passes two arguments.
+-}
+regroup :: Ctx n -> [S.Expr] -> M [S.Expr]
+regroup ctx = go
+ where
+  go = \case
+    [] -> pure []
+    a : rest
+      | isLiteral a.node -> do
+          (units, rest') <- takeUnits rest
+          let q =
+                foldl
+                  (\acc u -> S.Expr (S.spanUnion acc.span u.span) (S.BinOp S.Scale acc u))
+                  a
+                  units
+          (q :) <$> go rest'
+      | otherwise -> (a :) <$> go rest
+  isLiteral = \case
+    S.Num _ -> True
+    S.Vec _ -> True
+    _ -> False
+  takeUnits = \case
+    [] -> pure ([], [])
+    u : rest -> do
+      unit <- isUnitName u
+      if unit
+        then first (u :) <$> takeUnits rest
+        else pure ([], u : rest)
+  -- Only names (and their powers): a number after a literal is not a unit,
+  -- and an unknown name is reported by the ordinary path.
+  isUnitName u = case u.node of
+    S.Var x
+      | Nothing <- lookupCtx x ctx ->
+          asks
+            ( \env ->
+                maybe
+                  (isJust (baseUnit x))
+                  (maybe False (.isUnit) . asTerm)
+                  (env.resolve x)
+            )
+    S.Pow b _ -> isUnitName b
+    _ -> pure False

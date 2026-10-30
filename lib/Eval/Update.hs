@@ -22,6 +22,7 @@ import Eval.Codebase
 import Eval.Core
 import Eval.Hash (hashTerm)
 import Eval.Infer
+import Eval.Resolve (typeLookupFor)
 
 type RefMap = Map Reference Reference
 
@@ -82,7 +83,7 @@ propagate initial cb0 = go cb0 initial (Propagation cb0 [] []) affectedInOrder
               )
               t
           holders = [(n, i) | (n, Reference rh i) <- Map.toList cb.names, rh == h]
-       in case elaborateClosed (\k -> lookupTypes k cb) t' of
+       in case elaborateClosed (typeLookupFor cb) t' of
             Left err ->
               go
                 cb

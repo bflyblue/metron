@@ -15,6 +15,9 @@ module Eval.Hash (
   encodeStored,
   decodeStored,
   decodeStoredV,
+  encodeTypeDef,
+  decodeTypeDef,
+  hashTypeDef,
   storageVersion,
   hashHex,
   hashFromHex,
@@ -32,6 +35,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Eval.Core
+import Eval.Dimension
+import Eval.Type
 
 -- | The canonical encoding of a closed term.
 encodeTerm :: Term Z -> ByteString
@@ -82,7 +87,7 @@ enc ph hint depth = \case
   Pow t n -> word8 0x09 <> enc ph hint depth t <> sint n
   Con c as ->
     word8 0x11
-      <> text c
+      <> conRef c
       <> varint (fromIntegral (length as))
       <> foldMap (enc ph hint depth) as
   Case s alts ->
@@ -92,7 +97,7 @@ enc ph hint depth = \case
       <> foldMap encAlt alts
    where
     encAlt (Alt c hs b) =
-      text c
+      conRef c
         <> varint (fromIntegral (vecLength hs))
         <> foldMap hint (vecToList hs)
         <> enc ph hint (depth + vecLength hs) b
@@ -117,6 +122,11 @@ enc ph hint depth = \case
   label = \case
     Owner t -> word8 0 <> text t
     Tag t -> word8 1 <> text t
+  -- A built-in constructor is its name; a declared one is an empty name,
+  -- the type's hash and the index, so built-in encodings never changed.
+  conRef = \case
+    Builtin c -> text c
+    UserCon (Hash h) i -> text "" <> byteString h <> varint (fromIntegral i)
 
 -- | Length-prefixed UTF-8.
 text :: Text -> Builder
@@ -144,37 +154,6 @@ sint n =
   magnitude m = BS.pack (reverse (go m))
   go 0 = []
   go m = fromIntegral (m .&. 0xFF) : go (m `shiftR` 8)
-
-{- | A short, human-facing form: @#@ followed by the first five base32hex
-characters of the digest.
--}
-showHash :: Hash -> Text
-showHash h = "#" <> T.take 5 (base32hex h)
-
-{- | Whether a hash's base32hex form starts with the given text (with or
-without the leading @#@).
--}
-hashHasPrefix :: Text -> Hash -> Bool
-hashHasPrefix prefix h = T.dropWhile (== '#') prefix `T.isPrefixOf` base32hex h
-
--- | RFC 4648 base32hex without padding.
-base32hex :: Hash -> Text
-base32hex (Hash bs) = T.pack (go (BS.unpack bs))
- where
-  alphabet = "0123456789abcdefghijklmnopqrstuv"
-  go [] = []
-  go chunkBytes =
-    let (chunk, rest) = splitAt 5 chunkBytes
-        n = length chunk
-        bits =
-          foldl (\acc b -> (acc `shiftL` 8) .|. fromIntegral b) (0 :: Integer) chunk
-            `shiftL` (8 * (5 - n))
-        chars = (n * 8 + 4) `div` 5
-        digits =
-          [ alphabet !! fromIntegral ((bits `shiftR` (40 - 5 * (i + 1))) .&. 31)
-          | i <- [0 .. chars - 1]
-          ]
-     in digits ++ go rest
 
 -- Decoding ------------------------------------------------------------------------
 
@@ -319,7 +298,7 @@ term refHints d =
       rs <- traverse (const ((%) <$> decSint <*> decVarint)) [1 .. product dims]
       pure (Lit (LTensor (dims, rs)))
     -- Retired tags, read from stores of format 2 and before (design §6.1).
-    0x04 -> (\b -> Con (if b == 1 then "True" else "False") []) <$> byte
+    0x04 -> (\b -> Con (Builtin (if b == 1 then "True" else "False")) []) <$> byte
     0x05 -> Lam <$> decHint <*> term refHints (DS d)
     0x06 -> App <$> term refHints d <*> term refHints d
     0x07 -> Let <$> decHint <*> term refHints d <*> term refHints (DS d)
@@ -327,7 +306,7 @@ term refHints d =
       c <- term refHints d
       t <- term refHints d
       e <- term refHints d
-      pure (Case c [Alt "False" VNil e, Alt "True" VNil t])
+      pure (Case c [Alt (Builtin "False") VNil e, Alt (Builtin "True") VNil t])
     0x09 -> Pow <$> term refHints d <*> decSint
     0x0A -> Noise <$> decKind <*> decLabel <*> decVarint
     0x0B -> Uncertain <$> decKind <*> decLabel <*> term refHints d <*> term refHints d
@@ -341,7 +320,7 @@ term refHints d =
         SomeVec hs -> Cycle hs <$> vecTraverse (const (term refHints (depthPlus hs d))) hs
     0x0F -> Proj <$> term refHints d <*> (fromIntegral <$> decVarint)
     0x11 -> do
-      c <- decText
+      c <- decConRef
       k <- decVarint
       Con c <$> traverse (const (term refHints d)) [1 .. k]
     0x12 -> do
@@ -351,7 +330,7 @@ term refHints d =
       pure (Case s alts)
      where
       alt = do
-        c <- decText
+        c <- decConRef
         k <- decVarint
         hints <- traverse (const decHint) [1 .. k]
         case vecFromList hints of
@@ -377,3 +356,159 @@ hashFromHex t
  where
   pairs (a : b : rest) = fromIntegral (a * 16 + b) : pairs rest
   pairs _ = []
+
+decConRef :: Dec ConRef
+decConRef = do
+  name <- decText
+  if T.null name
+    then UserCon . Hash <$> bytes 32 <*> (fromIntegral <$> decVarint)
+    else pure (Builtin name)
+
+-- Type definitions -------------------------------------------------------------------
+
+{- | The canonical encoding of a declared type (design §6.1): parameter kinds,
+constructors' field types, label. Names are not part of it.
+-}
+encodeTypeDef :: TypeDef -> ByteString
+encodeTypeDef def =
+  BL.toStrict . toLazyByteString
+    $ varint (fromIntegral (length def.params))
+      <> foldMap (kindByte . snd) def.params
+      <> varint (fromIntegral (length def.constructors))
+      <> foldMap
+        (\fs -> varint (fromIntegral (length fs)) <> foldMap encType fs)
+        def.constructors
+      <> labelEnc def.label
+ where
+  labelEnc = \case
+    Owner t -> word8 0 <> text t
+    Tag t -> word8 1 <> text t
+
+hashTypeDef :: TypeDef -> Hash
+hashTypeDef = Hash . SHA256.hash . encodeTypeDef
+
+kindByte :: Kind -> Builder
+kindByte = \case
+  KType -> word8 0
+  KLen -> word8 1
+  KShape -> word8 2
+  KDim -> word8 3
+
+encType :: Type -> Builder
+encType = \case
+  TBool -> word8 0x20
+  TTensor sh d -> word8 0x21 <> encShape sh <> encDim d
+  TPoint sh d -> word8 0x22 <> encShape sh <> encDim d
+  TScale sh d -> word8 0x23 <> encShape sh <> encDim d
+  TTuple ts -> word8 0x24 <> varint (fromIntegral (length ts)) <> foldMap encType ts
+  TList t -> word8 0x25 <> encType t
+  TFun a b -> word8 0x26 <> encType a <> encType b
+  TVar v -> word8 0x27 <> varint (fromIntegral v)
+  TData (Hash h) as ->
+    word8 0x28
+      <> byteString h
+      <> varint (fromIntegral (length as))
+      <> foldMap encArg as
+
+encArg :: Arg -> Builder
+encArg = \case
+  AType t -> word8 0 <> encType t
+  ALen l -> word8 1 <> encLen l
+  AShape sh -> word8 2 <> encShape sh
+  ADim d -> word8 3 <> encDim d
+
+encShape :: Shape -> Builder
+encShape = \case
+  SNil -> word8 0
+  SCons l rest -> word8 1 <> encLen l <> encShape rest
+  SVar v -> word8 2 <> varint (fromIntegral v)
+
+encLen :: Len -> Builder
+encLen = \case
+  LLit k -> word8 0 <> varint (fromIntegral k)
+  LVar v k -> word8 1 <> varint (fromIntegral v) <> varint (fromIntegral k)
+
+encDim :: Dim -> Builder
+encDim d =
+  let atoms = dimAtoms d
+   in varint (fromIntegral (length atoms))
+        <> foldMap
+          ( \(a, k) -> case a of
+              Base b -> word8 0 <> word8 (fromIntegral (fromEnum b)) <> sint (fromIntegral k)
+              DVar v -> word8 1 <> varint (fromIntegral v) <> sint (fromIntegral k)
+          )
+          atoms
+
+decodeTypeDef :: ByteString -> Either Text TypeDef
+decodeTypeDef bs = do
+  (def, end) <- runDec typeDef bs 0
+  if end == BS.length bs
+    then Right def
+    else Left "trailing bytes after the type definition"
+ where
+  typeDef = do
+    np <- decVarint
+    kinds <- traverse (const decKindByte) [1 .. np]
+    nc <- decVarint
+    cons <-
+      traverse
+        (const (decVarint >>= \nf -> traverse (const decType) [1 .. nf]))
+        [1 .. nc]
+    TypeDef (zip [0 ..] kinds) cons <$> decLabel
+  decKindByte =
+    byte >>= \case
+      0 -> pure KType
+      1 -> pure KLen
+      2 -> pure KShape
+      3 -> pure KDim
+      k -> failDec ("unknown kind " <> T.pack (show k))
+
+decType :: Dec Type
+decType =
+  byte >>= \case
+    0x20 -> pure TBool
+    0x21 -> TTensor <$> decShape <*> decDim
+    0x22 -> TPoint <$> decShape <*> decDim
+    0x23 -> TScale <$> decShape <*> decDim
+    0x24 -> decVarint >>= \n -> TTuple <$> traverse (const decType) [1 .. n]
+    0x25 -> TList <$> decType
+    0x26 -> TFun <$> decType <*> decType
+    0x27 -> TVar . fromIntegral <$> decVarint
+    0x28 -> do
+      h <- bytes 32
+      n <- decVarint
+      TData (Hash h) <$> traverse (const decArg) [1 .. n]
+    tag -> failDec ("unknown type tag " <> T.pack (show tag))
+ where
+  decArg =
+    byte >>= \case
+      0 -> AType <$> decType
+      1 -> ALen <$> decLen
+      2 -> AShape <$> decShape
+      3 -> ADim <$> decDim
+      k -> failDec ("unknown argument kind " <> T.pack (show k))
+  decShape =
+    byte >>= \case
+      0 -> pure SNil
+      1 -> SCons <$> decLen <*> decShape
+      2 -> SVar . fromIntegral <$> decVarint
+      k -> failDec ("unknown shape tag " <> T.pack (show k))
+  decLen =
+    byte >>= \case
+      0 -> LLit . fromIntegral <$> decVarint
+      1 -> LVar . fromIntegral <$> decVarint <*> (fromIntegral <$> decVarint)
+      k -> failDec ("unknown length tag " <> T.pack (show k))
+  decDim = do
+    n <- decVarint
+    atoms <-
+      traverse
+        ( const
+            ( byte >>= \case
+                0 ->
+                  (\b k -> (Base (toEnum (fromIntegral b)), fromIntegral k)) <$> byte <*> decSint
+                1 -> (\v k -> (DVar (fromIntegral v), fromIntegral k)) <$> decVarint <*> decSint
+                k -> failDec ("unknown dimension atom " <> T.pack (show k))
+            )
+        )
+        [1 .. n]
+    pure (dimFromAtoms atoms)

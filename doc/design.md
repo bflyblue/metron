@@ -139,7 +139,9 @@ f 3 4                           -- a bare expression: evaluate and print
 A `let` without `in` at the top level *proposes* a definition: it goes into the
 scratch (§7.5), where it is checked, hashed and usable by later expressions but
 not stored. `unit name = e` is the same with the name additionally marked as a
-display unit (§3.2.12). `:add` and `:update` move scratch definitions into the codebase (§7).
+display unit (§3.2.12), and `scale name = step at origin` a scale (§3.6). A `data`
+declaration (§2.3) proposes a type the same way. `:add` and `:update` move
+scratch definitions into the codebase (§7).
 Within one input a name may be defined only once, as in a Haskell module; across
 REPL inputs a pending definition is replaced by a newer one.
 
@@ -181,6 +183,47 @@ six-element orbital state is `(r, v)` with two dimensions, not a `Vec 6`. Lists
 are the one unbounded structure; `map`, `filter`, `foldl`, `foldr`, `length`,
 `sum`, `zip`, `range` and `reverse` are prelude definitions, recursive through
 `Cycle` like any other.
+
+**Declared data types.** A `data` statement declares a type as a sum of
+products, as in Haskell, with parameters of any kind:
+
+```
+data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])
+data Maybe a = Nothing | Just a
+data Tree a = Leaf | Node (Tree a) a (Tree a)           -- recursion through the type itself
+data State n = State (Vec n [m]) (Vec n [m/s])          -- n is a length, from its use
+data Reading d = Reading (Num d) (Point [K])             -- d is a dimension
+structural data Pair a b = Pair a b
+```
+
+A field is a type atom: a name (`Bool`, `Num`, a parameter, a declared type
+of no parameters) or a compound type in parentheses, written as `:type` prints
+it: `Num [m]`, `Vec 3 [m s^-2]`, `Mat 3 3`, `Tensor [2, 3] d`, `Point [K]`,
+`Point (Vec 3 [m])`, `(a, b)`, `{a}`, `a -> b`, `Maybe (Num [m])`. Inside a
+dimension bracket the names are base units (`m kg s A K mol cd rad`), declared
+units (`[N]`, `[km/h]`) and parameters, with `^` or superscript exponents and
+`/`. A parameter's kind is read off the positions it appears in, so it needs no
+annotation; using one both as a dimension and as a type is an error.
+
+Constructors are functions and values: `Circle` has type `Num [m] -> Shape`,
+`Nothing` type `Maybe a`, `map Just xs` works, and `Rect 3 m 4 m` passes two
+quantities because a literal argument takes the units after it (§2.6). A
+`case` takes a value apart one constructor deep, naming the fields in order;
+`_` and variables fill in the constructors not written, as for lists. Values
+print as they are written, `Rect 3 m 4 m` and `Just (Circle 1 m)`.
+
+A type's identity is its definition: parameter kinds, the constructors' field
+types in order, and the type's name as an owner stamp (§3.2.4), so two users
+who declare `data Shape = …` alike share one type and `data Blob = Circle (Num
+[m])` is another. `structural data` leaves the name out, so any two structural
+declarations of the same shape are the same type. Constructor names and the
+type name are labels in the codebase, like definition names (§7): `:unname
+Circle` leaves the constructor printing as `#a3f9k.0`, `:view Shape` prints
+the declaration back, and a constructor name and a definition name share one
+namespace, the newer label winning (declaring `data Temp = T (Num [K])`
+unnames the tesla until a `let T = …` takes the name back). A declaration is
+pending in the scratch (§7.5) until `:add`, like a definition. There is no
+`==` on declared types yet, and no records; both are open (§11).
 
 Further sugar, all removed by desugaring (§2.9):
 
@@ -280,6 +323,14 @@ variable needs an explicit operator on either side: `x * km`, `5 * a`.
 
 The rule is a parse-time rewrite to `*`. Core (§5.1) never sees it.
 
+Inside an application the same rule groups each literal argument with the unit
+names after it: `Rect 3 m 4 m` is `Rect (3 m) (4 m)` and `f 2 km 500 m` adds
+two lengths, while `range 1 n` passes two arguments because `n` is not a unit
+and `\m -> f 2 m` passes two because the bound `m` shadows the metre. An
+operator after the arguments still applies to the whole application, so a
+compound unit in argument position is parenthesised: `Body (5 kg) ([1, 2, 3]
+km) ([4, 5, 6] km/s)`.
+
 ### 2.7 Grammar
 
 The grammar is over canonical tokens, after the unicode mapping of §2.8.
@@ -290,7 +341,15 @@ sep        ::= newline-at-column-0 | ';'
 statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | 'unit' name '=' expr                      -- a display unit (3.2.12)
              | 'scale' name '=' expr 'at' expr            -- a point scale (3.6)
+             | ['structural'] 'data' name param* '=' con ( '|' con )*   -- a data type (2.3)
              | expr
+con        ::= name tyatom*
+type       ::= tyapp [ '->' type ]
+tyapp      ::= name tyatom* | tyatom
+tyatom     ::= name | natural | '(' type ( ',' type )* ')' | '{' type '}' | '[' bracket ']'
+bracket    ::= [ product ( ',' product )* ]            -- a shape [2, 3] or a dimension [kg m^2 / s^2]
+product    ::= factor+ ( '/' factor+ )*
+factor     ::= ( name | natural ) [ '^' [ '-' ] natural ]
 bindings   ::= binding ( sep binding )*            -- indented block
 binding    ::= name param* '=' expr
 param      ::= name
@@ -314,7 +373,8 @@ primary    ::= number | name | 'true' | 'false'
              | '{' [ expr ( ',' expr )* ] '}'                   -- a list
              | 'case' expr 'of' alts                       -- alts: an indented block, or ; separated
 alt        ::= pattern '->' expr
-pattern    ::= '(' name ( ',' name )+ ')' | '{}' | name ':' name | 'true' | 'false' | '_' | name
+pattern    ::= '(' name ( ',' name )+ ')' | '{}' | name ':' name | 'true' | 'false' | '_' | name name*
+                                                  -- a lone name is a variable unless it is a constructor
 section    ::= '(' operator expr ')' | '(' expr operator ')'
 vector     ::= '[' [ expr ( sep expr )* ] ']'     -- sep: ',' elements, ';' rows, ';;' planes …
 matrix     ::= vector                             -- [1, 2; 3, 4] or [[1, 2], [3, 4]]
@@ -433,6 +493,7 @@ clearer.
 | `Bool` | `true` or `false` | a data type with two constructors; `if` is `case` on it |
 | `(a, b, …)` | a tuple of values | components of any types, so a state `(r, v)` has two dimensions |
 | `{a}` | a list: `{}` or `x : xs` | the one unbounded structure; lazy, so `range` and `map` stream |
+| `T α…` (declared, §2.3) | a constructor and its fields, as thunks | `Shape`, `Maybe (Num [m])`, `Tree a`; the same runtime shape as tuples and lists |
 | `a -> b` | a closure: core term plus environment | first class; hashed like everything else |
 | `Tensor s δ` | a flat row-major buffer of magnitudes, its shape `s`, one shared dimension vector and hint | `s` is a type-level list of lengths. `Vec n δ` and `Mat m n δ` are how `Tensor [n] δ` and `Tensor [m, n] δ` print; rotations are `Mat 3 3 1` |
 
@@ -442,9 +503,9 @@ an exact rational with denominator 1, and positions that need an integer (the
 exponent of `^`, the argument of `noise` and `gauss`) are syntactic restrictions,
 not types.
 
-Tuples, lists and `Bool` are the data types; `case` (§2.3) is how they are
-consumed, and user-declared data types will be the same mechanism with declared
-constructors.
+Tuples, lists, `Bool` and declared types are the data types; `case` (§2.3) is
+how they are consumed. The built-in ones differ from declared ones only in
+having syntax of their own.
 
 ### 3.2 Magnitudes: exact rationals and affine forms
 
@@ -1126,7 +1187,8 @@ concatenation for the products and an equality instance (§4.2).
 ### 4.1 Types
 
 ```
-τ ::= Tensor σ δ | Point σ δ | Scale σ δ | Bool | (τ, τ, …) | {τ} | τ -> τ | α
+τ ::= Tensor σ δ | Point σ δ | Scale σ δ | Bool | (τ, τ, …) | {τ} | T a… | τ -> τ | α
+a ::= τ | σ | δ | ν                     -- an argument of a declared type T, by the kind of its parameter
 σ ::= [] | ν : σ | s                   -- a shape: a list of lengths, possibly ending in a shape variable
 δ ::= 1 | B | d | δ·δ | δ⁻¹          -- an abelian group, normalised
 ν ::= k | n | n + k                    -- a literal, a length variable, or a variable plus a literal offset
@@ -1137,6 +1199,13 @@ concatenation for the products and an equality instance (§4.2).
 over `Tensor σ δ` and `Scale σ δ` a scale, or frame, for writing and printing
 them (§3.6). `Point [K]` prints for a scalar point and `Point (Vec 3 [m])` for
 a position.
+
+A declared type `T` (§2.3) is a type constructor with parameters of fixed
+kinds, known from its definition, and `T a…` applies it to one argument per
+parameter. Two applications unify when they are of the same type (the same
+definition hash, §6.1) and their arguments unify kind by kind. A declared type
+is identified by the hash of its definition, not by its name; the type that
+inference prints as `#a3f9k` the driver renames (§7.2).
 
 **Variables are kinded.** There is one namespace of variables, each with a kind:
 `Type`, `Len`, `Shape`, and `Dim` when dimensions arrive. Each kind is an index
@@ -1430,7 +1499,7 @@ Term n ::= Var (Fin n)                -- bound variable
          | Lam hint (Term (S n))      -- one parameter
          | App (Term n) (Term n)
          | Let hint (Term n) (Term (S n))   -- non-recursive, generalising local binding
-         | Con name [Term n]          -- a saturated data constructor: True, False, Tuple, Nil, Cons
+         | Con con [Term n]           -- a saturated data constructor
          | Case (Term n) [Alt n]      -- one alternative per constructor, canonical order, lazy in the bodies
          | Pow (Term n) Integer       -- e ^ n
          | Noise Kind Integer         -- noise n / gauss n
@@ -1438,16 +1507,21 @@ Term n ::= Var (Fin n)                -- bound variable
          | Pack [Term n]              -- [a, b, c]: stack k tensors of shape s into shape k : s
          | Proj (Term n) Int          -- t.i, i a literal position: peel the first length
          | Cycle (Vec k hint) (Vec k (Term (k + n)))  -- k mutually recursive bodies
-Alt n  ::= Alt name (Vec k hint) (Term (k + n))   -- binds the constructor's k fields
+Alt n  ::= Alt con (Vec k hint) (Term (k + n))   -- binds the constructor's k fields
+con    ::= Builtin name                    -- True, False, Tuple, Nil, Cons
+         | UserCon hash i                  -- constructor i of the declared type with that definition hash
 Kind ::= Bound | Stat
 ```
 
 `if c then a else b` is `Case c [Alt False [] b, Alt True [] a]`; `true` is
 `Con True []`; `(a, b)` is `Con Tuple [a, b]` (the arity is the argument count);
 `{a, b}` is `Con Cons [a, Con Cons [b, Con Nil []]]`. Alternatives follow the
-constructors' declaration order (`False, True`; `Nil, Cons`) and cover every
-constructor of the scrutinee's type; a surface
-`_` is expanded into the missing alternatives, so Core has no default case.
+constructors' declaration order (`False, True`; `Nil, Cons`; a declared
+type's as written) and cover every constructor of the scrutinee's type; a
+surface `_` is expanded into the missing alternatives, so Core has no default
+case. A declared constructor is referenced by its type's definition hash and
+its position, never by name, so renaming a constructor changes no term (§7.2)
+and a term's hash depends on the type's definition, not on what it is called.
 
 Rules:
 
@@ -1582,8 +1656,39 @@ declares uncertainty depends on its name; nothing else in the hash does.
 | 0x0E | `Cycle ts` | varint count, each `t` |
 | 0x0F | `Proj t i` | `t`, varint `i` |
 | 0x10 | cycle-variable placeholder | no payload; only in the ordering hash of §6.2, never in a stored term |
-| 0x11 | `Con name args` | text name, varint count, each argument |
-| 0x12 | `Case s alts` | `s`, varint count, each alternative: text name, varint `k`, (`k` hints in the storage encoding), body at depth `+ k` |
+| 0x11 | `Con con args` | constructor reference, varint count, each argument |
+| 0x12 | `Case s alts` | `s`, varint count, each alternative: constructor reference, varint `k`, (`k` hints in the storage encoding), body at depth `+ k` |
+
+A constructor reference is the text name for a built-in constructor, or an
+empty text followed by the 32-byte definition hash of the declared type and
+the varint position of the constructor in it. Built-in constructors therefore
+encode as they did before declared types existed, and no format bump was
+needed.
+
+A declared type (§2.3) is hashed separately, from its own canonical encoding:
+varint parameter count and one kind byte per parameter (0 type, 1 length, 2
+shape, 3 dimension); varint constructor count, and per constructor a varint
+field count and each field type; then the label (0 owner and the type name,
+or 1 and an empty text for `structural`). Types use tags of their own:
+
+| Tag | Type | Payload |
+|---|---|---|
+| 0x20 | `Bool` | |
+| 0x21 | `Tensor σ δ` | shape, dimension |
+| 0x22 | `Point σ δ` | shape, dimension |
+| 0x23 | `Scale σ δ` | shape, dimension |
+| 0x24 | tuple | varint count, each type |
+| 0x25 | list | element type |
+| 0x26 | `a -> b` | `a`, `b` |
+| 0x27 | variable | varint id (a parameter: 0 .. k-1) |
+| 0x28 | `T a…` | 32-byte hash, varint count, each argument as a kind byte and a type, length, shape or dimension |
+
+A shape is 0 for `[]`, 1 then a length and a shape, or 2 and a variable id; a
+length is 0 and a varint literal, or 1, a variable id and a varint offset; a
+dimension is a varint atom count and per atom 0 and a base-dimension byte or 1
+and a variable id, then the sint exponent. A recursive occurrence of the type
+being declared is `0x28` with the all-zero hash, so the definition never
+contains its own hash.
 
 `varint` is unsigned LEB128. `sint` is one sign byte followed by a varint byte
 length and big-endian magnitude bytes, so arbitrarily large integers encode
@@ -1647,6 +1752,9 @@ Codebase = { terms   :: Map Hash Term                -- Core, the hashed content
            , derived :: Map Hash (Scheme, TTerm)      -- inferred type, Typed Core; recomputable
            , names   :: Map Name Ref                  -- current label → reference
            , history :: Map Name [Ref]                -- newest first
+           , typeDefs  :: Map Hash TypeDef           -- declared types by definition hash (2.3)
+           , typeNames :: Map Name Hash              -- type labels
+           , conNames  :: Map Name (Hash, Int)       -- constructor labels: a type and a position
            }
 Ref      = Ref Hash (Maybe Int)                 -- hash plus optional cycle index
 ```
@@ -1712,19 +1820,19 @@ Scratch and codebase (7.5)
 :todo                   pending definitions and stale references
 :scratch                list pending definitions
 :forget name            drop a pending definition
-:edit name              print a definition as source, ready to paste back
+:edit name              print a definition, or a data declaration, as source, ready to paste back
 
 Inspection
 :type e            inferred type scheme of e
 :hash name         current ref of name
 :names #hash       every name that points at the hash (current or historical)
 :history name      refs the name has pointed at, newest first
-:view name         pretty-print the term with refs rendered as in 7.2
+:view name         pretty-print the term with refs rendered as in 7.2; for a type, its declaration
 :core name         print the Typed Core (5.3) with every annotation
 :lint name         re-run lint on a stored definition and print its type(s)
 :dependents name   definitions whose terms reference the current ref of name
 :alias new old     point new at old's current ref
-:unname name       remove the label; the term stays
+:unname name       remove the label (of a definition, a type or a constructor); the term stays
 
 Session
 :set precision n   significant digits printed; working precision is n + 4 (3.2.8)
@@ -1757,6 +1865,8 @@ terms/<hex hash>   one term per file: the canonical encoding of 6.1 with each
                    binder's name hint after its tag and each reference's written
                    name after it, so :view keeps the author's names and units are
                    decided by the name used; the hash is recomputed on load
+types/<hex hash>   one declared type per file, in the encoding of 6.1; loaded
+                   before the terms, which may mention them
 names.log          append-only, one event per line:
                      <unix time> bind <name> <hex hash>[.<i>]
                      <unix time> unname <name>
@@ -1764,6 +1874,8 @@ names.log          append-only, one event per line:
                      <unix time> scale <name>
                      <unix time> prefer <unit text>
                      <unix time> unprefer <unit text>
+                     <unix time> type <name> <hex hash>          -- a type label
+                     <unix time> con <name> <hex hash>.<i>       -- a constructor label
 history            the REPL's line history
 ```
 
@@ -1980,11 +2092,16 @@ tuned, and compilation is a later milestone.
    haskeline with a history file beside the store, `:store`, `:prefer`,
    `:covariance`. Remaining: `:set unicode`, a merge tool for two stores' logs.
 7. **Tuples**, then **lists** with a `case` construct in the core. Status: done.
-   `Con` and `Case` replaced `If` and the boolean literal (core.md §5); user
-   data types are the same mechanism with declared constructors and remain.
+   `Con` and `Case` replaced `If` and the boolean literal (core.md §5). User
+   data types (§2.3): done, as the same mechanism with declared constructors,
+   kinded parameters inferred from use, self-recursion, owner-stamped or
+   structural identity, and persistence in `types/`. Remaining: records as a
+   sugar over one-constructor types (`s.v` field access, update syntax),
+   `==` on declared types, mutually recursive types, and re-expressing `Bool`,
+   tuples and lists as prelude declarations.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
-   (re-evaluate at higher `p`); type annotations; user data types; mixed-dimension matrices, which
+   (re-evaluate at higher `p`); type annotations; mixed-dimension matrices, which
    unlocks joint state covariance as a value; ball-plus-zonotope enclosures for
    radial bounds; non-SI and affine-offset units (°C); rewrite rules that
    fuse `star (wedge a b)` back into a hand-coded 3D cross kernel and notice
@@ -2019,6 +2136,13 @@ tuned, and compilation is a later milestone.
   source files (text, reviewable in diffs) and treat the store as a cache?
 - Should `:view` of a stale reference print `x#a3f9k` (Unison style) or `#a3f9k`
   alone?
+- Equality on declared types: derive `==` structurally when every field is
+  comparable (the rule tuples and lists follow), or make it opt-in per type?
+- Records: `data Body = Body {mass :: Num [kg], pos :: Vec 3 [m]}` with `b.mass`
+  as field access clashes with the glued projection `v.0` only lexically
+  (a name against a natural); update syntax is the open part.
+- A constructor that takes a prelude unit's name (`data Temp = T …`) unnames
+  the tesla silently. Warn, refuse, or keep the newer-label rule?
 
 ---
 

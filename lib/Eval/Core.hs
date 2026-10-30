@@ -29,6 +29,8 @@ module Eval.Core (
 
   -- * Terms
   Hash (..),
+  showHash,
+  hashHasPrefix,
   Hint (..),
   NudgeKind (..),
   Label (..),
@@ -36,6 +38,7 @@ module Eval.Core (
   Lit (..),
   Term (..),
   Alt (..),
+  ConRef (..),
   weakenBy,
   alphaEq,
   refs,
@@ -44,12 +47,15 @@ module Eval.Core (
   primArity,
 ) where
 
+import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.Kind (Type)
 import Data.Set (Set)
 import Data.Set qualified as Set
-import Data.String (IsString)
+import Data.String (IsString (..))
 import Data.Text (Text)
+import Data.Text qualified as T
 
 -- Type-level naturals ------------------------------------------------------
 
@@ -194,7 +200,7 @@ data Term (n :: Nat) where
   {- | A saturated data constructor (design §5.1): @True@, @False@, @Tuple@ (arity
   from the arguments), @Nil@, @Cons@.
   -}
-  Con :: Text -> [Term n] -> Term n
+  Con :: ConRef -> [Term n] -> Term n
   {- | Case analysis: one alternative per constructor of the scrutinee's type,
   in canonical (declaration) order, each binding the constructor's fields. Lazy in
   the bodies.
@@ -218,8 +224,18 @@ data Term (n :: Nat) where
   -- | @k@ mutually recursive bodies, each in scope of the @k@ members.
   Cycle :: Vec k Hint -> Vec k (Term (Plus k n)) -> Term n
 
+{- | A data constructor: one of the five built in, or constructor @ of a
+declared type by the type's hash (design §2.3). Names are labels.
+-}
+data ConRef = Builtin Text | UserCon Hash Int
+  deriving stock (Eq, Ord, Show)
+
+-- | A string literal is a built-in constructor.
+instance IsString ConRef where
+  fromString = Builtin . T.pack
+
 -- | An alternative of a 'Case': constructor, field hints, body in scope of the fields.
-data Alt n = forall k. Alt Text (Vec k Hint) (Term (Plus k n))
+data Alt n = forall k. Alt ConRef (Vec k Hint) (Term (Plus k n))
 
 instance Show (Alt n) where
   show (Alt c hs b) = "Alt " ++ show c ++ " " ++ show (vecToList hs) ++ " (" ++ show b ++ ")"
@@ -431,3 +447,36 @@ weakenBy ks = renameTerm (shiftFin ks)
   shiftFin js i = case js of
     VNil -> i
     VCons _ rest -> FS (shiftFin rest i)
+
+-- Hash display ----------------------------------------------------------------------
+
+{- | A short, human-facing form: @#@ followed by the first five base32hex
+characters of the digest.
+-}
+showHash :: Hash -> Text
+showHash h = "#" <> T.take 5 (base32hex h)
+
+{- | Whether a hash's base32hex form starts with the given text (with or
+without the leading @#@).
+-}
+hashHasPrefix :: Text -> Hash -> Bool
+hashHasPrefix prefix h = T.dropWhile (== '#') prefix `T.isPrefixOf` base32hex h
+
+-- | RFC 4648 base32hex without padding.
+base32hex :: Hash -> Text
+base32hex (Hash bs) = T.pack (go (BS.unpack bs))
+ where
+  alphabet = "0123456789abcdefghijklmnopqrstuv"
+  go [] = []
+  go chunkBytes =
+    let (chunk, rest) = splitAt 5 chunkBytes
+        n = length chunk
+        bits =
+          foldl (\acc b -> (acc `shiftL` 8) .|. fromIntegral b) (0 :: Integer) chunk
+            `shiftL` (8 * (5 - n))
+        chars = (n * 8 + 4) `div` 5
+        digits =
+          [ alphabet !! fromIntegral ((bits `shiftR` (40 - 5 * (i + 1))) .&. 31)
+          | i <- [0 .. chars - 1]
+          ]
+     in digits ++ go rest

@@ -6,6 +6,14 @@ module Eval.Codebase (
   Codebase (..),
   emptyCodebase,
   addTerm,
+  addTypeDef,
+  lookupTypeDef,
+  bindTypeName,
+  bindConName,
+  lookupTypeName,
+  lookupConName,
+  typeNameOf,
+  conNameOf,
   bindName,
   unbindName,
   markUnit,
@@ -37,9 +45,8 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core
-import Eval.Hash (hashHasPrefix, showHash)
 import Eval.TCore (TTerm)
-import Eval.Type (Scheme)
+import Eval.Type (Scheme, TypeDef (..))
 
 {- | A reference to a definition: a hash, plus a member index when the hashed
 term is a 'Cycle'.
@@ -60,11 +67,27 @@ data Codebase = Codebase
   -- ^ names declared with @scale@ (design §3.6)
   , preferences :: Set.Set Text
   -- ^ display preferences as written (@km/h@), label-level metadata (design §3.2.12)
+  , typeDefs :: Map Hash TypeDef
+  -- ^ declared data types by the hash of their definition (design §2.3)
+  , typeNames :: Map Text Hash
+  -- ^ type names: labels on type definitions
+  , conNames :: Map Text (Hash, Int)
+  -- ^ constructor names: labels on a type's constructors
   }
 
 emptyCodebase :: Codebase
 emptyCodebase =
-  Codebase Map.empty Map.empty Map.empty Map.empty Set.empty Set.empty Set.empty
+  Codebase
+    Map.empty
+    Map.empty
+    Map.empty
+    Map.empty
+    Set.empty
+    Set.empty
+    Set.empty
+    Map.empty
+    Map.empty
+    Map.empty
 
 {- | Declare a name a display unit (design §3.2.12). Units are names, not
 references: two names for one hash can be a unit and a plain quantity.
@@ -145,10 +168,13 @@ bindName n r cb
       cb
         { names = Map.insert n r cb.names
         , history = Map.insertWith (\new old -> new ++ old) n [r] cb.history
+        , -- Constructors and definitions share the expression namespace.
+          conNames = Map.delete n cb.conNames
         }
 
-{- | Remove a label. The term and the name's history stay.
-| Remove a label, and with it any unit or scale declaration it carried.
+{- | Remove a label, whatever it names (a definition, a type or a
+constructor), and with it any unit or scale declaration it carried. The
+term and the name's history stay.
 -}
 unbindName :: Text -> Codebase -> Codebase
 unbindName n cb =
@@ -156,6 +182,8 @@ unbindName n cb =
     { names = Map.delete n cb.names
     , units = Set.delete n cb.units
     , scales = Set.delete n cb.scales
+    , typeNames = Map.delete n cb.typeNames
+    , conNames = Map.delete n cb.conNames
     }
 
 lookupName :: Text -> Codebase -> Maybe Reference
@@ -193,3 +221,44 @@ findByPrefix p cb = filter (hashHasPrefix p) (Map.keys cb.terms)
 -- | @#a3f9k@ for a plain term, @#a3f9k.1@ for member 1 of a cycle.
 showReference :: Reference -> Text
 showReference (Reference h idx) = showHash h <> maybe "" (\i -> "." <> T.pack (show i)) idx
+
+-- Data types ----------------------------------------------------------------------
+
+-- | Store a type definition under its hash. A no-op if already present.
+addTypeDef :: Hash -> TypeDef -> Codebase -> Codebase
+addTypeDef h def cb = cb{typeDefs = Map.insertWith (\_new old -> old) h def cb.typeDefs}
+
+lookupTypeDef :: Hash -> Codebase -> Maybe TypeDef
+lookupTypeDef h cb = Map.lookup h cb.typeDefs
+
+bindTypeName :: Text -> Hash -> Codebase -> Codebase
+bindTypeName n h cb = cb{typeNames = Map.insert n h cb.typeNames}
+
+{- | Bind a constructor name. A definition of that name is unnamed: constructors
+and definitions share the expression namespace, and the newer label wins.
+-}
+bindConName :: Text -> Hash -> Int -> Codebase -> Codebase
+bindConName n h i cb =
+  cb
+    { conNames = Map.insert n (h, i) cb.conNames
+    , names = Map.delete n cb.names
+    , units = Set.delete n cb.units
+    , scales = Set.delete n cb.scales
+    }
+
+lookupTypeName :: Text -> Codebase -> Maybe Hash
+lookupTypeName n cb = Map.lookup n cb.typeNames
+
+lookupConName :: Text -> Codebase -> Maybe (Hash, Int)
+lookupConName n cb = Map.lookup n cb.conNames
+
+-- | The current names of a type and of one of its constructors.
+typeNameOf :: Hash -> Codebase -> Maybe Text
+typeNameOf h cb = case [n | (n, h') <- Map.toList cb.typeNames, h' == h] of
+  n : _ -> Just n
+  [] -> Nothing
+
+conNameOf :: Hash -> Int -> Codebase -> Maybe Text
+conNameOf h i cb = case [n | (n, (h', i')) <- Map.toList cb.conNames, h' == h, i' == i] of
+  n : _ -> Just n
+  [] -> Nothing

@@ -5,7 +5,8 @@ A store is a directory:
 @
 format          "eval codebase 1"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
-names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text
+types\/\<hex\>    one declared type per file (design §6.1)
+names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i
 @
 
 Terms are content-addressed, so they never conflict and are only ever
@@ -31,7 +32,7 @@ module Eval.Store (
 
 import Control.Monad (foldM, foldM_, forM_, unless, when)
 import Data.ByteString qualified as BS
-import Data.Either (lefts)
+import Data.Either (lefts, rights)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set (Set)
@@ -78,6 +79,7 @@ locateStore = \case
 openStore :: FilePath -> IO (Either Text Store)
 openStore d = do
   createDirectoryIfMissing True (d </> "terms")
+  createDirectoryIfMissing True (d </> "types")
   let formatFile = d </> "format"
   present <- doesFileExist formatFile
   if not present
@@ -168,17 +170,34 @@ reported as notes and the rest still loads.
 -}
 loadStore :: Store -> Codebase -> IO (Codebase, [Text])
 loadStore store base = do
+  typesPresent <- doesDirectoryExist (store.dir </> "types")
+  typeFiles <-
+    if typesPresent then listDirectory (store.dir </> "types") else pure []
+  decodedTypes <- mapM readType typeFiles
+  -- Types first: terms mention them, they mention only each other.
+  let withTypes =
+        foldl (\acc (h, def) -> addTypeDef h def acc) base (rights decodedTypes)
   files <- listDirectory (store.dir </> "terms")
   decoded <- mapM readTerm files
   let loaded = Map.fromList [(h, t) | Right (h, t) <- decoded]
-      decodeNotes = lefts decoded
-  let (cb, enterNotes) = enterAll loaded base
+      decodeNotes = lefts decodedTypes ++ lefts decoded
+  let (cb, enterNotes) = enterAll loaded withTypes
   let logFile = store.dir </> "names.log"
   present <- doesFileExist logFile
   logLines <- if present then T.lines <$> TIO.readFile logFile else pure []
   let (cb', logNotes) = foldl replay (cb, []) (zip [1 :: Int ..] logLines)
   pure (cb', decodeNotes ++ enterNotes ++ reverse logNotes)
  where
+  readType file = do
+    raw <- BS.readFile (store.dir </> "types" </> file)
+    pure $ case hashFromHex (T.pack file) of
+      Nothing -> Left ("types/" <> T.pack file <> ": not a hash, ignored")
+      Just h -> case decodeTypeDef raw of
+        Left err -> Left ("types/" <> T.pack file <> ": " <> err <> ", ignored")
+        Right def
+          | hashTypeDef def /= h ->
+              Left ("types/" <> T.pack file <> ": content does not match its hash, ignored")
+          | otherwise -> Right (h, def)
   readTerm file = do
     raw <- BS.readFile (store.dir </> "terms" </> file)
     pure $ case hashFromHex (T.pack file) of
@@ -226,6 +245,30 @@ loadStore store base = do
                   : notes
               )
     [_, "unname", name] -> (unbindName name cb, notes)
+    -- Declared types and their constructors (design §7.4).
+    [_, "type", name, hex]
+      | Just h <- hashFromHex hex ->
+          if Map.member h cb.typeDefs
+            then (bindTypeName name h cb, notes)
+            else
+              ( cb
+              , ("names.log:" <> tshow lineNo <> ": " <> name <> " names a missing type, skipped")
+                  : notes
+              )
+    [_, "con", name, target]
+      | Just (Reference h (Just i)) <- parseRef target ->
+          if Map.member h cb.typeDefs
+            then (bindConName name h i cb, notes)
+            else
+              ( cb
+              , ( "names.log:"
+                    <> tshow lineNo
+                    <> ": "
+                    <> name
+                    <> " names a constructor of a missing type, skipped"
+                )
+                  : notes
+              )
     -- Units and scales are names (design §3.2.12). A format-1 log flagged a
     -- reference; every name then bound to it is flagged.
     [_, "unit", target] -> (flagNames markUnit target cb, notes)
@@ -243,6 +286,10 @@ pointing at a missing term.
 -}
 sync :: Store -> Codebase -> Codebase -> IO ()
 sync store old new = do
+  forM_ (Map.toList (Map.difference new.typeDefs old.typeDefs)) $ \(h, def) ->
+    BS.writeFile
+      (store.dir </> "types" </> T.unpack (hashHex h))
+      (encodeTypeDef def)
   let fresh = Map.keys (Map.difference new.terms old.terms)
   foldM_ writeClosure Set.empty fresh
   now <- (round <$> getPOSIXTime) :: IO Integer
@@ -252,9 +299,17 @@ sync store old new = do
         | (name, r) <- Map.toList new.names
         , Map.lookup name old.names /= Just r
         ]
+      -- A name a bind or con line of this sync takes over needs no unname.
+      gone name =
+        not
+          ( Map.member name new.names
+              || Map.member name new.conNames
+              || Map.member name new.typeNames
+          )
       unnames =
         [ stamp <> " unname " <> name
         | name <- Map.keys (Map.difference old.names new.names)
+        , gone name
         ]
       units =
         [stamp <> " unit " <> n | n <- Set.toList (Set.difference new.units old.units)]
@@ -269,7 +324,34 @@ sync store old new = do
         [ stamp <> " unprefer " <> t
         | t <- Set.toList (Set.difference old.preferences new.preferences)
         ]
-      entries = binds ++ unnames ++ units ++ scales ++ prefers ++ unprefers
+      types =
+        [ stamp <> " type " <> name <> " " <> hashHex h
+        | (name, h) <- Map.toList new.typeNames
+        , Map.lookup name old.typeNames /= Just h
+        ]
+      cons =
+        [ stamp <> " con " <> name <> " " <> hashHex h <> "." <> tshow i
+        | (name, (h, i)) <- Map.toList new.conNames
+        , Map.lookup name old.conNames /= Just (h, i)
+        ]
+      -- An unname line covers a type or constructor label as well.
+      unnamedTypes =
+        [ stamp <> " unname " <> name
+        | name <-
+            Map.keys (Map.difference old.typeNames new.typeNames)
+              ++ Map.keys (Map.difference old.conNames new.conNames)
+        , gone name
+        ]
+      entries =
+        types
+          ++ cons
+          ++ binds
+          ++ unnames
+          ++ unnamedTypes
+          ++ units
+          ++ scales
+          ++ prefers
+          ++ unprefers
   unless (null entries)
     $ TIO.appendFile (store.dir </> "names.log") (T.unlines entries)
  where

@@ -39,7 +39,6 @@ data TypeError = TypeError {path :: Path, message :: Text}
   deriving stock (Eq, Show)
 
 -- | Types of codebase definitions, one scheme per cycle member.
-type TypeLookup = Hash -> Maybe [Scheme]
 
 -- | A deferred relation between types (design §4.2).
 data Constraint
@@ -166,6 +165,8 @@ unify p expected actual = do
                 <> tshow (length bs)
             )
     (TList a1, TList a2) -> unify p a1 a2
+    (TData h1 as, TData h2 bs)
+      | h1 == h2 && length as == length bs -> zipWithM_ unifyArg as bs
     (TPoint s1 d1, TPoint s2 d2) -> shapeAndDims s1 d1 s2 d2
     (TScale s1 d1, TScale s2 d2) -> shapeAndDims s1 d1 s2 d2
     (TTensor s1 d1, TTensor s2 d2) -> do
@@ -196,6 +197,15 @@ unify p expected actual = do
         )
     _ -> failAt p ("expected " <> renderType e <> ", got " <> renderType a)
  where
+  -- Arguments of a declared type, by kind; a kind mismatch cannot happen for
+  -- a well-formed type, so it reports as a plain mismatch.
+  unifyArg x y = case (x, y) of
+    (AType t1, AType t2) -> unify p t1 t2
+    (ALen l1, ALen l2) -> unifyLen p l1 l2
+    (AShape s1, AShape s2) -> unifyShape p s1 s2
+    (ADim d1, ADim d2) -> unifyDim p d1 d2
+    _ ->
+      failAt p ("expected " <> renderType expected <> ", got " <> renderType actual)
   shapeAndDims s1 d1 s2 d2 = do
     st <- get
     case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
@@ -490,8 +500,14 @@ negativeOnly quantified ts =
     TScale _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TTuple parts -> concatMap (exponents v) parts
     TList t -> exponents v t
+    TData _ args -> concatMap argExponents args
     TFun a b -> exponents v a ++ exponents v b
     TVar _ -> []
+   where
+    argExponents = \case
+      AType t -> exponents v t
+      ADim d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+      _ -> []
 
 {- | Replace the quantified variables by fresh ones and return the arguments
 used, for the explicit type applications. This is a one-shot renaming, not
@@ -518,7 +534,7 @@ infer look p ctx = \case
   Var i -> do
     (t, args) <- instantiate (lookupCtx i ctx)
     pure (t, applyArgs (TVr i) args)
-  Ref h idx hint -> case look h of
+  Ref h idx hint -> case look.schemesOf h of
     Nothing -> failAt p "reference to a definition with no stored type"
     Just schemes -> case nth (fromMaybe 0 idx) schemes of
       Just sc -> do
@@ -550,7 +566,7 @@ infer look p ctx = \case
   -- Data (design §5.1): constructors are typed by the table below, a case by
   -- its scrutinee's constructors, with each alternative binding the fields.
   Con c args -> do
-    (fieldTys, resultTy) <- constructorType p c (length args)
+    (fieldTys, resultTy) <- constructorType look p c (length args)
     typed <-
       zipWithM
         ( \i (a, want) -> do (ta, a') <- infer look (i : p) ctx a; unify (i : p) want ta; pure a'
@@ -565,7 +581,7 @@ infer look p ctx = \case
     typedAlts <-
       zipWithM (\i alt -> inferAlt look (i : p) ctx ts result alt) [1 ..] alts
     ts' <- resolve ts
-    checkExhaustive p ts' [c | Alt c _ _ <- alts]
+    checkExhaustive look p ts' [c | Alt c _ _ <- alts]
     result' <- resolve result
     pure (result', TCase s' result' typedAlts)
   Lam h body -> do
@@ -830,16 +846,38 @@ vecZipWith f as bs = case (as, bs) of
 {- | Field types and result type of a constructor applied to @k@ arguments,
 with fresh variables where the constructor is polymorphic.
 -}
-constructorType :: Path -> Text -> Int -> Infer ([Type], Type)
-constructorType p c k = case c of
-  "True" | k == 0 -> pure ([], TBool)
-  "False" | k == 0 -> pure ([], TBool)
-  "Tuple" | k >= 2 -> do
+constructorType :: TypeLookup -> Path -> ConRef -> Int -> Infer ([Type], Type)
+constructorType look p c k = case c of
+  Builtin "True" | k == 0 -> pure ([], TBool)
+  Builtin "False" | k == 0 -> pure ([], TBool)
+  Builtin "Tuple" | k >= 2 -> do
     ts <- mapM (const freshType) [1 .. k]
     pure (ts, TTuple ts)
-  "Nil" | k == 0 -> (\t -> ([], TList t)) <$> freshType
-  "Cons" | k == 2 -> (\t -> ([t, TList t], TList t)) <$> freshType
-  _ -> failAt p ("unknown constructor " <> c <> " with " <> tshow k <> " fields")
+  Builtin "Nil" | k == 0 -> (\t -> ([], TList t)) <$> freshType
+  Builtin "Cons" | k == 2 -> (\t -> ([t, TList t], TList t)) <$> freshType
+  -- A declared type: fresh arguments for its parameters, by kind.
+  UserCon h i | Just def <- look.typeDefOf h -> do
+    args <- mapM (freshArg . snd) def.params
+    let ty = TData h args
+    case dataConstructors look.typeDefOf ty of
+      Just table
+        | Just fields <- lookup (UserCon h i) table
+        , length fields == k ->
+            pure (fields, ty)
+      _ ->
+        failAt
+          p
+          ("constructor " <> conText c <> " does not take " <> tshow k <> " fields")
+  _ ->
+    failAt
+      p
+      ("unknown constructor " <> conText c <> " with " <> tshow k <> " fields")
+ where
+  freshArg = \case
+    KType -> AType <$> freshType
+    KLen -> ALen <$> freshLen 0
+    KShape -> AShape <$> freshShape
+    KDim -> ADim <$> freshDim
 
 {- | One alternative: the constructor's fields enter scope at their types and
 the body must have the case's result type.
@@ -848,7 +886,7 @@ inferAlt ::
   TypeLookup -> Path -> Vec n Scheme -> Type -> Type -> Alt n -> Infer (TAlt n)
 inferAlt look p ctx scrutTy result (Alt c hs body) = do
   st <- resolve scrutTy
-  fields <- case dataConstructors st of
+  fields <- case dataConstructors look.typeDefOf st of
     Just cs -> case lookup c cs of
       Just fts
         | length fts == vecLength hs -> pure fts
@@ -856,16 +894,19 @@ inferAlt look p ctx scrutTy result (Alt c hs body) = do
             failAt
               p
               ( "constructor "
-                  <> c
+                  <> conText c
                   <> " has "
                   <> tshow (length fts)
                   <> " fields, the pattern binds "
                   <> tshow (vecLength hs)
               )
-      Nothing -> failAt p ("constructor " <> c <> " does not belong to " <> renderType st)
+      Nothing ->
+        failAt
+          p
+          ("constructor " <> conText c <> " does not belong to " <> renderType st)
     Nothing -> case st of
       TVar _ -> do
-        (fts, rt) <- constructorType p c (vecLength hs)
+        (fts, rt) <- constructorType look p c (vecLength hs)
         unify p scrutTy rt
         pure fts
       _ ->
@@ -874,8 +915,8 @@ inferAlt look p ctx scrutTy result (Alt c hs body) = do
           ( "cannot match "
               <> renderType st
               <> " against the constructor "
-              <> c
-              <> ( if c `elem` ["True", "False"]
+              <> conText c
+              <> ( if c `elem` [Builtin "True", Builtin "False"]
                      then ": the condition of `if` must be a Bool"
                      else ""
                  )
@@ -894,8 +935,8 @@ inferAlt look p ctx scrutTy result (Alt c hs body) = do
 {- | A case covers exactly the constructors of its scrutinee's type, in
 canonical order (design §5.1).
 -}
-checkExhaustive :: Path -> Type -> [Text] -> Infer ()
-checkExhaustive p ty cs = case dataConstructors ty of
+checkExhaustive :: TypeLookup -> Path -> Type -> [ConRef] -> Infer ()
+checkExhaustive look p ty cs = case dataConstructors look.typeDefOf ty of
   Nothing ->
     failAt
       p
@@ -909,7 +950,7 @@ checkExhaustive p ty cs = case dataConstructors ty of
       $ failAt
         p
         ( "the alternatives must be exactly "
-            <> T.intercalate ", " want
+            <> T.intercalate ", " (map conText want)
             <> " in that order; got "
-            <> T.intercalate ", " cs
+            <> T.intercalate ", " (map conText cs)
         )

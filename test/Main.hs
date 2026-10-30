@@ -8,8 +8,9 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Eval.Affine hiding (DivideByZero)
-import Eval.Codebase (Codebase (..))
+import Eval.Affine hiding (Builtin, DivideByZero)
+import Eval.Affine qualified as A
+import Eval.Codebase (Codebase (..), lookupTypeName)
 import Eval.Core
 import Eval.Desugar
 import Eval.Dimension (DimAtom (..), dimAtoms, isDimOne)
@@ -76,7 +77,7 @@ bool b = Con (if b then "True" else "False") []
 
 -- | An if, as the desugarer writes it: a case on Bool in canonical order.
 ifT :: Term n -> Term n -> Term n -> Term n
-ifT c t e = Case c [Alt "False" VNil e, Alt "True" VNil t]
+ifT c t e = Case c [Alt (Builtin "False") VNil e, Alt (Builtin "True") VNil t]
 
 prim2 :: Text -> Term n -> Term n -> Term n
 prim2 p a b = PrimApp p [a, b]
@@ -120,7 +121,7 @@ elaborateDefs = go []
       first (("type error: " <>) . (.message)) (elaborateClosed (typesIn acc) t)
     _ <- first ("lint: " <>) (lintClosed (typesIn acc) typed)
     go ((k, (schemes, typed)) : acc) rest
-  typesIn acc k = fst <$> lookup k acc
+  typesIn acc = TypeLookup (\k -> fst <$> lookup k acc) (const Nothing)
 
 {- | Elaborate, lint, evaluate and render a closed term against some
 definitions. Type errors, lint failures and evaluation errors all come
@@ -129,7 +130,7 @@ back as text.
 run :: Defs -> Term Z -> Either Text Text
 run defs t = do
   elaborated <- elaborateDefs defs
-  let typesOf k = fst <$> lookup k elaborated
+  let typesOf = TypeLookup (\k -> fst <$> lookup k elaborated) (const Nothing)
       typedOf k = snd <$> lookup k elaborated
   (_, typed) <-
     first (("type error: " <>) . (.message)) (elaborateClosed typesOf t)
@@ -307,8 +308,8 @@ elabText src = do
   e <- parseExpr src
   (t, _) <- either (Left . renderDesugarError) Right (desugarClosed noResolver e)
   (_, typed) <-
-    first (("type error: " <>) . (.message)) (elaborateClosed (const Nothing) t)
-  _ <- first ("lint: " <>) (lintClosed (const Nothing) typed)
+    first (("type error: " <>) . (.message)) (elaborateClosed noLookup t)
+  _ <- first ("lint: " <>) (lintClosed noLookup typed)
   pure typed
 
 showCore :: TTerm Z -> Text
@@ -343,7 +344,7 @@ tcoreTests =
           ]
     , testCase "lint rejects a badly annotated term"
         $ lintClosed
-          (const Nothing)
+          noLookup
           ( TLam
               "x"
               TBool
@@ -353,7 +354,7 @@ tcoreTests =
     , testCase
         "lint rejects a primitive at a type that is not an instance of its scheme"
         $ lintClosed
-          (const Nothing)
+          noLookup
           ( TPrimApp
               "add"
               (TFun TBool (TFun TBool TBool))
@@ -363,12 +364,12 @@ tcoreTests =
             "primitive add used at Bool -> Bool -> Bool, not an instance of Tensor s d -> Tensor s d -> Tensor s d"
     , testCase "lint rejects a mismatched let annotation"
         $ case lintClosed
-          (const Nothing)
+          noLookup
           (TLet "x" (Forall [] TBool) (TLit (LTensor ([], [1]))) (TVr FZ)) of
           Left err -> T.isPrefixOf "let binder annotated" err @? T.unpack err
           Right sc -> assertFailure (show sc)
     , testCase "lint rejects a type application without an abstraction"
-        $ lintClosed (const Nothing) (TTyApp (TLit (LTensor ([], [1]))) (AType TBool))
+        $ lintClosed noLookup (TTyApp (TLit (LTensor ([], [1]))) (AType TBool))
           @?= Left "type application to a term with no type abstraction"
     ]
 
@@ -696,7 +697,9 @@ desugarTests =
           Left err -> assertFailure (T.unpack err)
     , testCase "a resolver turns free names into references"
         $ let resolver n =
-                if n == "k" then Just (Resolution (h "kay", Nothing) False False) else Nothing
+                if n == "k"
+                  then Just (ATerm (Resolution (h "kay", Nothing) False False))
+                  else Nothing
            in case parseExpr "k + 1"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
                 Right (t, _) ->
@@ -705,7 +708,7 @@ desugarTests =
     , testCase "codebase names shadow primitives"
         $ let resolver n =
                 if n == "sqrt"
-                  then Just (Resolution (h "mine", Nothing) False False)
+                  then Just (ATerm (Resolution (h "mine", Nothing) False False))
                   else Nothing
            in case parseExpr "sqrt 4"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
@@ -1386,7 +1389,7 @@ withElaborated ::
   Source -> S.Expr -> (Term Z -> ([Scheme], TTerm Z) -> Property) -> Property
 withElaborated src e k = case desugarClosed noResolver e of
   Left err -> src.rejected (T.unpack (renderDesugarError err))
-  Right (t, _) -> case elaborateClosed (const Nothing) t of
+  Right (t, _) -> case elaborateClosed noLookup t of
     Left err -> src.rejected ("type error: " <> T.unpack err.message)
     Right r -> k t r
 
@@ -1399,7 +1402,7 @@ pipelineProperties src =
   [ testProperty "whatever inference accepts, lint accepts with the same type"
       $ forProgram src
       $ \e ->
-        withElaborated src e $ \_ (schemes, typed) -> lintClosed (const Nothing) typed === Right schemes
+        withElaborated src e $ \_ (schemes, typed) -> lintClosed noLookup typed === Right schemes
   , -- Only well-typed terms: an ill-typed one such as a number applied to
     -- a number has no surface spelling because of the quantity rule, and
     -- `:view` only ever prints stored, checked definitions.
@@ -1450,8 +1453,8 @@ pipelineProperties src =
         case desugarClosed noResolver e of
           Left err -> src.rejected (T.unpack (renderDesugarError err))
           Right (t, _) ->
-            fmap fst (elaborateClosed (const Nothing) t)
-              === fmap fst (elaborateClosed (const Nothing) t)
+            fmap fst (elaborateClosed noLookup t)
+              === fmap fst (elaborateClosed noLookup t)
   ]
  where
   evalOutcome = \case
@@ -1507,6 +1510,7 @@ generatorProperty =
     | otherwise = "20+"
   targetKind = \case
     TBool -> "Bool"
+    TData _ _ -> "data"
     TFun _ _ -> "function"
     TPoint _ _ -> "Point"
     TScale _ _ -> "Scale"
@@ -1740,12 +1744,12 @@ lintRegressionTests =
             g' = Lam "y" (ifT (v0 ==. v0) (bool True) (App v1 (num 1 /. v0)))
             cycle' = Cycle (VCons "f" (VCons "g" VNil)) (VCons f' (VCons g' VNil))
            in
-            case elaborateClosed (const Nothing) cycle' of
+            case elaborateClosed noLookup cycle' of
               Left err -> assertFailure (T.unpack err.message)
               Right (schemes, typed) -> do
                 let closed (Forall vs t) = all ((`elem` map fst vs) . fst) (freeVars t)
                 all closed schemes @? show schemes
-                map renderScheme <$> lintClosed (const Nothing) typed
+                map renderScheme <$> lintClosed noLookup typed
                   @?= Right (map renderScheme schemes)
     , -- Found by the type-directed generator. `neg 0` (the primitive applied
       -- to a constant) printed as `-0`, which reads back as the constant
@@ -2325,7 +2329,7 @@ affineTests =
     eOf n = case n.origin of
       Tagged _ _ -> 0
       Declared site _ _ -> maybe 0 (\e -> toRational (max (-1) (min 1 e))) (lookup site es)
-      Builtin _ -> 0
+      A.Builtin _ -> 0
   -- Double arithmetic is only good to about 1e-15 relative.
   near z t = abs (t - midpoint z) <= radius z + abs t * 1e-12 + 1e-300
 
@@ -2440,6 +2444,25 @@ storeTests =
         _ <- persistLines dir ["let c = 3e8 m / s", ":update"]
         (loaded, _) <- reload dir
         linesIn loaded ["c"] @?= Right ["300000000 m s^-1"]
+    , testCase
+        "declared types, their names and a type that uses another survive a reload" $ withTempStore $ \dir -> do
+        s <-
+          persistLines
+            dir
+            [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+            , "data Wrap a = Wrap Shape a"
+            , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+            , ":add"
+            , ":unname Circle"
+            ]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        loaded.codebase.typeDefs @?= s.codebase.typeDefs
+        loaded.codebase.typeNames @?= s.codebase.typeNames
+        loaded.codebase.conNames @?= s.codebase.conNames
+        Map.member "Circle" loaded.codebase.conNames @?= False
+        linesIn loaded ["area (Rect 2 m 3 m)", "Wrap (Rect 1 m 1 m) 2", ":view Wrap"]
+          @?= Right ["6 m^2", "Wrap (Rect 1 m 1 m) 2", "data Wrap a = Wrap Shape a"]
     , testCase ":unname persists" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add", ":alias y x", ":unname y"]
         (loaded, _) <- reload dir
@@ -2548,34 +2571,35 @@ dataTests =
         -- a cons cell's tail is a thunk: an error in it surfaces only when walked
         evalP "fst (case 1 : {1 / 0} of {} -> (0, 0); x : _ -> (x, 0))" @?= Right ["1"]
     , testCase
-        "case: one constructor deep, exhaustive, canonical order; _ and variables fill in" $ do
-        evalP "case (1, 2) of (a, b) -> a + b" @?= Right ["3"]
-        evalP "case {1, 2} of {} -> 0; x : _ -> x" @?= Right ["1"]
-        runLinesP
-          [ "let f xs = case xs of {} -> 0; x : rest -> x + f rest"
-          , "f (range 1 100)"
-          , ":view f"
-          ]
-          @?= Right ["5050", "f = \\xs -> case xs of {} -> 0; x : rest -> x + f rest"]
-        evalP "case true of true -> 1; false -> 2" @?= Right ["1"]
-        evalP "case {1} of {} -> 0; xs -> length xs" @?= Right ["1"]
-        evalP "(case {1, 2} of {} -> 0; x : _ -> x) + 1" @?= Right ["2"]
-        evalP "if true then 1 else 2" @?= Right ["1"]
-        runLinesP ["let g c = if c then 1 else 2", ":view g", ":core g"]
-          @?= Right
-            ["g = \\c -> if c then 1 else 2", "g = \\(c : Bool) -> if c then 1.0 else 2.0"]
-        case evalP "case 5 of x -> x + 1" of
-          Left err -> T.isInfixOf "at least one constructor pattern" err @? T.unpack err
-          Right v -> assertFailure (show v)
-        case evalP "case {1} of {} -> 0" of
-          Left err -> T.isInfixOf "does not cover Cons" err @? T.unpack err
-          Right v -> assertFailure (show v)
-        case evalP "case (1, 2) of (a, b) -> a; {} -> 0" of
-          Left err -> T.isInfixOf "does not belong" err @? T.unpack err
-          Right v -> assertFailure (show v)
-        case evalP "if 1 then 2 else 3" of
-          Left err -> T.isInfixOf "the condition of `if` must be a Bool" err @? T.unpack err
-          Right v -> assertFailure (show v)
+        "case: one constructor deep, exhaustive, canonical order; _ and variables fill in"
+        $ do
+          evalP "case (1, 2) of (a, b) -> a + b" @?= Right ["3"]
+          evalP "case {1, 2} of {} -> 0; x : _ -> x" @?= Right ["1"]
+          runLinesP
+            [ "let f xs = case xs of {} -> 0; x : rest -> x + f rest"
+            , "f (range 1 100)"
+            , ":view f"
+            ]
+            @?= Right ["5050", "f = \\xs -> case xs of {} -> 0; x : rest -> x + f rest"]
+          evalP "case true of true -> 1; false -> 2" @?= Right ["1"]
+          evalP "case {1} of {} -> 0; xs -> length xs" @?= Right ["1"]
+          evalP "(case {1, 2} of {} -> 0; x : _ -> x) + 1" @?= Right ["2"]
+          evalP "if true then 1 else 2" @?= Right ["1"]
+          runLinesP ["let g c = if c then 1 else 2", ":view g", ":core g"]
+            @?= Right
+              ["g = \\c -> if c then 1 else 2", "g = \\(c : Bool) -> if c then 1.0 else 2.0"]
+          case evalP "case 5 of x -> x + 1" of
+            Left err -> T.isInfixOf "at least one constructor pattern" err @? T.unpack err
+            Right v -> assertFailure (show v)
+          case evalP "case {1} of {} -> 0" of
+            Left err -> T.isInfixOf "does not cover Cons" err @? T.unpack err
+            Right v -> assertFailure (show v)
+          case evalP "case (1, 2) of (a, b) -> a; {} -> 0" of
+            Left err -> T.isInfixOf "does not belong" err @? T.unpack err
+            Right v -> assertFailure (show v)
+          case evalP "if 1 then 2 else 3" of
+            Left err -> T.isInfixOf "the condition of `if` must be a Bool" err @? T.unpack err
+            Right v -> assertFailure (show v)
     , testCase "case alternatives as a layout block"
         $ runLinesP
           [ "let sumList xs = case xs of\n  {} -> 0\n  x : rest -> x + sumList rest"
@@ -2589,4 +2613,202 @@ dataTests =
           , ":type state"
           ]
           @?= Right ["7.5 km s^-1", "(Vec 3 [m], Vec 3 [m s^-1])"]
+    , testCase "declared types: constructors, case, types, printing" $ do
+        runLinesP
+          [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+          , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+          , "area (Rect 3 m 4 m)"
+          , ":type Circle"
+          , ":type area"
+          , "Rect 1 m 2 m"
+          , "map area {Circle 1 m, Rect 1 m 2 m}"
+          , ":type {Circle 1 m}"
+          , ":view Shape"
+          , ":edit Shape"
+          , ":scratch"
+          ]
+          @?= Right
+            [ "12 m^2"
+            , "Num [m] -> Shape"
+            , "Shape -> Num [m^2]"
+            , "Rect 1 m 2 m"
+            , "{3.1415926535897932384… m^2, 2 m^2}"
+            , "{Shape}"
+            , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+            , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+            , "pending: data Shape"
+            , "pending: area"
+            ]
+        -- A constructor is a function: partial application and bare use.
+        runLinesP
+          [ "data Maybe a = Nothing | Just a"
+          , "map Just {1, 2}"
+          , "let fromMaybe d m = case m of Nothing -> d; Just x -> x"
+          , "fromMaybe 0 (Just 5)"
+          , "fromMaybe 0 Nothing"
+          , ":type fromMaybe"
+          , ":type Nothing"
+          ]
+          @?= Right ["{Just 1, Just 2}", "5", "0", "a -> Maybe a -> a", "Maybe a"]
+    , testCase "declared types: parameters take their kinds from use; recursion" $ do
+        runLinesP
+          [ "data Q d = Q (Num d) (Num d)"
+          , "let lo q = case q of Q a _ -> a"
+          , "lo (Q 1 m 2 m)"
+          , ":type Q"
+          , ":type lo"
+          , "data V n = V (Vec n [m]) (Vec n [m/s])"
+          , ":type V"
+          , "data Tree a = Leaf | Node (Tree a) a (Tree a)"
+          , "let sumTree z t = case t of Leaf -> z; Node l x r -> sumTree z l + x + sumTree z r"
+          , "sumTree (0 kg) (Node (Node Leaf 1 kg Leaf) 2 kg (Node Leaf 3 kg Leaf))"
+          , ":type sumTree"
+          , ":view Tree"
+          , "data Body = Body (Num [kg]) (Vec 3 [m]) (Vec 3 [m/s])"
+          , "let mass b = case b of Body m _ _ -> m"
+          , "mass (Body 5 kg [1,2,3] km ([4,5,6] km/s))"
+          , "data E = E (Num [kg m^2 / s^2]) (Num [N]) (Num [m s⁻²]) (Point [K]) Bool (Num, {Num [m]})"
+          , ":view E"
+          ]
+          @?= Right
+            [ "1 m"
+            , "Num d -> Num d -> Q d"
+            , "Q d -> Num d"
+            , "Vec n [m] -> Vec n [m s^-1] -> V n"
+            , "6 kg"
+            , "Tensor s d -> Tree (Tensor s d) -> Tensor s d"
+            , "data Tree a = Leaf | Node (Tree a) a (Tree a)"
+            , "5 kg"
+            , "data E = E (Num [kg m^2 s^-2]) (Num [kg m s^-2]) (Num [m s^-2]) (Point [K]) Bool (Num, {Num [m]})"
+            ]
+    , testCase "declared types: identity is the stamped or structural definition" $ do
+        s <-
+          either (assertFailure . T.unpack) pure
+            $ sessionP
+              [ "data P a b = P a b"
+              , "data P2 a b = Q2 a b"
+              , "structural data S1 a b = S1 a b"
+              , "structural data S2 a b = S2 a b"
+              , ":add"
+              ]
+        let cb = s.codebase
+            tyOf n = fromMaybe (error (T.unpack n)) (lookupTypeName n cb)
+        -- The same shape under another name is another type; structurally it is the same one.
+        (tyOf "P" == tyOf "P2") @?= False
+        tyOf "S1" @?= tyOf "S2"
+        -- Both names and all four constructors stay bound.
+        Map.size cb.typeNames @?= 4
+        Map.size cb.conNames @?= 4
+        runLinesP
+          ["data P a b = P a b", "P 1 2", "structural data T a = T a", "T (T 1)"]
+          @?= Right ["P 1 2", "T (T 1)"]
+    , testCase "declared types: what is refused" $ do
+        let refused src needle = case runLinesP src of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+        refused ["data Bad a = Bad (Num a) a"] "used both as a dimension and as a type"
+        refused ["data Vec = V"] "is a built-in type"
+        refused ["data Dup = A | A"] "constructor `A` appears twice"
+        refused ["data Dup a a = D a"] "parameter `a` appears twice"
+        refused ["data W = W Nope"] "unknown type `Nope`"
+        refused
+          ["data Maybe a = Nothing | Just a", "data W = W Maybe"]
+          "`Maybe` takes 1 argument, given 0"
+        refused ["data W = W (Num [furlong])"] "a dimension is a product of base units"
+        refused ["data W = W (Vec [m])"] "a length is a number or a parameter"
+        refused
+          ["data Maybe a = Nothing | Just a", "case Just 1 of Nothing -> 0"]
+          "does not cover Just"
+        refused
+          ["data Maybe a = Nothing | Just a", "case Just 1 of Nothing -> 0; Just -> 1"]
+          "has 1 fields"
+        refused
+          ["data Maybe a = Nothing | Just a", "Just 1 == Just 1"]
+          "no equality on Maybe"
+        refused
+          ["data Shape = Circle (Num [m])", "Circle 1"]
+          "expected Num [m], got Num"
+        refused
+          ["data Shape = Circle (Num [m])", "Circle 1 m 2 m"]
+          "Shape is not a function"
+        -- :add refuses a type that exists with another definition.
+        refused
+          [ "data Shape = Circle (Num [m])"
+          , ":add"
+          , "data Shape = Circle (Num [s])"
+          , ":add"
+          ]
+          "already exists with a different definition"
+    , testCase "declared types: names are labels" $ do
+        let outs =
+              runLinesP
+                [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+                , ":add"
+                , ":unname Circle"
+                , "Rect 1 m 2 m"
+                , ":view Shape"
+                , ":unname Shape"
+                , ":type Rect"
+                ]
+        case outs of
+          Right [_, removed, rect, viewed, _, ty] -> do
+            removed @?= "removed the label `Circle`"
+            rect @?= "Rect 1 m 2 m"
+            T.isPrefixOf "data Shape = #" viewed @? T.unpack viewed
+            T.isPrefixOf "Num [m] -> Num [m] -> #" ty @? T.unpack ty
+          other -> assertFailure (show other)
+    , testCase
+        "constructors and definitions share one namespace; the newer label wins" $ do
+        runLinesP
+          [ "1 T"
+          , "data Temp = T (Num [K])"
+          , "T (300 K)"
+          , ":type T"
+          , "let T = 2"
+          , "T + 1"
+          ]
+          @?= Right ["1 T", "T 300 K", "Num [K] -> Temp", "3"]
+        case runLinesP ["data Temp = T (Num [K])", "1 T"] of
+          Left err -> T.isInfixOf "`T` is not a unit" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "the quantity rule inside an application" $ do
+        runLinesP
+          [ "let f a b = a + b"
+          , "f 2 m 3 m"
+          , "f 2 3"
+          , "range 1 5"
+          , "let g m = f 2 m"
+          , "g 5"
+          , "f 2 km 500 m"
+          ]
+          @?= Right ["5 m", "5", "{1, 2, 3, 4, 5}", "7", "2500 m"]
+    , testCase "the type grammar" $ do
+        let ok src = case parseType src of
+              Left err -> assertFailure (T.unpack err)
+              Right _ -> pure ()
+        mapM_
+          ok
+          [ "Num [m]"
+          , "Vec 3 [m] -> Maybe a"
+          , "(a, Num [kg m^2 / s^2])"
+          , "{Tree a}"
+          , "Point (Vec 3 [m])"
+          , "Tensor [2, 3] d"
+          , "Num"
+          ]
+        case parseProgram "structural data Pair a b = Pair a b | Other (Num [m])" of
+          Right [S.SData d] -> do
+            d.name.text @?= "Pair"
+            map (.text) d.params @?= ["a", "b"]
+            map (\(c, fs) -> (c.text, length fs)) d.constructors
+              @?= [("Pair", 2), ("Other", 1)]
+            d.structural @?= True
+          other -> assertFailure (show other)
     ]
+
+-- | The session after feeding lines to one with the prelude.
+sessionP :: [Text] -> Either Text Session
+sessionP = go withPrelude
+ where
+  go s [] = Right s
+  go s (l : ls) = feed s l >>= \(s', _) -> go s' ls

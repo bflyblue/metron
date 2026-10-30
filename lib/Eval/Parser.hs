@@ -6,12 +6,14 @@
 module Eval.Parser (
   parseProgram,
   parseExpr,
+  parseType,
 ) where
 
 import Control.Monad.Combinators.Expr
 import Data.Bifunctor (first)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
+import Data.Maybe (isJust)
 import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -127,7 +129,13 @@ program :: Parser [Statement]
 program = P.many (tok TSep) *> P.sepEndBy statement (P.some (tok TSep))
 
 statement :: Parser Statement
-statement = letStatement P.<|> unitStatement P.<|> scaleStatement P.<|> SExpr <$> expr
+statement =
+  letStatement
+    P.<|> unitStatement
+    P.<|> scaleStatement
+    P.<|> dataStatement
+    P.<|> SExpr
+    <$> expr
 
 -- | @unit name = expr@: a definition that is also a display unit.
 unitStatement :: Parser Statement
@@ -184,6 +192,116 @@ binding = do
 
 whereClause :: Parser [Binding]
 whereClause = kw KWhere *> P.sepBy1 binding (tok TSep) <* tok TBlockEnd
+
+{- | @data Name params = Con fields | Con fields@ (design §2.3), optionally
+preceded by @structural@. A field is a type atom: a name, or a compound
+type in parentheses.
+-}
+dataStatement :: Parser Statement
+dataStatement = do
+  structural <-
+    P.optional
+      (P.try (match "structural" (\case TIdent "structural" -> Just (); _ -> Nothing)))
+  s <- kw KData
+  n <- name
+  ps <- P.many name
+  _ <- tok TEquals
+  cons <- P.sepBy1 constructor (tok TBar)
+  let start = maybe s fst structural
+      end = case last cons of
+        (c, []) -> c.span
+        (_, fs) -> (.span) (last fs)
+  pure
+    ( SData
+        ( DataDecl
+            (spanUnion start end)
+            n
+            ps
+            cons
+            (isJust structural)
+        )
+    )
+ where
+  constructor = (,) <$> name <*> P.many typeAtom
+
+-- Types ---------------------------------------------------------------------------
+
+-- | A type: an application, optionally followed by @->@ and another type.
+typeExpr :: Parser TyExpr
+typeExpr = do
+  a <- typeApp
+  P.option a $ do
+    _ <- tok TArrow
+    b <- typeExpr
+    pure (TyExpr (spanUnion a.span b.span) (TyFun a b))
+
+-- | A name applied to atoms, or a lone atom.
+typeApp :: Parser TyExpr
+typeApp =
+  P.choice
+    [ do
+        hd <- name
+        args <- P.many typeAtom
+        pure $ case args of
+          [] -> TyExpr hd.span (TyName hd.text)
+          _ -> TyExpr (spanUnion hd.span (last args).span) (TyApp hd args)
+    , typeAtom
+    ]
+
+typeAtom :: Parser TyExpr
+typeAtom =
+  P.choice
+    [ (\n -> TyExpr n.span (TyName n.text)) <$> name
+    , (\(sp, k) -> TyExpr sp (TyInt k))
+        <$> match
+          "length"
+          (\case TNum r | denominator r == 1 -> Just (numerator r); _ -> Nothing)
+    , do
+        s <- tok TLParen
+        t <- typeExpr
+        rest <- P.many (tok TComma *> typeExpr)
+        e <- tok TRParen
+        pure (TyExpr (spanUnion s e) (if null rest then t.node else TyTuple (t : rest)))
+    , do
+        s <- tok TLBrace
+        t <- typeExpr
+        e <- tok TRBrace
+        pure (TyExpr (spanUnion s e) (TyList t))
+    , do
+        s <- tok TLBracket
+        items <- P.sepBy bracketItem (tok TComma)
+        e <- tok TRBracket
+        pure (TyExpr (spanUnion s e) (TyBracket items))
+    ]
+ where
+  -- A product of powered factors, with @/@ negating the exponents after it.
+  bracketItem = do
+    nums <- P.some factor
+    dens <- P.many (tok (TOp "/") *> P.some factor)
+    pure (nums ++ [(f, negate k) | (f, k) <- concat dens])
+  factor = do
+    f <-
+      P.choice
+        [ (\n -> TyExpr n.span (TyName n.text)) <$> name
+        , (\(sp, k) -> TyExpr sp (TyInt k))
+            <$> match
+              "number"
+              (\case TNum r | denominator r == 1 -> Just (numerator r); _ -> Nothing)
+        ]
+    k <-
+      P.option 1
+        $ P.choice
+          [ snd <$> match "superscript" (\case TSup k -> Just k; _ -> Nothing)
+          , do
+              _ <- tok (TOp "^")
+              neg <- P.optional (tok (TOp "-"))
+              (_, k) <-
+                match
+                  "exponent"
+                  (\case TNum r | denominator r == 1 -> Just (numerator r); _ -> Nothing)
+              pure (maybe k (const (negate k)) neg)
+          ]
+    pure (f, k)
 
 -- Expressions ----------------------------------------------------------------------
 
@@ -425,6 +543,12 @@ patternP =
               _ <- tok (TOp ":")
               xs <- name
               pure (Pattern (spanUnion x.span xs.span) (PCon "Cons" [x, xs]))
+          , -- A declared constructor with its fields; a lone name is a
+            -- variable here and becomes a nullary constructor pattern when
+            -- it names one (Eval.Desugar).
+            do
+              fields <- P.some name
+              pure (Pattern (spanUnion x.span (last fields).span) (PCon x.text fields))
           , pure (Pattern x.span (if x.text == "_" then PWild else PVar x))
           ]
     ]
@@ -502,3 +626,9 @@ vecOrMat = do
       | s == k = (reverse acc, reverse accS) : go [x] [] xs ss
       | otherwise = go (x : acc) (s : accS) xs ss
     go acc accS _ _ = [(reverse acc, reverse accS)]
+
+-- | A type on its own, for tests and the driver.
+parseType :: Text -> Either Text TyExpr
+parseType src = do
+  toks <- tokenize src
+  runP (P.many (tok TSep) *> typeExpr <* P.many (tok TSep)) src toks

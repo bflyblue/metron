@@ -199,3 +199,16 @@
   log. Prelude: `fst`, `snd`, `map`, `filter`, `foldr`, `foldl`, `length`,
   `reverse`, `zip`, `range`. `==` works on tuples and lists of comparable
   things. A closing bracket now ends layout blocks opened inside it.
+- User data types (design §2.3). `data Shape = Circle (Num [m]) | Rect (Num
+  [m]) (Num [m])` declares a sum of products with parameters of any kind,
+  inferred from use (`data State n = State (Vec n [m]) (Vec n [m/s])`,
+  `data Reading d = Reading (Num d) (Point [K])`), recursive through the type
+  itself. Constructors are functions and `case` patterns; `:type`, `:view`
+  and `:edit` know the types; types and constructor names are labels, stored
+  as `types/<hash>` files and `type`/`con` log lines, and a type's identity
+  is its definition stamped with its name, or structural with `structural
+  data`. In Core a constructor is `UserCon hash i`; built-in constructors
+  encode as before, so no format bump. The quantity rule now applies inside
+  an application: `Rect 3 m 4 m` passes two quantities. Constructors and
+  definitions share one namespace, the newer label winning. Not yet: `==`
+  on declared types, records, mutually recursive types.

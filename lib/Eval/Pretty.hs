@@ -21,11 +21,13 @@ import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
-import Eval.Affine
+import Eval.Affine hiding (Builtin)
+import Eval.Affine qualified as A
 import Eval.Core
 import Eval.Dimension (renderUnits)
 import Eval.Eval
 import Eval.TCore (patternText)
+import Eval.Type (conText)
 
 -- Numbers ------------------------------------------------------------------------
 
@@ -180,16 +182,19 @@ renderValueWith namer scale prefs showMagnitude = \case
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
   -- Tuples as written; a list by walking its spine.
-  VData "Tuple" fields -> do
+  VData (Builtin "Tuple") fields -> do
     parts <- mapM (>>= renderValueWith namer scale prefs showMagnitude) fields
     pure ("(" <> T.intercalate ", " parts <> ")")
-  v@(VData c _) | c == "Cons" || c == "Nil" -> do
+  v@(VData c _) | c == Builtin "Cons" || c == Builtin "Nil" -> do
     items <- listItems v
     parts <- mapM (renderValueWith namer scale prefs showMagnitude) items
     pure ("{" <> T.intercalate ", " parts <> "}")
   VData c fields -> do
-    parts <- mapM (>>= renderValueWith namer scale prefs showMagnitude) fields
-    pure (T.unwords (c : parts))
+    parts <-
+      mapM
+        (>>= \v -> fieldText v <$> renderValueWith namer scale prefs showMagnitude v)
+        fields
+    pure (T.unwords (conText c : parts))
   -- A point prints on the scale it was written on (design §3.6): steps from
   -- the origin, then the scale's name; without a scale, as an amount from
   -- the base origin in base units.
@@ -294,7 +299,7 @@ originName namer = \case
     namer h Nothing ""
       <> (if null path then "" else " @" <> T.intercalate "." (map tshow path))
       <> (if i == 0 then "" else "." <> tshow i)
-  Builtin name -> name
+  A.Builtin name -> name
 
 {- | The error budget of a magnitude (design §3.2.6): the collapsed value,
 then every nudge with its contribution and share, largest first. Bound
@@ -404,16 +409,19 @@ renderTerm namer = go 0
             (prec > 0)
             ("let " <> h' <> " = " <> go 0 ctx e <> " in " <> go 0 (VCons h' ctx) b)
     Con c args -> case (c, args) of
-      ("True", []) -> "true"
-      ("False", []) -> "false"
-      ("Tuple", _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
-      ("Nil", []) -> "{}"
-      ("Cons", [x, xs]) -> case listSpine xs of
+      (Builtin "True", []) -> "true"
+      (Builtin "False", []) -> "false"
+      (Builtin "Tuple", _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
+      (Builtin "Nil", []) -> "{}"
+      (Builtin "Cons", [x, xs]) -> case listSpine xs of
         Just items -> "{" <> T.intercalate ", " (map (go 0 ctx) (x : items)) <> "}"
         Nothing -> paren (prec > 4) (go 5 ctx x <> " : " <> go 4 ctx xs)
-      _ -> paren (prec > 10) (T.unwords (c : map (go 11 ctx) args))
+      _ ->
+        paren
+          (prec > 10 && not (null args))
+          (T.unwords (conText c : map (go 11 ctx) args))
     -- A case on Bool reads back as the if it came from.
-    Case sc [Alt "False" VNil el, Alt "True" VNil th] ->
+    Case sc [Alt (Builtin "False") VNil el, Alt (Builtin "True") VNil th] ->
       paren
         (prec > 0)
         ("if " <> go 0 ctx sc <> " then " <> go 0 ctx th <> " else " <> go 0 ctx el)
@@ -530,8 +538,8 @@ renderRough m = renderRadius (abs (midpoint m))
 -- | The elements of a list value, forcing its spine.
 listItems :: Value -> Either EvalError [Value]
 listItems = \case
-  VData "Nil" [] -> Right []
-  VData "Cons" [x, xs] -> do
+  VData (Builtin "Nil") [] -> Right []
+  VData (Builtin "Cons") [x, xs] -> do
     x' <- x
     rest <- xs >>= listItems
     pure (x' : rest)
@@ -540,6 +548,18 @@ listItems = \case
 -- | The remaining elements of a literal list spine, if it ends in @{}@.
 listSpine :: Term n -> Maybe [Term n]
 listSpine = \case
-  Con "Nil" [] -> Just []
-  Con "Cons" [x, xs] -> (x :) <$> listSpine xs
+  Con (Builtin "Nil") [] -> Just []
+  Con (Builtin "Cons") [x, xs] -> (x :) <$> listSpine xs
   _ -> Nothing
+
+{- | A field of a printed data value must read back as one argument: a
+value with fields of its own, a negative number or an uncertain one goes in
+parentheses; @Rect 1 m 2 m@ is fine by the quantity rule.
+-}
+fieldText :: Value -> Text -> Text
+fieldText v s
+  | VData _ (_ : _) <- v = paren
+  | T.isPrefixOf "-" s || T.isInfixOf "±" s = paren
+  | otherwise = s
+ where
+  paren = "(" <> s <> ")"

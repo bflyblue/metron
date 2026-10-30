@@ -43,7 +43,7 @@ data TTerm (n :: Nat) where
   -- | The bound term has the scheme; its abstractions are explicit in it.
   TLet :: Hint -> Scheme -> TTerm n -> TTerm (S n) -> TTerm n
   -- | A constructor at its result type (@Nil@ alone fixes no element type).
-  TCon :: Text -> Type -> [TTerm n] -> TTerm n
+  TCon :: ConRef -> Type -> [TTerm n] -> TTerm n
   -- | A case at its result type.
   TCase :: TTerm n -> Type -> [TAlt n] -> TTerm n
   TPow :: TTerm n -> Integer -> TTerm n
@@ -62,7 +62,7 @@ data TTerm (n :: Nat) where
     [(VarId, Kind)] -> Vec k (Hint, Type) -> Vec k (TTerm (Plus k n)) -> TTerm n
 
 -- | A typed alternative: the fields enter scope at their types.
-data TAlt n = forall k. TAlt Text (Vec k (Hint, Type)) (TTerm (Plus k n))
+data TAlt n = forall k. TAlt ConRef (Vec k (Hint, Type)) (TTerm (Plus k n))
 
 instance Show (TAlt n) where
   show (TAlt c bs b) = "TAlt " ++ show c ++ " " ++ show (vecToList bs) ++ " (" ++ show b ++ ")"
@@ -182,7 +182,7 @@ primScheme name = case name of
 member. The result is 'Left' only when elaboration produced an ill-typed
 term, which is an internal error.
 -}
-lintClosed :: (Hash -> Maybe [Scheme]) -> TTerm Z -> Either Text [Scheme]
+lintClosed :: TypeLookup -> TTerm Z -> Either Text [Scheme]
 lintClosed look = \case
   TCycle vars members bodies -> do
     let ctx = vecAppend (vecMap (Forall [] . snd) members) VNil
@@ -204,10 +204,10 @@ lintClosed look = \case
   t -> (: []) <$> lint look VNil t
 
 lint ::
-  (Hash -> Maybe [Scheme]) -> Vec n Scheme -> TTerm n -> Either Text Scheme
+  TypeLookup -> Vec n Scheme -> TTerm n -> Either Text Scheme
 lint look ctx = \case
   TVr i -> Right (lookupCtx i ctx)
-  TRef h idx _ -> case look h of
+  TRef h idx _ -> case look.schemesOf h of
     Nothing -> Left "reference to a definition with no stored type"
     Just schemes ->
       maybe
@@ -278,13 +278,13 @@ lint look ctx = \case
   TCon c ty args -> do
     fts <-
       maybe
-        (Left ("constructor " <> c <> " does not build " <> renderType ty))
+        (Left ("constructor " <> conText c <> " does not build " <> renderType ty))
         Right
-        (lookup c =<< dataConstructors ty)
+        (lookup c =<< dataConstructors look.typeDefOf ty)
     require
       (length fts == length args)
       ( "constructor "
-          <> c
+          <> conText c
           <> " applied to "
           <> T.pack (show (length args))
           <> " fields"
@@ -293,7 +293,13 @@ lint look ctx = \case
       ta <- monoOf a
       require
         (ta == want)
-        ("field of " <> c <> " has type " <> renderType ta <> ", not " <> renderType want)
+        ( "field of "
+            <> conText c
+            <> " has type "
+            <> renderType ta
+            <> ", not "
+            <> renderType want
+        )
     mono ty
   TCase sc ty alts -> do
     tsc <- monoOf sc
@@ -301,20 +307,22 @@ lint look ctx = \case
       maybe
         (Left ("case on " <> renderType tsc <> ", which is not a data type"))
         Right
-        (dataConstructors tsc)
+        (dataConstructors look.typeDefOf tsc)
     require
       ([c | TAlt c _ _ <- alts] == map fst table)
-      ("case alternatives are not exactly " <> T.intercalate ", " (map fst table))
+      ( "case alternatives are not exactly "
+          <> T.intercalate ", " (map (conText . fst) table)
+      )
     forM_ alts $ \(TAlt c bs body) -> do
       let fts = maybe [] id (lookup c table)
       require
         (map snd (vecToList bs) == fts)
-        ("fields of " <> c <> " bound at the wrong types")
+        ("fields of " <> conText c <> " bound at the wrong types")
       tb <- monoOfIn (vecAppend (vecMap (\(_, t) -> Forall [] t) bs) ctx) body
       require
         (tb == ty)
         ( "alternative "
-            <> c
+            <> conText c
             <> " has type "
             <> renderType tb
             <> ", not "
@@ -563,13 +571,16 @@ renderTTerm namer = go 0
             <> go 0 (VCons h ctx) b
         )
     TCon c _ args -> case (c, args) of
-      ("True", []) -> "true"
-      ("False", []) -> "false"
-      ("Tuple", _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
-      ("Nil", []) -> "{}"
-      ("Cons", [x, xs]) -> paren (prec > 4) (go 5 ctx x <> " : " <> go 4 ctx xs)
-      _ -> paren (prec > 10) (T.unwords (c : map (go 11 ctx) args))
-    TCase sc _ [TAlt "False" VNil e, TAlt "True" VNil t] ->
+      (Builtin "True", []) -> "true"
+      (Builtin "False", []) -> "false"
+      (Builtin "Tuple", _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
+      (Builtin "Nil", []) -> "{}"
+      (Builtin "Cons", [x, xs]) -> paren (prec > 4) (go 5 ctx x <> " : " <> go 4 ctx xs)
+      _ ->
+        paren
+          (prec > 10 && not (null args))
+          (T.unwords (conText c : map (go 11 ctx) args))
+    TCase sc _ [TAlt (Builtin "False") VNil e, TAlt (Builtin "True") VNil t] ->
       paren
         (prec > 0)
         ("if " <> go 0 ctx sc <> " then " <> go 0 ctx t <> " else " <> go 0 ctx e)
@@ -625,14 +636,14 @@ renderTTerm namer = go 0
             <> "]"
 
 -- | How a constructor pattern is written (design §2.3).
-patternText :: Text -> [Text] -> Text
+patternText :: ConRef -> [Text] -> Text
 patternText c names = case (c, names) of
-  ("True", []) -> "true"
-  ("False", []) -> "false"
-  ("Tuple", _) -> "(" <> T.intercalate ", " names <> ")"
-  ("Nil", []) -> "{}"
-  ("Cons", [x, xs]) -> x <> " : " <> xs
-  _ -> T.unwords (c : names)
+  (Builtin "True", []) -> "true"
+  (Builtin "False", []) -> "false"
+  (Builtin "Tuple", _) -> "(" <> T.intercalate ", " names <> ")"
+  (Builtin "Nil", []) -> "{}"
+  (Builtin "Cons", [x, xs]) -> x <> " : " <> xs
+  _ -> T.unwords (conText c : names)
 
 {- | The types `==` is defined at (design §4.2): tensors, booleans, points,
 and structured data whose components are.

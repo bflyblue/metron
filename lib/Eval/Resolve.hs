@@ -8,9 +8,12 @@ module Eval.Resolve (
   resolverFor,
   typeLookupFor,
   processGroup,
+  enterData,
   storeTerm,
 ) where
 
+import Control.Monad (when, zipWithM)
+import Control.Monad.State.Strict (StateT, gets, lift, modify, runStateT)
 import Data.Foldable (foldlM)
 import Data.Graph (SCC (..), stronglyConnComp)
 import Data.List (sortOn)
@@ -23,11 +26,12 @@ import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
 import Eval.Desugar qualified as D
+import Eval.Dimension
 import Eval.Hash
 import Eval.Infer
 import Eval.Syntax qualified as S
 import Eval.TCore (lintClosed)
-import Eval.Type (Scheme)
+import Eval.Type
 
 data ResolveError
   = DuplicateDefinition S.Name
@@ -38,6 +42,8 @@ data ResolveError
     TypeErrorIn S.Name (Maybe S.Span) Text
   | -- | Elaboration produced ill-typed Typed Core: an internal error.
     LintFailure S.Name Text
+  | -- | A @ declaration that cannot be entered, at the offending span.
+    DataError S.Span Text
   deriving stock (Eq, Show)
 
 -- | Render without source text; "Eval.Driver" renders with the excerpt.
@@ -61,25 +67,40 @@ renderResolveError = \case
       <> n.text
       <> "` produced ill-typed core: "
       <> msg
+  DataError sp msg -> S.renderSpanError Nothing sp msg
 
 -- | Free names resolve to whatever the codebase currently binds.
 resolverFor :: Codebase -> Resolver
-resolverFor cb n =
-  (\(Reference h i) -> Resolution (h, i) (isUnitName n cb) (isScaleName n cb))
-    <$> lookupName n cb
+resolverFor cb n = case lookupName n cb of
+  Just (Reference h i) -> Just (ATerm (Resolution (h, i) (isUnitName n cb) (isScaleName n cb)))
+  Nothing -> case lookupConName n cb of
+    Just (h, i)
+      | Just def <- lookupTypeDef h cb ->
+          Just
+            ( AConstructor
+                ( ConInfo
+                    (UserCon h i)
+                    (length (def.constructors !! i))
+                    [(UserCon h j, length fs) | (j, fs) <- zip [0 ..] def.constructors]
+                )
+            )
+    _ -> Nothing
 
 typeLookupFor :: Codebase -> TypeLookup
-typeLookupFor cb h = lookupTypes h cb
+typeLookupFor cb = TypeLookup (`lookupTypes` cb) (`lookupTypeDef` cb)
 
 {- | Enter a binding group into the codebase. Statements may refer to each
 other in any order; strongly connected components are hashed as cycles.
 Components are processed dependencies-first, so a reference from one
 component to another always sees the new hash and its type.
 -}
-processGroup :: Codebase -> [S.Binding] -> Either ResolveError Codebase
-processGroup cb0 bindings = do
-  checkDuplicates bindings
-  let groupNames = Set.fromList (map (.name.text) bindings)
+processGroup :: Codebase -> [S.Decl] -> Either ResolveError Codebase
+processGroup cb0 decls = do
+  checkDuplicates decls
+  -- Data declarations first, in order: the definitions may use their constructors.
+  cb1 <- foldlM enterData cb0 [d | S.DData d <- decls]
+  let bindings = [b | S.DBind b <- decls]
+      groupNames = Set.fromList (map (.name.text) bindings)
       nodes =
         [ ( b
           , b.name.text
@@ -87,9 +108,9 @@ processGroup cb0 bindings = do
           )
         | b <- bindings
         ]
-  foldlM enterComponent cb0 (stronglyConnComp nodes)
+  foldlM enterComponent cb1 (stronglyConnComp nodes)
 
-checkDuplicates :: [S.Binding] -> Either ResolveError ()
+checkDuplicates :: [S.Decl] -> Either ResolveError ()
 checkDuplicates = go Set.empty
  where
   go _ [] = Right ()
@@ -253,3 +274,224 @@ patternNames p = case p.node of
   S.PCon _ ns -> ns
   S.PVar n -> [n]
   S.PWild -> []
+
+-- Data declarations ----------------------------------------------------------------
+
+{- | Enter a @data@ declaration (design §2.3). The parameters take their
+kinds from the positions the fields use them in; the field types are
+checked against the types in scope; the definition is hashed and stored,
+and the type's and constructors' names bound to it.
+-}
+enterData :: Codebase -> S.DataDecl -> Either ResolveError Codebase
+enterData cb decl = do
+  distinct "parameter" decl.params
+  distinct "constructor" (map fst decl.constructors)
+  when (decl.name.text `elem` builtinTypeNames)
+    $ Left
+      (DataError decl.name.span ("`" <> decl.name.text <> "` is a built-in type"))
+  -- Two passes: the first learns the parameters' kinds from where they
+  -- appear, the second converts with the kinds known, so that the
+  -- arguments of a recursive occurrence can be read by their kinds.
+  (_, kinds1) <- runStateT convertAll Map.empty
+  (fieldss, kinds) <- runStateT convertAll kinds1
+  let params =
+        [(i, Map.findWithDefault KType p.text kinds) | (i, p) <- zip [0 ..] decl.params]
+      def =
+        TypeDef
+          params
+          fieldss
+          (if decl.structural then structuralLabel else Owner decl.name.text)
+      h = hashTypeDef def
+      cb' = bindTypeName decl.name.text h (addTypeDef h def cb)
+  pure
+    ( foldl
+        (\acc (i, (c, _)) -> bindConName c.text h i acc)
+        cb'
+        (zip [0 ..] decl.constructors)
+    )
+ where
+  env =
+    DataEnv
+      { codebase = cb
+      , self = decl.name
+      , params = Map.fromList (zip (map (.text) decl.params) [0 ..])
+      , paramNames = map (.text) decl.params
+      }
+  convertAll = mapM (mapM (tyType env) . snd) decl.constructors
+  distinct what = go Set.empty
+   where
+    go _ [] = Right ()
+    go seen (n : ns)
+      | n.text `Set.member` seen =
+          Left (DataError n.span (what <> " `" <> n.text <> "` appears twice"))
+      | otherwise = go (Set.insert n.text seen) ns
+
+builtinTypeNames :: [Text]
+builtinTypeNames = ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Scale"]
+
+data DataEnv = DataEnv
+  { codebase :: Codebase
+  , self :: S.Name
+  , params :: Map.Map Text VarId
+  , paramNames :: [Text]
+  }
+
+-- | Conversion of written types, learning the parameters' kinds.
+type Kinds = StateT (Map.Map Text Kind) (Either ResolveError)
+
+bad :: S.TyExpr -> Text -> Kinds a
+bad t msg = lift (Left (DataError t.span msg))
+
+kindNoun :: Kind -> Text
+kindNoun = \case
+  KType -> "a type"
+  KLen -> "a length"
+  KShape -> "a shape"
+  KDim -> "a dimension"
+
+-- | A parameter used at a kind: record it, or report the clash.
+useParam :: DataEnv -> S.TyExpr -> Text -> Kind -> Kinds VarId
+useParam env t p k = do
+  known <- gets (Map.lookup p)
+  case known of
+    Just k'
+      | k' /= k ->
+          bad
+            t
+            ( "parameter `"
+                <> p
+                <> "` is used both as "
+                <> kindNoun k'
+                <> " and as "
+                <> kindNoun k
+            )
+    _ -> do
+      modify (Map.insert p k)
+      pure (Map.findWithDefault 0 p env.params)
+
+tyType :: DataEnv -> S.TyExpr -> Kinds Type
+tyType env t = case t.node of
+  S.TyName n
+    | Map.member n env.params -> TVar <$> useParam env t n KType
+    | n == "Bool" -> pure TBool
+    | n == "Num" -> pure numT
+    | n `elem` builtinTypeNames -> bad t ("`" <> n <> "` needs its arguments")
+    | otherwise -> applied env t n []
+  S.TyApp hd args
+    | Map.member hd.text env.params ->
+        bad t ("parameter `" <> hd.text <> "` takes no arguments")
+    | otherwise -> case (hd.text, args) of
+        ("Num", [d]) -> TTensor SNil <$> tyDim env d
+        ("Vec", [n]) -> (\l -> TTensor (SCons l SNil) dimOne) <$> tyLen env n
+        ("Vec", [n, d]) -> (\l -> TTensor (SCons l SNil)) <$> tyLen env n <*> tyDim env d
+        ("Mat", [m, n]) ->
+          (\a b -> TTensor (SCons a (SCons b SNil)) dimOne)
+            <$> tyLen env m
+            <*> tyLen env n
+        ("Mat", [m, n, d]) ->
+          (\a b -> TTensor (SCons a (SCons b SNil)))
+            <$> tyLen env m
+            <*> tyLen env n
+            <*> tyDim env d
+        ("Tensor", [sh]) -> (`TTensor` dimOne) <$> tyShape env sh
+        ("Tensor", [sh, d]) -> TTensor <$> tyShape env sh <*> tyDim env d
+        ("Point", [a]) -> affine TPoint a
+        ("Scale", [a]) -> affine TScale a
+        (n, _)
+          | n `elem` builtinTypeNames ->
+              bad t ("`" <> n <> "` does not take these arguments")
+        (n, _) -> applied env t n args
+  S.TyTuple ts -> TTuple <$> mapM (tyType env) ts
+  S.TyList a -> TList <$> tyType env a
+  S.TyFun a b -> TFun <$> tyType env a <*> tyType env b
+  S.TyInt _ -> bad t "a number is a length, not a type"
+  S.TyBracket _ -> bad t "a bracket is a shape or a dimension, not a type"
+ where
+  -- `Point [K]` is a scalar point; `Point (Vec 3 [m])` a point over that space.
+  affine mk a = case a.node of
+    S.TyBracket _ -> mk SNil <$> tyDim env a
+    S.TyName p | Map.member p env.params -> mk SNil <$> tyDim env a
+    _ ->
+      tyType env a >>= \case
+        TTensor sh d -> pure (mk sh d)
+        _ -> bad a "a point or scale is over a dimension or a tensor type"
+
+-- | A declared type, or the one being declared, applied to its arguments.
+applied :: DataEnv -> S.TyExpr -> Text -> [S.TyExpr] -> Kinds Type
+applied env t n args
+  | n == env.self.text = do
+      arity (length env.paramNames)
+      kinds <- mapM (gets . Map.findWithDefault KType) env.paramNames
+      TData selfType <$> zipWithM (argOf env) kinds args
+  | Just h <- lookupTypeName n env.codebase
+  , Just def <- lookupTypeDef h env.codebase = do
+      arity (length def.params)
+      TData h <$> zipWithM (argOf env) (map snd def.params) args
+  | otherwise = bad t ("unknown type `" <> n <> "`")
+ where
+  arity k =
+    when (length args /= k)
+      $ bad
+        t
+        ( "`"
+            <> n
+            <> "` takes "
+            <> T.pack (show k)
+            <> (if k == 1 then " argument" else " arguments")
+            <> ", given "
+            <> T.pack (show (length args))
+        )
+
+argOf :: DataEnv -> Kind -> S.TyExpr -> Kinds Arg
+argOf env k a = case k of
+  KType -> AType <$> tyType env a
+  KLen -> ALen <$> tyLen env a
+  KShape -> AShape <$> tyShape env a
+  KDim -> ADim <$> tyDim env a
+
+tyLen :: DataEnv -> S.TyExpr -> Kinds Len
+tyLen env a = case a.node of
+  S.TyInt k | k >= 0 -> pure (LLit (fromInteger k))
+  S.TyName p | Map.member p env.params -> (`LVar` 0) <$> useParam env a p KLen
+  _ -> bad a "a length is a number or a parameter"
+
+tyShape :: DataEnv -> S.TyExpr -> Kinds Shape
+tyShape env a = case a.node of
+  S.TyBracket items -> foldr SCons SNil <$> mapM item items
+  S.TyName p | Map.member p env.params -> SVar <$> useParam env a p KShape
+  _ -> bad a "a shape is a list of lengths like [2, 3], or a parameter"
+ where
+  item = \case
+    [(f, 1)] -> tyLen env f
+    _ -> bad a "a shape is a list of lengths like [2, 3]"
+
+{- | A dimension: a bracketed product of base units, units and parameters
+with exponents (@[kg m^2 s^-2]@, @[m / s]@), a lone parameter, or @1@.
+-}
+tyDim :: DataEnv -> S.TyExpr -> Kinds Dim
+tyDim env a = case a.node of
+  S.TyBracket [] -> pure dimOne
+  S.TyBracket [item] -> foldr dimMul dimOne <$> mapM factor item
+  S.TyBracket _ -> bad a "a dimension is one product, not a list"
+  S.TyInt 1 -> pure dimOne
+  S.TyName p | Map.member p env.params -> dimVar <$> useParam env a p KDim
+  _ ->
+    bad
+      a
+      "a dimension is written in brackets, like [m s^-2], or is a parameter or 1"
+ where
+  factor (f, k) = case f.node of
+    S.TyInt 1 -> pure dimOne
+    S.TyName n
+      | Map.member n env.params ->
+          dimPow (fromInteger k) . dimVar <$> useParam env f n KDim
+      | Just b <- lookup n [(baseSymbol b', b') | b' <- [minBound .. maxBound]] ->
+          pure (dimPow (fromInteger k) (dimBase b))
+      | isUnitName n env.codebase
+      , Just r <- lookupName n env.codebase
+      , Just (Forall [] (TTensor SNil d)) <- typeOf r env.codebase ->
+          pure (dimPow (fromInteger k) d)
+    _ ->
+      bad
+        f
+        "a dimension is a product of base units (m kg s A K mol cd rad), units and parameters"

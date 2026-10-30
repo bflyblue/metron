@@ -15,10 +15,11 @@ module Eval.Driver (
   refreshPreferences,
 ) where
 
+import Data.Char (isDigit)
 import Data.List (partition)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -35,7 +36,7 @@ import Eval.Core
 import Eval.Desugar
 import Eval.Dimension (Dim, dimPow, renderDim)
 import Eval.Eval
-import Eval.Hash (hashTerm, showHash)
+import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
 import Eval.Parser (parseExpr, parseProgram)
 import Eval.Prelude (preludeSource)
@@ -43,12 +44,12 @@ import Eval.Pretty
 import Eval.Resolve
 import Eval.Syntax qualified as S
 import Eval.TCore
-import Eval.Type (renderScheme)
+import Eval.Type (TypeDef (..), renderScheme, renderTypeDef)
 import Eval.Update
 
 data Session = Session
   { codebase :: Codebase
-  , scratch :: [S.Binding]
+  , scratch :: [S.Decl]
   -- ^ pending definitions, oldest first
   , sources :: Map Text Text
   -- ^ the input text each pending definition came from, for error excerpts
@@ -78,15 +79,21 @@ preludeSession = do
 the lines to print, or the first error.
 -}
 feed :: Session -> Text -> Either Text (Session, [Text])
-feed session src
+feed session src = case feed' session src of
+  -- Declared types print by hash below here; the session names them (design §7.2).
+  Left err -> Left (nameTypes session.staging err)
+  Right (session', outs) -> Right (session', map (nameTypes session'.staging) outs)
+
+feed' :: Session -> Text -> Either Text (Session, [Text])
+feed' session src
   | Just cmd <- T.stripPrefix ":" (T.stripStart src) =
       command session src (T.words cmd)
   | otherwise = do
       stmts <- parseProgram src
-      let lets = [b | S.SLet b <- stmts]
+      let decls = mapMaybe S.declOf stmts
           exprs = [e | S.SExpr e <- stmts]
       (session', notes) <-
-        if null lets then Right (session, []) else propose session src lets
+        if null decls then Right (session, []) else propose session src decls
       outs <-
         mapM (evalExpr session'.config session'.preferred session'.staging src) exprs
       pure (session', notes ++ outs)
@@ -96,12 +103,12 @@ feed session src
 input is an error. The whole scratch is re-entered on top of the codebase
 so that errors surface now.
 -}
-propose :: Session -> Text -> [S.Binding] -> Either Text (Session, [Text])
-propose session src lets = do
-  let incoming = map (.name.text) lets
+propose :: Session -> Text -> [S.Decl] -> Either Text (Session, [Text])
+propose session src decls = do
+  let incoming = map (.name.text) decls
       (replaced, kept) = partition (\b -> b.name.text `elem` incoming) session.scratch
-      scratch' = kept ++ lets
-      sources' = foldr (\b -> Map.insert b.name.text src) session.sources lets
+      scratch' = kept ++ decls
+      sources' = foldr (\b -> Map.insert b.name.text src) session.sources decls
   staging' <-
     either
       (Left . renderResolveErrorWith sources' src)
@@ -126,6 +133,7 @@ renderResolveErrorWith sources src = \case
       ("`" <> n.text <> "` is defined twice in the same group")
   Desugar (UnknownName sp n) -> S.renderSpanError (Just src) sp ("unknown name `" <> n <> "`")
   Desugar (BadSpecialForm sp msg) -> S.renderSpanError (Just src) sp msg
+  DataError sp msg -> S.renderSpanError (Just src) sp msg
   err@(LintFailure _ _) -> renderResolveError err
 
 -- | Desugar, typecheck and elaborate, lint, evaluate, print.
@@ -313,12 +321,14 @@ command session src = \case
     e <- parseExpr (T.unwords rest)
     (_, _, ty) <- checkExpr cb (T.unwords rest) e
     pure [ty]
-  ["edit", n] -> keep $ withName n $ \r ->
-    let keyword
-          | isUnitName n cb = "unit "
-          | isScaleName n cb = "scale "
-          | otherwise = "let "
-     in (\body -> [keyword <> n <> " = " <> body]) <$> viewReference cb r
+  ["edit", n] -> keep $ case lookupName n cb of
+    Just r ->
+      let keyword
+            | isUnitName n cb = "unit "
+            | isScaleName n cb = "scale "
+            | otherwise = "let "
+       in (\body -> [keyword <> n <> " = " <> body]) <$> viewReference cb r
+    Nothing -> viewData n
   ["lint", n] -> keep $ withName n $ \r -> case lookupTyped r.hash cb of
     Nothing -> Left ("no typed core for " <> showHash r.hash)
     Just t -> case lintClosed (typeLookupFor cb) t of
@@ -338,7 +348,9 @@ command session src = \case
   ["history", n] -> keep $ case historyOf n cb of
     [] -> Left ("unknown name `" <> n <> "`")
     r : rs -> pure ((showReference r <> "  (current)") : map showReference rs)
-  ["view", n] -> keep $ withName n $ \r -> (: []) . ((n <> " = ") <>) <$> viewReference cb r
+  ["view", n] -> keep $ case lookupName n cb of
+    Just r -> (: []) . ((n <> " = ") <>) <$> viewReference cb r
+    Nothing -> viewData n
   ["dependents", n] -> keep $ withName n $ \r -> pure (dependents r.hash cb)
   -- An alias of a unit or scale is one too.
   ["alias", new, old] -> withName' old $ \r ->
@@ -348,7 +360,12 @@ command session src = \case
      in commit
           (flagged (bindName new r cb))
           ["`" <> new <> "` now also names " <> showReference r]
-  ["unname", n] -> withName' n $ \_ -> commit (unbindName n cb) ["removed the label `" <> n <> "`"]
+  ["unname", n]
+    | Map.member n session.codebase.names
+        || Map.member n session.codebase.typeNames
+        || Map.member n session.codebase.conNames ->
+        commit (unbindName n cb) ["removed the label `" <> n <> "`"]
+    | otherwise -> Left ("unknown name `" <> n <> "`")
   _ ->
     Left
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
@@ -378,7 +395,22 @@ command session src = \case
       | i <- [0 .. vecLength hints - 1]
       ]
     _ -> []
-  pending b = "pending: " <> b.name.text
+  pending = \case
+    S.DBind b -> "pending: " <> b.name.text
+    S.DData d -> "pending: data " <> d.name.text
+  -- A declared type as it could be written again (design §7.2).
+  viewData n = case lookupTypeName n cb >>= \h -> (h,) <$> lookupTypeDef h cb of
+    Just (h, def) ->
+      pure
+        [ renderTypeDef
+            h
+            n
+            [ fromMaybe (showHash h <> "." <> tshow i) (conNameOf h i cb)
+            | i <- [0 .. length def.constructors - 1]
+            ]
+            def
+        ]
+    Nothing -> Left ("unknown name `" <> n <> "`")
   _ = src
 
 {- | Store scratch definitions whose names are new (or unchanged). A name
@@ -414,6 +446,11 @@ add session
     , Just old <- [lookupName n session.codebase]
     , lookupName n session.staging /= Just old
     ]
+      ++ [ n
+         | n <- names
+         , Just old <- [lookupTypeName n session.codebase]
+         , lookupTypeName n session.staging /= Just old
+         ]
 
 {- | Store scratch definitions, re-binding names that already exist, then
 propagate the new versions to every dependent that still typechecks
@@ -431,14 +468,30 @@ update doUpgrade session
             , Just new <- [lookupName n session.staging]
             , old /= new
             ]
-          added = [n | n <- names, Nothing <- [lookupName n session.codebase]]
+          added =
+            [ n
+            | S.DBind b <- session.scratch
+            , let n = b.name.text
+            , Nothing <- [lookupName n session.codebase]
+            ]
+          types =
+            [ ( if Map.member n session.codebase.typeNames
+                  then "updated data "
+                  else "added data "
+              )
+                <> n
+            | S.DData d <- session.scratch
+            , let n = d.name.text
+            , lookupTypeName n session.codebase /= lookupTypeName n session.staging
+            ]
           refmap = Map.fromList [(old, new) | (_, old, new) <- changed]
           result =
             if doUpgrade
               then propagate refmap session.staging
               else Propagation session.staging [] []
           report =
-            ["added " <> n | n <- added]
+            types
+              ++ ["added " <> n | n <- added]
               ++ [ "updated " <> n <> " " <> showReference old <> " -> " <> showReference new
                  | (n, old, new) <- changed
                  ]
@@ -604,3 +657,29 @@ refreshPreferences session =
         , Right (d, h) <- [preferenceHint session.config session.staging t]
         ]
    in Right session{preferred = Map.fromList hints}
+
+{- | Declared types and their constructors print by hash (@#a3f9k@,
+@#a3f9k.1@) wherever a type or a value is rendered; here those become the
+current names (design §7.2). A type without a name keeps its hash.
+-}
+nameTypes :: Codebase -> Text -> Text
+nameTypes cb
+  | Map.null cb.typeDefs = id
+  | otherwise = go
+ where
+  go t = case T.breakOn "#" t of
+    (before, rest) | T.null rest -> before
+    (before, rest) ->
+      let (hex, after) = T.span isBase32 (T.drop 1 rest)
+          (idx, after') = case T.uncons after of
+            Just ('.', more)
+              | (ds, more') <- T.span isDigit more
+              , not (T.null ds) ->
+                  (Just (read (T.unpack ds) :: Int), more')
+            _ -> (Nothing, after)
+       in case [h | h <- Map.keys cb.typeDefs, showHash h == "#" <> hex] of
+            h : _
+              | Just i <- idx, Just c <- conNameOf h i cb -> before <> c <> go after'
+              | Nothing <- idx, Just n <- typeNameOf h cb -> before <> n <> go after'
+            _ -> before <> "#" <> go (T.drop 1 rest)
+  isBase32 c = isDigit c || (c >= 'a' && c <= 'v')

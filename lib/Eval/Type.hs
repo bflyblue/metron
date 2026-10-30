@@ -11,6 +11,13 @@ module Eval.Type (
   VarId,
   Type (..),
   dataConstructors,
+  TypeDef (..),
+  TypeLookup (..),
+  noLookup,
+  conText,
+  selfType,
+  structuralLabel,
+  renderTypeDef,
   Len (..),
   Shape (..),
   Arg (..),
@@ -37,11 +44,13 @@ module Eval.Type (
   renderArg,
 ) where
 
+import Data.ByteString qualified as BS
 import Data.List (nubBy)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+import Eval.Core (ConRef (..), Hash (..), Label (..), showHash)
 import Eval.Dimension
 
 data Kind = KType | KLen | KShape | KDim
@@ -60,6 +69,8 @@ data Type
     TTuple [Type]
   | -- | a list
     TList Type
+  | -- | a declared data type applied to its parameters (design §2.3); a definition refers to itself as 'selfType'
+    TData Hash [Arg]
   | TFun Type Type
   | TVar VarId
   deriving stock (Eq, Ord, Show)
@@ -122,6 +133,7 @@ applyType s = \case
   TScale sh d -> TScale (applyShape s sh) (applyDim s d)
   TTuple ts -> TTuple (map (applyType s) ts)
   TList t -> TList (applyType s t)
+  TData h as -> TData h (map (applyArg s) as)
   TFun a b -> TFun (applyType s a) (applyType s b)
   TVar v -> case Map.lookup v s of
     Just (AType t) -> applyType s t
@@ -185,6 +197,7 @@ substOnce m = go
     TScale sh d -> TScale (shape sh) (dim d)
     TTuple ts -> TTuple (map go ts)
     TList t -> TList (go t)
+    TData h as -> TData h (map arg as)
     TFun a b -> TFun (go a) (go b)
     TVar v -> case Map.lookup v m of
       Just (AType t) -> t
@@ -200,6 +213,11 @@ substOnce m = go
     LVar v k -> case Map.lookup v m of
       Just (ALen l) -> shiftLen k l
       _ -> LVar v k
+  arg = \case
+    AType t -> AType (go t)
+    ALen l -> ALen (len l)
+    AShape sh -> AShape (shape sh)
+    ADim d -> ADim (dim d)
   dim d =
     foldr
       dimMul
@@ -221,6 +239,7 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
     TScale sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
     TTuple ts -> concatMap go ts
     TList t -> go t
+    TData _ as -> concatMap argVars as
     TFun a b -> go a ++ go b
     TVar v -> [(v, KType)]
   shape = \case
@@ -230,6 +249,11 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
   len = \case
     LLit _ -> []
     LVar v _ -> [(v, KLen)]
+  argVars = \case
+    AType t -> go t
+    ALen l -> len l
+    AShape sh -> shape sh
+    ADim d -> [(v, KDim) | v <- dimVars d]
 
 -- Rendering ---------------------------------------------------------------------
 
@@ -269,6 +293,11 @@ renderArg = \case
 renderWith :: Map VarId Text -> Int -> Type -> Text
 renderWith names prec = \case
   TBool -> "Bool"
+  -- As an argument of a declared type, a tensor with a shape or dimension is parenthesised.
+  TTensor sh d
+    | prec > 10
+    , not (T.null (dim d)) || sh /= SNil ->
+        "(" <> tensor sh <> dim d <> ")"
   TTensor sh d -> tensor sh <> dim d
   -- A scalar point is `Point [K]`; a point over a vector space, `Point (Vec 3 [m])`.
   TPoint SNil d -> "Point" <> dim d
@@ -277,6 +306,12 @@ renderWith names prec = \case
   TScale sh d -> "Scale (" <> tensor sh <> dim d <> ")"
   TTuple ts -> "(" <> T.intercalate ", " (map (renderWith names 0) ts) <> ")"
   TList t -> "{" <> renderWith names 0 t <> "}"
+  -- A declared type prints by its short hash here; the driver replaces that
+  -- with the current name (design §7.2), so inference needs no name table.
+  TData h as ->
+    paren
+      (prec > 10 && not (null as))
+      (T.unwords (showHash h : map (argWith names) as))
   TFun a b -> paren (prec > 0) (renderWith names 1 a <> " -> " <> renderWith names 0 b)
   TVar v -> Map.findWithDefault ("t" <> T.pack (show v)) v names
  where
@@ -293,6 +328,13 @@ renderWith names prec = \case
     | [(DVar v, 1)] <- dimAtoms d = " " <> dimName v
     | otherwise = " " <> renderDimWith dimName d
   dimName v = Map.findWithDefault ("d" <> T.pack (show v)) v names
+  argWith ns = \case
+    AType t -> renderWith ns 11 t
+    ALen l -> renderLen ns l
+    AShape sh -> renderShapeList ns sh
+    ADim d
+      | [(DVar v, 1)] <- dimAtoms d -> dimName v
+      | otherwise -> renderDimWith dimName d
 
 -- | A length on its own: an offset form is parenthesised, @Vec (n + 1)@.
 renderLen :: Map VarId Text -> Len -> Text
@@ -354,13 +396,112 @@ idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
 
 -- Data ----------------------------------------------------------------------------
 
+{- | A declared data type (design §2.3): its parameters by kind (variables
+0 .. k-1 in the field types), its constructors' field types in declaration
+order, and its owner stamp or structural label. Constructor and type names
+are labels in the codebase, not part of the definition. A recursive
+occurrence of the type inside its own fields is 'selfType'.
+-}
+data TypeDef = TypeDef
+  { params :: [(VarId, Kind)]
+  , constructors :: [[Type]]
+  , label :: Label
+  }
+  deriving stock (Eq, Show)
+
+-- | The hash a definition uses for itself inside its own fields.
+selfType :: Hash
+selfType = Hash (BS.replicate 32 0)
+
 {- | The constructors of a data type with their field types, in canonical
 (declaration) order: the one table 'Con' and 'Case' are checked against
-(design §5.1).
+(design §5.1). Declared types come from the lookup, with their parameters
+instantiated at the type's arguments.
 -}
-dataConstructors :: Type -> Maybe [(Text, [Type])]
-dataConstructors = \case
-  TBool -> Just [("False", []), ("True", [])]
-  TTuple ts -> Just [("Tuple", ts)]
-  TList t -> Just [("Nil", []), ("Cons", [t, TList t])]
+dataConstructors :: (Hash -> Maybe TypeDef) -> Type -> Maybe [(ConRef, [Type])]
+dataConstructors defs = \case
+  TBool -> Just [(Builtin "False", []), (Builtin "True", [])]
+  TTuple ts -> Just [(Builtin "Tuple", ts)]
+  TList t -> Just [(Builtin "Nil", []), (Builtin "Cons", [t, TList t])]
+  TData h as -> do
+    def <- defs h
+    let sub = Map.fromList (zip (map fst def.params) as)
+    pure
+      [ (UserCon h i, map (substOnce sub . unself h) fields)
+      | (i, fields) <- zip [0 ..] def.constructors
+      ]
   _ -> Nothing
+ where
+  -- The definition's own type, written with its parameters, becomes the
+  -- applied type.
+  unself h = go
+   where
+    go = \case
+      TData h' as' | h' == selfType -> TData h (map goArg as')
+      TData h' as' -> TData h' (map goArg as')
+      TTuple ts -> TTuple (map go ts)
+      TList t -> TList (go t)
+      TFun a b -> TFun (go a) (go b)
+      t -> t
+    goArg = \case
+      AType t -> AType (go t)
+      a -> a
+
+{- | What inference and lint need from the codebase: the schemes of a stored
+definition, and the declaration of a data type.
+-}
+data TypeLookup = TypeLookup
+  { schemesOf :: Hash -> Maybe [Scheme]
+  , typeDefOf :: Hash -> Maybe TypeDef
+  }
+
+-- | A lookup that knows nothing: for closed terms over built-in types.
+noLookup :: TypeLookup
+noLookup = TypeLookup (const Nothing) (const Nothing)
+
+{- | A constructor's name as it prints without a codebase: built-in names
+as they are, a declared one as @#hash.i@ for the driver to name.
+-}
+conText :: ConRef -> Text
+conText = \case
+  Builtin c -> c
+  UserCon h i -> showHash h <> "." <> T.pack (show i)
+
+{- | The label of a @structural data@ declaration: no owner, so two
+declarations of the same shape are one type.
+-}
+structuralLabel :: Label
+structuralLabel = Tag ""
+
+{- | A declaration as it could be written again: @data Name a = Con fields |
+…@, with the type's own hash standing for recursive occurrences (the
+driver names it) and parameters named by kind as in 'renderType'.
+-}
+renderTypeDef :: Hash -> Text -> [Text] -> TypeDef -> Text
+renderTypeDef h name conNames def =
+  (if def.label == structuralLabel then "structural " else "")
+    <> "data "
+    <> T.unwords (name : map (\(v, _) -> Map.findWithDefault "?" v names) def.params)
+    <> " = "
+    <> T.intercalate
+      " | "
+      (zipWith constructor (conNames ++ repeat "?") def.constructors)
+ where
+  names = prettyNames def.params
+  constructor c fields = T.unwords (c : map (field . unself) fields)
+  -- A field is an atom: a compound type goes in parentheses.
+  field t =
+    let s = renderWith names 11 t
+     in if " " `T.isInfixOf` s && not (T.isPrefixOf "(" s || T.isPrefixOf "{" s)
+          then "(" <> s <> ")"
+          else s
+  unself = \case
+    TData h' as | h' == selfType -> TData h (map unselfArg as)
+    TData h' as -> TData h' (map unselfArg as)
+    TTuple ts -> TTuple (map unself ts)
+    TList t -> TList (unself t)
+    TFun a b -> TFun (unself a) (unself b)
+    t -> t
+  unselfArg = \case
+    AType t -> AType (unself t)
+    a -> a

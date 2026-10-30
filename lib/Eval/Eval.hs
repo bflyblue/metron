@@ -47,10 +47,11 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector (Vector)
 import Data.Vector qualified as V
-import Eval.Affine
+import Eval.Affine hiding (Builtin)
 import Eval.Core
 import Eval.Dimension
 import Eval.TCore
+import Eval.Type (conText)
 
 {- | Evaluation parameters: the number of significant digits printed, and the
 number of standard deviations a comparison must clear to be decided (design
@@ -160,7 +161,7 @@ data Value
   | VScale ScaleHint
   | VBool Bool
   | -- | a constructor other than the booleans, with its fields as thunks (design §8)
-    VData Text [Thunk]
+    VData ConRef [Thunk]
   | VClosure Closure
 
 {- | A function value: a body under one binder, closed over its environment
@@ -202,19 +203,19 @@ eval cfg rt = go
     TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
     TLit (LTensor (dims, rs)) -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
     -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
-    TCon "True" _ [] -> Right (VBool True)
-    TCon "False" _ [] -> Right (VBool False)
+    TCon (Builtin "True") _ [] -> Right (VBool True)
+    TCon (Builtin "False") _ [] -> Right (VBool False)
     TCon c _ args -> Right (VData c (zipWith (\i a -> go (child i) env a) [0 ..] args))
     TCase sc _ alts -> do
       v <- go (child 0) env sc
       let (c, fields) = case v of
-            VBool True -> ("True", [])
-            VBool False -> ("False", [])
+            VBool True -> (Builtin "True", [])
+            VBool False -> (Builtin "False", [])
             VData c' fs -> (c', fs)
-            _ -> ("", [])
+            _ -> (Builtin "", [])
       case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
         (i, TAlt _ bs body) : _ -> go (child i) (vecAppend (attach bs fields) env) body
-        [] -> Left (Internal ("case: no alternative for " <> c))
+        [] -> Left (Internal ("case: no alternative for " <> conText c))
     TLam _ _ body -> Right (VClosure (Closure (child 0) env body))
     TApp f a -> do
       fv <- go (child 0) env f
@@ -919,8 +920,8 @@ render = \case
     parts <- mapM (>>= render) fields
     pure
       ( case c of
-          "Tuple" -> "(" <> T.intercalate ", " parts <> ")"
-          _ -> T.unwords (c : parts)
+          Builtin "Tuple" -> "(" <> T.intercalate ", " parts <> ")"
+          _ -> T.unwords (conText c : parts)
       )
   VClosure _ -> Right "<function>"
  where

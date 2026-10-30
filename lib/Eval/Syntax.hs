@@ -15,12 +15,18 @@ module Eval.Syntax (
   PatNode (..),
   BindKind (..),
   Statement (..),
+  TyExpr (..),
+  TyNode (..),
+  DataDecl (..),
+  Decl (..),
+  declOf,
   renderSpanError,
 ) where
 
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core (NudgeKind)
+import GHC.Records (HasField (..))
 
 -- | A 1-based line and column.
 data Pos = Pos {line :: !Int, col :: !Int}
@@ -144,8 +150,60 @@ data Binding = Binding
   {span :: Span, name :: Name, params :: [Name], body :: Expr, kind :: BindKind}
   deriving stock (Eq, Show)
 
+{- | A type as written in a @data@ declaration (design §2.3). The sorts
+(types, lengths, shapes, dimensions) are told apart by position when the
+declaration is entered; here a bracket is just a bracket.
+-}
+data TyExpr = TyExpr {span :: Span, node :: TyNode}
+  deriving stock (Eq, Show)
+
+data TyNode
+  = -- | a type name, a parameter, or a dimension name inside brackets
+    TyName Text
+  | -- | a length literal
+    TyInt Integer
+  | -- | a type name applied to arguments: @Num [m]@, @Vec 3 [m]@, @Maybe a@
+    TyApp Name [TyExpr]
+  | -- | @(a, b, …)@: two or more components
+    TyTuple [TyExpr]
+  | -- | @{a}@: a list
+    TyList TyExpr
+  | TyFun TyExpr TyExpr
+  | {- | @[…]@: comma-separated items, each a product of powered factors.
+    @[2, 3]@ is a shape, @[kg m^2 s^-2]@ a dimension; @[m / s]@ divides.
+    -}
+    TyBracket [[(TyExpr, Integer)]]
+  deriving stock (Eq, Show)
+
+{- | @data Name params = Con fields | …@ (design §2.3). A @structural@
+declaration takes its identity from its structure alone; otherwise the
+type name is stamped into it.
+-}
+data DataDecl = DataDecl
+  { span :: Span
+  , name :: Name
+  , params :: [Name]
+  , constructors :: [(Name, [TyExpr])]
+  , structural :: Bool
+  }
+  deriving stock (Eq, Show)
+
+-- | What the scratch holds: a definition or a data declaration.
+data Decl = DBind Binding | DData DataDecl
+  deriving stock (Eq, Show)
+
+instance HasField "name" Decl Name where
+  getField = \case
+    DBind b -> b.name
+    DData d -> d.name
+
+instance HasField "span" Decl Span where
+  getField = \case
+    DBind b -> b.span
+    DData d -> d.span
 data Statement
   = SLet Binding
+  | SData DataDecl
   | SExpr Expr
   deriving stock (Eq, Show)
 
@@ -172,3 +230,10 @@ renderSpanError src sp msg =
   lineAt s n = case drop (n - 1) (T.lines s) of
     l : _ -> Just l
     [] -> Nothing
+
+-- | The declaration a statement makes, if it is one.
+declOf :: Statement -> Maybe Decl
+declOf = \case
+  SLet b -> Just (DBind b)
+  SData d -> Just (DData d)
+  SExpr _ -> Nothing

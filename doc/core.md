@@ -141,7 +141,7 @@ larger than it will eventually need to be.
 | `Lam hint (Term (S n))` | one-parameter abstraction | fundamental |
 | `App` | application | fundamental |
 | `Let hint e (Term (S n))` | non-recursive, generalising local binding; cannot be `App (Lam …)` because `Let` is where let-polymorphism happens | fundamental |
-| `Con name [Term n]` | a saturated data constructor: `True`, `False`, `Tuple`, `Nil`, `Cons`; structured data with fields of different types, which no tensor can hold | fundamental |
+| `Con con [Term n]` | a saturated data constructor: the built-in `True`, `False`, `Tuple`, `Nil`, `Cons`, or constructor `i` of a declared type, referenced by the type's definition hash; structured data with fields of different types, which no tensor can hold | fundamental |
 | `Case scrutinee [Alt]` | first-class choice between alternatives, one per constructor in canonical order, each binding the fields; lazy in the bodies. Cannot be a primitive because a primitive cannot select which argument to evaluate | fundamental; absorbed `If` and the boolean literal |
 | `Pow t Integer` | `e ^ n` with a literal exponent, so the dimension of the result is static | special form: stays, because the exponent is syntax, not a value |
 | `Noise kind n` | `n` fresh nudges with definition-site identity (design §3.2.4); the identity depends on the node's path, which no primitive can see | special form: stays |
@@ -190,9 +190,11 @@ at every rank:
 - **A default alternative in `Case`.** The desugarer expands `_` into the
   missing constructors, so every `Case` is exhaustive and canonically ordered
   and two terms that mean the same case analysis hash the same.
-- **User data declarations.** `Con` and `Case` know five constructors. A
-  declaration adds names to that table and a type to the type language; it is
-  the planned next use of the same two forms.
+- **Constructor names.** A declared constructor is `UserCon hash i`: the
+  definition hash of its type and its position. Names are labels in the
+  codebase, so renaming a constructor or a type changes no term, and the
+  declaration itself is hashed from kinds, field types and label alone
+  (design §6.1).
 - **Local recursion.** `Let` is non-recursive. Recursion is a top-level affair
   through `Cycle`, which is where hashing needs it. A local recursive helper
   can be a top-level definition.
@@ -327,8 +329,10 @@ Applying the test to the roadmap, in order:
   done: `Con` and `Case` arrived once, `If` and the boolean literal left, so
   Core is 15 constructors where it was 14. It was the first hash-changing
   migration (format 2 to 3). `Vec`, `Mat` and `Proj` stay built in because the
-  length index is beyond an ordinary data declaration. User data types add
-  constructors to the table, not forms to Core.
+  length index is beyond an ordinary data declaration. User data types then
+  added constructors to the table, not forms to Core: a constructor reference
+  became a built-in name or a type hash with a position, encoded so that the
+  built-in ones kept their bytes, and no format bump was needed.
 - **Points and scales (design §3.6).** Two constructors in the *type* language,
   `Point δ` and `Scale δ`, five saturated primitives, and a `scale`
   declaration that is label-level metadata like `unit`. No Core change: a
