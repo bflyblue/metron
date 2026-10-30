@@ -130,18 +130,19 @@ express. Where a constructor is a *special form* that a more general mechanism
 would later subsume, that is said, because it marks a place where Core is
 larger than it will eventually need to be.
 
-### Core (`Term n`, 14 constructors)
+### Core (`Term n`, 15 constructors)
 
 | Constructor | Why it exists | Status |
 |---|---|---|
 | `Var (Fin n)` | bound variable | fundamental |
 | `Ref hash [idx]` | another definition by content hash; the codebase's edge | fundamental |
 | `PrimApp name [Term n]` | saturated primitive; the only way to reach arithmetic and the runtime | fundamental |
-| `Lit` (a constant tensor: shape plus flat row-major rationals, or a boolean) | constants; a number is the rank-zero case, so there is no separate number literal | fundamental; the boolean alternative is the last special-cased constant and leaves with `If` when `Case` arrives |
+| `Lit` (a constant tensor: shape plus flat row-major rationals) | constants; a number is the rank-zero case, so there is no separate number literal | fundamental |
 | `Lam hint (Term (S n))` | one-parameter abstraction | fundamental |
 | `App` | application | fundamental |
 | `Let hint e (Term (S n))` | non-recursive, generalising local binding; cannot be `App (Lam …)` because `Let` is where let-polymorphism happens | fundamental |
-| `If` | conditional, lazy in both branches; cannot be a primitive because primitives evaluate under call-by-need only argument by argument, and `if` must *select* a branch | special form: becomes `Case` on `Bool` when `Case` arrives |
+| `Con name [Term n]` | a saturated data constructor: `True`, `False`, `Tuple`, `Nil`, `Cons`; structured data with fields of different types, which no tensor can hold | fundamental |
+| `Case scrutinee [Alt]` | first-class choice between alternatives, one per constructor in canonical order, each binding the fields; lazy in the bodies. Cannot be a primitive because a primitive cannot select which argument to evaluate | fundamental; absorbed `If` and the boolean literal |
 | `Pow t Integer` | `e ^ n` with a literal exponent, so the dimension of the result is static | special form: stays, because the exponent is syntax, not a value |
 | `Noise kind n` | `n` fresh nudges with definition-site identity (design §3.2.4); the identity depends on the node's path, which no primitive can see | special form: stays |
 | `Uncertain kind x e` | `x ± e`; expressible as `x + e * noise 1` but kept as a node so identity and `:view` are exact | special form: candidate for removal once `Noise` identity is settled |
@@ -149,9 +150,10 @@ larger than it will eventually need to be.
 | `Proj t i` | component at a literal position, peeling the first length off the shape, checked statically | special form: stays, for the same reason |
 | `Cycle (Vec k hint) (Vec k (Term (k + n)))` | `k` mutually recursive definitions hashed as one term (design §6.2) | fundamental for the codebase |
 
-### Typed Core (`TTerm n`, 16 constructors)
+### Typed Core (`TTerm n`, 17 constructors)
 
-The fourteen above with types on `TLam`, `TLet`, `TPrimApp` and `TCycle`, plus
+The fifteen above with types on `TLam`, `TLet`, `TPrimApp`, `TCon`, `TCase`
+(the result type, since `Nil` alone fixes no element type) and `TCycle`, plus
 two kinded type forms: `TTyLam v kind body` and `TTyApp body arg`, where the
 argument is a type, a length or a shape according to the kind, and a
 dimension once dimensions arrive. One pair serves every index kind, so adding a
@@ -185,8 +187,12 @@ at every rank:
 
 ### What is deliberately absent
 
-- **`Case` and data constructors.** Nothing in the language needs them yet.
-  They arrive with tuples (§8) and will absorb `If` and booleans.
+- **A default alternative in `Case`.** The desugarer expands `_` into the
+  missing constructors, so every `Case` is exhaustive and canonically ordered
+  and two terms that mean the same case analysis hash the same.
+- **User data declarations.** `Con` and `Case` know five constructors. A
+  declaration adds names to that table and a type to the type language; it is
+  the planned next use of the same two forms.
 - **Local recursion.** `Let` is non-recursive. Recursion is a top-level affair
   through `Cycle`, which is where hashing needs it. A local recursive helper
   can be a top-level definition.
@@ -317,12 +323,12 @@ Applying the test to the roadmap, in order:
   parameter at run time, a dictionary. With data constructors available a
   dictionary is just a record, as in GHC, so this waits for `Case` rather than
   adding `DictLam`/`DictApp` forms of its own. No new Core form either way.
-- **Tuples, then lists, then user data types.** This is the one genuine
-  extension on the horizon: structured data and first-class choice between
-  alternatives, which no desugaring into the current Core can provide. It adds
-  `Case` and constructor application, once, and removes `If` and the boolean
-  literal. `Vec`, `Mat` and `Proj` stay built in because the length index is
-  beyond an ordinary data declaration.
+- **Tuples, then lists, then user data types.** The one genuine extension,
+  done: `Con` and `Case` arrived once, `If` and the boolean literal left, so
+  Core is 15 constructors where it was 14. It was the first hash-changing
+  migration (format 2 to 3). `Vec`, `Mat` and `Proj` stay built in because the
+  length index is beyond an ordinary data declaration. User data types add
+  constructors to the table, not forms to Core.
 - **Points and scales (design §3.6).** Two constructors in the *type* language,
   `Point δ` and `Scale δ`, five saturated primitives, and a `scale`
   declaration that is label-level metadata like `unit`. No Core change: a
@@ -340,9 +346,8 @@ Applying the test to the roadmap, in order:
 - **A compiler.** Reads Typed Core. No Core change; possibly a later, lower
   representation of its own.
 
-So in the foreseeable roadmap Core grows by exactly one mechanism, `Case` with
-constructors, and shrinks by one, `If`, with the kinds refactor shrinking Typed
-Core as well. That is the shape SPJ's discipline predicts: long stretches where
+So in the foreseeable roadmap Core has grown by exactly one mechanism, `Case`
+with constructors, and shrunk by one, `If`, as predicted. That is the shape SPJ's discipline predicts: long stretches where
 the surface grows and the core does not.
 
 ## 9. Correctness strategy
@@ -393,15 +398,15 @@ Core is small so that it can be made correct, and these are the means:
 
 | | System FC | Ours |
 |---|---|---|
-| Term constructors | about 10 | 15 untyped, 19 typed |
+| Term constructors | about 10 | 15 untyped, 17 typed |
 | Typing | explicit, Lint-checked | explicit, lint-checked |
 | Polymorphism | type abstraction and application | same, plus lengths; dimensions next |
-| Data | `case` over constructors; `Bool` is data | built-in `if`, vectors, matrices; `Case` pending |
+| Data | `case` over constructors; `Bool` is data | `case` over constructors; `Bool` is data; vectors and matrices built in |
 | Recursion | `let rec`, local | top-level `Cycle` only |
 | Coercions | `Cast` with proofs | none needed |
 | Kinds | full kind system | fixed kinds: type, length, soon dimension |
 | Identity | none | content hash of untyped Core |
 
-Structurally we are GHC's Core as it stood before coercions, with built-in data
-where FC uses `case`, and with content addressing that FC never needed. The
-gap that matters is `Case`; the rest is intended.
+Structurally we are GHC's Core as it stood before coercions, with tensors
+built in beside `case`, and with content addressing that FC never needed. The
+remaining differences are intended.

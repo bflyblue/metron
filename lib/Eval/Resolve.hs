@@ -199,6 +199,13 @@ freeNames = go Set.empty
   go bound e = case e.node of
     S.Num _ -> Set.empty
     S.Labelled _ a -> go bound a
+    S.Tuple es -> foldMap (go bound) es
+    S.List es -> foldMap (go bound) es
+    S.CaseOf s alts ->
+      go bound s
+        <> foldMap
+          (\(p, b) -> go (foldr (Set.insert . (.text)) bound (patternNames p)) b)
+          alts
     S.Bool _ -> Set.empty
     S.Var x -> if x `Set.member` bound then Set.empty else Set.singleton x
     S.Lam ns b -> go (foldr (Set.insert . (.text)) bound ns) b
@@ -239,3 +246,10 @@ markKind kind n cb = case kind of
   S.Plain -> clearFlags n cb
   S.Unit -> markUnit n cb
   S.ScaleDecl -> markScale n cb
+
+-- | The variables a pattern binds.
+patternNames :: S.Pattern -> [S.Name]
+patternNames p = case p.node of
+  S.PCon _ ns -> ns
+  S.PVar n -> [n]
+  S.PWild -> []

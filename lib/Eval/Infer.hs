@@ -17,7 +17,7 @@ module Eval.Infer (
   inferClosed,
 ) where
 
-import Control.Monad (foldM, forM_, unless, zipWithM)
+import Control.Monad (foldM, forM_, unless, zipWithM, zipWithM_)
 import Control.Monad.State.Strict (StateT, get, gets, modify', put, runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.List (isSuffixOf, minimumBy, nubBy)
@@ -155,6 +155,17 @@ unify p expected actual = do
     (TVar v, t) -> bindVar p v (AType t)
     (t, TVar v) -> bindVar p v (AType t)
     (TFun a1 b1, TFun a2 b2) -> unify p a1 a2 >> unify p b1 b2
+    (TTuple as, TTuple bs)
+      | length as == length bs -> zipWithM_ (unify p) as bs
+      | otherwise ->
+          failAt
+            p
+            ( "expected a tuple of "
+                <> tshow (length as)
+                <> " components, got one of "
+                <> tshow (length bs)
+            )
+    (TList a1, TList a2) -> unify p a1 a2
     (TPoint s1 d1, TPoint s2 d2) -> shapeAndDims s1 d1 s2 d2
     (TScale s1 d1, TScale s2 d2) -> shapeAndDims s1 d1 s2 d2
     (TTensor s1 d1, TTensor s2 d2) -> do
@@ -348,6 +359,9 @@ solveOne p = \case
       TTensor _ _ -> pure True
       TBool -> pure True
       TPoint _ _ -> pure True
+      -- Structured data compares when its components do.
+      TTuple ts -> mapM_ (defer p . EqInstance) ts >> pure True
+      TList elt -> defer p (EqInstance elt) >> pure True
       TVar _ -> pure False
       _ -> failAt p ("no equality on " <> renderType t')
   OrdInstance t -> do
@@ -474,6 +488,8 @@ negativeOnly quantified ts =
     TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TPoint _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TScale _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TTuple parts -> concatMap (exponents v) parts
+    TList t -> exponents v t
     TFun a b -> exponents v a ++ exponents v b
     TVar _ -> []
 
@@ -530,8 +546,28 @@ infer look p ctx = \case
     -- was waiting for; solve now so later errors print resolved types.
     solvePending
     pure (result, TPrimApp name t (map snd typed))
-  Lit l@(LTensor dims _) -> pure (TTensor (shapeOfDims dims) dimOne, TLit l)
-  Lit l@(LBool _) -> pure (TBool, TLit l)
+  Lit l@(LTensor (dims, _)) -> pure (TTensor (shapeOfDims dims) dimOne, TLit l)
+  -- Data (design §5.1): constructors are typed by the table below, a case by
+  -- its scrutinee's constructors, with each alternative binding the fields.
+  Con c args -> do
+    (fieldTys, resultTy) <- constructorType p c (length args)
+    typed <-
+      zipWithM
+        ( \i (a, want) -> do (ta, a') <- infer look (i : p) ctx a; unify (i : p) want ta; pure a'
+        )
+        [0 ..]
+        (zip args fieldTys)
+    resolved <- resolve resultTy
+    pure (resolved, TCon c resolved typed)
+  Case s alts -> do
+    (ts, s') <- infer look (0 : p) ctx s
+    result <- freshType
+    typedAlts <-
+      zipWithM (\i alt -> inferAlt look (i : p) ctx ts result alt) [1 ..] alts
+    ts' <- resolve ts
+    checkExhaustive p ts' [c | Alt c _ _ <- alts]
+    result' <- resolve result
+    pure (result', TCase s' result' typedAlts)
   Lam h body -> do
     a <- freshType
     (b, body') <- infer look (0 : p) (VCons (Forall [] a) ctx) body
@@ -553,13 +589,6 @@ infer look p ctx = \case
     sc@(Forall vs _) <- generalise ctx te
     (tb, body') <- infer look (1 : p) (VCons sc ctx) body
     pure (tb, TLet h sc (abstractOver vs e') body')
-  If c t e -> do
-    (tc, c') <- infer look (0 : p) ctx c
-    unifyMsg (0 : p) TBool tc "the condition of `if` must be a Bool"
-    (tt, t') <- infer look (1 : p) ctx t
-    (te, e') <- infer look (2 : p) ctx e
-    unifyMsg (2 : p) tt te "both branches of `if` must have the same type"
-    pure (tt, TIf c' t' e')
   Pow b n -> do
     (tb, b') <- infer look (0 : p) ctx b
     d <- freshDim
@@ -746,7 +775,15 @@ zonk s = go
     TLam h ty b -> TLam h (applyType s ty) (go b)
     TApp f a -> TApp (go f) (go a)
     TLet h sc e b -> TLet h (applyScheme s sc) (go e) (go b)
-    TIf c t e -> TIf (go c) (go t) (go e)
+    TCon c ty args -> TCon c (applyType s ty) (map go args)
+    TCase sc ty alts ->
+      TCase
+        (go sc)
+        (applyType s ty)
+        ( map
+            (\(TAlt c bs b) -> TAlt c (vecMap (\(h, t) -> (h, applyType s t)) bs) (go b))
+            alts
+        )
     TPow b n -> TPow (go b) n
     TNoise k l n -> TNoise k l n
     TUncertain k l x e -> TUncertain k l (go x) (go e)
@@ -787,3 +824,92 @@ vecZipWith :: (a -> b -> c) -> Vec k a -> Vec k b -> Vec k c
 vecZipWith f as bs = case (as, bs) of
   (VNil, VNil) -> VNil
   (VCons a as', VCons b bs') -> VCons (f a b) (vecZipWith f as' bs')
+
+-- Data ---------------------------------------------------------------------------------
+
+{- | Field types and result type of a constructor applied to @k@ arguments,
+with fresh variables where the constructor is polymorphic.
+-}
+constructorType :: Path -> Text -> Int -> Infer ([Type], Type)
+constructorType p c k = case c of
+  "True" | k == 0 -> pure ([], TBool)
+  "False" | k == 0 -> pure ([], TBool)
+  "Tuple" | k >= 2 -> do
+    ts <- mapM (const freshType) [1 .. k]
+    pure (ts, TTuple ts)
+  "Nil" | k == 0 -> (\t -> ([], TList t)) <$> freshType
+  "Cons" | k == 2 -> (\t -> ([t, TList t], TList t)) <$> freshType
+  _ -> failAt p ("unknown constructor " <> c <> " with " <> tshow k <> " fields")
+
+{- | One alternative: the constructor's fields enter scope at their types and
+the body must have the case's result type.
+-}
+inferAlt ::
+  TypeLookup -> Path -> Vec n Scheme -> Type -> Type -> Alt n -> Infer (TAlt n)
+inferAlt look p ctx scrutTy result (Alt c hs body) = do
+  st <- resolve scrutTy
+  fields <- case dataConstructors st of
+    Just cs -> case lookup c cs of
+      Just fts
+        | length fts == vecLength hs -> pure fts
+        | otherwise ->
+            failAt
+              p
+              ( "constructor "
+                  <> c
+                  <> " has "
+                  <> tshow (length fts)
+                  <> " fields, the pattern binds "
+                  <> tshow (vecLength hs)
+              )
+      Nothing -> failAt p ("constructor " <> c <> " does not belong to " <> renderType st)
+    Nothing -> case st of
+      TVar _ -> do
+        (fts, rt) <- constructorType p c (vecLength hs)
+        unify p scrutTy rt
+        pure fts
+      _ ->
+        failAt
+          p
+          ( "cannot match "
+              <> renderType st
+              <> " against the constructor "
+              <> c
+              <> ( if c `elem` ["True", "False"]
+                     then ": the condition of `if` must be a Bool"
+                     else ""
+                 )
+          )
+  let typed = attach hs fields
+  (tb, body') <-
+    infer look (0 : p) (vecAppend (vecMap (Forall [] . snd) typed) ctx) body
+  unify p result tb
+  pure (TAlt c typed body')
+ where
+  attach :: Vec k Hint -> [Type] -> Vec k (Hint, Type)
+  attach VNil _ = VNil
+  attach (VCons h rest) (t : ts) = VCons (h, t) (attach rest ts)
+  attach (VCons h rest) [] = VCons (h, TBool) (attach rest []) -- unreachable: lengths were checked
+
+{- | A case covers exactly the constructors of its scrutinee's type, in
+canonical order (design §5.1).
+-}
+checkExhaustive :: Path -> Type -> [Text] -> Infer ()
+checkExhaustive p ty cs = case dataConstructors ty of
+  Nothing ->
+    failAt
+      p
+      ( "cannot case on "
+          <> renderType ty
+          <> "; the scrutinee's type is not a data type, or not yet known"
+      )
+  Just table -> do
+    let want = map fst table
+    unless (cs == want)
+      $ failAt
+        p
+        ( "the alternatives must be exactly "
+            <> T.intercalate ", " want
+            <> " in that order; got "
+            <> T.intercalate ", " cs
+        )

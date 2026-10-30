@@ -172,6 +172,29 @@ algebra =
   , ("cross", "\\a b -> star (a /\\ b)")
   ]
 
+{- | Tuples and lists (design §2.3): the structural functions, recursive
+through cycles like any other definition.
+-}
+structural :: [(Text, Text)]
+structural =
+  [ ("fst", "\\p -> case p of (a, _) -> a")
+  , ("snd", "\\p -> case p of (_, b) -> b")
+  , ("map", "\\f xs -> case xs of {} -> {}; x : rest -> f x : map f rest")
+  ,
+    ( "filter"
+    , "\\p xs -> case xs of {} -> {}; x : rest -> if p x then x : filter p rest else filter p rest"
+    )
+  , ("foldr", "\\f z xs -> case xs of {} -> z; x : rest -> f x (foldr f z rest)")
+  , ("foldl", "\\f z xs -> case xs of {} -> z; x : rest -> foldl f (f z x) rest")
+  , ("length", "\\xs -> foldl (\\n _ -> n + 1) 0 xs")
+  , ("reverse", "\\xs -> foldl (\\acc x -> x : acc) {} xs")
+  ,
+    ( "zip"
+    , "\\xs ys -> case xs of {} -> {}; x : xr -> case ys of {} -> {}; y : yr -> (x, y) : zip xr yr"
+    )
+  , ("range", "\\a b -> if a > b then {} else a : range (a + 1) b")
+  ]
+
 preludeSource :: Text
 preludeSource =
   T.unlines
@@ -184,6 +207,7 @@ preludeSource =
       ++ [def n e | (n, e) <- constants]
       ++ [scaleDef n e | (n, e) <- scales]
       ++ [def n e | (n, e) <- algebra]
+      ++ [def n e | (n, e) <- structural]
  where
   def n e = "let " <> n <> " = " <> e
   unitDef n e = "unit " <> n <> " = " <> e
@@ -197,3 +221,4 @@ preludeNames =
     ++ map fst constants
     ++ map fst scales
     ++ map fst algebra
+    ++ map fst structural

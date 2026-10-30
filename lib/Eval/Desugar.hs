@@ -121,8 +121,16 @@ desugar :: Path -> Ctx n -> S.Expr -> M (Term n)
 desugar path ctx e = do
   record path e.span
   case e.node of
-    S.Num r -> pure (Lit (LTensor [] [r]))
-    S.Bool b -> pure (Lit (LBool b))
+    S.Num r -> pure (Lit (LTensor ([], [r])))
+    S.Bool b -> pure (Con (if b then "True" else "False") [])
+    S.Tuple es -> Con "Tuple" <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
+    S.List es ->
+      foldr
+        ( \(i, a) rest -> (\x r -> Con "Cons" [x, r]) <$> desugar (i : path) ctx a <*> rest
+        )
+        (pure (Con "Nil" []))
+        (zip [0 ..] es)
+    S.CaseOf scrut alts -> caseOf path ctx e.span scrut alts
     S.Var x -> headApp path ctx e x []
     S.App f a ->
       let (hd, args) = spine e
@@ -140,11 +148,12 @@ desugar path ctx e = do
       Let (Hint n.text)
         <$> lams (0 : path) ctx rhs.span params rhs
         <*> desugar (1 : path) (VCons n.text ctx) body
-    S.If c t f ->
-      If
-        <$> desugar (0 : path) ctx c
-        <*> desugar (1 : path) ctx t
-        <*> desugar (2 : path) ctx f
+    -- if is a case on Bool (design §5.1): alternatives in canonical order.
+    S.If c t f -> do
+      c' <- desugar (0 : path) ctx c
+      t' <- desugar (1 : path) ctx t
+      f' <- desugar (2 : path) ctx f
+      pure (Case c' [Alt "False" VNil f', Alt "True" VNil t'])
     S.BinOp op a b -> case op of
       S.PlusMinus k ->
         Uncertain k
@@ -156,6 +165,10 @@ desugar path ctx e = do
         scaleName <- isScaleName ctx b
         prim (if scaleName then "toScale" else "to") [a, b]
       S.PAdd -> prim "pointAdd" [a, b]
+      S.Cons ->
+        (\x r -> Con "Cons" [x, r])
+          <$> desugar (0 : path) ctx a
+          <*> desugar (1 : path) ctx b
       S.PSub -> prim "pointSub" [a, b]
       S.Compose ->
         -- f ∘ g  =  \x -> f (g x)
@@ -208,7 +221,7 @@ desugar path ctx e = do
     S.Neg a -> do
       a' <- desugar (0 : path) ctx a
       pure $ case a' of
-        Lit (LTensor dims rs) -> Lit (LTensor dims (map negate rs))
+        Lit (LTensor (dims, rs)) -> Lit (LTensor (dims, map negate rs))
         _ -> PrimApp "neg" [a']
     S.Pow a n -> (`Pow` n) <$> desugar (0 : path) ctx a
     S.SectionL op a ->
@@ -251,11 +264,11 @@ foldConstant :: [Term n] -> Term n
 foldConstant elems = case traverse constant elems of
   Just ((dims, _) : rest)
     | all ((== dims) . fst) rest ->
-        Lit (LTensor (length elems : dims) (concatMap snd (constants elems)))
+        Lit (LTensor (length elems : dims, concatMap snd (constants elems)))
   _ -> Pack elems
  where
   constant = \case
-    Lit (LTensor dims rs) -> Just (dims, rs)
+    Lit (LTensor (dims, rs)) -> Just (dims, rs)
     _ -> Nothing
   constants = foldr (\e acc -> maybe acc (: acc) (constant e)) []
 
@@ -385,6 +398,7 @@ opPrim = \case
   S.To -> "to"
   S.PAdd -> "pointAdd"
   S.PSub -> "pointSub"
+  S.Cons -> "cons"
   S.PlusMinus _ -> "uncertain"
   S.Compose -> "compose"
   S.Infix n -> n
@@ -435,3 +449,102 @@ isScaleName ctx e = case e.node of
     | Nothing <- lookupCtx x ctx ->
         asks (\env -> maybe False (.isScale) (env.resolve x))
   _ -> pure False
+
+{- | A @case@ (design §2.3, §5.1): one alternative per constructor of the
+scrutinee's type, in canonical order. The type is read off the constructor
+patterns present; a @_@ or a variable supplies every constructor not
+written, with its body weakened under that constructor's fields (and, for a
+variable, the scrutinee bound once around the whole case).
+-}
+caseOf ::
+  Path -> Ctx n -> S.Span -> S.Expr -> [(S.Pattern, S.Expr)] -> M (Term n)
+caseOf path ctx sp scrut alts = do
+  let explicit = [(c, ns, body, p) | (p@S.Pattern{node = S.PCon c ns}, body) <- alts]
+      catchAll = [(p, body) | (p, body) <- alts, isCatchAll p.node]
+  table <- case explicit of
+    [] ->
+      failWith
+        ( BadSpecialForm
+            sp
+            "a case needs at least one constructor pattern ((a, b), x : xs, {}, true or false) to say which type it analyses"
+        )
+    (c, ns, _, p) : _ ->
+      maybe
+        (failWith (BadSpecialForm p.span ("unknown constructor pattern " <> c)))
+        pure
+        (tableFor c (length ns))
+  -- Every written constructor belongs to the type, once, with the right arity.
+  mapM_
+    ( \(c, ns, _, p) -> case lookup c table of
+        Nothing ->
+          failWith
+            ( BadSpecialForm
+                p.span
+                ("pattern " <> c <> " does not belong to the type of the scrutinee")
+            )
+        Just k
+          | k /= length ns ->
+              failWith
+                ( BadSpecialForm
+                    p.span
+                    ("pattern " <> c <> " has " <> T.pack (show k) <> " fields")
+                )
+        _ -> pure ()
+    )
+    explicit
+  let names = [c | (c, _, _, _) <- explicit]
+      dup = [c | (c, i) <- zip names [0 :: Int ..], c `elem` take i names]
+      missing = [c | (c, _) <- table, c `notElem` names]
+  mapM_
+    (\c -> failWith (BadSpecialForm sp ("constructor " <> c <> " appears twice")))
+    (take 1 dup)
+  case (missing, catchAll) of
+    (_ : _, []) ->
+      failWith
+        (BadSpecialForm sp ("case does not cover " <> T.intercalate ", " missing))
+    _ -> pure ()
+  scrut' <- desugar (0 : path) ctx scrut
+  case catchAll of
+    (S.Pattern{node = S.PVar v}, _) : _ ->
+      -- let v = scrutinee in case v of …
+      Let (Hint v.text) scrut'
+        <$> build (VCons v.text ctx) (Var FZ) table explicit catchAll
+    _ -> build ctx scrut' table explicit catchAll
+ where
+  isCatchAll = \case
+    S.PWild -> True
+    S.PVar _ -> True
+    _ -> False
+  tableFor c k = case c of
+    "True" -> Just [("False", 0), ("True", 0)]
+    "False" -> Just [("False", 0), ("True", 0)]
+    "Tuple" -> Just [("Tuple", k)]
+    "Nil" -> Just [("Nil", 0), ("Cons", 2)]
+    "Cons" -> Just [("Nil", 0), ("Cons", 2)]
+    _ -> Nothing
+  build ::
+    forall m.
+    Ctx m ->
+    Term m ->
+    [(Text, Int)] ->
+    [(Text, [S.Name], S.Expr, S.Pattern)] ->
+    [(S.Pattern, S.Expr)] ->
+    M (Term m)
+  build ctx' scrutTerm table explicit catchAll = do
+    alts' <- zipWithM (alternative ctx' explicit catchAll) [1 ..] table
+    pure (Case scrutTerm alts')
+  alternative ::
+    forall m.
+    Ctx m ->
+    [(Text, [S.Name], S.Expr, S.Pattern)] ->
+    [(S.Pattern, S.Expr)] ->
+    Int ->
+    (Text, Int) ->
+    M (Alt m)
+  alternative ctx' explicit catchAll i (c, k) = case [(ns, body) | (c', ns, body, _) <- explicit, c' == c] of
+    (ns, body) : _ -> case vecFromList (map (.text) ns) of
+      SomeVec hs -> Alt c (vecMap Hint hs) <$> desugar (i : path) (vecAppend hs ctx') body
+    [] -> case catchAll of
+      (_, body) : _ -> case vecFromList (replicate k "_") of
+        SomeVec hs -> Alt c (vecMap Hint hs) . weakenBy hs <$> desugar (i : path) ctx' body
+      [] -> failWith (BadSpecialForm sp ("case does not cover " <> c))

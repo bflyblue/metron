@@ -25,6 +25,7 @@ import Eval.Affine
 import Eval.Core
 import Eval.Dimension (renderUnits)
 import Eval.Eval
+import Eval.TCore (patternText)
 
 -- Numbers ------------------------------------------------------------------------
 
@@ -178,6 +179,17 @@ renderValueWith namer scale prefs showMagnitude = \case
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
+  -- Tuples as written; a list by walking its spine.
+  VData "Tuple" fields -> do
+    parts <- mapM (>>= renderValueWith namer scale prefs showMagnitude) fields
+    pure ("(" <> T.intercalate ", " parts <> ")")
+  v@(VData c _) | c == "Cons" || c == "Nil" -> do
+    items <- listItems v
+    parts <- mapM (renderValueWith namer scale prefs showMagnitude) items
+    pure ("{" <> T.intercalate ", " parts <> "}")
+  VData c fields -> do
+    parts <- mapM (>>= renderValueWith namer scale prefs showMagnitude) fields
+    pure (T.unwords (c : parts))
   -- A point prints on the scale it was written on (design §3.6): steps from
   -- the origin, then the scale's name; without a scale, as an amount from
   -- the base origin in base units.
@@ -378,12 +390,10 @@ renderTerm namer = go 0
   go prec ctx t = case t of
     Var i -> lookupVar i ctx
     Ref h idx (Hint written) -> namer h idx written
-    Lit (LTensor [] [r])
+    Lit (LTensor ([], [r]))
       | r < 0 -> paren (prec > 8) (renderRational 20 r)
       | otherwise -> renderRational 20 r
-    Lit (LTensor dims rs) -> renderNested (renderRational 20) dims rs
-    Lit (LBool True) -> "true"
-    Lit (LBool False) -> "false"
+    Lit (LTensor (dims, rs)) -> renderNested (renderRational 20) dims rs
     Lam (Hint h) b ->
       let h' = freshen h ctx
        in paren (prec > 0) ("\\" <> h' <> " -> " <> go 0 (VCons h' ctx) b)
@@ -393,10 +403,29 @@ renderTerm namer = go 0
        in paren
             (prec > 0)
             ("let " <> h' <> " = " <> go 0 ctx e <> " in " <> go 0 (VCons h' ctx) b)
-    If c th el ->
+    Con c args -> case (c, args) of
+      ("True", []) -> "true"
+      ("False", []) -> "false"
+      ("Tuple", _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
+      ("Nil", []) -> "{}"
+      ("Cons", [x, xs]) -> case listSpine xs of
+        Just items -> "{" <> T.intercalate ", " (map (go 0 ctx) (x : items)) <> "}"
+        Nothing -> paren (prec > 4) (go 5 ctx x <> " : " <> go 4 ctx xs)
+      _ -> paren (prec > 10) (T.unwords (c : map (go 11 ctx) args))
+    -- A case on Bool reads back as the if it came from.
+    Case sc [Alt "False" VNil el, Alt "True" VNil th] ->
       paren
         (prec > 0)
-        ("if " <> go 0 ctx c <> " then " <> go 0 ctx th <> " else " <> go 0 ctx el)
+        ("if " <> go 0 ctx sc <> " then " <> go 0 ctx th <> " else " <> go 0 ctx el)
+    Case sc alts ->
+      paren
+        (prec > 0)
+        ("case " <> go 0 ctx sc <> " of " <> T.intercalate "; " (map alt alts))
+     where
+      alt (Alt c hs b) =
+        let names = freshenAll (vecMap (\(Hint h) -> h) hs) ctx
+            ctx' = vecAppend names ctx
+         in patternText c (vecToList names) <> " -> " <> go 0 ctx' b
     Pow b n -> paren (prec > 9) (go 10 ctx b <> "^" <> tshow n)
     Noise Bound l n -> "noise " <> tshow n <> renderLabel l
     Noise Stat l n -> "gauss " <> tshow n <> renderLabel l
@@ -424,7 +453,7 @@ renderTerm namer = go 0
   prim :: Int -> Vec m Text -> Text -> [Term m] -> Text
   prim prec ctx p args = case (binary p, args) of
     -- Points and scales read back as they are written (design §3.6).
-    (_, [s, Lit (LTensor [] [r])])
+    (_, [s, Lit (LTensor ([], [r]))])
       | p == "pointOn" ->
           paren (prec > 10) (renderRational 20 r <> " " <> go 11 ctx s)
     (_, [a, b]) | p == "mkScale" -> paren (prec > 0) (go 1 ctx a <> " at " <> go 1 ctx b)
@@ -450,6 +479,13 @@ renderTerm namer = go 0
   -- or a composition, `§s0`, which is not an identifier). De Bruijn
   -- indices make the term itself unambiguous; this keeps the printed text
   -- so.
+  -- Fresh names for a group of binders entering scope together.
+  freshenAll :: forall j m. Vec j Text -> Vec m Text -> Vec j Text
+  freshenAll hs ctx = case hs of
+    VNil -> VNil
+    VCons h rest ->
+      let h' = freshen h (vecAppend rest ctx)
+       in VCons h' (freshenAll rest (VCons h' ctx))
   freshen :: Text -> Vec m Text -> Text
   freshen h ctx
     | T.null h || "§" `T.isPrefixOf` h = freshen "x" ctx
@@ -490,3 +526,20 @@ binary = \case
 -- | A magnitude to two significant digits, for radii and bias boxes.
 renderRough :: Magnitude -> Text
 renderRough m = renderRadius (abs (midpoint m))
+
+-- | The elements of a list value, forcing its spine.
+listItems :: Value -> Either EvalError [Value]
+listItems = \case
+  VData "Nil" [] -> Right []
+  VData "Cons" [x, xs] -> do
+    x' <- x
+    rest <- xs >>= listItems
+    pure (x' : rest)
+  _ -> Left (Internal "not a list")
+
+-- | The remaining elements of a literal list spine, if it ends in @{}@.
+listSpine :: Term n -> Maybe [Term n]
+listSpine = \case
+  Con "Nil" [] -> Just []
+  Con "Cons" [x, xs] -> (x :) <$> listSpine xs
+  _ -> Nothing

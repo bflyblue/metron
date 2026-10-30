@@ -35,6 +35,8 @@ module Eval.Core (
   renderLabel,
   Lit (..),
   Term (..),
+  Alt (..),
+  weakenBy,
   alphaEq,
   refs,
   refsWithIndex,
@@ -163,9 +165,9 @@ renderLabel = \case
 row-major order; a number is the rank-zero case. The boolean alternative is
 the last special-cased constant (core.md §5).
 -}
-data Lit
-  = LTensor [Int] [Rational]
-  | LBool Bool
+
+-- | A constant tensor: shape and flat row-major values. Booleans are data ('Con').
+newtype Lit = LTensor ([Int], [Rational])
   deriving stock (Eq, Ord, Show)
 
 {- | Core terms in a scope of @n@ variables. @Var FZ@ is the innermost
@@ -189,8 +191,15 @@ data Term (n :: Nat) where
   App :: Term n -> Term n -> Term n
   -- | Non-recursive, generalising local binding: @Let h e b@ binds @e@ in @b@.
   Let :: Hint -> Term n -> Term (S n) -> Term n
-  -- | Lazy in both branches.
-  If :: Term n -> Term n -> Term n -> Term n
+  {- | A saturated data constructor (design §5.1): @True@, @False@, @Tuple@ (arity
+  from the arguments), @Nil@, @Cons@.
+  -}
+  Con :: Text -> [Term n] -> Term n
+  {- | Case analysis: one alternative per constructor of the scrutinee's type,
+  in canonical (declaration) order, each binding the constructor's fields. Lazy in
+  the bodies.
+  -}
+  Case :: Term n -> [Alt n] -> Term n
   -- | @e ^ n@ with a literal integer exponent.
   Pow :: Term n -> Integer -> Term n
   -- | @noise n@ or @gauss n@: @n@ fresh unit nudges as a dimensionless vector.
@@ -209,6 +218,12 @@ data Term (n :: Nat) where
   -- | @k@ mutually recursive bodies, each in scope of the @k@ members.
   Cycle :: Vec k Hint -> Vec k (Term (Plus k n)) -> Term n
 
+-- | An alternative of a 'Case': constructor, field hints, body in scope of the fields.
+data Alt n = forall k. Alt Text (Vec k Hint) (Term (Plus k n))
+
+instance Show (Alt n) where
+  show (Alt c hs b) = "Alt " ++ show c ++ " " ++ show (vecToList hs) ++ " (" ++ show b ++ ")"
+
 deriving stock instance Show (Term n)
 
 {- | Alpha-equivalence: structural equality ignoring hints. Because variables
@@ -226,7 +241,8 @@ alphaEq = go
   go (Lam _ b) (Lam _ b') = go b b'
   go (App f a) (App g b) = go f g && go a b
   go (Let _ e b) (Let _ e' b') = go e e' && go b b'
-  go (If c t e) (If c' t' e') = go c c' && go t t' && go e e'
+  go (Con c as) (Con c' bs) = c == c' && goList as bs
+  go (Case s as) (Case s' bs) = go s s' && length as == length bs && and (zipWith goAlt as bs)
   go (Pow t n) (Pow t' n') = n == n' && go t t'
   go (Noise k l n) (Noise k' l' n') = k == k' && l == l' && n == n'
   go (Uncertain k l x e) (Uncertain k' l' x' e') = k == k' && l == l' && go x x' && go e e'
@@ -237,6 +253,8 @@ alphaEq = go
 
   goList :: [Term a] -> [Term b] -> Bool
   goList as bs = length as == length bs && and (zipWith go as bs)
+  goAlt :: Alt a -> Alt b -> Bool
+  goAlt (Alt c hs b) (Alt c' hs' b') = c == c' && vecLength hs == vecLength hs' && go b b'
 
 -- | The hashes a term refers to.
 refs :: Term n -> Set Hash
@@ -248,7 +266,8 @@ refs = \case
   Lam _ b -> refs b
   App f a -> refs f <> refs a
   Let _ e b -> refs e <> refs b
-  If c t e -> refs c <> refs t <> refs e
+  Con _ as -> foldMap refs as
+  Case s alts -> refs s <> foldMap (\(Alt _ _ b) -> refs b) alts
   Pow t _ -> refs t
   Noise{} -> Set.empty
   Uncertain _ _ x e -> refs x <> refs e
@@ -266,7 +285,8 @@ refsWithIndex = \case
   Lam _ b -> refsWithIndex b
   App f a -> refsWithIndex f <> refsWithIndex a
   Let _ e b -> refsWithIndex e <> refsWithIndex b
-  If c t e -> refsWithIndex c <> refsWithIndex t <> refsWithIndex e
+  Con _ as -> foldMap refsWithIndex as
+  Case s alts -> refsWithIndex s <> foldMap (\(Alt _ _ b) -> refsWithIndex b) alts
   Pow t _ -> refsWithIndex t
   Noise{} -> Set.empty
   Uncertain _ _ x e -> refsWithIndex x <> refsWithIndex e
@@ -290,7 +310,8 @@ rewriteRefs f = go
     Lam h b -> Lam h (go b)
     App a b -> App (go a) (go b)
     Let h e b -> Let h (go e) (go b)
-    If c t e -> If (go c) (go t) (go e)
+    Con c as -> Con c (map go as)
+    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
     Pow t n -> Pow (go t) n
     Noise k l n -> Noise k l n
     Uncertain k l x e -> Uncertain k l (go x) (go e)
@@ -366,3 +387,47 @@ primArity = \case
   "cholesky" -> Just 1
   "covariance" -> Just 1
   _ -> Nothing
+
+-- Renaming and weakening ------------------------------------------------------
+
+{- | Apply a renaming of free variables, lifting it under binders. The one use
+is weakening: moving a term under new binders it does not mention.
+-}
+renameTerm :: forall n m. (Fin n -> Fin m) -> Term n -> Term m
+renameTerm f = \case
+  Var i -> Var (f i)
+  Ref h i hint -> Ref h i hint
+  PrimApp p as -> PrimApp p (map (renameTerm f) as)
+  Lit l -> Lit l
+  Lam h b -> Lam h (renameTerm (liftFin f) b)
+  App a b -> App (renameTerm f a) (renameTerm f b)
+  Let h e b -> Let h (renameTerm f e) (renameTerm (liftFin f) b)
+  Con c as -> Con c (map (renameTerm f) as)
+  Case s alts -> Case (renameTerm f s) (map renameAlt alts)
+  Pow t k -> Pow (renameTerm f t) k
+  Noise k l n -> Noise k l n
+  Uncertain k l x e -> Uncertain k l (renameTerm f x) (renameTerm f e)
+  Pack ts -> Pack (map (renameTerm f) ts)
+  Proj t i -> Proj (renameTerm f t) i
+  Cycle hs bs -> Cycle hs (vecMap (renameTerm (liftFinBy hs f)) bs)
+ where
+  renameAlt (Alt c hs b) = Alt c hs (renameTerm (liftFinBy hs f) b)
+
+liftFin :: (Fin n -> Fin m) -> Fin (S n) -> Fin (S m)
+liftFin f = \case
+  FZ -> FZ
+  FS i -> FS (f i)
+
+liftFinBy :: Vec k a -> (Fin n -> Fin m) -> Fin (Plus k n) -> Fin (Plus k m)
+liftFinBy ks f = case ks of
+  VNil -> f
+  VCons _ rest -> liftFin (liftFinBy rest f)
+
+-- | Move a term under @k@ new innermost binders it does not mention.
+weakenBy :: Vec k a -> Term n -> Term (Plus k n)
+weakenBy ks = renameTerm (shiftFin ks)
+ where
+  shiftFin :: Vec j a -> Fin n -> Fin (Plus j n)
+  shiftFin js i = case js of
+    VNil -> i
+    VCons _ rest -> FS (shiftFin rest i)

@@ -10,6 +10,7 @@ module Eval.Type (
   Kind (..),
   VarId,
   Type (..),
+  dataConstructors,
   Len (..),
   Shape (..),
   Arg (..),
@@ -55,6 +56,10 @@ data Type
     TPoint Shape Dim
   | -- | a scale for writing and printing points (design §3.6)
     TScale Shape Dim
+  | -- | a tuple of two or more components (design §2.3)
+    TTuple [Type]
+  | -- | a list
+    TList Type
   | TFun Type Type
   | TVar VarId
   deriving stock (Eq, Ord, Show)
@@ -115,6 +120,8 @@ applyType s = \case
   TTensor sh d -> TTensor (applyShape s sh) (applyDim s d)
   TPoint sh d -> TPoint (applyShape s sh) (applyDim s d)
   TScale sh d -> TScale (applyShape s sh) (applyDim s d)
+  TTuple ts -> TTuple (map (applyType s) ts)
+  TList t -> TList (applyType s t)
   TFun a b -> TFun (applyType s a) (applyType s b)
   TVar v -> case Map.lookup v s of
     Just (AType t) -> applyType s t
@@ -176,6 +183,8 @@ substOnce m = go
     TTensor sh d -> TTensor (shape sh) (dim d)
     TPoint sh d -> TPoint (shape sh) (dim d)
     TScale sh d -> TScale (shape sh) (dim d)
+    TTuple ts -> TTuple (map go ts)
+    TList t -> TList (go t)
     TFun a b -> TFun (go a) (go b)
     TVar v -> case Map.lookup v m of
       Just (AType t) -> t
@@ -210,6 +219,8 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
     TTensor sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
     TPoint sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
     TScale sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
+    TTuple ts -> concatMap go ts
+    TList t -> go t
     TFun a b -> go a ++ go b
     TVar v -> [(v, KType)]
   shape = \case
@@ -264,6 +275,8 @@ renderWith names prec = \case
   TPoint sh d -> "Point (" <> tensor sh <> dim d <> ")"
   TScale SNil d -> "Scale" <> dim d
   TScale sh d -> "Scale (" <> tensor sh <> dim d <> ")"
+  TTuple ts -> "(" <> T.intercalate ", " (map (renderWith names 0) ts) <> ")"
+  TList t -> "{" <> renderWith names 0 t <> "}"
   TFun a b -> paren (prec > 0) (renderWith names 1 a <> " -> " <> renderWith names 0 b)
   TVar v -> Map.findWithDefault ("t" <> T.pack (show v)) v names
  where
@@ -338,3 +351,16 @@ idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
     KLen -> "n"
     KShape -> "s"
     KDim -> "d"
+
+-- Data ----------------------------------------------------------------------------
+
+{- | The constructors of a data type with their field types, in canonical
+(declaration) order: the one table 'Con' and 'Case' are checked against
+(design §5.1).
+-}
+dataConstructors :: Type -> Maybe [(Text, [Type])]
+dataConstructors = \case
+  TBool -> Just [("False", []), ("True", [])]
+  TTuple ts -> Just [("Tuple", ts)]
+  TList t -> Just [("Nil", []), ("Cons", [t, TList t])]
+  _ -> Nothing

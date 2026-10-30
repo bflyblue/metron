@@ -162,6 +162,26 @@ f a b                           -- application by juxtaposition, left-associativ
 `let … in`, `\ … ->` and `if … then … else` extend as far to the right as possible,
 as in Haskell.
 
+**Tuples, lists and `case`.** A tuple is `(a, b)` or `(a, b, c)`, with components
+of any types; a list is `{a, b, c}` or `{}` (brackets belong to tensors, §2.4) and
+`x : xs` prepends. Both are taken apart with `case`, one constructor pattern deep:
+
+```
+case p of (r, v) -> r .+ v * dt            -- a pair
+case xs of {} -> 0; x : rest -> x + sum rest  -- a list, two alternatives
+if c then a else b   ≡   case c of true -> a; false -> b
+```
+
+The alternatives are separated by `;` or by newlines at one indentation, as
+`where` bindings are. Every alternative is a constructor pattern with variables,
+or `_`, or a plain variable; nested patterns are not accepted. A `case` must be
+exhaustive: `_` or a variable stands for every constructor not listed. Tuples
+have no projections: `fst` and `snd` are prelude definitions by `case`, and a
+six-element orbital state is `(r, v)` with two dimensions, not a `Vec 6`. Lists
+are the one unbounded structure; `map`, `filter`, `foldl`, `foldr`, `length`,
+`sum`, `zip`, `range` and `reverse` are prelude definitions, recursive through
+`Cycle` like any other.
+
 Further sugar, all removed by desugaring (§2.9):
 
 ```
@@ -290,6 +310,11 @@ atom       ::= primary ( '.' projection )*          -- no whitespace around '.'
 projection ::= natural
 primary    ::= number | name | 'true' | 'false'
              | '(' expr ')' | section | vector | matrix
+             | '(' expr ( ',' expr )+ ')'                      -- a tuple
+             | '{' [ expr ( ',' expr )* ] '}'                   -- a list
+             | 'case' expr 'of' alts                       -- alts: an indented block, or ; separated
+alt        ::= pattern '->' expr
+pattern    ::= '(' name ( ',' name )+ ')' | '{}' | name ':' name | 'true' | 'false' | '_' | name
 section    ::= '(' operator expr ')' | '(' expr operator ')'
 vector     ::= '[' [ expr ( sep expr )* ] ']'     -- sep: ',' elements, ';' rows, ';;' planes …
 matrix     ::= vector                             -- [1, 2; 3, 4] or [[1, 2], [3, 4]]
@@ -405,7 +430,9 @@ clearer.
 | Static type | Runtime value | Notes |
 |---|---|---|
 | `Num δ` | a magnitude (§3.2) plus a dimension vector and a display-unit hint | `δ` is checked statically; the runtime dimension vector exists only for printing. `Num δ` is the rank-zero tensor `Tensor [] δ` (§3.3) |
-| `Bool` | `true` or `false` | primitive because `if` and comparisons need it |
+| `Bool` | `true` or `false` | a data type with two constructors; `if` is `case` on it |
+| `(a, b, …)` | a tuple of values | components of any types, so a state `(r, v)` has two dimensions |
+| `{a}` | a list: `{}` or `x : xs` | the one unbounded structure; lazy, so `range` and `map` stream |
 | `a -> b` | a closure: core term plus environment | first class; hashed like everything else |
 | `Tensor s δ` | a flat row-major buffer of magnitudes, its shape `s`, one shared dimension vector and hint | `s` is a type-level list of lengths. `Vec n δ` and `Mat m n δ` are how `Tensor [n] δ` and `Tensor [m, n] δ` print; rotations are `Mat 3 3 1` |
 
@@ -415,8 +442,9 @@ an exact rational with denominator 1, and positions that need an integer (the
 exponent of `^`, the argument of `noise` and `gauss`) are syntactic restrictions,
 not types.
 
-Tuples are the first roadmap item after the core, because a six-element orbital
-state `(r, v)` has two dimensions and cannot be a `Vec 6`. Lists come later.
+Tuples, lists and `Bool` are the data types; `case` (§2.3) is how they are
+consumed, and user-declared data types will be the same mechanism with declared
+constructors.
 
 ### 3.2 Magnitudes: exact rationals and affine forms
 
@@ -790,8 +818,8 @@ come from:
   is `180`, `(2 km)^2 / m` is `4000 km`.
 - `+` and `-` take the **smaller** of their operands' units, so that the result
   does not depend on operand order: `5 km + 3 m` and `3 m + 5 km` are both
-  `5003 m`. Projection, packing, negation, `abs`, `transpose` and
-  `⋆` keep the unit; every other operation drops it.
+  `5003 m`. Projection, packing, negation, `abs`, `norm`, `transpose`
+  and `⋆` keep the unit; every other operation drops it.
 - `x to u` replaces the display unit with `u`'s. `to` is shape-polymorphic.
 
 The rule for which unit a result prints in, in order: an explicit `to` wins;
@@ -1098,7 +1126,7 @@ concatenation for the products and an equality instance (§4.2).
 ### 4.1 Types
 
 ```
-τ ::= Tensor σ δ | Point σ δ | Scale σ δ | Bool | τ -> τ | α
+τ ::= Tensor σ δ | Point σ δ | Scale σ δ | Bool | (τ, τ, …) | {τ} | τ -> τ | α
 σ ::= [] | ν : σ | s                   -- a shape: a list of lengths, possibly ending in a shape variable
 δ ::= 1 | B | d | δ·δ | δ⁻¹          -- an abelian group, normalised
 ν ::= k | n | n + k                    -- a literal, a length variable, or a variable plus a literal offset
@@ -1398,19 +1426,28 @@ checker, so it must be able to hold ill-typed terms.
 Term n ::= Var (Fin n)                -- bound variable
          | Ref hash [idx]             -- another definition by content hash, plus cycle index
          | PrimApp name [Term n]      -- saturated primitive application
-         | Lit (Tensor shape [Rational] | Bool)   -- a constant: shape and flat row-major values
+         | Lit (Tensor shape [Rational])   -- a constant tensor: shape and flat row-major values
          | Lam hint (Term (S n))      -- one parameter
          | App (Term n) (Term n)
          | Let hint (Term n) (Term (S n))   -- non-recursive, generalising local binding
-         | If (Term n) (Term n) (Term n)    -- lazy in both branches
+         | Con name [Term n]          -- a saturated data constructor: True, False, Tuple, Nil, Cons
+         | Case (Term n) [Alt n]      -- one alternative per constructor, canonical order, lazy in the bodies
          | Pow (Term n) Integer       -- e ^ n
          | Noise Kind Integer         -- noise n / gauss n
          | Uncertain Kind (Term n) (Term n) -- x ± err / x ±σ err; a node, so :view shows it
          | Pack [Term n]              -- [a, b, c]: stack k tensors of shape s into shape k : s
          | Proj (Term n) Int          -- t.i, i a literal position: peel the first length
          | Cycle (Vec k hint) (Vec k (Term (k + n)))  -- k mutually recursive bodies
+Alt n  ::= Alt name (Vec k hint) (Term (k + n))   -- binds the constructor's k fields
 Kind ::= Bound | Stat
 ```
+
+`if c then a else b` is `Case c [Alt False [] b, Alt True [] a]`; `true` is
+`Con True []`; `(a, b)` is `Con Tuple [a, b]` (the arity is the argument count);
+`{a, b}` is `Con Cons [a, Con Cons [b, Con Nil []]]`. Alternatives follow the
+constructors' declaration order (`False, True`; `Nil, Cons`) and cover every
+constructor of the scrutinee's type; a surface
+`_` is expanded into the missing alternatives, so Core has no default case.
 
 Rules:
 
@@ -1526,11 +1563,11 @@ SHA-256 of the encoding, displayed as a base32hex prefix: `#a3f9k`.
 | 0x01 | `Ref h idx` | 32 bytes `h`, varint `idx + 1` (0 means no index) |
 | 0x02 | `PrimApp name args` | varint length, UTF-8 bytes, then each argument (count is fixed by the arity table) |
 | 0x03 | `Lit tensor` | varint rank, each length as varint, then each value as sint numerator, varint denominator, row-major |
-| 0x04 | `Lit bool` | one byte, 0 or 1 |
+| 0x04 | retired | was `Lit bool`; read by the format-2 decoder as `Con True/False`, never written |
 | 0x05 | `Lam t` | `t` |
 | 0x06 | `App f a` | `f`, `a` |
 | 0x07 | `Let e b` | `e`, `b` |
-| 0x08 | `If c t e` | `c`, `t`, `e` |
+| 0x08 | retired | was `If c t e`; read by the format-2 decoder as a `Case` on `Bool`, never written |
 | 0x09 | `Pow t n` | `t`, sint `n` |
 | 0x0A | `Noise k l n` | one byte kind (0 bound, 1 stat), label, varint `n` |
 | 0x0B | `Uncertain k l x err` | one byte kind, label, `x`, `err` |
@@ -1545,6 +1582,8 @@ declares uncertainty depends on its name; nothing else in the hash does.
 | 0x0E | `Cycle ts` | varint count, each `t` |
 | 0x0F | `Proj t i` | `t`, varint `i` |
 | 0x10 | cycle-variable placeholder | no payload; only in the ordering hash of §6.2, never in a stored term |
+| 0x11 | `Con name args` | text name, varint count, each argument |
+| 0x12 | `Case s alts` | `s`, varint count, each alternative: text name, varint `k`, (`k` hints in the storage encoding), body at depth `+ k` |
 
 `varint` is unsigned LEB128. `sint` is one sign byte followed by a varint byte
 length and big-endian magnitude bytes, so arbitrarily large integers encode
@@ -1713,7 +1752,7 @@ eval --codebase DIR …    use an explicit store
 A codebase on disk is a directory:
 
 ```
-format             "eval codebase 2": the storage format version
+format             "eval codebase 3": the storage format version
 terms/<hex hash>   one term per file: the canonical encoding of 6.1 with each
                    binder's name hint after its tag and each reference's written
                    name after it, so :view keeps the author's names and units are
@@ -1758,6 +1797,12 @@ the old rules and rewritten, with empty hints, and old `unit <hash>` lines in
 the log flag every name then bound to that hash. Hashes do not change, so the
 log and the names stay valid.
 
+
+Format 2 stores are migrated to 3 on first open as well, and this one changes
+hashes: `If` and the boolean literal became `Case` and `Con`, so every term that
+used them is decoded by the format-2 rules, re-encoded, and re-hashed, and the
+references to it and the `bind` lines of the log are rewritten to the new hash in
+dependency order. Old term files are removed.
 ### 7.5 Scratch, add, update, upgrade
 
 The codebase is never written by typing a definition. This follows Unison, whose
@@ -1820,7 +1865,11 @@ unreachable for linted terms and are reported as internal errors.
   guaranteed the shapes and dimensions match, so the evaluator does no dimension
   checking beyond maintaining the vector for printing.
 - Closures capture the environment. Application is call-by-need: Haskell's own
-  laziness supplies thunks, which `if` and recursion rely on.
+  laziness supplies thunks, which `case` and recursion rely on.
+- `Con` builds a data value whose fields are thunks; `Case` forces its scrutinee
+  to a constructor and binds the fields, unevaluated, in the chosen alternative.
+  Booleans are the two nullary constructors; lists are cons cells of thunks, so
+  an infinite `range` is fine until something walks it.
 - `Cycle` is evaluated by knot-tying: the list of member values is defined in terms
   of itself.
 - `Ref` looks up the Typed Core of the referenced hash (elaborating it on demand if
@@ -1930,7 +1979,9 @@ tuned, and compilation is a later milestone.
    `:` commands, error messages with source spans. Status: stores done (§7.4),
    haskeline with a history file beside the store, `:store`, `:prefer`,
    `:covariance`. Remaining: `:set unicode`, a merge tool for two stores' logs.
-7. **Tuples**, then **lists** with a `case` construct in the core.
+7. **Tuples**, then **lists** with a `case` construct in the core. Status: done.
+   `Con` and `Case` replaced `If` and the boolean literal (core.md §5); user
+   data types are the same mechanism with declared constructors and remain.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
    (re-evaluate at higher `p`); type annotations; user data types; mixed-dimension matrices, which

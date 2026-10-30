@@ -29,7 +29,7 @@ module Eval.Store (
   sync,
 ) where
 
-import Control.Monad (foldM, foldM_, unless)
+import Control.Monad (foldM, foldM_, forM_, unless, when)
 import Data.ByteString qualified as BS
 import Data.Either (lefts)
 import Data.Map.Strict (Map)
@@ -90,18 +90,21 @@ openStore d = do
         then pure (Right (Store d))
         else
           if line == formatLine (1 :: Int)
-            then migrate1to2 >> pure (Right (Store d))
+            then migrate1to2 >> migrate2to3 >> pure (Right (Store d))
             else
-              pure
-                ( Left
-                    ( T.pack d
-                        <> " is not an eval codebase of format "
-                        <> tshow formatVersion
-                        <> " (found \""
-                        <> line
-                        <> "\"); see core.md on migrations"
+              if line == formatLine (2 :: Int)
+                then migrate2to3 >> pure (Right (Store d))
+                else
+                  pure
+                    ( Left
+                        ( T.pack d
+                            <> " is not an eval codebase of format "
+                            <> tshow formatVersion
+                            <> " (found \""
+                            <> line
+                            <> "\"); see core.md on migrations"
+                        )
                     )
-                )
  where
   formatLine v = "eval codebase " <> tshow v
   -- Format 2 added the written name after each reference (design §7.4).
@@ -118,6 +121,45 @@ openStore d = do
             Left _ -> pure ()
       )
       files
+    TIO.writeFile (d </> "format") (formatLine (2 :: Int) <> "\n")
+  -- Format 3 replaced If and the boolean literal by Case and Con, which
+  -- changes hashes: every term is decoded by the format-2 rules (the decoder
+  -- rewrites those forms), re-hashed with its references mapped to the new
+  -- hashes in dependency order, and the log's bind lines are rewritten.
+  migrate2to3 = do
+    files <- listDirectory (d </> "terms")
+    decoded <-
+      mapM
+        ( \file -> do
+            raw <- BS.readFile (d </> "terms" </> file)
+            pure $ case (hashFromHex (T.pack file), decodeStoredV 2 raw) of
+              (Just h, Right t) -> Just (h, t)
+              _ -> Nothing
+        )
+        files
+    let old = Map.fromList [x | Just x <- decoded]
+        visit acc h
+          | Map.member h acc = acc
+          | Just t <- Map.lookup h old =
+              let acc' = foldl visit acc (Set.toList (refs t))
+                  t' = rewriteRefs (\h' i -> (\(new, _) -> (new, i)) <$> Map.lookup h' acc') t
+               in Map.insert h (hashTerm t', t') acc'
+          | otherwise = acc
+        remap = foldl visit Map.empty (Map.keys old)
+        newHashes = Set.fromList [h' | (h', _) <- Map.elems remap]
+    forM_ (Map.toList remap) $ \(h, (h', t')) -> do
+      BS.writeFile (d </> "terms" </> T.unpack (hashHex h')) (encodeStored t')
+      when (h' /= h && not (Set.member h newHashes))
+        $ removeFile (d </> "terms" </> T.unpack (hashHex h))
+    let logFile = d </> "names.log"
+    present <- doesFileExist logFile
+    when present $ do
+      ls <- T.lines <$> TIO.readFile logFile
+      let hexMap = Map.fromList [(hashHex h, hashHex h') | (h, (h', _)) <- Map.toList remap]
+          fixWord w = case T.splitOn "." w of
+            (hex : rest) | Just new <- Map.lookup hex hexMap -> T.intercalate "." (new : rest)
+            _ -> w
+      TIO.writeFile logFile (T.unlines (map (T.unwords . map fixWord . T.words) ls))
     TIO.writeFile (d </> "format") (formatLine formatVersion <> "\n")
 
 {- | Load the store on top of a codebase (the prelude's): decode every term,

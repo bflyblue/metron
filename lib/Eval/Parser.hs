@@ -188,7 +188,7 @@ whereClause = kw KWhere *> P.sepBy1 binding (tok TSep) <* tok TBlockEnd
 -- Expressions ----------------------------------------------------------------------
 
 expr :: Parser Expr
-expr = P.choice [lambda, letIn, ifExpr, opExpr]
+expr = P.choice [lambda, letIn, ifExpr, caseExpr, opExpr]
 
 lambda :: Parser Expr
 lambda = do
@@ -239,6 +239,7 @@ opExpr = makeExprParser term table
       ]
     , [InfixN plusMinus]
     , [Postfix labelP]
+    , [InfixR (binop Cons <$ opTok ":")]
     ,
       [ InfixN (binop Eq <$ opTok "==")
       , InfixN (binop Ne <$ opTok "/=")
@@ -341,6 +342,7 @@ primary =
     , (\n -> Expr n.span (Var n.text)) <$> name
     , parens
     , vecOrMat
+    , listLit
     ]
 
 {- | @(e)@, a left section @(op e)@, or a right section @(e op)@. @(- e)@ is
@@ -365,6 +367,65 @@ parens = do
           , do
               e2 <- tok TRParen
               pure (Expr (spanUnion s e2) e.node)
+          , -- A tuple: two or more components (§2.3).
+            do
+              rest <- P.some (tok TComma *> expr)
+              e2 <- tok TRParen
+              pure (Expr (spanUnion s e2) (Tuple (e : rest)))
+          ]
+    ]
+
+-- | @{a, b, c}@ or @{}@: a list literal (§2.3).
+listLit :: Parser Expr
+listLit = do
+  s <- tok TLBrace
+  es <- P.sepBy expr (tok TComma)
+  e <- tok TRBrace
+  pure (Expr (spanUnion s e) (List es))
+
+-- | @case e of alts@: the alternatives are a layout block, as after @where@.
+caseExpr :: Parser Expr
+caseExpr = do
+  s <- kw KCase
+  scrut <- expr
+  _ <- kw KOf
+  alts <- P.sepBy1 alternative (P.some (tok TSep))
+  _ <- P.optional (tok TSep)
+  _ <- tok TBlockEnd
+  let end = case alts of
+        [] -> scrut.span
+        _ -> (snd (last alts)).span
+  pure (Expr (spanUnion s end) (CaseOf scrut alts))
+ where
+  alternative = do
+    p <- patternP
+    _ <- tok TArrow
+    body <- expr
+    pure (p, body)
+
+-- | One constructor deep: a tuple of names, @{}@, @x : xs@, a boolean, @_@ or a name.
+patternP :: Parser Pattern
+patternP =
+  P.choice
+    [ do
+        s <- tok TLParen
+        ns <- P.sepBy1 name (tok TComma)
+        e <- tok TRParen
+        pure (Pattern (spanUnion s e) (PCon "Tuple" ns))
+    , do
+        s <- tok TLBrace
+        e <- tok TRBrace
+        pure (Pattern (spanUnion s e) (PCon "Nil" []))
+    , (\sp -> Pattern sp (PCon "True" [])) <$> kw KTrue
+    , (\sp -> Pattern sp (PCon "False" [])) <$> kw KFalse
+    , do
+        x <- name
+        P.choice
+          [ do
+              _ <- tok (TOp ":")
+              xs <- name
+              pure (Pattern (spanUnion x.span xs.span) (PCon "Cons" [x, xs]))
+          , pure (Pattern x.span (if x.text == "_" then PWild else PVar x))
           ]
     ]
 
@@ -390,6 +451,7 @@ sectionOp allowMinus =
       , Compose <$ tok (TOp ".")
       , PAdd <$ tok (TOp ".+")
       , PSub <$ tok (TOp ".-")
+      , Cons <$ tok (TOp ":")
       , To <$ kw KTo
       , PlusMinus <$> plusMinusKind
       , Infix . (.text) <$> (tok TBacktick *> name <* tok TBacktick)

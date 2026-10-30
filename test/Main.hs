@@ -62,16 +62,21 @@ main =
         , displayTests
         , affineTests
         , storeTests
+        , dataTests
         ]
     )
 
 -- Term-building helpers -------------------------------------------------
 
 num :: Rational -> Term n
-num r = Lit (LTensor [] [r])
+num r = Lit (LTensor ([], [r]))
 
 bool :: Bool -> Term n
-bool = Lit . LBool
+bool b = Con (if b then "True" else "False") []
+
+-- | An if, as the desugarer writes it: a case on Bool in canonical order.
+ifT :: Term n -> Term n -> Term n -> Term n
+ifT c t e = Case c [Alt "False" VNil e, Alt "True" VNil t]
 
 prim2 :: Text -> Term n -> Term n -> Term n
 prim2 p a b = PrimApp p [a, b]
@@ -201,14 +206,14 @@ evalTests =
            in runClosed (App (App twice inc) (num 5)) @?= Right "7"
     , testCase "polymorphic let used at two types"
         $ let idF = Lam "x" v0
-           in runClosed (Let "id" idF (If (App v0 (bool True)) (App v0 (num 1)) (num 2)))
+           in runClosed (Let "id" idF (ifT (App v0 (bool True)) (App v0 (num 1)) (num 2)))
                 @?= Right "1"
     , testCase "eta-expanded primitive as a value"
         $ let add = Lam "a" (Lam "b" (v1 +. v0))
               applyTwice = Lam "f" (Lam "x" (App (App v1 v0) v0))
            in runClosed (App (App applyTwice add) (num 4)) @?= Right "8"
     , testCase "if is lazy in the untaken branch"
-        $ runClosed (If (bool True) (num 1) (num 1 /. num 0)) @?= Right "1"
+        $ runClosed (ifT (bool True) (num 1) (num 1 /. num 0)) @?= Right "1"
     , testCase "let is call-by-need"
         $ runClosed (Let "boom" (num 1 /. num 0) (num 2)) @?= Right "2"
     , testCase "unused lambda argument is never forced"
@@ -264,7 +269,7 @@ evalTests =
             -- inside the body: v0 is n, v1 is fact (the cycle member)
             fact =
               Lam "n"
-                $ If
+                $ ifT
                   (v0 ==. num 0)
                   (num 1)
                   (v0 *. App v1 (v0 -. num 1))
@@ -275,8 +280,8 @@ evalTests =
         $ let
             -- members: 0 = even, 1 = odd. Inside a Lam, v0 is n, v1 is even,
             -- v2 is odd.
-            even' = Lam "n" (If (v0 ==. num 0) (bool True) (App v2 (v0 -. num 1)))
-            odd' = Lam "n" (If (v0 ==. num 0) (bool False) (App v1 (v0 -. num 1)))
+            even' = Lam "n" (ifT (v0 ==. num 0) (bool True) (App v2 (v0 -. num 1)))
+            odd' = Lam "n" (ifT (v0 ==. num 0) (bool False) (App v1 (v0 -. num 1)))
             defs =
               [
                 ( h "eo"
@@ -342,7 +347,7 @@ tcoreTests =
           ( TLam
               "x"
               TBool
-              (TPrimApp "add" (TFun numT (TFun numT numT)) [TVr FZ, TLit (LTensor [] [1])])
+              (TPrimApp "add" (TFun numT (TFun numT numT)) [TVr FZ, TLit (LTensor ([], [1]))])
           )
           @?= Left "argument of add has type Bool, expected Num"
     , testCase
@@ -352,18 +357,18 @@ tcoreTests =
           ( TPrimApp
               "add"
               (TFun TBool (TFun TBool TBool))
-              [TLit (LBool True), TLit (LBool False)]
+              [TCon "True" TBool [], TCon "False" TBool []]
           )
           @?= Left
             "primitive add used at Bool -> Bool -> Bool, not an instance of Tensor s d -> Tensor s d -> Tensor s d"
     , testCase "lint rejects a mismatched let annotation"
         $ case lintClosed
           (const Nothing)
-          (TLet "x" (Forall [] TBool) (TLit (LTensor [] [1])) (TVr FZ)) of
+          (TLet "x" (Forall [] TBool) (TLit (LTensor ([], [1]))) (TVr FZ)) of
           Left err -> T.isPrefixOf "let binder annotated" err @? T.unpack err
           Right sc -> assertFailure (show sc)
     , testCase "lint rejects a type application without an abstraction"
-        $ lintClosed (const Nothing) (TTyApp (TLit (LTensor [] [1])) (AType TBool))
+        $ lintClosed (const Nothing) (TTyApp (TLit (LTensor ([], [1]))) (AType TBool))
           @?= Left "type application to a term with no type abstraction"
     ]
 
@@ -530,6 +535,9 @@ shape e = case e.node of
   S.SectionR a o -> SR (shape a) o
   S.Vec es -> Vc (map shape es)
   S.Labelled l a -> Lb l (shape a)
+  S.Tuple es -> Vc (map shape es)
+  S.List es -> Vc (map shape es)
+  S.CaseOf s _ -> shape s
   S.Proj a i -> Pj (shape a) i
 
 parserTests :: TestTree
@@ -784,8 +792,8 @@ endToEndTests =
         $ evalText "[[[1, 2], [3, 4]], [[5, 6], [7, 8]]].1.0.1" @?= Right ["6"]
     , testCase "constant literals fold into one node, constructions do not"
         $ case (desugarText "[[1, 2], [3, 4]]", desugarText "\\x -> [x, 2]") of
-          ( Right (Lit (LTensor [2, 2] [1, 2, 3, 4]))
-            , Right (Lam _ (Pack [Var FZ, Lit (LTensor [] [2])]))
+          ( Right (Lit (LTensor ([2, 2], [1, 2, 3, 4])))
+            , Right (Lam _ (Pack [Var FZ, Lit (LTensor ([], [2]))]))
             ) -> pure ()
           other -> assertFailure (show other)
     , testCase "a name defined twice in one group is an error"
@@ -1343,7 +1351,8 @@ blankHints = go
     Lam _ b -> Lam "q" (go b)
     App f a -> App (go f) (go a)
     Let _ e b -> Let "q" (go e) (go b)
-    If c t e -> If (go c) (go t) (go e)
+    Con c as -> Con c (map go as)
+    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
     Pow t n -> Pow (go t) n
     Noise k l n -> Noise k l n
     Uncertain k l x e -> Uncertain k l (go x) (go e)
@@ -1501,6 +1510,8 @@ generatorProperty =
     TFun _ _ -> "function"
     TPoint _ _ -> "Point"
     TScale _ _ -> "Scale"
+    TTuple _ -> "tuple"
+    TList _ -> "list"
     TTensor sh d ->
       ( case rankOf sh of
           0 -> "Num"
@@ -1556,7 +1567,8 @@ polyLets = \case
   TLet _ (Forall vs _) e b -> (if null vs then 0 else 1) + polyLets e + polyLets b
   TLam _ _ b -> polyLets b
   TApp f a -> polyLets f + polyLets a
-  TIf c t e -> polyLets c + polyLets t + polyLets e
+  TCon _ _ as -> sum (map polyLets as)
+  TCase s _ alts -> polyLets s + sum [polyLets b | TAlt _ _ b <- alts]
   TPrimApp _ _ as -> sum (map polyLets as)
   TPow b _ -> polyLets b
   TUncertain _ _ x e -> polyLets x + polyLets e
@@ -1573,7 +1585,11 @@ annotations = \case
   TLam _ ty b -> ty : annotations b
   TApp f a -> annotations f ++ annotations a
   TLet _ (Forall _ ty) e b -> ty : annotations e ++ annotations b
-  TIf c t e -> annotations c ++ annotations t ++ annotations e
+  TCon _ ty as -> ty : concatMap annotations as
+  TCase s ty alts ->
+    ty
+      : annotations s
+      ++ concat [map snd (vecToList bs) ++ annotations b | TAlt _ bs b <- alts]
   TPow b _ -> annotations b
   TUncertain _ _ x e -> annotations x ++ annotations e
   TPack ts -> concatMap annotations ts
@@ -1720,8 +1736,8 @@ lintRegressionTests =
         "a cycle's inferred schemes agree with lint's when a dimension is inverted"
         $ let
             -- Inside a member's lambda: v0 is its argument, v1 is f, v2 is g.
-            f' = Lam "x" (If (v0 ==. v0) (bool True) (App v2 (num 1 /. v0)))
-            g' = Lam "y" (If (v0 ==. v0) (bool True) (App v1 (num 1 /. v0)))
+            f' = Lam "x" (ifT (v0 ==. v0) (bool True) (App v2 (num 1 /. v0)))
+            g' = Lam "y" (ifT (v0 ==. v0) (bool True) (App v1 (num 1 /. v0)))
             cycle' = Cycle (VCons "f" (VCons "g" VNil)) (VCons f' (VCons g' VNil))
            in
             case elaborateClosed (const Nothing) cycle' of
@@ -2324,13 +2340,17 @@ firstDifference a b
       (Lam _ x, Lam _ y) -> firstDifference x y
       (App f x, App g y) -> firstOf [firstDifference f g, firstDifference x y]
       (Let _ e x, Let _ f y) -> firstOf [firstDifference e f, firstDifference x y]
-      (If c t e, If c' t' e') -> firstOf [firstDifference c c', firstDifference t t', firstDifference e e']
+      (Con c xs, Con c' ys) | c == c', length xs == length ys -> firstOf (zipWith firstDifference xs ys)
+      (Case s xs, Case s' ys)
+        | length xs == length ys ->
+            firstOf (firstDifference s s' : zipWith altDifference xs ys)
       (Pow x n, Pow y m) | n == m -> firstDifference x y
       (Pack xs, Pack ys) | length xs == length ys -> firstOf (zipWith firstDifference xs ys)
       (Proj x i, Proj y j) | i == j -> firstDifference x y
       _ -> here
  where
   here = Just ("first difference:\n  " <> show a <> "\nvs\n  " <> show b)
+  altDifference (Alt c _ x) (Alt c' _ y) = if c == c' && alphaEq x y then Nothing else here
   firstOf ds = case catMaybes ds of
     [] -> here
     d : _ -> Just d
@@ -2495,3 +2515,78 @@ dozenHash = hashShownAs ["unit dozen = 12"] "dozen"
 
 kmHash :: Text
 kmHash = hashShownAs [] "km"
+
+-- Tuples, lists and case --------------------------------------------------------------
+--
+-- Design §2.3, §5.1: Con and Case replaced If and the boolean literal.
+
+dataTests :: TestTree
+dataTests =
+  testGroup
+    "data"
+    [ testCase "tuples: construction, types, fst and snd, equality" $ do
+        evalP "(1, 2 m)" @?= Right ["(1, 2 m)"]
+        typeOfTextP "(1, 2 m, true)" @?= Right "(Num, Num [m], Bool)"
+        evalP "fst (3, 4)" @?= Right ["3"]
+        evalP "snd (3, 4 s)" @?= Right ["4 s"]
+        evalP "(1, 2) == (1, 2)" @?= Right ["true"]
+        evalP "(1, 2) == (1, 3)" @?= Right ["false"]
+        typeOfTextP "fst" @?= Right "(a, b) -> a"
+    , testCase "lists: literals, cons, the prelude functions, laziness" $ do
+        evalP "{1, 2, 3}" @?= Right ["{1, 2, 3}"]
+        evalP "1 : {2, 3}" @?= Right ["{1, 2, 3}"]
+        typeOfTextP "{1 m, 2 m}" @?= Right "{Num [m]}"
+        evalP "map (\\x -> x * 2) {1, 2, 3}" @?= Right ["{2, 4, 6}"]
+        evalP "length (range 1 10)" @?= Right ["10"]
+        evalP "foldl (\\a b -> a + b) (0 m) {1 m, 2 m, 3 m}" @?= Right ["6 m"]
+        evalP "zip {1, 2} {true, false}" @?= Right ["{(1, true), (2, false)}"]
+        evalP "reverse (range 1 5)" @?= Right ["{5, 4, 3, 2, 1}"]
+        evalP "filter (\\x -> x > 2) (range 1 5)" @?= Right ["{3, 4, 5}"]
+        evalP "{1, 2} == {1, 2, 3}" @?= Right ["false"]
+        typeOfTextP "map" @?= Right "(a -> b) -> {a} -> {b}"
+        typeOfTextP "zip" @?= Right "{a} -> {b} -> {(a, b)}"
+        -- a cons cell's tail is a thunk: an error in it surfaces only when walked
+        evalP "fst (case 1 : {1 / 0} of {} -> (0, 0); x : _ -> (x, 0))" @?= Right ["1"]
+    , testCase
+        "case: one constructor deep, exhaustive, canonical order; _ and variables fill in" $ do
+        evalP "case (1, 2) of (a, b) -> a + b" @?= Right ["3"]
+        evalP "case {1, 2} of {} -> 0; x : _ -> x" @?= Right ["1"]
+        runLinesP
+          [ "let f xs = case xs of {} -> 0; x : rest -> x + f rest"
+          , "f (range 1 100)"
+          , ":view f"
+          ]
+          @?= Right ["5050", "f = \\xs -> case xs of {} -> 0; x : rest -> x + f rest"]
+        evalP "case true of true -> 1; false -> 2" @?= Right ["1"]
+        evalP "case {1} of {} -> 0; xs -> length xs" @?= Right ["1"]
+        evalP "(case {1, 2} of {} -> 0; x : _ -> x) + 1" @?= Right ["2"]
+        evalP "if true then 1 else 2" @?= Right ["1"]
+        runLinesP ["let g c = if c then 1 else 2", ":view g", ":core g"]
+          @?= Right
+            ["g = \\c -> if c then 1 else 2", "g = \\(c : Bool) -> if c then 1.0 else 2.0"]
+        case evalP "case 5 of x -> x + 1" of
+          Left err -> T.isInfixOf "at least one constructor pattern" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "case {1} of {} -> 0" of
+          Left err -> T.isInfixOf "does not cover Cons" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "case (1, 2) of (a, b) -> a; {} -> 0" of
+          Left err -> T.isInfixOf "does not belong" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP "if 1 then 2 else 3" of
+          Left err -> T.isInfixOf "the condition of `if` must be a Bool" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "case alternatives as a layout block"
+        $ runLinesP
+          [ "let sumList xs = case xs of\n  {} -> 0\n  x : rest -> x + sumList rest"
+          , "sumList {1, 2, 3}"
+          ]
+          @?= Right ["6"]
+    , testCase "a state as a pair of vectors with different dimensions"
+        $ runLinesP
+          [ "let state = ([7000, 0, 0] km, [0, 7.5, 0] km/s)"
+          , "case state of (r, v) -> norm v"
+          , ":type state"
+          ]
+          @?= Right ["7.5 km s^-1", "(Vec 3 [m], Vec 3 [m s^-1])"]
+    ]

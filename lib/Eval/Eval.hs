@@ -159,6 +159,8 @@ data Value
     VPoint [Int] Dim (Maybe ScaleHint) (Vector Elem)
   | VScale ScaleHint
   | VBool Bool
+  | -- | a constructor other than the booleans, with its fields as thunks (design §8)
+    VData Text [Thunk]
   | VClosure Closure
 
 {- | A function value: a body under one binder, closed over its environment
@@ -198,19 +200,26 @@ eval cfg rt = go
           (_, Just s) -> asScale (UnitNamed s) v
           _ -> Right v
     TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
-    TLit (LTensor dims rs) -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
-    TLit (LBool b) -> Right (VBool b)
+    TLit (LTensor (dims, rs)) -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
+    -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
+    TCon "True" _ [] -> Right (VBool True)
+    TCon "False" _ [] -> Right (VBool False)
+    TCon c _ args -> Right (VData c (zipWith (\i a -> go (child i) env a) [0 ..] args))
+    TCase sc _ alts -> do
+      v <- go (child 0) env sc
+      let (c, fields) = case v of
+            VBool True -> ("True", [])
+            VBool False -> ("False", [])
+            VData c' fs -> (c', fs)
+            _ -> ("", [])
+      case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
+        (i, TAlt _ bs body) : _ -> go (child i) (vecAppend (attach bs fields) env) body
+        [] -> Left (Internal ("case: no alternative for " <> c))
     TLam _ _ body -> Right (VClosure (Closure (child 0) env body))
     TApp f a -> do
       fv <- go (child 0) env f
       apply cfg rt fv (go (child 1) env a)
     TLet _ _ e body -> go (child 1) (VCons (go (child 0) env e) env) body
-    TIf c t e -> do
-      cv <- go (child 0) env c
-      case cv of
-        VBool True -> go (child 1) env t
-        VBool False -> go (child 2) env e
-        _ -> Left (Internal "if: condition is not a boolean")
     TPow t n -> do
       (x, d, hint) <- scalarFull =<< go (child 0) env t
       r <- arith (powM p x n)
@@ -607,10 +616,10 @@ runPrim cfg rt prim args = case (prim, args) of
   ("pi", []) -> Right (num dimOne Nothing (piM p))
   -- Euclidean norm of a vector.
   ("norm", [a]) -> do
-    (_, d, _, buf) <- tensor =<< a
+    (_, d, hint, buf) <- tensor =<< a
     xs <- sequence (V.toList buf)
     r <- arith (sqrtM p (sumM [mulM p x x | x <- xs]))
-    Right (num d Nothing r)
+    Right (num d hint r)
   ("det", [a]) -> do
     (dims, _, _, buf) <- tensor =<< a
     case dims of
@@ -801,6 +810,9 @@ runPrim cfg rt prim args = case (prim, args) of
         ys' <- sequence (V.toList ys)
         and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
       (VBool m, VBool n) -> Right (m == n)
+      (VData c xs, VData c' ys)
+        | c == c' && length xs == length ys -> and <$> mapM (uncurry equal) (zip xs ys)
+        | otherwise -> Right False
       (VPoint _ _ _ xs, VPoint _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
@@ -903,6 +915,13 @@ render = \case
   VScale _ -> Right "<scale>"
   VBool True -> Right "true"
   VBool False -> Right "false"
+  VData c fields -> do
+    parts <- mapM (>>= render) fields
+    pure
+      ( case c of
+          "Tuple" -> "(" <> T.intercalate ", " parts <> ")"
+          _ -> T.unwords (c : parts)
+      )
   VClosure _ -> Right "<function>"
  where
   magnitude = \case
@@ -955,3 +974,13 @@ choleskyRows p a = go 0 []
                 then sqrtM p rest
                 else divM p rest ((done !! j) !! j)
     foldM (\acc j -> (\x -> acc ++ [x]) <$> entry j acc) [] [0 .. n - 1]
+
+{- | Pair the fields of a constructor with an alternative's binders; the
+counts agree by lint.
+-}
+attach :: Vec k a -> [Thunk] -> Vec k Thunk
+attach bs fields = case bs of
+  VNil -> VNil
+  VCons _ rest -> case fields of
+    f : fs -> VCons f (attach rest fs)
+    [] -> VCons (Left (Internal "case: missing field")) (attach rest [])

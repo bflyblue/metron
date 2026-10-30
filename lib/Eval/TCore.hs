@@ -16,8 +16,11 @@ module Eval.TCore (
   appendShape,
   lintClosed,
   renderTTerm,
+  patternText,
+  TAlt (..),
 ) where
 
+import Control.Monad (forM_)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -39,7 +42,10 @@ data TTerm (n :: Nat) where
   TApp :: TTerm n -> TTerm n -> TTerm n
   -- | The bound term has the scheme; its abstractions are explicit in it.
   TLet :: Hint -> Scheme -> TTerm n -> TTerm (S n) -> TTerm n
-  TIf :: TTerm n -> TTerm n -> TTerm n -> TTerm n
+  -- | A constructor at its result type (@Nil@ alone fixes no element type).
+  TCon :: Text -> Type -> [TTerm n] -> TTerm n
+  -- | A case at its result type.
+  TCase :: TTerm n -> Type -> [TAlt n] -> TTerm n
   TPow :: TTerm n -> Integer -> TTerm n
   TNoise :: NudgeKind -> Label -> Integer -> TTerm n
   TUncertain :: NudgeKind -> Label -> TTerm n -> TTerm n -> TTerm n
@@ -54,6 +60,12 @@ data TTerm (n :: Nat) where
   -}
   TCycle ::
     [(VarId, Kind)] -> Vec k (Hint, Type) -> Vec k (TTerm (Plus k n)) -> TTerm n
+
+-- | A typed alternative: the fields enter scope at their types.
+data TAlt n = forall k. TAlt Text (Vec k (Hint, Type)) (TTerm (Plus k n))
+
+instance Show (TAlt n) where
+  show (TAlt c bs b) = "TAlt " ++ show c ++ " " ++ show (vecToList bs) ++ " (" ++ show b ++ ")"
 
 deriving stock instance Show (TTerm n)
 
@@ -234,12 +246,11 @@ lint look ctx = \case
     result <- go ty args
     require (not (isFun result)) ("primitive " <> name <> " is not saturated")
     mono result
-  TLit (LTensor dims rs) -> do
+  TLit (LTensor (dims, rs)) -> do
     require
       (length rs == product dims)
       "tensor literal has the wrong number of values for its shape"
     mono (TTensor (shapeOfDims dims) dimOne)
-  TLit (LBool _) -> mono TBool
   TLam _ ty body -> do
     tb <- lint look (VCons (Forall [] ty) ctx) body >>= asMono "lambda body"
     mono (TFun ty tb)
@@ -261,15 +272,55 @@ lint look ctx = \case
           <> renderScheme actual
       )
     lint look (VCons sc ctx) body
-  TIf c t e -> do
-    tc <- monoOf c
-    require (tc == TBool) "if condition is not Bool"
-    tt <- monoOf t
-    te <- monoOf e
+  -- Data (design §5.1): a constructor's fields match the table at its
+  -- result type; a case covers its scrutinee's constructors exactly, binds
+  -- the fields at their types, and every body has the result type.
+  TCon c ty args -> do
+    fts <-
+      maybe
+        (Left ("constructor " <> c <> " does not build " <> renderType ty))
+        Right
+        (lookup c =<< dataConstructors ty)
     require
-      (tt == te)
-      ("if branches differ: " <> renderType tt <> " and " <> renderType te)
-    mono tt
+      (length fts == length args)
+      ( "constructor "
+          <> c
+          <> " applied to "
+          <> T.pack (show (length args))
+          <> " fields"
+      )
+    forM_ (zip args fts) $ \(a, want) -> do
+      ta <- monoOf a
+      require
+        (ta == want)
+        ("field of " <> c <> " has type " <> renderType ta <> ", not " <> renderType want)
+    mono ty
+  TCase sc ty alts -> do
+    tsc <- monoOf sc
+    table <-
+      maybe
+        (Left ("case on " <> renderType tsc <> ", which is not a data type"))
+        Right
+        (dataConstructors tsc)
+    require
+      ([c | TAlt c _ _ <- alts] == map fst table)
+      ("case alternatives are not exactly " <> T.intercalate ", " (map fst table))
+    forM_ alts $ \(TAlt c bs body) -> do
+      let fts = maybe [] id (lookup c table)
+      require
+        (map snd (vecToList bs) == fts)
+        ("fields of " <> c <> " bound at the wrong types")
+      tb <- monoOfIn (vecAppend (vecMap (\(_, t) -> Forall [] t) bs) ctx) body
+      require
+        (tb == ty)
+        ( "alternative "
+            <> c
+            <> " has type "
+            <> renderType tb
+            <> ", not "
+            <> renderType ty
+        )
+    mono ty
   TPow b n -> do
     tb <- monoOf b
     case tb of
@@ -318,6 +369,8 @@ lint look ctx = \case
   TCycle{} -> Left "a cycle inside an expression"
  where
   monoOf t = lint look ctx t >>= asMono "subterm"
+  monoOfIn :: forall j. Vec j Scheme -> TTerm j -> Either Text Type
+  monoOfIn ctx' t = lint look ctx' t >>= asMono "subterm"
   mono = Right . Forall []
   isFun = \case
     TFun _ _ -> True
@@ -362,11 +415,7 @@ lintConstrained name ty = case (name, ty) of
   (eqName, TFun t (TFun t' TBool))
     | eqName `elem` ["eq", "ne"] -> do
         require (t == t') (eqName <> ": operands differ in type")
-        case t of
-          TTensor _ _ -> Right ()
-          TBool -> Right ()
-          TPoint _ _ -> Right ()
-          _ -> Left ("no equality on " <> renderType t)
+        equatable t
     | eqName `elem` ["lt", "le", "gt", "ge"] -> do
         require (t == t') (eqName <> ": operands differ in type")
         case t of
@@ -494,9 +543,8 @@ renderTTerm namer = go 0
     TRef h idx (Hint written) -> namer h idx written
     TPrimApp p _ [] -> p
     TPrimApp p _ args -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
-    TLit (LTensor [] [r]) -> showD r
-    TLit (LTensor dims rs) -> nested dims rs
-    TLit (LBool b) -> if b then "true" else "false"
+    TLit (LTensor ([], [r])) -> showD r
+    TLit (LTensor (dims, rs)) -> nested dims rs
     TLam (Hint h) ty b ->
       paren
         (prec > 0)
@@ -514,10 +562,26 @@ renderTTerm namer = go 0
             <> " in "
             <> go 0 (VCons h ctx) b
         )
-    TIf c t e ->
+    TCon c _ args -> case (c, args) of
+      ("True", []) -> "true"
+      ("False", []) -> "false"
+      ("Tuple", _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
+      ("Nil", []) -> "{}"
+      ("Cons", [x, xs]) -> paren (prec > 4) (go 5 ctx x <> " : " <> go 4 ctx xs)
+      _ -> paren (prec > 10) (T.unwords (c : map (go 11 ctx) args))
+    TCase sc _ [TAlt "False" VNil e, TAlt "True" VNil t] ->
       paren
         (prec > 0)
-        ("if " <> go 0 ctx c <> " then " <> go 0 ctx t <> " else " <> go 0 ctx e)
+        ("if " <> go 0 ctx sc <> " then " <> go 0 ctx t <> " else " <> go 0 ctx e)
+    TCase sc _ alts ->
+      paren
+        (prec > 0)
+        ("case " <> go 0 ctx sc <> " of " <> T.intercalate "; " [alt a | a <- alts])
+     where
+      alt (TAlt c bs b) =
+        let names = vecMap (\(Hint h, _) -> h) bs
+            ctx' = vecAppend names ctx
+         in patternText c (vecToList names) <> " -> " <> go 0 ctx' b
     TPow b n -> paren (prec > 9) (go 10 ctx b <> "^" <> T.pack (show n))
     TNoise Bound l k -> "noise " <> T.pack (show k) <> renderLabel l
     TNoise Stat l k -> "gauss " <> T.pack (show k) <> renderLabel l
@@ -559,3 +623,25 @@ renderTTerm namer = go 0
               ", "
               [nested rest (take stride (drop (i * stride) rs)) | i <- [0 .. d - 1]]
             <> "]"
+
+-- | How a constructor pattern is written (design §2.3).
+patternText :: Text -> [Text] -> Text
+patternText c names = case (c, names) of
+  ("True", []) -> "true"
+  ("False", []) -> "false"
+  ("Tuple", _) -> "(" <> T.intercalate ", " names <> ")"
+  ("Nil", []) -> "{}"
+  ("Cons", [x, xs]) -> x <> " : " <> xs
+  _ -> T.unwords (c : names)
+
+{- | The types `==` is defined at (design §4.2): tensors, booleans, points,
+and structured data whose components are.
+-}
+equatable :: Type -> Either Text ()
+equatable t = case t of
+  TTensor _ _ -> Right ()
+  TBool -> Right ()
+  TPoint _ _ -> Right ()
+  TTuple ts -> mapM_ equatable ts
+  TList e -> equatable e
+  _ -> Left ("no equality on " <> renderType t)

@@ -11,6 +11,8 @@ module Eval.Syntax (
   Expr (..),
   Node (..),
   Binding (..),
+  Pattern (..),
+  PatNode (..),
   BindKind (..),
   Statement (..),
   renderSpanError,
@@ -51,6 +53,8 @@ data Op
     PAdd
   | -- | @.-@: the amount from one point to another (§3.6)
     PSub
+  | -- | @:@: prepend to a list
+    Cons
   | -- | @·@, @@@: contracting product
     Dot
   | -- | @×@, @><@: the 3D cross product, a prelude definition
@@ -105,6 +109,25 @@ data Node
     Vec [Expr]
   | -- | @e.i@ with a literal position.
     Proj Expr Int
+  | -- | @(a, b, …)@: two or more components (§2.3)
+    Tuple [Expr]
+  | -- | @{a, b, c}@: a list literal
+    List [Expr]
+  | -- | @case e of alternatives@
+    CaseOf Expr [(Pattern, Expr)]
+  deriving stock (Eq, Show)
+
+-- | A pattern of a case alternative: one constructor deep (§2.3).
+data Pattern = Pattern {span :: Span, node :: PatNode}
+  deriving stock (Eq, Show)
+
+data PatNode
+  = -- | a constructor with variables for its fields: @(a, b)@, @x : xs@, @{}@, @true@
+    PCon Text [Name]
+  | -- | @_@: every constructor not listed
+    PWild
+  | -- | a variable: every constructor not listed, with the scrutinee bound
+    PVar Name
   deriving stock (Eq, Show)
 
 {- | A top-level or @where@ binding: @name params = body@. A binding declared

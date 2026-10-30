@@ -71,18 +71,31 @@ enc ph hint depth = \case
       <> varint (maybe 0 (fromIntegral . (+ 1)) idx)
       <> hint name
   PrimApp p args -> word8 0x02 <> text p <> foldMap (enc ph hint depth) args
-  Lit (LTensor dims rs) ->
+  Lit (LTensor (dims, rs)) ->
     word8 0x03
       <> varint (fromIntegral (length dims))
       <> foldMap (varint . fromIntegral) dims
       <> foldMap (\r -> sint (numerator r) <> varint (denominator r)) rs
-  Lit (LBool b) -> word8 0x04 <> word8 (if b then 1 else 0)
   Lam h b -> word8 0x05 <> hint h <> enc ph hint (depth + 1) b
   App f a -> word8 0x06 <> enc ph hint depth f <> enc ph hint depth a
   Let h e b -> word8 0x07 <> hint h <> enc ph hint depth e <> enc ph hint (depth + 1) b
-  If c t e ->
-    word8 0x08 <> enc ph hint depth c <> enc ph hint depth t <> enc ph hint depth e
   Pow t n -> word8 0x09 <> enc ph hint depth t <> sint n
+  Con c as ->
+    word8 0x11
+      <> text c
+      <> varint (fromIntegral (length as))
+      <> foldMap (enc ph hint depth) as
+  Case s alts ->
+    word8 0x12
+      <> enc ph hint depth s
+      <> varint (fromIntegral (length alts))
+      <> foldMap encAlt alts
+   where
+    encAlt (Alt c hs b) =
+      text c
+        <> varint (fromIntegral (vecLength hs))
+        <> foldMap hint (vecToList hs)
+        <> enc ph hint (depth + vecLength hs) b
   Noise k l n -> word8 0x0A <> kind k <> label l <> varint n
   Uncertain k l x e ->
     word8 0x0B <> kind k <> label l <> enc ph hint depth x <> enc ph hint depth e
@@ -172,7 +185,7 @@ escapes its scope, an unknown tag or a placeholder is an error.
 
 -- | The storage encoding version this build writes (design §7.4).
 storageVersion :: Int
-storageVersion = 2
+storageVersion = 3
 
 decodeStored :: ByteString -> Either Text (Term Z)
 decodeStored = decodeStoredV storageVersion
@@ -304,12 +317,17 @@ term refHints d =
       rank <- decVarint
       dims <- traverse (const (fromIntegral <$> decVarint)) [1 .. rank]
       rs <- traverse (const ((%) <$> decSint <*> decVarint)) [1 .. product dims]
-      pure (Lit (LTensor dims rs))
-    0x04 -> Lit . LBool . (== 1) <$> byte
+      pure (Lit (LTensor (dims, rs)))
+    -- Retired tags, read from stores of format 2 and before (design §6.1).
+    0x04 -> (\b -> Con (if b == 1 then "True" else "False") []) <$> byte
     0x05 -> Lam <$> decHint <*> term refHints (DS d)
     0x06 -> App <$> term refHints d <*> term refHints d
     0x07 -> Let <$> decHint <*> term refHints d <*> term refHints (DS d)
-    0x08 -> If <$> term refHints d <*> term refHints d <*> term refHints d
+    0x08 -> do
+      c <- term refHints d
+      t <- term refHints d
+      e <- term refHints d
+      pure (Case c [Alt "False" VNil e, Alt "True" VNil t])
     0x09 -> Pow <$> term refHints d <*> decSint
     0x0A -> Noise <$> decKind <*> decLabel <*> decVarint
     0x0B -> Uncertain <$> decKind <*> decLabel <*> term refHints d <*> term refHints d
@@ -322,6 +340,22 @@ term refHints d =
       case vecFromList hints of
         SomeVec hs -> Cycle hs <$> vecTraverse (const (term refHints (depthPlus hs d))) hs
     0x0F -> Proj <$> term refHints d <*> (fromIntegral <$> decVarint)
+    0x11 -> do
+      c <- decText
+      k <- decVarint
+      Con c <$> traverse (const (term refHints d)) [1 .. k]
+    0x12 -> do
+      s <- term refHints d
+      n <- decVarint
+      alts <- traverse (const alt) [1 .. n]
+      pure (Case s alts)
+     where
+      alt = do
+        c <- decText
+        k <- decVarint
+        hints <- traverse (const decHint) [1 .. k]
+        case vecFromList hints of
+          SomeVec hs -> Alt c hs <$> term refHints (depthPlus hs d)
     0x10 -> failDec "a placeholder cannot be stored"
     tag -> failDec ("unknown term tag " <> T.pack (show tag))
 

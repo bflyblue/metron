@@ -33,6 +33,8 @@ data Keyword
   | KUnit
   | KScale
   | KAt
+  | KCase
+  | KOf
   | KIn
   | KWhere
   | KIf
@@ -61,6 +63,8 @@ data Token
   | TRParen
   | TLBracket
   | TRBracket
+  | TLBrace
+  | TRBrace
   | TComma
   | TSqrt
   | -- | A superscript power glued to the preceding atom: @m²@, @s⁻²@.
@@ -213,6 +217,8 @@ identifierOrKeyword = do
     "unit" -> TKw KUnit
     "scale" -> TKw KScale
     "at" -> TKw KAt
+    "case" -> TKw KCase
+    "of" -> TKw KOf
     "in" -> TKw KIn
     "where" -> TKw KWhere
     "if" -> TKw KIf
@@ -272,6 +278,7 @@ symbol =
     , char '*' $> TOp "*"
     , oneOf ("/÷" :: String) $> TOp "/"
     , char '^' $> TOp "^"
+    , char ':' $> TOp ":"
     , oneOf ("\\λ" :: String) $> TLambda
     , char '√' $> TSqrt
     , char '¬' $> TIdent "not"
@@ -285,6 +292,8 @@ symbol =
     , char ')' $> TRParen
     , char '[' $> TLBracket
     , char ']' $> TRBracket
+    , char '{' $> TLBrace
+    , char '}' $> TRBrace
     , char ',' $> TComma
     , char '`' $> TBacktick
     , (\n -> if n == 1 then TSep else TSemis n) . length <$> some (char ';')
@@ -354,28 +363,58 @@ new line to the left of that column closes the context with 'TBlockEnd'.
 A line indented deeper than its context is a continuation.
 -}
 layout :: [Located Token] -> [Located Token]
-layout = go [1] Nothing False
+layout = go [Block 1] Nothing False
  where
-  go :: [Int] -> Maybe Span -> Bool -> [Located Token] -> [Located Token]
+  go :: [Frame] -> Maybe Span -> Bool -> [Located Token] -> [Located Token]
   go stack prev _ [] =
     let here = maybe (Pos 1 1) (.to) prev
-     in replicate (length stack - 1) (Located (Span here here) TBlockEnd)
-  go stack prev afterWhere (t : ts)
-    | afterWhere =
-        t : go (t.span.from.col : stack) (Just t.span) (isWhere t) ts
+     in [Located (Span here here) TBlockEnd | Block _ <- take (length stack - 1) stack]
+  go stack prev afterOpener (t : ts)
+    | afterOpener =
+        let opened = Block t.span.from.col : stack
+         in t
+              : go
+                (if isOpenTok t.value then Open : opened else opened)
+                (Just t.span)
+                (opensBlock t)
+                ts
+    -- A closing bracket ends every block opened since its opening bracket
+    -- (Haskell's parse-error rule, for the one case that matters).
+    | isClose t.value =
+        let (inside, rest) = break isOpen stack
+            ends = [Located (Span t.span.from t.span.from) TBlockEnd | Block _ <- inside]
+         in ends ++ (t : go (drop 1 rest) (Just t.span) False ts)
+    | isOpenTok t.value = t : go (Open : stack) (Just t.span) False ts
     | Just p <- prev
     , t.span.from.line > p.to.line =
         let c = t.span.from.col
-            (closed, stack') = span (> c) stack
+            (closed, stack') = span (\f -> case f of Block k -> k > c; Open -> False) stack
             here = Span t.span.from t.span.from
             ends = map (const (Located here TBlockEnd)) closed
             -- An explicit ';' at the start of a line is already a separator.
-            sep = [Located here TSep | top stack' == c, t.value /= TSep]
-         in ends ++ sep ++ (t : go stack' (Just t.span) (isWhere t) ts)
-    | otherwise = t : go stack (Just t.span) (isWhere t) ts
-  top (c : _) = c
-  top [] = 1
-  isWhere t = t.value == TKw KWhere
+            sep = [Located here TSep | top stack' == Just c, t.value /= TSep]
+         in ends ++ sep ++ (t : go stack' (Just t.span) (opensBlock t) ts)
+    | otherwise = t : go stack (Just t.span) (opensBlock t) ts
+  top = \case
+    Block c : _ -> Just c
+    _ -> Nothing
+  opensBlock t = t.value == TKw KWhere || t.value == TKw KOf
+  isOpenTok = \case
+    TLParen -> True
+    TLBracket -> True
+    TLBrace -> True
+    _ -> False
+  isClose = \case
+    TRParen -> True
+    TRBracket -> True
+    TRBrace -> True
+    _ -> False
+  isOpen = \case
+    Open -> True
+    _ -> False
+
+-- | A layout context: a block at a column, or an open bracket.
+data Frame = Block Int | Open
 
 -- | For error messages.
 showToken :: Token -> Text
@@ -393,6 +432,8 @@ showToken = \case
   TLParen -> "("
   TRParen -> ")"
   TLBracket -> "["
+  TLBrace -> "{"
+  TRBrace -> "}"
   TRBracket -> "]"
   TComma -> ","
   TSqrt -> "sqrt"

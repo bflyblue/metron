@@ -261,6 +261,9 @@ exprDepth e =
     S.BinOp _ a b -> max (exprDepth a) (exprDepth b)
     S.Neg a -> exprDepth a
     S.Labelled _ a -> exprDepth a
+    S.Tuple es -> maximum (0 : map exprDepth es)
+    S.List es -> maximum (0 : map exprDepth es)
+    S.CaseOf s alts -> maximum (exprDepth s : map (exprDepth . snd) alts)
     S.Pow a _ -> exprDepth a
     S.SectionL _ a -> exprDepth a
     S.SectionR a _ -> exprDepth a

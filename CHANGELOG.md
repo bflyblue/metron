@@ -190,3 +190,12 @@
   statistical nudges exactly, `cholesky` its square-root factor, and
   `:covariance e` prints the covariance (or variance) with the bound box
   beside it. The design's `withCovariance` became `±σ` with a matrix.
+- Tuples, lists and `case` (design §2.3, §5.1). `(a, b)` and `{a, b, c}` are
+  data; `case e of` takes them apart one constructor deep, with `_` or a
+  variable standing for the constructors not written, and `if` is a case on
+  `Bool`. Core gains `Con` and `Case` and loses `If` and the boolean literal
+  (core.md §5): storage format 3, and the first hash-changing migration, which
+  re-hashes every stored term that used them and rewrites references and the
+  log. Prelude: `fst`, `snd`, `map`, `filter`, `foldr`, `foldl`, `length`,
+  `reverse`, `zip`, `range`. `==` works on tuples and lists of comparable
+  things. A closing bracket now ends layout blocks opened inside it.
