@@ -952,6 +952,9 @@ codebaseTests =
               [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
               , "Circle : Num [m] -> Shape"
               , "Rect : Num [m] -> Num [m] -> Shape"
+              , -- The library's one type, the joint covariance in blocks.
+                "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
+              , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
               ]
           ls ": Shape -> a" @?= Right ["area : Shape -> Num [m^2]"]
           ls ": {a} -> Num" @?= Right ["length : {a} -> Num"]
@@ -2784,6 +2787,82 @@ affineTests =
           evalP "crossCovariance ([1, 2] m ± 1 m #a) ([3, 4] m ± 1 m #a)"
             @?= Right ["[0, 0; 0, 0] m^2"]
           typeOfTextP "crossCovariance" @?= Right "Vec n d -> Vec m d1 -> Mat n m [d d1]"
+    , testCase "jointCovariance and the block filter: the types" $ do
+        typeOfTextP "jointCovariance" @?= Right "(Vec n d, Vec n d1) -> Cov2 n d d1"
+        typeOfTextP "Cov2"
+          @?= Right "Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
+        typeOfTextP "propagateCov2"
+          @?= Right
+            "(Mat n m [d1 d2 d3 d^-2], Mat n m [d1 d3^2 d^-2], Mat n m d2, Mat n m d3) -> Cov2 m [d d2^-1] [d d3^-1] -> Cov2 n [d1 d3 d^-1] d"
+        typeOfTextP "innovationCov2"
+          @?= Right
+            "Mat n m d -> Mat n m d1 -> Cov2 m [d1 d2 d^-1] d2 -> Mat n n [d1^2 d2^2] -> Mat n n [d1^2 d2^2]"
+        typeOfTextP "gain2"
+          @?= Right
+            "Mat n m d -> Mat n m d1 -> Cov2 m [d1 d2 d^-1] d2 -> Tensor (n : s) d3 -> (Tensor (m : s) [d1^2 d2^2 d3 d^-1], Tensor (m : s) [d1 d2^2 d3])"
+        typeOfTextP "updateCov2"
+          @?= Right
+            "(Mat n m d, Mat n m [d1^2 d2^-1]) -> Mat m n [d^-1] -> Mat m n [d2 d1^-2] -> Cov2 n [d d2 d1^-1] d1 -> Cov2 n [d d2 d1^-1] d1"
+    , testCase "propagateCov2 agrees exactly with the affine forms' own correlation" $ do
+        runLinesP
+          ( correlatedPair
+              ++ [ "let p = jointCovariance (r, v)"
+                 , "p"
+                 , "let eye = [[1, 0], [0, 1]]"
+                 , -- Φ = I is the identity on the record.
+                   "propagateCov2 (eye, [[0, 0], [0, 0]] s, [[0, 0], [0, 0]] s^-1, eye) p == p"
+                 , -- Φ = [I, Δt I; 0, I]: the blocks of Φ P Φᵀ against the
+                   -- covariance of (r + v Δt, v) read off the nudges.
+                   "propagateCov2 (eye, 10 s * eye, [[0, 0], [0, 0]] s^-1, eye) p == jointCovariance (r + v * (10 s), v)"
+                 , -- A Φ with every block full and of its own dimension.
+                   "let f_rr = [[1, 2], [0, 1]]"
+                 , "let f_rv = [[3, 0], [1, 1]] s"
+                 , "let f_vr = [[0, 1], [2, 0]] s^-1"
+                 , "let f_vv = [[1, 0], [1, 1]]"
+                 , "propagateCov2 (f_rr, f_rv, f_vr, f_vv) p"
+                 , "jointCovariance (f_rr @ r + f_rv @ v, f_vr @ r + f_vv @ v)"
+                 , "propagateCov2 (f_rr, f_rv, f_vr, f_vv) p == jointCovariance (f_rr @ r + f_rv @ v, f_vr @ r + f_vv @ v)"
+                 ]
+          )
+          @?= Right
+            [ "Cov2 {rr = [5, 3; 3, 9] m^2, rv = [2, -1; 0, 3] m^2 s^-1, vv = [1, -1; -1, 2] m^2 s^-2}"
+            , "true"
+            , "true"
+            , "Cov2 {rr = [74, 28; 28, 16] m^2, rv = [26, 41; 12, 12] m^2 s^-1, vv = [10, 13; 13, 25] m^2 s^-2}"
+            , "Cov2 {rr = [74, 28; 28, 16] m^2, rv = [26, 41; 12, 12] m^2 s^-1, vv = [10, 13; 13, 25] m^2 s^-2}"
+            , "true"
+            ]
+    , testCase
+        ":covariance of a pair prints the blocks of jointCovariance and both boxes"
+        $ do
+          expecting
+            ( runLinesP
+                ( correlatedPair
+                    ++ [ ":covariance (r, v)"
+                       , "let p = jointCovariance (r, v)"
+                       , "p.rr"
+                       , "p.rv"
+                       , "p.vv"
+                       ]
+                )
+            )
+            $ \outs -> do
+              take 4 outs
+                @?= [ "rr [5, 3; 3, 9] m^2"
+                    , "rv [2, -1; 0, 3] m^2 s^-1"
+                    , "vv [1, -1; -1, 2] m^2 s^-2"
+                    , "bound box ([0, 0] m, [0, 0] m s^-1)"
+                    ]
+              map (T.drop 3) (take 3 outs) @?= drop 4 outs
+          runLinesP [":covariance ([1, 2] m ± 0.5 m, [3, 4] m/s ±σ 1 m/s)"]
+            @?= Right
+              [ "rr [0, 0; 0, 0] m^2"
+              , "rv [0, 0; 0, 0] m^2 s^-1"
+              , "vv [1, 0; 0, 1] m^2 s^-2"
+              , "bound box ([0.5, 0.5] m, [0, 0] m s^-1)"
+              ]
+          evalP ":covariance ([1, 2] m, [[1]])"
+            @?= Left "covariance: a number, a vector, or a pair of vectors"
     , testCase "points: scales, .+ and .-, printing on the written scale" $ do
         evalP "20 degC" @?= Right ["20 degC"]
         evalP "20 °C .+ 5 K" @?= Right ["25 degC"]
@@ -3872,9 +3951,9 @@ dataTests =
         -- The same shape under another name is another type; structurally it is the same one.
         (tyOf "P" == tyOf "P2") @?= False
         tyOf "S1" @?= tyOf "S2"
-        -- Both names and all four constructors stay bound.
-        Map.size cb.typeNames @?= 4
-        Map.size cb.conNames @?= 4
+        -- Both names and all four constructors stay bound, beside the library's.
+        Map.size cb.typeNames - Map.size seeded.codebase.typeNames @?= 4
+        Map.size cb.conNames - Map.size seeded.codebase.conNames @?= 4
         runLinesP
           ["data P a b = P a b", "P 1 2", "structural data T a = T a", "T (T 1)"]
           @?= Right ["P 1 2", "T (T 1)"]
@@ -4229,7 +4308,8 @@ replTests =
                   ]
         completeAt s "b.ma" @?= Just ("b", [R.Completion ".mass" "mass" True])
         map (.display) (R.completions s "b" ".ma") @?= ["mass"]
-        map (.display) (R.completions s "b" ".") @?= ["mass", "vel"]
+        -- Every field in scope completes, the library's Cov2 fields among them.
+        map (.display) (R.completions s "b" ".") @?= ["mass", "rr", "rv", "vel", "vv"]
     , testCase ":load completes file names" $ do
         completeAt seeded ":load fo" @?= Nothing
         R.loadsFile " :load " @? ":load"
@@ -5566,13 +5646,16 @@ stdlibTests =
     , testCase ":ls alone shows the root and one line for std; :ls std the library" $ do
         runLinesP [":ls"]
           @?= Right ["namespace std (" <> T.pack (show (length stdlibNames)) <> " names)"]
+        -- :ls lists a type and its constructor on two lines and no fields:
+        -- std.Cov2 is one label and two lines, its three fields none.
+        let listed = length stdlibNames + 1 - 3
         expecting (runLinesP [":ls std"]) $ \outs -> do
-          length outs @?= length stdlibNames
+          length outs @?= listed
           ("unit km : Num [m]" `elem` outs) @? "km"
           ("scale degC : Scale [K]" `elem` outs) @? "degC"
         expecting (runLinesP [":ls --all"]) $ \outs -> do
           ("unit std.km : Num [m]" `elem` outs) @? "full paths with --all"
-          length outs @?= length stdlibNames
+          length outs @?= listed
         runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
     , testCase "a root name shadows the library's: c and std.c" $ do
         runLinesP ["let c = 3e8 m/s", "c", "std.c", ":add", "c", "std.c"]

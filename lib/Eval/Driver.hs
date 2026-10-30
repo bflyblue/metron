@@ -44,12 +44,11 @@ import Eval.Affine (
   Magnitude (..),
   addM,
   collapse,
-  statCoefficients,
  )
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
-import Eval.Dimension (Dim, Spelling (..), dimPow, dimVar, renderDimIn)
+import Eval.Dimension (Dim, Spelling (..), dimMul, dimPow, dimVar, renderDimIn)
 import Eval.Eval
 import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
@@ -429,54 +428,56 @@ command session src = \case
       Left (Internal _) -> Left "budget: not a number"
       Left err -> Left (renderEvalError err)
   -- The covariance view (design §3.5): Σ cᵢcᵢᵀ over the statistical nudges of
-  -- a vector, with the bound radii beside it as a bias box.
+  -- a vector, with the bound radii beside it as a bias box. A pair of
+  -- vectors (r, v) prints its joint covariance as the three blocks of
+  -- std.jointCovariance, rr, rv and vv (design §3.7), and both boxes.
   ("covariance" : rest) -> keep $ do
     (h, v) <- evalOf rest
+    let shown =
+          either (Left . renderEvalError) Right
+            . renderValue (inputPrinter h) cfg.precision session.preferred
+        rough =
+          either (Left . renderEvalError) Right
+            . renderValueWith (inputPrinter h) cfg.precision session.preferred renderRough
+        components buf = either (Left . renderEvalError) Right (sequence (V.toList buf))
+        unpinned = fmap (\hh -> hh{pinned = False})
+        -- One vector's bound radii, in its own shape and unit.
+        boundsOf dims d hint xs = VTensor dims d hint (V.fromList [Right (Exact (collapse x).bound) | x <- xs])
+        vectorOf = \case
+          Right (VTensor [n] d hint buf) -> Just (n, d, hint, buf)
+          _ -> Nothing
     case v of
       VTensor dims d hint buf | length dims <= 1 -> do
-        xs <- either (Left . renderEvalError) Right (sequence (V.toList buf))
-        let n = length xs
-            cols = map statCoefficients xs
-            cov i j = Exact (sum (Map.elems (Map.intersectionWith (*) (cols !! i) (cols !! j))))
-            covValue =
-              VTensor
-                [n, n]
-                (dimPow 2 d)
-                ((\hh -> hh{pinned = False}) <$> (hintPow (precisionOf cfg) 2 =<< hint))
-                (V.fromList [Right (cov i j) | i <- [0 .. n - 1], j <- [0 .. n - 1]])
-            bounds = VTensor dims d hint (V.fromList [Right (Exact (collapse x).bound) | x <- xs])
-        let scalarVar =
-              VTensor
-                []
-                (dimPow 2 d)
-                ((\hh -> hh{pinned = False}) <$> (hintPow (precisionOf cfg) 2 =<< hint))
-                (V.singleton (Right (cov 0 0)))
-        covText <-
-          either
-            (Left . renderEvalError)
-            Right
-            ( renderValue
-                (inputPrinter h)
-                cfg.precision
-                session.preferred
-                (if null dims then scalarVar else covValue)
-            )
-        boundText <-
-          either
-            (Left . renderEvalError)
-            Right
-            ( renderValueWith
-                (inputPrinter h)
-                cfg.precision
-                session.preferred
-                renderRough
-                bounds
-            )
+        xs <- components buf
+        let covHint = unpinned (hintPow (precisionOf cfg) 2 =<< hint)
+            covValue = covarianceMatrix (dimPow 2 d) covHint xs xs
+            scalarVar = case covValue of
+              VTensor _ d' h' cs -> VTensor [] d' h' (V.take 1 cs)
+              other -> other
+        covText <- shown (if null dims then scalarVar else covValue)
+        boundText <- rough (boundsOf dims d hint xs)
         pure
           [ (if null dims then "variance " else "covariance ") <> covText
           , (if null dims then "bound " else "bound box ") <> boundText
           ]
-      _ -> Left "covariance: a number or a vector"
+      VData (Builtin "Tuple") [a, b]
+        | Just (n1, d1, h1, buf1) <- vectorOf a
+        , Just (n2, d2, h2, buf2) <- vectorOf b -> do
+            xs <- components buf1
+            ys <- components buf2
+            let p = precisionOf cfg
+                block d hh = covarianceMatrix d (unpinned hh)
+            rr <- shown (block (dimPow 2 d1) (hintPow p 2 =<< h1) xs xs)
+            rv <- shown (block (dimMul d1 d2) (hintProduct p h1 h2) xs ys)
+            vv <- shown (block (dimPow 2 d2) (hintPow p 2 =<< h2) ys ys)
+            boxes <-
+              rough
+                ( VData
+                    (Builtin "Tuple")
+                    [Right (boundsOf [n1] d1 h1 xs), Right (boundsOf [n2] d2 h2 ys)]
+                )
+            pure ["rr " <> rr, "rv " <> rv, "vv " <> vv, "bound box " <> boxes]
+      _ -> Left "covariance: a number, a vector, or a pair of vectors"
   ["add"] -> add session
   ["update"] -> update True session
   ["update", "--no-upgrade"] -> update False session
