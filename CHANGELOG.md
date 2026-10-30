@@ -489,3 +489,6 @@
   `editScopeArgs`, `editorNote`; `Eval.Update.propagateWith` (a constructor
   map besides the reference map), `ConMap`, `conTypes`, and `restampTerm`
   exported. The executable depends on `process`.
+- A `let` that takes over a unit or scale name now stays a plain quantity
+  after a restart: the store logs `unflag name` when a bound name loses its
+  flag. Before, the flag came back on reload.

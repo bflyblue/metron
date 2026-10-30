@@ -2601,6 +2601,7 @@ names.log          append-only, one event per line:
                      <unix time> unname <name>
                      <unix time> unit <name>
                      <unix time> scale <name>
+                     <unix time> unflag <name>              -- a let took over a unit or scale name
                      <unix time> prefer <unit text>
                      <unix time> unprefer <unit text>
                      <unix time> type <name> <hex hash>          -- a type label

@@ -366,6 +366,8 @@ loadStore store base = do
     -- reference; every name then bound to it is flagged.
     [_, "unit", target] -> (flagNames markUnit target cb, notes)
     [_, "scale", target] -> (flagNames markScale target cb, notes)
+    -- A `let` that rebinds a unit or scale name makes it a plain quantity (design §3.2.12).
+    [_, "unflag", name] -> (clearFlags name cb, notes)
     (_ : "prefer" : rest) -> (addPreference (T.unwords rest) cb, notes)
     (_ : "unprefer" : rest) -> (removePreference (T.unwords rest) cb, notes)
     -- The codebase's stored default uses (design §7.7).
@@ -438,6 +440,17 @@ logEntries stamp old new =
       scales =
         [ stamp <> " scale " <> n | n <- Set.toList (Set.difference new.scales old.scales)
         ]
+      -- A flag a name lost while it stays bound; an unnamed label needs no line.
+      unflags =
+        [ stamp <> " unflag " <> n
+        | n <-
+            Set.toList
+              ( Set.union
+                  (Set.difference old.units new.units)
+                  (Set.difference old.scales new.scales)
+              )
+        , Map.member n new.names
+        ]
       prefers =
         [ stamp <> " prefer " <> t
         | t <- Set.toList (Set.difference new.preferences old.preferences)
@@ -496,6 +509,7 @@ logEntries stamp old new =
         ++ scales
         ++ prefers
         ++ unprefers
+        ++ unflags
         ++ unuses
         ++ uses
 

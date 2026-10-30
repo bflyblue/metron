@@ -3214,6 +3214,15 @@ storeTests =
         Map.member "orbital.mu" loaded.codebase.history @? "history keeps the old path"
         null [n | n <- Map.keys loaded.codebase.names, "orbital." `T.isPrefixOf` n]
           @? "nothing left under orbital"
+    , testCase "a let that takes over a unit name stays a quantity after a reload" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["unit dozen = 12", ":add", "let dozen = 13", ":update"]
+        (loaded, _) <- reload dir
+        Set.member "dozen" loaded.codebase.units @?= False
+        linesIn loaded ["dozen * 3", "dozen + 1"] @?= Right ["39", "14"]
+        -- and it is no longer a unit the quantity rule accepts
+        case linesIn loaded ["3 dozen"] of
+          Left err -> T.isInfixOf "is not a unit" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase ":unname persists" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add", ":alias y x", ":unname y"]
         (loaded, _) <- reload dir
