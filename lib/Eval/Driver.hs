@@ -339,12 +339,27 @@ checkExpr scope cb src e = do
       (Left . renderResolveErrorWith Map.empty src . Desugar)
       Right
       (desugarClosed (resolverFor scope cb) e)
-  -- Uses of signed names see their signatures (design §4.8).
+  -- Uses of signed names see their signatures, and ascriptions narrow
+  -- (design §4.8): with any, the term inferred is the one desugared with
+  -- their markers, while the term hashed and kept stays the plain one.
+  (checkTerm, checkProv) <-
+    if null prov.ascriptions
+      then Right (term, prov)
+      else
+        either
+          (Left . renderResolveErrorWith Map.empty src . Desugar)
+          Right
+          (desugarMarked "" "" (resolverFor scope cb) VNil e)
+  asc <-
+    either
+      (Left . renderResolveErrorWith Map.empty src)
+      Right
+      (ascriptionsIn scope cb [] checkProv)
   (schemes, typed) <-
     either
-      (Left . typeErr prov)
+      (Left . typeErr checkProv)
       Right
-      (I.elaborateClosedWith (annotationsFor cb) (typeLookupFor cb) term)
+      (I.elaborateClosedWith (annotationsWith cb asc) (typeLookupFor cb) checkTerm)
   linted <-
     either
       (Left . ("internal error: elaboration produced ill-typed core: " <>))

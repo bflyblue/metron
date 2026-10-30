@@ -305,6 +305,7 @@ let f x = x * k where k = 2          -- where: local bindings after a definition
 (+ 1)   (2 *)   (`dot` v)            -- operator sections
 a `dot` b                            -- infix application of a named function
 f ∘ g                                -- composition, \x -> f (g x)
+(3 m :: Num [m])                     -- an ascription: narrows the type (§4.8)
 ```
 
 ### 2.4 Vector and matrix literals
@@ -450,6 +451,7 @@ projection ::= natural
 primary    ::= number | name | '.' name | 'true' | 'false'     -- '.' name not glued: absolute (7.6)
              | '(' expr ')' | section | vector | matrix
              | '(' expr ( ',' expr )+ ')'                      -- a tuple
+             | '(' expr '::' type ')'                          -- an ascription (4.8)
              | '{' [ expr ( ',' expr )* ] '}'                   -- a list
              | 'case' expr 'of' alts                       -- alts: an indented block, or ; separated
 alt        ::= pattern '->' expr
@@ -2128,6 +2130,47 @@ is `3 s`. To narrow `h`, sign it: a signature is checked against the type
 the second check inferred, `Num [m] -> Num [m]` here, so `h :: Num [m] ->
 Num [m]` holds and `h :: a -> a` is refused. §11 has this as open.
 
+**Ascription.** `(e :: type)`, anywhere an expression goes, in parentheses
+as a tuple or a section is, gives `e` a type. The type is converted in the
+scope of the expression as a signature's is, each lowercase unknown name a
+fresh variable, and unified with `e`'s inferred type at `e`'s node, so an
+ascription narrows and never widens: `(1 :: a)` is `1`, of type `Num`,
+because `a` is a fresh variable that unifies with `Num`; `:type \x -> (x ::
+Num d)` is `Num d -> Num d` where `\x -> x` is `a -> a`; `(3 m :: Num [m])`
+is `3 m`. Each ascription's variables are its own: two ascriptions that
+both say `d` do not share it. A failure is reported at the ascription, in
+the usual form with the prefix "the ascription":
+
+```
+> (3 m :: Num [kg])
+error at 1:1
+  (3 m :: Num [kg])
+  ^^^^^^^^^^^^^^^^^
+  the ascription: expected Num [kg], got Num [m]: dimensions differ by [kg m^-1]
+```
+
+An ascription does not reach Core. The desugarer puts `e` in its place,
+and the term it builds is the one that is hashed, stored and run; it only
+notes the written type beside the provenance (`Provenance.ascriptions`).
+When there is any, the input is desugared a second time for checking
+alone (`Desugar.desugarMarked`), where each ascription is a marker, a
+primitive application under a reserved name `§ascribe…` around `e`, that
+the user cannot write. Inference reads the marker by its name, takes the
+converted type from the annotations (`Infer.Annotations`, beside the
+signatures), unifies, and elaborates the marker to `e`'s own typed term,
+so no marker reaches Typed Core. A marker identifies the node itself,
+which a path into the term would not: the provenance paths of the
+desugarer and the paths inference walks part ways inside `case`
+alternatives, `if` branches and list literals (§11). An error in the
+ascription is recorded under a key of its own and so always points at
+it. So `:view` and `:core` have nothing to show for an ascription: `let f
+x = (x :: Num [m]) + 1 m` views as `f = \x -> x + 1 * m`. An expression's type is narrowed (`:type`, and what it
+evaluates to), but inside a definition an ascription only checks: the
+definition's type is its Core's, as for a use of a signed name above,
+because the store recomputes types from the terms, which have no
+ascriptions. `let g x = (x :: Num [m])` is `a -> a`, the same hash as `let
+g x = x`; sign `g` to narrow it.
+
 ---
 
 ## 5. Core and Typed Core
@@ -3624,8 +3667,9 @@ tuned, and compilation is a later milestone.
    - *Type annotations.* Decided and built (§4.8): a signature `name ::
      type` is label-level, checked after inference as an instance of the
      inferred scheme, and seen by uses of the name; the error says the
-     definition's type is not as general as the signature. Polymorphic
-     recursion stays out (§4.6); §11 has what is open.
+     definition's type is not as general as the signature. An ascription
+     `(e :: type)` narrows by unification and does not reach Core.
+     Polymorphic recursion stays out (§4.6); §11 has what is open.
    - *A brick front end*, `eval --tui`, beside the line REPL: the canonical
      echo live as you type, completion as a popup, multi-line editing, and
      room for panes (a `:ls` sidebar, the error excerpt beside the input).
@@ -3716,10 +3760,20 @@ tuned, and compilation is a later milestone.
     where `f (3 s)` is refused. Stored types are a function of the hash,
     which cannot see labels. Should such a definition be given the narrower
     type it was checked at as a signature of its own (label-level, and so
-    stored), or should a use through it be refused some other way?
+    stored), or should a use through it be refused some other way? An
+    ascription inside a definition has the same limit: it checks, and the
+    definition keeps its Core's type.
   - Propagation re-checks a moved dependent without the signatures its
     references see, only against its own signature.
   - Polymorphic recursion (§4.6).
+- Provenance paths (§4.7) and the paths inference walks disagree inside
+  `case` alternatives (a body is one level deeper in inference), `if`
+  branches (also swapped) and list literals (elements are nested `Cons`
+  nodes), so a type error deep inside one of those gets the definition's
+  span, or sometimes another node's (`case x of true -> sin (1 m); …`
+  points at the `1`). Fixing it moves error excerpts of existing inputs,
+  so it is left for a change of its own; ascriptions do not depend on it
+  (§4.8).
 
 ---
 

@@ -579,3 +579,17 @@
   read back at the root (`Type.renderSignature`, `Resolve.typeVariable`).
   The REPL colours the type after `::` as a type and completes type names
   there.
+- Ascription (design §4.8): `(e :: type)` anywhere an expression goes. The
+  type is converted in the expression's scope with lowercase unknowns as
+  fresh variables and unified with `e`'s type, so it narrows and never
+  widens (`(1 :: a)` is `1 : Num`); a failure is "the ascription: expected
+  Num [kg], got Num [m]: dimensions differ by [kg m^-1]" at the ascription.
+  It does not reach Core: the term hashed, stored and run is `e`'s, and
+  only when there are ascriptions is the input desugared again for checking
+  (`Desugar.desugarMarked`), each ascription a marker primitive under a
+  reserved name that inference reads and elaborates away
+  (`Infer.Annotations`, `Resolve.ascriptionsIn`). `:view` shows the plain
+  expression; inside a definition an ascription checks and the definition
+  keeps its Core's type. Design §11 now records that provenance paths and
+  inference paths disagree inside `case`, `if` and list literals, which
+  the markers sidestep.

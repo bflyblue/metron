@@ -39,7 +39,7 @@ import Data.Ratio (numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core
-import Eval.Desugar (Path)
+import Eval.Desugar (Path, ascriptionMarker, unmarked)
 import Eval.Dimension
 import Eval.TCore
 import Eval.Type
@@ -78,16 +78,20 @@ type Infer = StateT St (Either TypeError)
 {- | What the annotations of an input add to inference (design §4.8): the
 signature a name carries, for a reference written under that name that
 still points where the name does (the full path, the hash and the cycle
-index). Annotations are label-level, never in Core: a stored term's types
-are inferred without them.
+index), and the ascriptions, by the names of their markers in a term
+desugared to check them ('Eval.Desugar.desugarMarked'), each with the path
+an error in it is reported at ('Eval.Desugar.ascriptionPath'). Annotations
+are label-level or surface syntax, never in a stored term: its types are
+inferred without them.
 -}
-newtype Annotations = Annotations
+data Annotations = Annotations
   { signatureFor :: Text -> Hash -> Maybe Int -> Maybe Scheme
+  , ascriptions :: Map.Map Text (Scheme, Path)
   }
 
 -- | No annotations: what a stored term is inferred with.
 noAnnotations :: Annotations
-noAnnotations = Annotations (\_ _ _ -> Nothing)
+noAnnotations = Annotations (\_ _ _ -> Nothing) Map.empty
 
 {- | Infer and elaborate a closed term: its scheme(s), one per cycle member,
 and the Typed Core term with all metavariables resolved.
@@ -662,6 +666,23 @@ applyArgs = foldl TTyApp
 
 infer :: TypeLookup -> Path -> Vec n Scheme -> Term n -> Infer (Type, TTerm n)
 infer look p ctx = \case
+  -- An ascription's marker, in a term desugared to check them (design
+  -- §4.8): the ascribed type, instantiated fresh, is unified with the
+  -- expression's, so it narrows and never widens. The marker elaborates to
+  -- the expression's own typed term.
+  PrimApp marker [a]
+    | ascriptionMarker `T.isPrefixOf` marker -> do
+        r@(t, _) <- infer look (0 : p) ctx a
+        ascribed <- gets (Map.lookup marker . (.annotations.ascriptions))
+        case ascribed of
+          Nothing -> failAt p "internal error: an ascription without its type"
+          Just (sc, at) -> do
+            (want, _) <- instantiate sc
+            st <- get
+            case runStateT (unify p want t) st of
+              Right ((), st') -> put st'
+              Left err -> failAt (reverse at) ("the ascription: " <> err.message)
+        pure r
   Var i -> do
     (t, args) <- instantiate (lookupCtx i ctx)
     pure (t, applyArgs (TVr i) args)
@@ -683,7 +704,7 @@ infer look p ctx = \case
             pure (t', applyArgs (TRef h idx hint) args)
       Nothing -> failAt p "reference to a cycle member that does not exist"
   PrimApp name args -> do
-    let literals = [case a of Lit l -> Just l; _ -> Nothing | a <- args]
+    let literals = [case unmarked a of Lit l -> Just l; _ -> Nothing | a <- args]
     -- contract, permute and slice (design §4.2): the scheme is computed
     -- from the literal positions, then used like any other.
     t <- case primSchemeFor name literals of

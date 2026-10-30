@@ -602,6 +602,7 @@ shape e = case e.node of
   S.Slice a k i -> Sl (shape a) k i
   S.FieldOf a f -> A (shape a) (V f)
   S.Record hd fs -> foldl (\acc (n, x) -> A acc (A (V n.text) (shape x))) (shape hd) fs
+  S.Ascribe a _ -> shape a
 
 parserTests :: TestTree
 parserTests =
@@ -6593,4 +6594,124 @@ annotationTests =
             s1
             [":type make", ":type same", "same (make (1 m))", "same (Square (2 m))"]
             @?= Right ["Num [m] -> Shape", "Shape -> Shape", "Circle (1 m)", "Square (2 m)"]
+    , testCase "ascription: (e :: type) narrows the expression's type" $ do
+        runLinesP
+          [ "(1 :: Num)"
+          , "(3 m :: Num [m])"
+          , "([1, 2, 3] m :: Vec 3 [m])"
+          , ":type (1 :: Num)"
+          , ":type \\x -> (x :: Num d)"
+          , ":type \\x -> x"
+          , ":type \\v -> (v :: Vec n)"
+          ]
+          @?= Right
+            [ "1"
+            , "3 m"
+            , "[1, 2, 3] m"
+            , "Num"
+            , "Num d -> Num d"
+            , "a -> a"
+            , "Vec n -> Vec n"
+            ]
+    , testCase "ascription never widens: (1 :: a) is 1, of type Num"
+        $ runLinesP ["(1 :: a)", ":type (1 :: a)"] @?= Right ["1", "Num"]
+    , testCase "an ascription narrows the node it is written on, wherever it is" $ do
+        runLinesP
+          [ "data Box a = Box {item :: a}"
+          , ":type \\x y -> {x, (y :: Num [m])}"
+          , ":type \\x -> if true then (x :: Num [m]) else x"
+          , ":type \\x -> if true then x else (x :: Num [s])"
+          , ":type \\f y -> case true of true -> f (y :: Num [m]); false -> f y"
+          , ":type \\y -> Box {item = (y :: Num [m])}"
+          , ":type \\y -> (+ (y :: Num [m]))"
+          , ":type \\v -> (v :: Vec 3).0"
+          , "{1 m, (2 m :: Num [m])}"
+          ]
+          @?= Right
+            [ "Num [m] -> Num [m] -> {Num [m]}"
+            , "Num [m] -> Num [m]"
+            , "Num [s] -> Num [s]"
+            , "(Num [m] -> a) -> Num [m] -> a"
+            , "Num [m] -> Box (Num [m])"
+            , "Num [m] -> Num [m] -> Num [m]"
+            , "Vec 3 -> Num"
+            , "{1 m, 2 m}"
+            ]
+        expectError
+          (runLinesP ["let f x = g (3 s) where g y = (y :: Num [m])"])
+          "expected Num [m], got Num [s]"
+        -- Each fails at its own ascription.
+        forM_
+          [ ("{1, (2 :: Bool)}", "(2 :: Bool)")
+          , ("if true then (1 :: Bool) else 2", "(1 :: Bool)")
+          , ("if true then 1 else (2 :: Bool)", "(2 :: Bool)")
+          , ("case true of true -> sin (1 :: Num [m]); false -> 2", "(1 :: Num [m])")
+          ]
+          $ \(src, part) -> case runLinesP [src] of
+            Left err -> do
+              ("the ascription: " `T.isInfixOf` err) @? T.unpack err
+              let col = T.length (fst (T.breakOn part src))
+                  carets = "\n  " <> T.replicate col " " <> T.replicate (T.length part) "^" <> "\n"
+              (carets `T.isInfixOf` err) @? T.unpack err
+            Right outs -> assertFailure (show outs)
+        -- A literal position of contract may be ascribed.
+        runLinesP ["contract (0 :: Num) 1 [1, 2; 3, 4]"]
+          @?= runLinesP ["contract 0 1 [1, 2; 3, 4]"]
+    , testCase "an ascription that does not unify is refused at the ascription" $ do
+        case runLinesP ["(3 m :: Num [kg])"] of
+          Left err -> do
+            ("the ascription: expected Num [kg], got Num [m]" `T.isInfixOf` err)
+              @? T.unpack err
+            ("  (3 m :: Num [kg])\n  ^^^^^^^^^^^^^^^^^" `T.isInfixOf` err) @? T.unpack err
+          Right outs -> assertFailure (show outs)
+        expectError (runLinesP ["(1 :: Bool)"]) "the ascription: "
+        expectError (runLinesP ["(1 :: Nope)"]) "unknown type `Nope`"
+        expectError
+          (runLinesP ["let f x = x", "(f :: Num [m] -> Num [m]) (3 s)"])
+          "expected Num [m], got Num [s]"
+        expectError
+          (runLinesP ["let k = (3 m :: Num [kg])"])
+          "the ascription: expected Num [kg], got Num [m]"
+    , testCase
+        "ascriptions inside definitions check, in a cycle too; :view shows the plain expression"
+        $ do
+          runLinesP
+            [ "let f x = (x :: Num [m]) + 1 m"
+            , ":view f"
+            , "f (2 m)"
+            , "let g x = (x :: Num [m])"
+            , ":type g"
+            , ":view g"
+            ]
+            @?= Right ["f = \\x -> x + 1 * m", "3 m", "a -> a", "g = \\x -> x"]
+          expectError
+            ( runLinesP
+                [ multiline
+                    [ "let even n = if n == 0 then true else odd (n - 1)"
+                    , "let odd n = if (n :: Num [m]) == 0 then false else even (n - 1)"
+                    ]
+                ]
+            )
+            "in `odd`: expected Num [m], got Num: dimensions differ by [m]"
+          -- In a cycle member, an ascription that fails is reported at itself.
+          case runLinesP
+            [ multiline
+                [ "let even n = if n == 0 then true else odd (n - 1)"
+                , "let odd n = if n == 0 then false else (even (n - 1) :: Num)"
+                ]
+            ] of
+            Left err -> do
+              ("in `odd`: the ascription: " `T.isInfixOf` err) @? T.unpack err
+              ("error at 2:39" `T.isInfixOf` err) @? T.unpack err
+              (("\n  " <> T.replicate 38 " " <> T.replicate 21 "^" <> "\n") `T.isInfixOf` err)
+                @? T.unpack err
+            Right outs -> assertFailure (show outs)
+          runLinesP
+            [ multiline
+                [ "let even n = if n == 0 then true else odd (n - 1)"
+                , "let odd n = if (n :: Num) == 0 then false else even (n - 1)"
+                ]
+            , "even 4"
+            ]
+            @?= Right ["true"]
     ]

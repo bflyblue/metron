@@ -142,6 +142,8 @@ data Node
     List [Expr]
   | -- | @case e of alternatives@
     CaseOf Expr [(Pattern, Expr)]
+  | -- | @(e :: type)@: an ascription (design §4.8); it narrows and does not reach Core
+    Ascribe Expr TyExpr
   deriving stock (Eq, Show)
 
 -- | A pattern of a case alternative: one constructor deep (§2.3).

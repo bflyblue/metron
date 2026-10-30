@@ -594,6 +594,12 @@ parens = do
           , do
               e2 <- tok TRParen
               pure (Expr (spanUnion s e2) e.node)
+          , -- An ascription (design §4.8): @(e :: type)@.
+            do
+              _ <- tok (TOp "::")
+              t <- typeExpr
+              e2 <- tok TRParen
+              pure (Expr (spanUnion s e2) (Ascribe e t))
           , -- A tuple: two or more components (§2.3).
             do
               rest <- P.some (tok TComma *> expr)

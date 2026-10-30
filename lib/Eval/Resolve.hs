@@ -24,6 +24,8 @@ module Eval.Resolve (
   typeVariable,
   signatureText,
   annotationsFor,
+  annotationsWith,
+  ascriptionsIn,
   usesSignatures,
   storeTerm,
   withHint,
@@ -327,10 +329,34 @@ typeLookupFor cb = TypeLookup (`lookupTypes` cb) (`lookupTypeDef` cb)
 the name does sees the signature.
 -}
 annotationsFor :: Codebase -> Annotations
-annotationsFor cb = Annotations $ \written h idx ->
+annotationsFor cb = annotationsWith cb Map.empty
+
+-- | 'annotationsFor' with the ascriptions of the term being checked.
+annotationsWith :: Codebase -> Map.Map Text (Scheme, D.Path) -> Annotations
+annotationsWith cb = Annotations $ \written h idx ->
   case (signatureOf written cb, lookupName written cb) of
     (Just sig, Just r) | r == Reference h idx -> Just sig
     _ -> Nothing
+
+{- | The ascriptions the desugarer found (design §4.8), by marker, each
+converted in the scope of its expression as a type query is (a lowercase
+unknown name is a fresh variable), with the path an error in it is
+reported at: after the given prefix, a cycle member's index, the key its
+span is recorded under ('D.ascriptionPath').
+-}
+ascriptionsIn ::
+  S.Scope ->
+  Codebase ->
+  D.Path ->
+  Provenance ->
+  Either ResolveError (Map.Map Text (Scheme, D.Path))
+ascriptionsIn scope cb prefix prov =
+  Map.fromList
+    <$> sequence
+      [ (\sc -> (marker, (sc, prefix ++ [D.ascriptionPath k])))
+          <$> queryScheme scope cb t
+      | (k, (marker, t)) <- zip [0 ..] prov.ascriptions
+      ]
 
 -- | Whether a term references a signed name, so that checking it must see signatures.
 usesSignatures :: Codebase -> Term n -> Bool
@@ -518,7 +544,24 @@ enterComponent group signed cb = \case
         (elaborateClosed (typeLookupFor cb) term)
     linted <-
       either (Left . LintFailure b.name) Right (lintClosed (typeLookupFor cb) typed)
-    checked <- annotatedCheck cb term (typeErrorIn b prov)
+    -- With ascriptions, they are checked on the term desugared with markers.
+    (checkTerm, checkProv, asc) <-
+      if null prov.ascriptions
+        then pure (term, prov, Map.empty)
+        else do
+          (marked, markedProv) <-
+            either
+              (Left . Desugar)
+              Right
+              ( desugarMarked
+                  ""
+                  b.name.text
+                  (groupResolver group Set.empty scope cb)
+                  VNil
+                  (asLambda b)
+              )
+          (marked,markedProv,) <$> ascriptionsIn scope cb [] markedProv
+    checked <- annotatedCheck cb asc checkTerm (typeErrorIn b checkProv)
     let h = hashTerm term
         ref = Reference h Nothing
         stored = preferLint schemes linted
@@ -529,22 +572,24 @@ enterComponent group signed cb = \case
   CyclicSCC bs -> enterCycle group signed cb bs
 
 {- | The check of a definition that the annotations of the input take part
-in (design §4.8): its uses of signed names see their signatures. Only
-when it has any; the schemes it gives are the definition's as checked,
-never stored, since a stored term's types are its Core's alone.
+in (design §4.8): its uses of signed names see their signatures, and its
+ascriptions narrow. Only when it has any; the schemes it gives are the
+definition's as checked, never stored, since a stored term's types are its
+Core's alone.
 -}
 annotatedCheck ::
   Codebase ->
+  Map.Map Text (Scheme, D.Path) ->
   Term Z ->
   (TypeError -> ResolveError) ->
   Either ResolveError (Maybe [Scheme])
-annotatedCheck cb term err
-  | not (usesSignatures cb term) = Right Nothing
+annotatedCheck cb asc term err
+  | Map.null asc && not (usesSignatures cb term) = Right Nothing
   | otherwise =
       either
         (Left . err)
         (Right . Just . fst)
-        (elaborateClosedWith (annotationsFor cb) (typeLookupFor cb) term)
+        (elaborateClosedWith (annotationsWith cb asc) (typeLookupFor cb) term)
 
 {- | The signatures of a component's members, each with its scheme as
 checked (design §4.8): the group's signature for a member, else the one the
@@ -624,7 +669,32 @@ enterCycle group signed cb sbs = do
           (Left . LintFailure (headName sorted))
           Right
           (lintClosed (typeLookupFor cb) typed)
-      checked <- annotatedCheck cb cycleTerm (cycleTypeError sorted provs)
+      -- With ascriptions, they are checked on the members desugared with
+      -- markers, each member's tagged by its index.
+      checked <-
+        if all (null . (.ascriptions)) provs
+          then annotatedCheck cb Map.empty cycleTerm (cycleTypeError sorted provs)
+          else do
+            (marked, _) <-
+              runStateT
+                ( vecTraverse
+                    ( \m -> do
+                        i <- gets id
+                        modify (+ 1)
+                        lift (desugarMarkedOne ctx i m)
+                    )
+                    members
+                )
+                (0 :: Int)
+            let markedProvs = vecToList (vecMap snd marked)
+                markedTerm = Cycle (vecMap (Hint . (.name.text) . snd) members) (vecMap fst marked)
+            asc <-
+              Map.unions
+                <$> sequence
+                  [ ascriptionsIn s cb [i] prov
+                  | (i, (s, _), prov) <- zip3 [0 ..] sortedScoped markedProvs
+                  ]
+            annotatedCheck cb asc markedTerm (cycleTypeError sorted markedProvs)
       let stored = preferLint schemes linted
           cb' = addTerm h cycleTerm stored typed cb
           bindMember acc (i, b) =
@@ -644,6 +714,22 @@ enterCycle group signed cb sbs = do
       (Left . Desugar)
       Right
       ( D.desugarMember
+          b.name.text
+          (groupResolver group memberNames scope cb)
+          ctx
+          (asLambda b)
+      )
+  desugarMarkedOne ::
+    Vec k Text ->
+    Int ->
+    (S.Scope, S.Binding) ->
+    Either ResolveError (Term k, Provenance)
+  desugarMarkedOne ctx i (scope, b) =
+    either
+      (Left . Desugar)
+      Right
+      ( D.desugarMarked
+          (T.pack (show i))
           b.name.text
           (groupResolver group memberNames scope cb)
           ctx
@@ -713,6 +799,7 @@ freeNames = go Set.empty
     S.Slice a _ _ -> go bound a
     S.FieldOf a _ -> go bound a
     S.Record hd fs -> go bound hd <> foldMap (go bound . snd) fs
+    S.Ascribe a _ -> go bound a
   opNames = \case
     S.Infix n -> Set.singleton n
     _ -> Set.empty
