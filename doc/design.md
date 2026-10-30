@@ -2301,13 +2301,14 @@ frame's axes. The decisions:
    blocks become `Mat a a [d²]`, `Mat a b [d d1]`.
 
 ```
-cross       : Vec a d -> Vec a d1 -> Vec a [d d1]          where card a ~ 3
+cross       : forall (a : 3). Vec a d -> Vec a d1 -> Vec a [d d1]
 norm        : Vec a d -> Num d
-rotationOf  : Chart a … -> Mat (parent a) a                -- rows parent, columns a
-coordinates : Point (Vec n d) -> Chart a … -> Vec a d      where card a ~ n
-along       : Chart a … -> Vec n d -> Vec a d              where card a ~ n
-v.0         : Vec a d -> Num d                             where card a ≥ 1
-v.x         : Vec a d -> Num d                             where x ∈ a
+rotationOf  : Chart a r … -> Mat r a                 -- rows along the root's axes, columns along the chart's
+p to c      : Point (Vec a d) -> Chart b r … -> Point (Vec b d)   -- same root and length; a moving c needs its arguments
+along       : Chart b … -> Vec a d -> Vec b d        -- re-express a framed vector: a rotation, visible
+q .- p      : Point (Vec a d) -> Point (Vec a d) -> Vec a d        -- one chart's axes in, the same axes out
+v.0         : Vec a d -> Num d                       -- a has at least one axis
+v.x         : Vec a d -> Num d                       -- x one of a's axis labels (layer 1)
 ```
 
 **Build in four stages**, each landing green on its own:
