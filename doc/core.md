@@ -155,8 +155,8 @@ larger than it will eventually need to be.
 The fifteen above with types on `TLam`, `TLet`, `TPrimApp`, `TCon`, `TCase`
 (the result type, since `Nil` alone fixes no element type) and `TCycle`, plus
 two kinded type forms: `TTyLam v kind body` and `TTyApp body arg`, where the
-argument is a type, a length or a shape according to the kind, and a
-dimension once dimensions arrive. One pair serves every index kind, so adding a
+argument is a type, a length, a shape, a dimension or the name slot of a
+shape position (design §3.9) according to the kind. One pair serves every index kind, so adding a
 kind adds no constructor.
 
 ### Operators across ranks
@@ -485,7 +485,7 @@ Core is small so that it can be made correct, and these are the means:
 | Data | `case` over constructors; `Bool` is data | `case` over constructors; `Bool`, tuples and lists are declared data; vectors and matrices built in |
 | Recursion | `let rec`, local | top-level `Cycle` only |
 | Coercions | `Cast` with proofs | none needed |
-| Kinds | full kind system | fixed kinds: type, length, soon dimension |
+| Kinds | full kind system | fixed kinds: type, length, shape, dimension, axis |
 | Identity | none | content hash of untyped Core |
 
 Structurally we are GHC's Core as it stood before coercions, with tensors
