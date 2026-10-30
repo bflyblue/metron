@@ -1878,13 +1878,18 @@ rotationTests =
               "expm [[0.1, 0.2], [0.3, -0.1]]"
           )
           @?= Right ["true"]
-        -- nearly antisymmetric (two fresh nudges where one would cancel): Rodrigues
-        -- with the symmetric part's bound, not the slow series
+        -- nearly antisymmetric (two fresh nudges where one would cancel):
+        -- Rodrigues with the symmetric part's bound, not the slow series
+        let near =
+              "let x = sqrt 2 in let y = sqrt 3 in [[0, x * y, 0], [(0 - x) * y, 0, 0], [0, 0, 0]]"
+        expectError
+          (evalP ("let b = " <> near <> " in b + transpose b == 0 * b"))
+          "decide"
         evalP
           ( encloses
               "1e-20"
-              "let r = expm (rotation [1, 2, 3] [-2, 0, 1]) in transpose r @ r"
-              "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]"
+              ("expm (" <> near <> ")")
+              "let a = sqrt 6 * rad in [[cos a, sin a, 0], [-sin a, cos a, 0], [0, 0, 1]]"
           )
           @?= Right ["true"]
         evalP "expm [[1, 2], [3, 4]]"
@@ -1967,7 +1972,7 @@ rotationTests =
           "transformBy: every axis must have length n: the matrix is 2 × 2 and the tensor's lengths are [3]"
         expectError
           (evalP "transformBy [[1, 2], [3, 4]] [[1, 2, 3], [4, 5, 6]]")
-          "every axis must have length n"
+          "every axis must have length n: the matrix is 2 × 2 and the tensor's lengths are [2, 3]"
     , testCase "the constructors' types" $ do
         typeOfTextP "e1" @?= Right "Vec 3"
         typeOfTextP "rotx" @?= Right "Num [rad] -> Mat 3 3"
@@ -2028,6 +2033,16 @@ rotationTests =
                 ]
         evalP (encloses "1e-20" "euler313 (30 deg) (45 deg) (60 deg)" q)
           @?= Right ["true"]
+    , testCase
+        "every constructor's bivector is exactly antisymmetric, enclosures and all" $ do
+        let antisymmetric b = evalP ("let b = " <> b <> " in b + transpose b == 0 * b")
+        antisymmetric "rotz (30 deg ± 0.01 rad)" @?= Right ["true"]
+        antisymmetric "axisAngle [1, 1, 1] (120 deg)" @?= Right ["true"]
+        antisymmetric "axisAngle ([1, 2, 2] ± 0.1) (40 deg ± 0.01 rad)"
+          @?= Right ["true"]
+        antisymmetric "rotation [1, 2, 3] [-2, 0, 1]" @?= Right ["true"]
+        antisymmetric "rotation ([1, 2, 3] ± 0.01) [-2, 0, 1]" @?= Right ["true"]
+        antisymmetric "rotation e1 (-e1)" @?= Right ["true"]
     , testCase "an uncertain angle makes a bivector with nudged entries" $ do
         evalP
           "let b = bound (rotz (90 deg ± 0.001 rad)) in b.0.1 >= 0.001 && b.1.0 >= 0.001 && b.0.0 == 0"

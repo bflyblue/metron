@@ -617,3 +617,20 @@
   3 to 5 is re-hashed on first open (types, then terms, in dependency
   order, with the log's hashes remapped) and gains the library's labels for
   the three types.
+- Rotations, the first pieces of charts (design §3.3, §3.8). `expm : Mat n
+  n -> Mat n n`, dimensionless, a rigorous enclosure: Rodrigues' formula
+  for a single plane (every antisymmetric matrix when `n ≤ 3`, an exact one
+  checked beyond), with `sin θ / θ` and `(1 − cos θ) / θ²` as series in
+  `θ²` so an angle near zero divides by nothing, and the series with
+  scaling and squaring otherwise, its remainder a fresh nudge on every
+  entry. `transformBy : Mat n n -> Tensor s d -> Tensor s d` applies a
+  matrix along every axis (`R v`, `R P Rᵀ`, any rank), keeping the
+  dimension and display unit; it is the one primitive with a run-time
+  shape check ("every axis must have length n"). `linalg` gains `e1 e2 e3`,
+  the bivector constructors `rotx roty rotz` (`Num [rad] -> Mat 3 3`,
+  right-handed: `rotz θ = θ (e2 ∧ e1)`, since `a ∧ b` turns `b` toward `a`),
+  `dual` (the inverse of `⋆`), `axisAngle n θ`, `rotation a b`, and
+  `euler313 Ω i ω`, the 3-1-3 matrix; every bivector they return is exactly
+  antisymmetric as affine forms. Primitives are appended; no change to
+  Core, hashing or the store, and the library's existing definitions keep
+  their hashes.

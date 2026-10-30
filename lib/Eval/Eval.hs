@@ -767,7 +767,7 @@ runPrim cfg rt prim args = case (prim, args) of
                       ( "transformBy: every axis must have length n: the matrix is "
                           <> T.pack (show n <> " × " <> show n)
                           <> " and the tensor's lengths are "
-                          <> T.pack (show dims)
+                          <> ("[" <> T.intercalate ", " (map (T.pack . show) dims) <> "]")
                       )
                   )
       _ -> Left (Internal "transformBy of a non-square matrix")
