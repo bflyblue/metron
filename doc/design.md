@@ -1219,7 +1219,7 @@ segments in space), not a box. Consider a rotation by an uncertain angle,
 `t = π/4 ± 0.001` (ignoring the sub-`1e-20` nudges from `pi` and the series):
 
 ```
-rotz t * [1, 0, 0] km
+rotz t @ [1, 0, 0] km
   x = 0.70710… km - 0.000707·e_t km
   y = 0.70710… km + 0.000707·e_t km
   z = 0
@@ -3630,15 +3630,15 @@ Num [m] -> Num [m] -> Num [m s^-1]
 > vis_viva (7000 km) (7000 km) to km/s
 7.5460 ±σ 0.0004 km/s
 
-> let rotz t = [[cos t, -(sin t), 0], [sin t, cos t, 0], [0, 0, 1]]
+> let rotz t = [cos t, -(sin t), 0; sin t, cos t, 0; 0, 0, 1]
 > :type rotz
-Num 1 -> Mat 3 3 1
-> rotz (90 deg) * [1, 0, 0] km
-[0.000000…, 1.000000…, 0] km            -- radii ~1e-10, below the last printed digit
-> let t = 45 deg ± 0.001 in rotz t * [1, 0, 0] km
-[0.7071 ± 0.0007, 0.7071 ± 0.0007, 0] km
-> let t = 45 deg ± 0.001 in norm (rotz t * [1, 0, 0] km)
-1.000000 ± 0.0000005 km                 -- the angle error cancels in the norm
+Num [rad] -> Mat 3 3
+> rotz (90 deg) @ [1, 0, 0] km
+[1.9e-25 ± 1.9e-25, 1.0000000000000000000…, 0] km   -- the series' enclosure of cos (π/2)
+> let t = 45 deg ± 0.001 rad in rotz t @ [1, 0, 0] km
+[0.70711 ± 0.00071, 0.70711 ± 0.00071, 0] km
+> let t = 45 deg ± 0.001 rad in norm (rotz t @ [1, 0, 0] km)
+1.00000025 ± 9.6e-7 km                  -- the angle error nearly cancels; a bound, not a sigma
 
 > let x = 5 ± 0.1 in x - x
 0
