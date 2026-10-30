@@ -27,6 +27,8 @@ module Eval.Codebase (
   clearFlags,
   addPreference,
   removePreference,
+  addStoredUse,
+  removeStoredUse,
   scaleNameFor,
   lookupName,
   lookupTerm,
@@ -49,6 +51,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core
+import Eval.Syntax (Use (..))
 import Eval.TCore (TTerm)
 import Eval.Type (Scheme, TypeDef (..))
 
@@ -79,6 +82,10 @@ data Codebase = Codebase
   -- ^ constructor names: labels on a type's constructors
   , fieldNames :: Map Text (Hash, Int, Int)
   -- ^ record field names: labels on a constructor's positions (design §2.3)
+  , uses :: [Use]
+  {- ^ the codebase's stored default @use@s, oldest first (design §7.7): @use
+  std@ from seeding. A name resolves through them after the root.
+  -}
   }
 
 emptyCodebase :: Codebase
@@ -95,6 +102,16 @@ emptyCodebase =
     Map.empty
     Map.empty
     Map.empty
+    []
+
+{- | Add a stored default @use@ (design §7.7) after the others; one already
+there moves to the end, as a repeated @use@ statement does.
+-}
+addStoredUse :: Use -> Codebase -> Codebase
+addStoredUse u cb = cb{uses = filter (/= u) cb.uses ++ [u]}
+
+removeStoredUse :: Use -> Codebase -> Codebase
+removeStoredUse u cb = cb{uses = filter (/= u) cb.uses}
 
 {- | Declare a name a display unit (design §3.2.12). Units are names, not
 references: two names for one hash can be a unit and a plain quantity.

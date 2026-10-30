@@ -96,8 +96,10 @@ commands =
   , ":move"
   , ":namespace"
   , ":uses"
+  , ":use"
   , ":unuse"
   , ":export"
+  , ":stdlib"
   , ":exact"
   , ":budget"
   , ":covariance"
@@ -292,12 +294,18 @@ namesOf :: Session -> Names
 namesOf session =
   Names
     { unitWords =
-        cb.units <> cb.scales <> Set.fromList (map baseSymbol [minBound .. maxBound])
-    , typeWords = Map.keysSet cb.typeNames <> Set.fromList builtinTypes
-    , conWords = Map.keysSet cb.conNames
+        spelled shortestName (Set.toList (cb.units <> cb.scales))
+          <> Set.fromList (map baseSymbol [minBound .. maxBound])
+    , typeWords =
+        spelled (shortestNameOf TypeLabel) (Map.keys cb.typeNames)
+          <> Set.fromList builtinTypes
+    , conWords = spelled shortestName (Map.keys cb.conNames)
     }
  where
   cb = session.staging
+  -- Each label by its full path and as the scope spells it, so that the
+  -- library's `std.km` is a unit written `km` (design §7.6, §7.7).
+  spelled short ns = Set.fromList ns <> Set.fromList (map (short session.scope cb) ns)
   builtinTypes = ["Num", "Vec", "Mat", "Tensor", "Point", "Scale", "Bool"]
 
 -- | What a printed line is, for colour.
@@ -364,8 +372,13 @@ classify = \case
       , "values of dimension "
       , "dependents left "
       , "(input abandoned)"
+      , "kept "
+      , "re-hashed "
+      , "stored use "
+      , "the library is up to date"
       ]
-      || ("(" `T.isPrefixOf` l && "prelude names hidden" `T.isInfixOf` l)
+      -- The namespaces under the current one, in a bare :ls.
+      || ("namespace " `T.isPrefixOf` l && " name" `T.isInfixOf` l && ")" `T.isSuffixOf` l)
       || ("`" `T.isPrefixOf` l && "` now also names " `T.isInfixOf` l)
   -- @area : …@, @unit km : …@; not a cons pattern inside a :view.
   isSignature l = case T.breakOn " : " l of

@@ -423,3 +423,47 @@
   refuses the export. Without a file the source is printed; the pending
   scratch is not exported, and a comment or note says so. New in
   `Eval.Driver`: `exportSource` and `exportRequest`.
+- The standard library lives in the codebase under `std` (design §7.7).
+  The prelude is no longer entered in memory under every session: a new
+  store is created and seeded with the library as one group under `std`
+  (`std.km`, `std.G`, `std.map`, …) and a stored `use std`, its log lines
+  stamped with time 0 so they sort before the user's and are the same in
+  every store (a merge of two seeded stores brings nothing across for the
+  library); an existing store is loaded on top of the empty codebase;
+  `--no-codebase` seeds in memory. The codebase keeps a list of stored
+  uses (`Codebase.uses`, log lines `use path [as alias]` and `unuse …`),
+  which resolve after the root, so a root `c` shadows `std.c`. `:uses`
+  marks them `(stored)`; `:use path [as alias]` adds one; `:unuse` removes
+  a stored one when one matches, else the session's. `:ls` alone lists the
+  current namespace's own labels and one line per namespace under it
+  (`namespace std (794 names)`), with no hidden-prelude footer; `--all`
+  lists full paths; a glob matches the full path or its last segment.
+  `:export` leaves `std` out unless asked (`:export std`), heads the text
+  with the stored uses as `use` statements and spells names for them, and
+  refuses a bare word that is no namespace instead of writing a file of
+  that name (a file needs a `/` or a `.`). `:stdlib upgrade`, a sketch:
+  adds new library names, updates names still on their seeded binding
+  (with propagation), keeps the user's. New: `Eval.Prelude.stdlibSource`,
+  `stdlibNames` (full paths, replacing `preludeNames`), `stdlibCodebase`,
+  `stdlibMoved`; `Eval.Driver.seededSession` (replacing `preludeSession`)
+  and `stdlibUpgrade`; `Eval.Store.Seed`, `stdlibSeed`, `seedStore`;
+  `openStore` and `mergeStores` take the seed; `qualifyWith` takes the
+  stored uses.
+- Store format 4. `formatVersion` is no longer `storageVersion` (still 3):
+  format 4 changes what a store holds, not how a term is encoded. A
+  format-3 store is migrated on open (formats 1 and 2 chain through 3) by
+  seeding it before its own log, so the user's root bindings still shadow
+  the library and the terms they reference are still on disk; no stored
+  hash moves.
+- Hash change: the owner stamp of a `±`, `noise` or `gauss` and of a
+  nominal type is the definition's full path (`lab.offset`, `std.G`,
+  `orbital.Body`), not its last segment, so `lab.offset = 1 ± 0.1` and
+  `field.offset = 1 ± 0.1` are two measurements and `a.Body` and `b.Body`
+  two types. The library's `std.G`, `std.M_earth` and `std.M_sun` therefore
+  have new hashes; every other library definition keeps the hash the root
+  prelude gave it. The format 3 to 4 migration records an old `G` that a
+  user term still uses as the history of `std.G`, so `:todo` reports the
+  term and `:upgrade std.G` moves it. `:rename` and `:move` of a stamped
+  definition or type re-stamp and re-hash it and propagate to everything
+  that uses it, reporting `re-hashed` and `upgraded` lines (new in
+  `Eval.Update`: `restamp`).

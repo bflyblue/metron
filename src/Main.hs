@@ -7,6 +7,7 @@ import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import Eval.Codebase (emptyCodebase)
 import Eval.Driver
 import Eval.Repl qualified as R
 import Eval.Store
@@ -75,8 +76,9 @@ format, which is reported.
 -}
 merge :: Options -> FilePath -> IO ()
 merge opts other = do
+  seed <- orFail stdlibSeed
   d <- locateStore opts.storeDir
-  result <- mergeStores d other
+  result <- mergeStores seed d other
   case result of
     Left err -> TIO.hPutStrLn stderr err >> exitFailure
     Right report -> do
@@ -88,32 +90,44 @@ merge opts other = do
  where
   tshow = T.pack . show
 
--- | A session: the prelude, then the store on top of it.
+-- | A session and the store it persists to, if any.
 data Live = Live {session :: Session, store :: Maybe Store}
 
+{- | The session to start with (design §7.7): in memory, a seeded one; else
+the store, created and seeded if it does not exist yet, loaded on top of
+the empty codebase.
+-}
 startSession :: Options -> IO Live
-startSession opts = do
-  base <- case preludeSession of
-    Left err ->
-      TIO.hPutStrLn stderr ("internal error: the prelude does not load:\n" <> err)
-        >> exitFailure
-    Right s -> pure s
+startSession opts =
   if opts.inMemory
-    then pure (Live base Nothing)
+    then (`Live` Nothing) <$> orFail seededSession
     else do
+      seed <- orFail stdlibSeed
       d <- locateStore opts.storeDir
-      opened <- openStore d
+      opened <- openStore seed d
       case opened of
         Left err -> TIO.hPutStrLn stderr err >> exitFailure
         Right st -> do
-          (cb, notes) <- loadStore st base.codebase
+          (cb, notes) <- loadStore st emptyCodebase
           mapM_ (TIO.hPutStrLn stderr . ("note: " <>)) notes
           session <-
             either
               (\err -> TIO.hPutStrLn stderr err >> exitFailure)
               pure
-              (refreshPreferences base{codebase = cb, staging = cb})
+              (refreshPreferences emptySession{codebase = cb, staging = cb})
           pure (Live session (Just st))
+
+-- | The library is part of the build; if it does not load, nothing can start.
+orFail :: Either Text a -> IO a
+orFail =
+  either
+    ( \err ->
+        TIO.hPutStrLn
+          stderr
+          ("internal error: the standard library does not load:\n" <> err)
+          >> exitFailure
+    )
+    pure
 
 -- | Run one input and persist whatever it changed.
 step :: Live -> Text -> IO (Either Text (Live, [Text]))

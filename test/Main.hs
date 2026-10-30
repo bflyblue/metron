@@ -1,8 +1,10 @@
 module Main (main) where
 
+import Control.Monad (foldM)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.List (sort)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Set qualified as Set
@@ -12,7 +14,7 @@ import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Eval.Affine hiding (Builtin, DivideByZero)
 import Eval.Affine qualified as A
-import Eval.Codebase (Codebase (..), lookupTypeName)
+import Eval.Codebase (Codebase (..), emptyCodebase, lookupName, lookupTypeName)
 import Eval.Core
 import Eval.Desugar
 import Eval.Dimension (DimAtom (..), Spelling (..), dimAtoms, dimOne, isDimOne)
@@ -23,7 +25,7 @@ import Eval.Infer (TypeError (..), elaborateClosed)
 import Eval.Lexer hiding (TNum, TProj)
 import Eval.Lexer qualified as L
 import Eval.Parser
-import Eval.Prelude (preludeNames)
+import Eval.Prelude (preludeSource, stdlibCodebase, stdlibNames)
 import Eval.Pretty
 import Eval.Repl qualified as R
 import Eval.Store
@@ -77,6 +79,7 @@ main =
         , respellTests
         , replTests
         , namespaceTests
+        , stdlibTests
         ]
     )
 
@@ -926,9 +929,7 @@ codebaseTests =
               , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
               , "Circle : Num [m] -> Shape"
               , "Rect : Num [m] -> Num [m] -> Shape"
-              , "("
-                  <> T.pack (show (length preludeNames))
-                  <> " prelude names hidden; :ls --all or a filter shows them)"
+              , "namespace std (" <> T.pack (show (length stdlibNames)) <> " names)"
               ]
           ls "k*m"
             @?= Right
@@ -2216,14 +2217,19 @@ lintRegressionTests =
 
 -- Prelude ----------------------------------------------------------------------------
 
-withPrelude :: Session
-withPrelude = either (error . T.unpack) id preludeSession
+-- | A session on a seeded codebase: the library under std, with `use std` stored.
+seeded :: Session
+seeded = either (error . T.unpack) id seededSession
+
+-- | What a new store is seeded with, and a format-3 store migrated with.
+theSeed :: Seed
+theSeed = either (error . T.unpack) id stdlibSeed
 
 evalP :: Text -> Either Text [Text]
-evalP src = snd <$> feed withPrelude src
+evalP src = snd <$> feed seeded src
 
 runLinesP :: [Text] -> Either Text [Text]
-runLinesP = go withPrelude []
+runLinesP = go seeded []
  where
   go _ acc [] = Right (concat (reverse acc))
   go s acc (l : ls) = do
@@ -2241,7 +2247,7 @@ preludeTests =
   testGroup
     "prelude"
     [ testCase "the prelude loads and defines its names"
-        $ length preludeNames > 600 @? "prelude is unexpectedly small"
+        $ length stdlibNames > 600 @? "prelude is unexpectedly small"
     , testCase "derived units are coherent" $ do
         evalP "1 N == 1 kg * m / s^2" @?= Right ["true"]
         evalP "1 J" @?= Right ["1 J"]
@@ -2804,8 +2810,10 @@ affineTests =
           ]
           @?= Right ["130 bp", "40 mmHg"]
         runLinesP ["let boil = 100 degC", ":view boil"] @?= Right ["boil = 100 degC"]
-        runLinesP [":edit degC"] @?= Right ["scale degC = K at 273.15 * K"]
-        runLinesP [":edit km"] @?= Right ["unit km = 10^3 * m"]
+        -- The library lives under std, so :edit prints its definitions in that block.
+        runLinesP [":edit degC"]
+          @?= Right ["namespace std", "  scale degC = K at 273.15 * K"]
+        runLinesP [":edit km"] @?= Right ["namespace std", "  unit km = 10^3 * m"]
     , testCase "display units of one dimension cancel against each other" $ do
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
         evalP "3 h / min" @?= Right ["180"]
@@ -3033,20 +3041,99 @@ storeTests =
             , "101.325 kPa"
             ]
     , testCase
-        "the store only holds what the user added, plus the prelude terms those use"
+        "a new store is seeded with the library; a reload is the library and the user's, from disk"
         $ withTempStore
         $ \dir -> do
-          _ <- persistLines dir ["let d = 3 km", ":add"]
-          (loaded, _) <- reload dir
-          -- km and its definition chain are on disk; a prelude name the user
-          -- never touched is still only in memory from the prelude.
-          Map.size loaded.codebase.terms @?= Map.size withPrelude.codebase.terms + 1
+          s <- persistLines dir ["let d = 3 km", ":add"]
+          -- The library's terms are on disk, with the user's one beside them.
+          onDisk <- listDirectory (dir </> "terms")
+          length onDisk @?= Map.size seeded.codebase.terms + 1
+          -- Loaded on top of the empty codebase: no prelude step.
+          (loaded, notes) <- reload dir
+          notes @?= []
+          Map.size loaded.codebase.terms @?= Map.size seeded.codebase.terms + 1
+          loaded.codebase.names @?= s.codebase.names
+          loaded.codebase.history @?= s.codebase.history
+          loaded.codebase.units @?= s.codebase.units
+          loaded.codebase.scales @?= s.codebase.scales
+          loaded.codebase.uses @?= [S.Use "std" Nothing]
           linesIn loaded ["d", "G"]
             @?= Right ["3 km", "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
-    , testCase "a user rebinding of a prelude name wins over the prelude on reload" $ withTempStore $ \dir -> do
-        _ <- persistLines dir ["let c = 3e8 m / s", ":update"]
+          -- The seed is at time 0, before the user's lines.
+          ls <- T.lines <$> TIO.readFile (dir </> "names.log")
+          ("0 use std" `elem` ls) @? "the stored use is a log line"
+          all ("0 " `T.isPrefixOf`) (takeWhile ("0 " `T.isPrefixOf`) ls) @? "seed first"
+          length (filter (not . ("0 " `T.isPrefixOf`)) ls) @?= 1
+    , testCase "a root binding shadows the library's on reload; :unuse std persists" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["let c = 3e8 m / s", ":add", ":unuse std"]
         (loaded, _) <- reload dir
-        linesIn loaded ["c"] @?= Right ["300000000 m s^-1"]
+        loaded.codebase.uses @?= []
+        linesIn loaded ["c", "std.c", ":use std", "1 km"]
+          @?= Right ["300000000 m s^-1", "299792458 m s^-1", "stored use std", "1 km"]
+        ls <- T.lines <$> TIO.readFile (dir </> "names.log")
+        any (" unuse std" `T.isSuffixOf`) ls @? "an unuse line"
+    , testCase
+        "a format-3 store is migrated: seeded before its log, the old G kept as history"
+        $ withTempStore
+        $ \dir -> do
+          -- A store as the format-3 code wrote it: the prelude in memory at the
+          -- root, only the user's labels in the log, the prelude terms they use
+          -- written beside theirs.
+          createDirectoryIfMissing True (dir </> "terms")
+          createDirectoryIfMissing True (dir </> "types")
+          writeFile (dir </> "format") "eval codebase 3\n"
+          user <-
+            either
+              (assertFailure . T.unpack)
+              pure
+              ( foldM
+                  (\s l -> fst <$> feed s l)
+                  legacyPrelude
+                  ["let c = 3e8 m / s", ":update", "let d = 3 km", "let w = 2 * G", ":add"]
+              )
+          sync (Store dir) legacyPrelude.codebase user.codebase
+          before <- T.lines <$> TIO.readFile (dir </> "names.log")
+          (loaded, notes) <- reload dir
+          notes @?= []
+          readFile (dir </> "format") >>= (@?= "eval codebase 4\n")
+          loaded.codebase.uses @?= [S.Use "std" Nothing]
+          -- The user's own lines are still there, after the seed.
+          afterwards <- T.lines <$> TIO.readFile (dir </> "names.log")
+          lastN (length before) afterwards @?= before
+          linesIn loaded ["c", "std.c", "d", "1 km", "w"]
+            @?= Right
+              [ "300000000 m s^-1"
+              , "299792458 m s^-1"
+              , "3 km"
+              , "1 km"
+              , "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2"
+              ]
+          expecting (linesIn loaded [":ls std"]) $ \outs ->
+            ("unit km : Num [m]" `elem` outs) @? "the library is listed"
+          -- w uses the root G the old prelude had, which is now std.G's history.
+          linesIn loaded [":view w", ":todo"]
+            @?= Right ["w = 2 * G#e1bms", "stale: w uses G#e1bms (use :upgrade G)"]
+          expecting (linesIn loaded [":upgrade std.G", ":view w"]) $ \outs ->
+            last outs @?= "w = 2 * G"
+          -- Merged into a store seeded fresh, std.G still ends on the new G.
+          let fresh = dir </> "fresh"
+          _ <- persistLines fresh []
+          _ <- mergeInto fresh dir
+          (merged, _) <- reload fresh
+          lookupName "std.G" merged.codebase @?= lookupName "std.G" seeded.codebase
+          linesIn merged ["w"] @?= Right ["1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2"]
+    , testCase "merging two seeded stores brings nothing across for the library"
+        $ withTempStore
+        $ \root -> do
+          let a = root </> "a"
+              b = root </> "b"
+          _ <- persistLines a ["let x = 1", ":add"]
+          _ <- persistLines b []
+          r <- mergeInto a b
+          r @?= MergeReport 0 0 0 []
+          _ <- persistLines b ["let y = 2", ":add"]
+          r' <- mergeInto a b
+          (r'.termsCopied, r'.linesAdded) @?= (1, 1)
     , testCase
         "declared types, their names and a type that uses another survive a reload"
         $ withTempStore
@@ -3124,7 +3211,7 @@ storeTests =
     , testCase "a store of another format is refused" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add"]
         writeFile (dir </> "format") "eval codebase 99\n"
-        opened <- openStore dir
+        opened <- openStore theSeed dir
         case opened of
           Left err -> T.isInfixOf "is not an eval codebase of format" err @? T.unpack err
           Right _ -> assertFailure "opened a store of another format"
@@ -3168,7 +3255,10 @@ storeTests =
           b2 <- store "b2" "2" 100
           xAfterMerge a2 b2 >>= (@?= Right ["1"])
           ls <- T.lines <$> TIO.readFile (a2 </> "names.log")
-          map (T.takeWhile (/= ' ')) ls @?= ["100", "200"]
+          -- The library's seed lines are at time 0 in both, and come first.
+          filter (/= "0") (map (T.takeWhile (/= ' ')) ls) @?= ["100", "200"]
+          takeWhile (== "0") (map (T.takeWhile (/= ' ')) ls)
+            @?= filter (== "0") (map (T.takeWhile (/= ' ')) ls)
     , testCase
         "merging: declared types and their type, con and field labels come across"
         $ withTempStore
@@ -3232,7 +3322,8 @@ storeTests =
           doesFileExist (a </> "terms" </> "not-a-hash") >>= (@?= False)
           doesFileExist (a </> "terms" </> replicate 64 '0') >>= (@?= False)
           ls <- T.lines <$> TIO.readFile (a </> "names.log")
-          take 1 ls @?= ["garbage line"]
+          -- Sorted as if at time 0: after the seed's lines, before the user's.
+          take 1 (dropWhile ("0 " `T.isPrefixOf`) ls) @?= ["garbage line"]
           (loaded, _) <- reload a
           linesIn loaded ["x + y"] @?= Right ["3"]
     , testCase
@@ -3242,7 +3333,7 @@ storeTests =
           let a = root </> "a"
               plain = root </> "plain"
               refused src needle = do
-                r <- mergeStores a src
+                r <- mergeStores theSeed a src
                 case r of
                   Left err -> T.isInfixOf needle err @? T.unpack err
                   Right v -> assertFailure (show v)
@@ -3266,14 +3357,19 @@ storeTests =
     ]
  where
   mergeInto :: FilePath -> FilePath -> IO MergeReport
-  mergeInto target source = either (error . T.unpack) id <$> mergeStores target source
-  -- Every line of a store's log at one time, for deterministic merges.
+  mergeInto target source = either (error . T.unpack) id <$> mergeStores theSeed target source
+  -- Every line of a store's log at one time, for deterministic merges; the
+  -- library's seed lines stay at time 0.
   restamp :: FilePath -> Integer -> IO ()
   restamp d t = do
     ls <- T.lines <$> TIO.readFile (d </> "names.log")
     TIO.writeFile
       (d </> "names.log")
-      (T.unlines [T.pack (show t) <> T.dropWhile (/= ' ') l | l <- ls])
+      ( T.unlines
+          [ if "0 " `T.isPrefixOf` l then l else T.pack (show t) <> T.dropWhile (/= ' ') l
+          | l <- ls
+          ]
+      )
   -- Every file under a directory with its content.
   snapshot :: FilePath -> IO (Map.Map FilePath ByteString)
   snapshot d = do
@@ -3298,21 +3394,21 @@ storeTests =
   -- Feed lines one at a time, persisting after each, as Main does.
   persistLines :: FilePath -> [Text] -> IO Session
   persistLines dir ls = do
-    st <- either (error . T.unpack) id <$> openStore dir
+    st <- either (error . T.unpack) id <$> openStore theSeed dir
     let go s [] = pure s
         go s (l : rest) = case feed s l of
           Left err -> error (T.unpack err)
           Right (s', _) -> sync st s.codebase s'.codebase >> go s' rest
-    go withPrelude ls
+    go seeded ls
   reload :: FilePath -> IO (Session, [Text])
   reload dir = do
-    st <- either (error . T.unpack) id <$> openStore dir
-    (cb, notes) <- loadStore st withPrelude.codebase
+    st <- either (error . T.unpack) id <$> openStore theSeed dir
+    (cb, notes) <- loadStore st emptyCodebase
     pure
       ( either
           (error . T.unpack)
           id
-          (refreshPreferences withPrelude{codebase = cb, staging = cb})
+          (refreshPreferences emptySession{codebase = cb, staging = cb})
       , notes
       )
   linesIn :: Session -> [Text] -> Either Text [Text]
@@ -3817,7 +3913,7 @@ dataTests =
 
 -- | The session after feeding lines to one with the prelude.
 sessionP :: [Text] -> Either Text Session
-sessionP = go withPrelude
+sessionP = go seeded
  where
   go s [] = Right s
   go s (l : ls) = feed s l >>= \(s', _) -> go s' ls
@@ -3828,7 +3924,7 @@ sessionP = go withPrelude
 leaves the session as it was.
 -}
 replLinesP :: [Text] -> [Either Text [Text]]
-replLinesP = go withPrelude
+replLinesP = go seeded
  where
   go _ [] = []
   go s (l : ls) = case feed s l of
@@ -4028,26 +4124,26 @@ replTests =
   testGroup
     "repl"
     [ testCase "commands complete at the start of a line" $ do
-        let cs = replacements withPrelude ":l"
+        let cs = replacements seeded ":l"
         all (`elem` cs) [":ls", ":load"] @? show cs
         all (":l" `isPrefixOfS`) cs @? show cs
-        replacements withPrelude "  :up" @?= [":update", ":upgrade"]
-        filter (":" `isPrefixOfS`) (replacements withPrelude "x :l") @?= []
+        replacements seeded "  :up" @?= [":update", ":upgrade"]
+        filter (":" `isPrefixOfS`) (replacements seeded "x :l") @?= []
     , testCase ":set and :colour complete their arguments" $ do
-        replacements withPrelude ":set un" @?= ["unicode"]
-        replacements withPrelude ":set " @?= ["precision", "sigma", "unicode"]
-        replacements withPrelude ":set unicode o" @?= ["on", "off"]
-        replacements withPrelude ":colour of" @?= ["off"]
-        R.completions withPrelude (reverse ":set ") "un"
+        replacements seeded ":set un" @?= ["unicode"]
+        replacements seeded ":set " @?= ["precision", "sigma", "unicode"]
+        replacements seeded ":set unicode o" @?= ["on", "off"]
+        replacements seeded ":colour of" @?= ["off"]
+        R.completions seeded (reverse ":set ") "un"
           @?= [R.Completion "unicode" "unicode" True]
     , testCase "names complete from the session: units, constructors, keywords" $ do
         -- The prelude's prefixed units are spelled with the SI symbol: km, kN.
-        let ks = replacements withPrelude "3 k"
+        let ks = replacements seeded "3 k"
         all (`elem` ks) ["km", "kN", "kJ", "kPa", "kat"] @? show ks
         all ("k" `isPrefixOfS`) ks @? show ks
-        replacements withPrelude "x + 3k" @?= ks
-        "where" `elem` replacements withPrelude "f x whe" @? "where"
-        replacements withPrelude "f x " @?= []
+        replacements seeded "x + 3k" @?= ks
+        "where" `elem` replacements seeded "f x whe" @? "where"
+        replacements seeded "f x " @?= []
         let s =
               either (error . T.unpack) id
                 $ sessionP ["data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"]
@@ -4064,22 +4160,22 @@ replTests =
         map (.display) (R.completions s "b" ".ma") @?= ["mass"]
         map (.display) (R.completions s "b" ".") @?= ["mass", "vel"]
     , testCase ":load completes file names" $ do
-        completeAt withPrelude ":load fo" @?= Nothing
+        completeAt seeded ":load fo" @?= Nothing
         R.loadsFile " :load " @? ":load"
         not (R.loadsFile ":ls") @? ":ls"
     , testCase "a backslash name completes from the unicode table only" $ do
-        completeAt withPrelude "2 \\mu"
+        completeAt seeded "2 \\mu"
           @?= Just (reverse "2 ", [R.Completion "\x03BC" "\x03BC" False])
-        replacements withPrelude "3 m \\pm" @?= ["±"]
-        replacements withPrelude "3 m \\pms" @?= ["±σ"]
-        replacements withPrelude "(\\Omega" @?= ["\x03A9"]
-        completeAt withPrelude "m\\^2" @?= Just ("m", [R.Completion "²" "²" False])
-        replacements withPrelude "s\\^-" @?= ["⁻"]
-        replacements withPrelude "\\lam" @?= ["λ"]
-        let os = replacements withPrelude "\\o"
+        replacements seeded "3 m \\pm" @?= ["±"]
+        replacements seeded "3 m \\pms" @?= ["±σ"]
+        replacements seeded "(\\Omega" @?= ["\x03A9"]
+        completeAt seeded "m\\^2" @?= Just ("m", [R.Completion "²" "²" False])
+        replacements seeded "s\\^-" @?= ["⁻"]
+        replacements seeded "\\lam" @?= ["λ"]
+        let os = replacements seeded "\\o"
         length os > 1 && all ("\\o" `isPrefixOfS`) os @? show os
         -- Nothing from the codebase: `kat` is a name, `\kat` is not an entry.
-        replacements withPrelude "\\kat" @?= []
+        replacements seeded "\\kat" @?= []
     , testCase
         "every unicode entry lexes as a documented ASCII spelling or is an identifier"
         $ sequence_
@@ -4099,7 +4195,7 @@ replTests =
         map
           fst
           ( R.classify
-              (Right ["(812 prelude names hidden; :ls --all or a filter shows them)"])
+              (Right ["namespace std (812 names)"])
           )
           @?= [R.Note]
         map
@@ -4387,7 +4483,7 @@ replTests =
             map stripSgr painted @?= concatMap (T.splitOn "\n") outs
     ]
  where
-  names = R.namesOf withPrelude
+  names = R.namesOf seeded
   shapes =
     either (error . T.unpack) id
       $ sessionP ["data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"]
@@ -4505,7 +4601,9 @@ namespaceTests =
           ( runLinesP
               (orbitalSetup ++ [":uses", "use orbital", ":uses", ":unuse orbital", ":uses"])
           )
-          $ \outs -> lastN 3 outs @?= ["no uses", "use orbital", "no uses"]
+          $ \outs ->
+            lastN 4 outs
+              @?= ["use std (stored)", "use std (stored)", "use orbital", "use std (stored)"]
     , testCase "use … as: an alias prefix"
         $ expecting (runLinesP (orbitalSetup ++ ["use orbital as o", "o.period 2"]))
         $ \outs ->
@@ -4586,16 +4684,30 @@ namespaceTests =
               ["let period = 1", ":add", multiline ["namespace period", "  let x = 1"]]
           )
           "`period` is a definition; it cannot also be a namespace"
+        -- The library's labels are under std (design §7.7).
         expectError
-          (runLinesP [multiline ["namespace km", "  let x = 1"]])
-          "`km` is a definition; it cannot also be a namespace"
+          (runLinesP [multiline ["namespace std.km", "  let x = 1"]])
+          "`std.km` is a definition; it cannot also be a namespace"
         expectError
-          (runLinesP [":namespace km"])
-          "`km` is a definition; it cannot also be a namespace"
-    , testCase "the declared name's namespace never reaches the hash" $ do
+          (runLinesP [":namespace std.km"])
+          "`std.km` is a definition; it cannot also be a namespace"
+    , testCase "a ± definition's namespace reaches its hash; a plain one's does not" $ do
         let hashOf ls n = fmap last (runLinesP (ls ++ [":hash " <> n]))
-        hashOf ["let r = 1 m ± 0.1 m"] "r"
-          @?= hashOf [multiline ["namespace a", "  let r = 1 m ± 0.1 m"]] "a.r"
+        -- The owner stamp is the full path (design §3.2.4).
+        ( hashOf ["let r = 1 m ± 0.1 m"] "r"
+            /= hashOf [multiline ["namespace a", "  let r = 1 m ± 0.1 m"]] "a.r"
+          )
+          @? "a.r and r are two measurements"
+        hashOf ["let q = 1 m"] "q"
+          @?= hashOf [multiline ["namespace a", "  let q = 1 m"]] "a.q"
+        -- Two namespaces, one text: two terms, and their difference keeps both nudges.
+        let two =
+              [ multiline ["namespace a", "  let x = 1 ± 0.1"]
+              , multiline ["namespace b", "  let x = 1 ± 0.1"]
+              ]
+        (hashOf two "a.x" /= hashOf two "b.x") @? "a.x and b.x are two measurements"
+        expecting (runLinesP (two ++ ["a.x - b.x", ":covariance a.x - b.x"])) $ \outs ->
+          lastN 3 outs @?= ["0.0 ± 0.2", "variance 0", "bound 0.2"]
     , testCase ":namespace: single lines land under it, and :scratch shows the path" $ do
         runLinesP [":namespace", ":namespace orbital", ":namespace"]
           @?= Right ["namespace . (the root)", "namespace orbital", "namespace orbital"]
@@ -4630,15 +4742,17 @@ namespaceTests =
               ]
           )
           "unknown name `x`"
-    , testCase "a nominal type's namespace never reaches its hash" $ do
+    , testCase "a nominal type's namespace reaches its hash" $ do
         root <- either (assertFailure . T.unpack) pure (sessionP ["data T = T Num"])
         inner <-
           either
             (assertFailure . T.unpack)
             pure
             (sessionP [multiline ["namespace a", "  data T = T Num"]])
-        lookupTypeName "a.T" inner.staging @?= lookupTypeName "T" root.staging
+        (lookupTypeName "a.T" inner.staging /= lookupTypeName "T" root.staging)
+          @? "a.T and T are two types"
         isJust (lookupTypeName "T" root.staging) @? "declared"
+        isJust (lookupTypeName "a.T" inner.staging) @? "declared"
     , testCase ":ls of a namespace lists its labels relative to it" $ do
         expecting
           ( runLinesP
@@ -4661,9 +4775,24 @@ namespaceTests =
                   ]
         expecting (runLinesP (orbitalSetup ++ [":namespace orbital", ":ls"])) $ \outs ->
           lastN 2 outs @?= ["mu : Num", "period : Num d -> Num d"]
+        -- Alone at the root: the root's own labels, then the namespaces under it.
         expecting (runLinesP (orbitalSetup ++ [":ls"])) $ \outs ->
-          ("prelude names hidden" `T.isInfixOf` last outs)
-            @? "the footer counts the prelude"
+          lastN 2 outs
+            @?= [ "namespace orbital (2 names)"
+                , "namespace std (" <> T.pack (show (length stdlibNames)) <> " names)"
+                ]
+        expecting
+          ( runLinesP
+              ( orbitalSetup
+                  ++ [ multiline ["namespace orbital.kepler", "  let e = 1"]
+                     , ":namespace orbital"
+                     , ":ls"
+                     ]
+              )
+          )
+          $ \outs ->
+            lastN 3 outs
+              @?= ["mu : Num", "period : Num d -> Num d", "namespace kepler (1 name)"]
     , testCase
         ":rename a definition, and a namespace with its units, types and fields"
         $ do
@@ -4702,8 +4831,10 @@ namespaceTests =
                 )
             )
             $ \outs ->
-              lastN 4 outs
+              map (T.takeWhile (/= '#')) (lastN 6 outs)
                 @?= [ "renamed the 5 labels under `orbital` to `mechanics`"
+                    , "re-hashed data mechanics.Body"
+                    , "re-hashed mechanics.earth "
                     , "2 mechanics.au"
                     , "6 kg"
                     , "Body {mass = 1 kg}"
@@ -4786,11 +4917,11 @@ namespaceTests =
               ]
           )
           $ \outs -> last outs @?= "y = a.x + b.x"
-        -- A multiline with its own km refers to the root's with a leading dot.
+        -- A multiline with its own km refers to the library's by its path.
         expecting
           ( runLinesP
               [ multiline
-                  ["namespace orbital", "  let km = 5", "  let d = 2 .km", "  let e = km"]
+                  ["namespace orbital", "  let km = 5", "  let d = 2 std.km", "  let e = km"]
               , ":add"
               , ":namespace orbital"
               , ":view d"
@@ -4798,7 +4929,18 @@ namespaceTests =
               , "d"
               ]
           )
-          $ \outs -> lastN 3 outs @?= ["d = 2 * .km", "e = km", "2 .km"]
+          $ \outs -> lastN 3 outs @?= ["d = 2 * std.km", "e = km", "2 std.km"]
+        -- A root name with the spelling the library has takes a leading dot.
+        expecting
+          ( runLinesP
+              [ multiline
+                  ["let km = 5", "namespace orbital", "  let km = 6", "  let d = .km + km"]
+              , ":add"
+              , ":namespace orbital"
+              , ":view d"
+              ]
+          )
+          $ \outs -> last outs @?= "d = .km + km"
     , testCase "a file's uses last for the file only" $ do
         s <- either (assertFailure . T.unpack) pure (sessionP orbitalSetup)
         case feedFile s (multiline ["use orbital", "period 2"]) of
@@ -4851,7 +4993,8 @@ namespaceTests =
         s <- either (assertFailure . T.unpack) pure (sessionP exportScript)
         expecting (runLinesP (exportScript ++ [":export orbital.kepler"])) $ \outs ->
           T.lines (last outs)
-            @?= [ "namespace orbital"
+            @?= [ "use std"
+                , "namespace orbital"
                 , "  namespace kepler"
                 , "    let anomaly = \\e -> \\x -> x + e * x"
                 , "    let viaParent = orbital.size * 2"
@@ -4864,8 +5007,15 @@ namespaceTests =
           last (T.lines (last outs))
             @?= "-- not exported: 1 pending definitions (:add or :update them first)"
         expectError (runLinesP [":export a b c"]) "usage: :export"
-        -- A single word that is no namespace is a file, which only the REPL writes.
+        -- A single word that is no namespace is a file when it looks like a
+        -- path, which only the REPL writes; a bare word is a misspelt namespace.
         expectError (runLinesP [":export out.ev"]) "only the REPL writes files"
+        expectError (runLinesP [":export dir/out"]) "only the REPL writes files"
+        expectError
+          (runLinesP [":export orbitl"])
+          "`orbitl` is not a namespace; to write a file give a path like orbitl.ev"
+        fmap fst (exportRequest s ["orbitl"])
+          @?= Left "`orbitl` is not a namespace; to write a file give a path like orbitl.ev"
         expectError
           (runLinesP [":export nowhere out.ev"])
           "`nowhere` is not a namespace"
@@ -4902,7 +5052,7 @@ namespaceTests =
                   ]
               , "data Pair = Pair orbital.Orbit orbital.Orbit"
               ]
-        runLinesP (setup ++ ["2 orbital.au", "orbital.one to km", "3 .km"])
+        runLinesP (setup ++ ["2 orbital.au", "orbital.one to km", "3 .std.km"])
           @?= Right ["added orbital.au", "2 orbital.au", "149597870.7 km", "3 km"]
         expecting (runLinesP (setup ++ [":add", ":view Pair", ":edit orbital.Orbit"])) $ \outs ->
           lastN 3 outs
@@ -4914,3 +5064,224 @@ namespaceTests =
         s <- either (assertFailure . T.unpack) pure (sessionP orbitalSetup)
         R.highlight (R.namesOf s) "orbital.period 2" @?= "orbital.period 2"
     ]
+
+-- The standard library (design §7.7) -------------------------------------------------
+
+{- | The library as the old root prelude entered it, before it moved under
+std: the statements of 'preludeSource' at the root, added.
+-}
+legacyPrelude :: Session
+legacyPrelude =
+  either (error . T.unpack) id $ do
+    (s, _) <- feed emptySession preludeSource
+    (s', _) <- feed s ":add"
+    pure s'
+
+stdlibTests :: TestTree
+stdlibTests =
+  testGroup
+    "standard library"
+    [ testCase "the move under std keeps the hash of every definition without a ±" $ do
+        -- Printed by `:hash km` and `:hash map` in a prelude session at 21cb8e8,
+        -- before the library moved under std.
+        runLinesP [":hash std.km", ":hash std.map"] @?= Right ["#90tke", "#v2enr.0"]
+        let old n = lookupName n legacyPrelude.codebase
+            new n = lookupName ("std." <> n) seeded.codebase
+        old "km" @?= new "km"
+        old "map" @?= new "map"
+        old "degC" @?= new "degC"
+        isJust (new "km") @? "std.km"
+        -- Every library name but the ± ones and what uses them keeps its hash.
+        [ n
+          | n <- Map.keys legacyPrelude.codebase.names
+          , old n /= new n
+          ]
+          @?= ["G", "M_earth", "M_sun"]
+    , testCase "a ± definition is stamped with its full path: std.G is not a root G" $ do
+        -- `:hash G` printed #e1bms at 21cb8e8, when the prelude's G was at the root.
+        expecting (runLinesP [":hash G", ":hash std.G"]) $ \case
+          [g, stdG] -> do
+            g @?= stdG
+            (g /= "#e1bms") @? "std.G has a new hash"
+          outs -> assertFailure (show outs)
+        expecting
+          ( runLinesP
+              [ ":unuse std"
+              , "let G = (6.67430e-11 ±σ 1.5e-15) * m^3 / (kg * s^2)"
+              , ":add"
+              , ":hash G"
+              , ":hash std.G"
+              ]
+          )
+          $ \outs -> case lastN 2 outs of
+            [g, stdG] -> do
+              -- The root G has the hash the root prelude's G had.
+              g @?= "#e1bms"
+              (stdG /= g) @? "std.G differs from the root G"
+            other -> assertFailure (show other)
+    , testCase "units resolve through the stored use std and print bare" $ do
+        evalP "5 km" @?= Right ["5 km"]
+        runLinesP ["5 std.km", "1 km to m", "3 degC"]
+          @?= Right ["5 km", "1000 m", "3 degC"]
+        runLinesP [":type std.G"] @?= Right ["Num [m^3 kg^-1 s^-2]"]
+    , testCase ":ls alone shows the root and one line for std; :ls std the library" $ do
+        runLinesP [":ls"]
+          @?= Right ["namespace std (" <> T.pack (show (length stdlibNames)) <> " names)"]
+        expecting (runLinesP [":ls std"]) $ \outs -> do
+          length outs @?= length stdlibNames
+          ("unit km : Num [m]" `elem` outs) @? "km"
+          ("scale degC : Scale [K]" `elem` outs) @? "degC"
+        expecting (runLinesP [":ls --all"]) $ \outs -> do
+          ("unit std.km : Num [m]" `elem` outs) @? "full paths with --all"
+          length outs @?= length stdlibNames
+        runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
+    , testCase "a root name shadows the library's: c and std.c" $ do
+        runLinesP ["let c = 3e8 m/s", "c", "std.c", ":add", "c", "std.c"]
+          @?= Right
+            [ "300000000 m s^-1"
+            , "299792458 m s^-1"
+            , "added c"
+            , "300000000 m s^-1"
+            , "299792458 m s^-1"
+            ]
+        expecting
+          (runLinesP ["let c = 3e8 m/s", "let x = c + std.c", ":add", ":view x"])
+          $ \outs ->
+            last outs @?= "x = c + std.c"
+    , testCase "library names are names: :rename, :unname, :edit" $ do
+        runLinesP [":rename std.h std.hour", "3 hour", "2 hour + 30 min"]
+          @?= Right ["renamed `std.h` to `std.hour`", "3 hour", "150 min"]
+        expectError (runLinesP [":rename std.h std.hour", "3 h"]) "unknown name `h`"
+        expectError (runLinesP [":unname std.AU", "1 AU"]) "unknown name `AU`"
+        runLinesP [":edit std.km"] @?= Right ["namespace std", "  unit km = 10^3 * m"]
+    , testCase ":uses, :unuse and :use for the stored use std" $ do
+        runLinesP [":uses"] @?= Right ["use std (stored)"]
+        runLinesP [":unuse std", ":uses"]
+          @?= Right ["removed the stored use std; :use std puts it back", "no uses"]
+        expectError (runLinesP [":unuse std", "5 km"]) "unknown name `km`"
+        runLinesP [":unuse std", "5 std.km", ":use std", "5 km", ":uses"]
+          @?= Right
+            [ "removed the stored use std; :use std puts it back"
+            , "5 std.km"
+            , "stored use std"
+            , "5 km"
+            , "use std (stored)"
+            ]
+        expectError (runLinesP [":use std"]) "use std is already stored"
+        -- A session use and a stored one of the same path: the stored goes first.
+        runLinesP ["use std", ":uses", ":unuse std", ":uses", ":unuse std", ":uses"]
+          @?= Right
+            [ "use std (stored)"
+            , "use std"
+            , "removed the stored use std; :use std puts it back"
+            , "use std"
+            , "no uses"
+            ]
+        -- The scratch must still check without it.
+        expectError
+          (runLinesP ["let d = 2 km", ":unuse std"])
+          "the pending definitions would not check"
+    , testCase ":stdlib upgrade: up to date, added, updated, kept" $ do
+        runLinesP [":stdlib upgrade"] @?= Right ["the library is up to date"]
+        lib <- either (assertFailure . T.unpack) pure stdlibCodebase
+        -- An older library: G as a plain number, c the user rebinds, AU absent.
+        old <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            ( sessionWith
+                emptySession
+                [ multiline ["namespace std", "  let G = 1", "  let c = 2", "  let gone = 3"]
+                , ":add"
+                , multiline ["namespace std", "  let c = 5"]
+                , "let twice = std.G * 2"
+                , ":update"
+                ]
+            )
+        case stdlibUpgrade lib old of
+          Left err -> assertFailure (T.unpack err)
+          Right (s, outs) -> do
+            ("added std.km" `elem` outs) @? "km added"
+            any ("updated std.G " `T.isPrefixOf`) outs @? "G updated"
+            ("kept std.c (yours)" `elem` outs) @? "c kept"
+            any ("upgraded twice " `T.isPrefixOf`) outs @? "twice upgraded"
+            linesIn' s ["std.c", "std.gone", "twice", "1 std.km"]
+              @?= Right ["5", "3", "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2", "1 std.km"]
+    , testCase
+        ":rename and :move re-hash a stamped definition and upgrade its dependents" $ do
+        let hashOf ls n = fmap last (runLinesP (ls ++ [":hash " <> n]))
+        -- A plain definition keeps its hash; a ± one takes its new path's.
+        expecting (runLinesP ["let q = 1", ":add", ":rename q r"]) $ \outs ->
+          last outs @?= "renamed `q` to `r`"
+        expecting
+          ( runLinesP
+              ["let a = 1 ± 0.1", "let b = a * 2", ":add", ":rename a c", "b", ":todo"]
+          )
+          $ \outs -> do
+            case drop 2 outs of
+              renamed : rehashed : upgraded : rest -> do
+                renamed @?= "renamed `a` to `c`"
+                ("re-hashed c #" `T.isPrefixOf` rehashed) @? T.unpack rehashed
+                ("upgraded b #" `T.isPrefixOf` upgraded) @? T.unpack upgraded
+                rest @?= ["2.0 ± 0.2", "nothing to do"]
+              other -> assertFailure (show other)
+        hashOf ["let a = 1 ± 0.1", ":add", ":rename a c"] "c"
+          @?= hashOf ["let c = 1 ± 0.1", ":add"] "c"
+        -- A namespace moved: each stamped member re-hashed, as if entered there.
+        let lab = [multiline ["namespace lab", "  let x = 1 ± 0.1", "  let y = x + 1"], ":add"]
+        expecting (runLinesP (lab ++ [":rename lab field"])) $ \outs ->
+          map (T.takeWhile (/= '#')) (lastN 3 outs)
+            @?= [ "renamed the 2 labels under `lab` to `field`"
+                , "re-hashed field.x "
+                , "re-hashed field.y "
+                ]
+        hashOf (lab ++ [":move lab.x field"]) "field.x"
+          @?= hashOf [multiline ["namespace field", "  let x = 1 ± 0.1"], ":add"] "field.x"
+        -- The library's G: its dependents follow it.
+        expecting (runLinesP [":rename std.G std.Gn", ":todo"]) $ \outs ->
+          map (T.unwords . take 2 . T.words) outs
+            @?= [ "renamed `std.G`"
+                , "re-hashed Gn"
+                , "upgraded M_earth"
+                , "upgraded M_sun"
+                , "nothing to"
+                ]
+    , testCase
+        ":rename of a nominal type re-hashes it, its users and the types that use it" $ do
+        let shapes =
+              [ "data Shape = Circle (Num [m]) | Square (Num [m])"
+              , "data Wrap = Wrap Shape"
+              , "let size s = case s of Circle r -> r; Square a -> a"
+              , "let one = Wrap (Circle (1 m))"
+              , ":add"
+              ]
+        expecting
+          ( runLinesP
+              ( shapes
+                  ++ [":rename Shape Form", "size (Square (2 m))", "one", ":view Wrap", ":todo"]
+              )
+          )
+          $ \outs -> do
+            let report = takeWhile (/= "2 m") (dropWhile (not . ("renamed" `T.isPrefixOf`)) outs)
+            take 1 report @?= ["renamed `Shape` to `Form`"]
+            sort (map (T.unwords . take 2 . T.words) (drop 1 report))
+              @?= ["re-hashed data", "re-hashed data", "upgraded one", "upgraded size"]
+            lastN 3 outs
+              @?= ["Wrap (Circle (1 m))", "data Wrap = Wrap Form", "nothing to do"]
+        -- The type now has the hash a fresh declaration under the new name has.
+        let typeHash ls n = do
+              s <- sessionP ls
+              pure (lookupTypeName n s.codebase)
+        typeHash (shapes ++ [":rename Shape Form"]) "Form"
+          @?= typeHash ["data Form = Circle (Num [m]) | Square (Num [m])", ":add"] "Form"
+    ]
+ where
+  linesIn' s0 = go s0 []
+   where
+    go _ acc [] = Right (concat (reverse acc))
+    go s acc (l : rest) = do
+      (s', outs) <- feed s l
+      go s' (outs : acc) rest
+  sessionWith s0 = \case
+    [] -> Right s0
+    l : ls -> feed s0 l >>= \(s', _) -> sessionWith s' ls

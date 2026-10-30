@@ -283,11 +283,22 @@ The policy, now that stores exist (design §7.4):
   again gets the new hash, which the codebase treats as a new version like
   any other. Such changes are still listed in the changelog as hash-affecting,
   because the same text no longer reproduces the stored hash.
+  The owner stamp of a `±` and of a nominal type becoming the full path
+  (`std.G`, `orbital.Body`) rather than the bare name is such a change: a
+  stored `±` definition keeps its hash, and the same text entered again, or
+  under a namespace, gets the new one.
 - **Encoding and Core changes are versioned.** The store carries a format
-  number (`format`, currently 1). Any change to the canonical encoding or to
+  number (`format`, currently 4). Any change to the canonical encoding or to
   a Core constructor (the label field on `Noise` and `Uncertain` was the last,
   made before any store existed) bumps it, and the loader refuses a store of
-  another version. Opening an old store then means a numbered migration:
+  another version it cannot migrate. The format number is no longer the
+  storage encoding's version (`storageVersion`, still 3): format 4 changed
+  what a store holds, not how a term is encoded. A format-3 store assumed a
+  prelude entered in memory at every start; a format-4 store holds the
+  standard library as labels under `std`, seeded into it (design §7.7). The
+  3 to 4 migration writes the library's terms and seed lines into the
+  store and moves no stored hash: every term file stays as it is, and a user
+  term that referenced an old prelude hash still finds it on disk. Opening an old store then means a numbered migration:
   decode with the old decoder, re-encode, map every old hash to its new one,
   rewrite the references in dependency order (the `propagate` machinery), and
   rewrite the log. The first, format 1 to 2 (a written name after each

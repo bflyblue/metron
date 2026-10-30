@@ -239,15 +239,16 @@ print with each compound field in parentheses, `Rect (3 m) (4 m)` and
 record prints with its field names (below).
 
 A type's identity is its definition: parameter kinds, the constructors' field
-types in order, and the type's name as an owner stamp (§3.2.4), so two users
+types in order, and the type's full path as an owner stamp (§3.2.4), so two users
 who declare `data Shape = …` alike share one type and `data Blob = Circle (Num
 [m])` is another. `structural data` leaves the name out, so any two structural
 declarations of the same shape are the same type. Constructor names and the
 type name are labels in the codebase, like definition names (§7): `:unname
 Circle` leaves the constructor printing as `#a3f9k.0`, `:view Shape` prints
 the declaration back, and a constructor name and a definition name share one
-namespace, the newer label winning (declaring `data Temp = T (Num [K])`
-unnames the tesla until a `let T = …` takes the name back). A declaration is
+namespace, the newer label winning (declaring `data Temp = T (Num [K])` in
+`namespace std` would unname the tesla `std.T`; at the root it only
+shadows it, as any root name shadows the library's, §7.7). A declaration is
 pending in the scratch (§7.5) until `:add`, like a definition. `==` and `/=`
 work on a declared type when every field of every constructor has equality
 (§4.2), as on tuples and lists: `Circle (1 m) == Circle (1 m)` is true, values
@@ -736,11 +737,16 @@ of what created it.
   The codebase is content-addressed, so two definitions with identical text
   would be one definition and therefore one unknown. To keep `let a = 5 ± 0.1`
   and `let b = 5 ± 0.1` independent, as two parts from one batch are, the
-  desugarer stamps every `±`, `noise` and `gauss` with the **name of the
-  definition it is written in** (`Owner "a"`, a field of the Core node, hence
-  in the hash). The stamp is never printed: `:view a` shows `5 ± 0.1`, and
+  desugarer stamps every `±`, `noise` and `gauss` with the **full path of the
+  definition it is written in** (`Owner "a"` at the root, `Owner
+  "lab.offset"` in `namespace lab`, a field of the Core node, hence in the
+  hash). The stamp is never printed: `:view a` shows `5 ± 0.1`, and
   re-adding that text under the name `a` reproduces the same term, while adding
-  it under another name makes a new measurement. An expression typed at the
+  it under another name, or the same name in another namespace, makes a new
+  measurement. The full path, not the last segment: `lab.offset = 1 ± 0.1`
+  and `field.offset = 1 ± 0.1` are two instruments, and if they were one term
+  and one unknown their difference would print as exactly `0`. The price is
+  that renaming or moving a stamped definition changes its hash (§7.2). An expression typed at the
   prompt has owner `""` and its own hash as the site. This is a deterministic,
   text-visible version of Unison's `unique type` salt: the text of a
   measurement is the whole `let name = body`, not just the body.
@@ -955,7 +961,7 @@ let km = 1000 m
 let g  = kg / 1000              -- the one wrinkle: the base unit carries a prefix
 ```
 
-The prelude ships: the 22 derived SI units (N, J, W, Pa, Hz, C, V, Ω, F, S, T, H,
+The prelude, now the standard library under `std` (§7.7), ships: the 22 derived SI units (N, J, W, Pa, Hz, C, V, Ω, F, S, T, H,
 Wb, lm, lx, Bq, Gy, Sv, kat, `sr = rad^2`), the 24 SI prefixes applied to
 every base and derived unit plus `L` and `g` (`km`, `mm`, `µs`, `kPa`, `GHz`, …),
 and the accepted units iapetus needs: `min h day year` (Julian, 365.25 day), `AU`,
@@ -2031,8 +2037,9 @@ SHA-256 of the encoding, displayed as a base32hex prefix: `#a3f9k`.
 A label is one byte (0 owner, 1 tag) and the text. In the *storage* encoding
 (§7.4) every `Ref` is followed by the name the author wrote, and every binder
 by its name hint; the canonical encoding, and so the hash, has neither. The owner stamp is the
-name of the enclosing definition (§3.2.4), so the hash of a definition that
-declares uncertainty depends on its name; nothing else in the hash does.
+full path of the enclosing definition (§3.2.4), so the hash of a definition
+that declares uncertainty depends on its name and its namespace; nothing
+else in the hash does.
 | 0x0C | `Pack ts` | varint count, each `t` |
 | 0x0D | retired | was `MatLit`; never reused |
 | 0x0E | `Cycle ts` | varint count, each `t` |
@@ -2191,9 +2198,29 @@ hash, as `name#hash` when the name has moved on, and as `#hash` when nothing
 names it. A reference into a cycle prints as `#hash.i`, and `:view` of a cycle
 member shows that member's body with the other members by their current names.
 Within one input, defining the same name twice is an error rather than a
-rebinding: rebinding is something that happens between inputs. The same applies inside the prelude: redefining `G` to a newer CODATA
-value leaves every existing function pointing at the old `G#…` until its author
-re-enters it, and `:dependents G` lists them.
+rebinding: rebinding is something that happens between inputs. The same
+applies to the standard library (§7.7), which is names like any other:
+rebinding `std.G` to a newer CODATA value with `:update --no-upgrade` leaves
+every existing function pointing at the old `G#…`, `:dependents std.G` lists
+them, and `:upgrade std.G` moves them.
+
+Relabelling never changes a hash, with one exception: a definition whose
+term carries an owner stamp, a `±`, `noise` or `gauss` written in it
+(§3.2.4), and a nominal type (§2.3), are stamped with their full path.
+`:rename` and `:move` of such a label, alone or as part of a namespace,
+re-stamp it with the new path and re-hash it, so it has the hash its text
+would have if entered under the new name. Then everything that mentions it
+follows, dependencies first, as `:update` propagates: a type whose fields
+use a re-hashed type, a definition that uses a re-hashed type's
+constructors, and every dependent of a re-hashed definition, re-checked and
+re-bound, with a cycle's other members and the type's constructor and
+field labels moving with it. All or nothing: if anything would no longer
+check, nothing changes. The report says what moved: `re-hashed data
+mechanics.Body` for a type, `re-hashed lab.x #k1 -> #k5` for each moved
+definition whose hash changed, `upgraded b #k2 -> #k6` for each dependent
+outside the move. History keeps the old path on the old hash. (A cycle
+re-stamped in place keeps its members' order, which re-entering its text
+might not give: then the text gives another hash for the same cycle.)
 
 ### 7.3 REPL commands
 
@@ -2210,11 +2237,13 @@ Scratch and codebase (7.5)
 
 Inspection
 :ls [glob|namespace] [--all|--units|--scales|--types] [: type]
-                   every name with its type, sorted; the prelude hidden unless a filter or --all;
-                   a glob (* anywhere, else a substring), a kind, or a type query whose lowercase
-                   unknown names are variables, matched by unification both ways; a word that
-                   names a namespace lists only its labels, relative to it, data lines included;
-                   alone inside a namespace, that namespace
+                   names with their types, sorted; alone, the current namespace's own labels,
+                   then one line per namespace directly under it, `namespace std (794 names)`;
+                   a word that names a namespace lists everything under it, relative to it, data
+                   lines included; --all lists everything by full path; a glob (* anywhere, else
+                   a substring; on the full path or its last segment), a kind, or a type query
+                   whose lowercase unknown names are variables, matched by unification both
+                   ways, searches everything
 :type e            inferred type scheme of e
 :hash name         current ref of name
 :names #hash       every name that points at the hash (current or historical)
@@ -2233,8 +2262,12 @@ Inspection
 
 Namespaces (7.6)
 :namespace [path|.] show or set the current namespace (a full path); . is the root
-:uses              list the uses in effect; a `use` statement adds one
-:unuse path        drop a use, by its path or its alias
+:uses              list the uses in effect: the codebase's stored ones, marked (stored), then the
+                   session's; a `use` statement adds one for the session
+:use path [as a]   add a stored use, kept in the codebase (7.7)
+:unuse path        drop a use, by its path or its alias: a stored one when there is one (and say
+                   so), else the session's
+:stdlib upgrade    take the shipped standard library's newer definitions (7.7)
 
 Session
 :set precision n   significant digits printed; working precision is n + 4 (3.2.8)
@@ -2247,8 +2280,9 @@ Session
 :budget e          error budget (3.2.6)
 :covariance e      covariance (or variance) of the statistical nudges, and the bound box (3.5)
 :load file         enter a file into the scratch as one binding group; its `use`s last for the file
-:export [ns] [file] the stored codebase, or the namespace ns, as source :load reads back (7.4);
-                   to the file when one is given (a word that is no namespace is the file)
+:export [ns] [file] the stored codebase but std, or the namespace ns (std included), as source
+                   :load reads back (7.4); to the file when one is given (a word that is no
+                   namespace is the file if it has a / or a ., else refused as a misspelling)
 :colour [on|off]   colour the REPL's output; alone, say whether it is on (a REPL-level setting, below)
 :quit
 ```
@@ -2313,7 +2347,7 @@ changes what an input means or the text it prints.
 - elsewhere, a name the session sees (definitions, units, types and
   constructors, pending ones included) or a keyword.
 
-The prelude has many hundreds of names, so a short prefix can list many
+The standard library has many hundreds of names, so a short prefix can list many
 candidates.
 
 **Unicode by name.** A backslash, a name, then TAB enters a character, as
@@ -2354,7 +2388,7 @@ terminal themes do not show dim text:
 |---|---|
 | an error's `error at` line and message | red |
 | an error's carets | bold red |
-| notes: `pending:`, `added`, `updated`, `nothing …`, the hidden-prelude line of `:ls`, `(input abandoned)`, the `≡` of the unicode echo | bright black (grey) |
+| notes: `pending:`, `added`, `updated`, `nothing …`, the namespace lines of a bare `:ls`, `kept`, `stored use`, `(input abandoned)`, the `≡` of the unicode echo | bright black (grey) |
 | comments, `-- …` and `{- … -}` | bright black |
 | keywords: `let unit scale data case of in where if then else to true false at`, and `structural` before `data` | magenta |
 | numbers and superscript powers | plain |
@@ -2468,7 +2502,7 @@ eval --merge OTHER       merge the store at OTHER into this one, leaving OTHER a
 A codebase on disk is a directory:
 
 ```
-format             "eval codebase 3": the storage format version
+format             "eval codebase 4": the store's format version
 terms/<hex hash>   one term per file: the canonical encoding of 6.1 with each
                    binder's name hint after its tag and each reference's written
                    name after it, so :view keeps the author's names and units are
@@ -2485,12 +2519,14 @@ names.log          append-only, one event per line:
                      <unix time> type <name> <hex hash>          -- a type label
                      <unix time> con <name> <hex hash>.<i>       -- a constructor label
                      <unix time> field <name> <hex hash>.<i>.<j>  -- a record field label
+                     <unix time> use <path> [as <alias>]          -- a stored use (7.7)
+                     <unix time> unuse <path> [as <alias>]
 history            the REPL's line history
 ```
 
 Types and Typed Core are not stored; they are recomputed on load by
-typechecking and linting each term, dependencies first (cheap: the prelude's
-700 definitions take 30 ms). Terms are only ever added, so two stores never
+typechecking and linting each term, dependencies first (cheap: the standard
+library's 800 definitions take 30 ms). Terms are only ever added, so two stores never
 conflict on terms; the log is the one thing with order, and merging two stores
 is concatenating their logs and sorting by time, last writer winning per name.
 
@@ -2521,12 +2557,16 @@ same hashes (`names`, `typeNames`, `conNames`, `fieldNames`, `units`,
 `scales`). Each namespace is a `namespace` block, nested as the paths nest,
 with root definitions outside any block. Each definition is rendered as
 `:edit` renders it (`let name = body`, `unit name = …`, `scale name = … at
-…`, `data` declarations with their field names), names inside a block
-spelled for that block with no `use` (§7.6), so a name the block shadows
-gets its leading dot (`.km`). Prelude definitions are not exported, since
-every session enters them; a prelude name the user rebound is, and a
-prelude term a user definition references prints by its name, which
-resolves. Types come first, each after the types it uses, since `data`
+…`, `data` declarations with their field names). The standard library under
+`std` is not exported unless asked for with `:export std`: a codebase that
+reads the export is seeded with it already. The codebase's stored `use`s
+(§7.7) head the export as `use` statements, `use std` in a seeded codebase,
+and every name is spelled for them and for its block (§7.6): a library
+term a user definition references prints as `km`, a name the block shadows
+gets its leading dot (`.km` for a root `km`), and so does a root name that
+a stored use also offers, since a `use` in a file comes before the root.
+So the text means the same in any codebase seeded with the library,
+whatever its stored uses. Types come first, each after the types it uses, since `data`
 declarations are entered in order; then the terms, each after what it
 references, a cycle's members together, and among what is ready the ones
 in the same namespace as the last, so few blocks are reopened. `:export
@@ -2538,31 +2578,35 @@ file, a note) says so.
 What does not round-trip, and why: a definition that refers to a version
 no name points at (after `:update --no-upgrade` and an `:unname`) cannot
 be written as source, so the export refuses and names it; a definition
-with a `±` and a nominal type are stamped with their name as declared
-(§3.2.4, §2.3, §7.6), so after a rename of the definition or type itself
-(not of its namespace) re-entering the export gives a new hash; two labels
+with a `±` and a nominal type are stamped with their full path (§3.2.4,
+§2.3), which `:rename` and `:move` keep up to date by re-hashing (§7.2), but
+a definition whose stamp no longer matches its path (one of the old store's
+terms, or a second label on it) gives a new hash when its export is
+re-entered; two labels
 on one reference export as two definitions, which hash alike only when the
 body declares no `±` and is not recursive (the second refers to the first
 by name instead of being a member of its cycle); a type or constructor
 that a definition uses but no label names any more prints as a hash and
-does not read back; a rebound prelude name needs `:update` rather than
-`:add` after loading, and a prelude name the user unnamed comes back;
-history, preferences and the `use`s of the session are not part of the
-export. This answers the question of §11 for iapetus:
+does not read back; a library name the user rebound or unnamed under `std`
+is not exported with the rest (`:export std` writes the whole library as
+the codebase has it, which needs `:update` rather than `:add` where it
+differs from the seed); history, preferences and the `use`s of the session
+are not part of the export. This answers the question of §11 for iapetus:
 the binary `.eval/` store stays the source of truth for history and
 hashes, and an export beside it is the reviewable text, diffable in git
 and enough to rebuild the current labels.
 
-The prelude is entered at the start of every session as an ordinary binding
-group, in memory, and the store's log is replayed on top of it. (This is the
-model §7.7 replaces: the library will be seeded into a new codebase once and
-live there as names.) Prelude
-*bindings* are therefore never written: a user who rebinds `c` keeps that
-binding across sessions, and a prelude that changes `G` rebinds `G` on the next
-start while the user's dependents keep pointing at the old hash, which `:todo`
-reports as stale. Prelude *terms* that a stored definition references are
-written beside it, so a store stays self-contained whatever the prelude later
-becomes. Each successful input is written through immediately: new terms first,
+**Seeding.** The standard library lives in the store like everything else
+(§7.7). A store that does not exist yet is created and seeded: the
+library's terms are written, then its labels as ordinary `bind`, `unit` and
+`scale` lines and its `use std`, all stamped with time `0`. Time 0 sorts
+before every line of the user's, so a merge can never let the seed override
+the user, and the seed's lines are the same in every store, so merging two
+seeded stores brings nothing across for the library. The format file is
+written last, so an interrupted seeding is seeded again. A store is then
+loaded on top of the empty codebase, with no prelude step: an empty store
+really is empty, and the second start of a new store reads the library
+from disk. `--no-codebase` seeds the same library in memory. Each successful input is written through immediately: new terms first,
 dependencies before dependents, then the log lines, so an interrupted session
 never leaves a name pointing at a missing term. A term that fails to decode,
 fails to typecheck, or is named but missing is reported as a note at start and
@@ -2574,12 +2618,35 @@ the old rules and rewritten, with empty hints, and old `unit <hash>` lines in
 the log flag every name then bound to that hash. Hashes do not change, so the
 log and the names stay valid.
 
-
 Format 2 stores are migrated to 3 on first open as well, and this one changes
 hashes: `If` and the boolean literal became `Case` and `Con`, so every term that
 used them is decoded by the format-2 rules, re-encoded, and re-hashed, and the
 references to it and the `bind` lines of the log are rewritten to the new hash in
 dependency order. Old term files are removed.
+
+Format 3 stores are migrated to 4 on first open, and formats 1 and 2 chain
+through 3. A format-3 store held only the user's labels and assumed the
+prelude entered in memory at the root; format 4 holds the library (§7.7).
+The migration moves no stored hash. It seeds the store as a new one is
+seeded, its terms first, and puts the seed's time-0 lines *before* the
+log's own, then writes `eval codebase 4`. Replayed in that order, a user's
+root binding that shadowed a prelude name (`c`) is a root name that shadows
+`std.c`, and a user term that referenced a prelude hash still finds the
+term, which the format-3 code wrote beside it. One thing does move: a
+library definition whose `±` is stamped with its name (§3.2.4) has a new
+hash under `std` (`std.G` is not the root `G`), and so do those built on it
+(`M_earth`, `M_sun`). Where a user term still references the old hash, the
+migration records it as the history of the new name, a `0 bind std.G
+<old>` before the seed, and binds the new one again at time 1, after every
+seed line of any store, so that a merge with a store seeded fresh also ends
+on it. `:todo` then reports the user's term as stale on `G#…` and
+`:upgrade std.G` moves it, which is the honest story: the library's `G` was
+relabelled and re-hashed by the move. What does not carry over: a log line
+that unnamed a prelude name at the root now acts on a root name that no
+longer exists, so `km` resolves to `std.km` again (unname that if wanted);
+a prelude name renamed at the root keeps its new root label while the old
+spelling reaches the library again; and a user label named `std`, or under
+`std.`, meets the library there.
 ### 7.5 Scratch, add, update, upgrade
 
 The codebase is never written by typing a definition. This follows Unison, whose
@@ -2633,13 +2700,16 @@ and why.
 ### 7.6 Namespaces
 
 A name is a dotted path, `orbital.kepler.period`, and nothing else changes: a
-namespace is a prefix on a label. Terms, hashes and the store never see it,
+namespace is a prefix on a label. Terms, hashes and the store do not see it,
 since a `Ref` carries only a hash and, in the storage encoding, the name as
-written (now the full path it resolved to). Moving `period` under `orbital`
-is a relabelling (§7.2), so history keeps the old name and nothing is
-re-hashed. Types, constructors and fields are labels too and move the same
-way, and so do the `unit` and `scale` flags. The prelude's units and
-constants stay at the root: `5 km` is `km`.
+written (now the full path it resolved to); the one exception is the owner
+stamp of a `±` definition or a nominal type, which is its full path (below).
+Moving `period` under `orbital` is a relabelling (§7.2), so history keeps
+the old name and nothing is re-hashed, unless `period` is stamped.
+Types, constructors and fields are labels too and move the same way, and so
+do the `unit` and `scale` flags. The standard library's units and
+constants live under `std` (§7.7) and the stored `use std` reaches them: `5 km`
+is `std.km`.
 
 **Blocks.** `namespace` opens a block of statements, laid out as a `where`
 block is (§2.2): it opens at the first token after the path, which must be
@@ -2676,24 +2746,30 @@ resolves in this order:
 3. the `use`d namespaces: `u.x` for each `use u`, and `u.y` for `k.y` under
    `use u as k`. Two of them offering the name is an error, not a choice:
    "`x` is both `a.x` and `b.x`; write one of them";
-4. the root, which is where every name without a dot lives.
+4. the root, which is where every name without a dot lives;
+5. the codebase's stored `use`s (§7.7), `use std` in a seeded codebase,
+   with the same rule against two of them offering the name.
 
 A full path written out, `orbital.period`, resolves as itself at the root
 step, so it works from anywhere unless a nearer namespace has the same path
 under it. A leading dot writes an absolute name: `.km` is the root's `km`
 and `.orbital.period` the full path, whatever is current or used. At the
-root, step 2 is skipped, so a `use` takes precedence over a root name of the
-same spelling. Each kind of label resolves among its own kind: definitions
-and constructors share one set, types and fields have theirs.
+root, step 2 is skipped, so a `use` of the session or a file takes
+precedence over a root name of the same spelling, while a root name takes
+precedence over a stored `use`: `let c = 3e8 m/s` at the root shadows the
+library's `std.c` without ceremony, and `std.c` still reaches it. Each kind
+of label resolves among its own kind: definitions and constructors share
+one set, types and fields have theirs.
 
 A `use` path is always a full path (a leading dot is allowed and means the
 same). A `use` applies to the statements after it in its block and in the
 blocks inside it. A top-level `use` typed at the REPL lasts for the session
 (`:uses` lists them, `:unuse` drops one); a file read with `:load` keeps its
-own to itself. Neither `namespace` nor `use` is stored: a stored term holds
-full references, so no reader of the codebase needs imports to make sense
-of it. The one exception to come is the codebase's default `use` list, `use
-std` at seeding (§7.7), kept as a log line.
+own to itself. Neither `namespace` nor a `use` statement is stored: a
+stored term holds full references, so no reader of the codebase needs
+imports to make sense of it. The one exception is the codebase's stored
+`use` list, `use std` at seeding (§7.7), kept as log lines and changed with
+`:use` and `:unuse`.
 
 **The dot.** `b.mass` is a field access and `v.0` a projection, so
 `orbital.period` lexes as "field `period` of `orbital`". The desugarer
@@ -2707,7 +2783,7 @@ definition cannot have its name"), and so is declaring anything under
 also be a namespace, as `period.x` would make it"). The rule covers labels
 of every kind, it is checked for a whole binding group and for `:alias`,
 `:rename`, `:move` and `:namespace`, and it means a namespace cannot be
-named like a prelude unit (`namespace m` is refused).
+named like a definition (`namespace std.km` is refused).
 
 *Fields.* A field written after a dot is a bare name and resolves through
 the scope only (`.mass` is `orbital.mass` inside `orbital`, or with `use
@@ -2717,26 +2793,31 @@ written by path; `use` its namespace. A record built with a constructor,
 constructor's own, by their last segment, from anywhere. Records print
 their fields so.
 
-**Hashes never see the namespace.** A definition's declared uncertainties
-are labelled (§3.2.4) with the last segment of its name, and a nominal type
-is stamped (§2.3) with the last segment of its name, so the same source
-gives the same hash at the root and inside any block, and a moved
-definition re-entered from source gets its old hash back. The other side
-of this: two definitions, or two nominal types, with the same last segment
-and the same body in different namespaces are one term, or one type, with
-two labels.
+**Stamps see the namespace.** A definition's declared uncertainties are
+labelled (§3.2.4) with its full path, and a nominal type is stamped (§2.3)
+with its full path, so `lab.offset = 1 ± 0.1` and `field.offset = 1 ± 0.1`
+are two terms and two measurements, `lab.offset - field.offset` carries
+both nudges, and `a.Body` and `b.Body` with the same fields are two types.
+Everything else is the same term wherever it is written: `let q = 1 m` has
+one hash at the root and in any block. The other side: renaming or moving
+a stamped definition re-hashes it, which `:rename` and `:move` do (§7.2),
+and the library's `std.G` is not the hash the root prelude's `G` had
+(§7.4 says how a migrated store keeps the old one reachable).
 
 **Printing.** A name prints as Unison prints it: the shortest spelling that
 resolves back to the same label in the current scope, trying in order the
 last segment alone, the path relative to the current namespace, the path
-relative to each `use` (under its alias, `k.anomaly`), the full path, and,
+relative to each `use` (under its alias, `k.anomaly`; the session's, then
+the stored ones), the full path, and,
 only when the full path itself would resolve to something else here, the
-absolute `.full.path`. So inside `namespace orbital` with no `use`,
-`orbital.period` prints `period` and the root's `km` prints `km`; with `use
-orbital` at the root, `orbital.period` prints `period`; with `use a` and
-`use b` both offering `x`, `a.x` prints `a.x`; and a block that defines its
-own `km` refers to the root's as `.km`. At the root with no `use`, every
-root name prints as itself, as before namespaces. The rule
+absolute `.full.path`. So inside `namespace orbital` with no `use` of the
+session, `orbital.period` prints `period` and the library's `std.km` prints
+`km`; with `use orbital` at the root, `orbital.period` prints `period`; with
+`use a` and `use b` both offering `x`, `a.x` prints `a.x`; a block that
+defines its own `km` refers to the library's as `std.km`, and to a root
+`km` as `.km`; and after `:unuse std`, `5 std.km` prints `5 std.km`. At the
+root with no `use` of the session, every root name prints as itself, as
+before namespaces, and so does every library name no root name shadows. The rule
 (`Eval.Resolve.shortestName`) is used for `:view`, `:edit`, `:core`, values
 and their units, types and constructors (through the type namer), `:ls`
 outside a namespace listing, `:names`, `:dependents`, and the notes
@@ -2767,56 +2848,72 @@ path that is already a label of the same kind ("`x` is already a label;
 nothing was changed"), two names moved to one path, or a path that breaks
 the namespace rule refuses the whole change. They are written to the store
 as the existing `bind`, `unname`, `type`, `con`, `field`, `unit` and `scale`
-log lines, so the store format is unchanged. `:edit` of a definition
+log lines, beside the new term and type files of anything re-stamped (§7.2). `:edit` of a definition
 outside the current namespace prints it inside a `namespace` block, with
 its names relative to that block, for pasting at the root.
 
-**Open.** Whether `:ls` shows a tree; whether a `use` may be stored per
-codebase; whether the prelude should itself live under `std.*` with an
-implied `use std`, which the printing rule is ready for (`5 std.km` would
-print `5 km`); whether a field should be reachable by path from outside its
-namespace.
+**Open.** Whether `:ls` shows more of the tree than one level; whether a
+field should be reachable by path from outside its namespace.
 
-### 7.7 The standard library (design; not yet built)
+### 7.7 The standard library
 
-The prelude becomes a standard library that lives in the codebase like
-everything else. Today the prelude is entered in memory at every start and the
-store's log is replayed on top (§7.4); that two-layer model is what keeps
-`:ls` hiding 800 names, keeps `:edit`, `:rename` and `:export` from touching
-units, and makes a prelude change rebind names behind the user's back.
-Instead:
+The prelude became a standard library that lives in the codebase like
+everything else. It used to be entered in memory at every start with the
+store's log replayed on top; that two-layer model kept `:ls` hiding 800
+names, kept `:edit`, `:rename` and `:export` from touching units, and made a
+prelude change rebind names behind the user's back. Now:
 
 - **Seeding.** A codebase that does not yet exist is created with the
-  standard library entered as an ordinary group under the namespace `std`
-  (`std.km`, `std.G`, `std.degC`, `std.map`, …), with its terms and `bind`
-  lines written like any other, and with one stored default `use std`.
-  `--no-codebase` seeds the same library in memory. Hashes are unchanged: a
-  stored unit has the hash it always had.
+  standard library entered as one ordinary group under the namespace `std`
+  (`std.km`, `std.G`, `std.degC`, `std.map`, …), the source of
+  `Eval.Prelude.stdlibSource`, with its terms and its `bind`, `unit` and
+  `scale` lines written like any other, and with one stored `use std`
+  (§7.4 has the store's side: the seed's lines are at time 0). The second
+  start reads it from disk; nothing is entered in memory first.
+  `--no-codebase` seeds the same library in memory. A definition without a
+  `±` keeps the hash it had at the root (`std.km` is the old `km`, `std.map`
+  the old `map`); one with a `±` is stamped with its full path (§3.2.4), so
+  `std.G`, and `std.M_earth` and `std.M_sun` built on it, have new hashes.
 - **Nothing is special afterwards.** The library is names in the database.
-  `5 km` resolves through the default `use`; `:ls` lists the user's root
-  names and `:ls std` the library; `let c = 3e8 m/s` shadows `std.c` without
-  ceremony; `:rename std.h std.hour`, `:unname std.furlong` and `:edit std`
-  all work, and `:export` writes the library out with everything else.
-- **A stored `use`.** §7.6 says `use` is never stored. The one exception is a
-  codebase's default `use` list: `use std` is written at seeding as a log
-  line (`<time> use std`, `<time> unuse std` to remove), replayed with the
-  other labels, and `:uses` lists it with the session's own. Nothing else
-  about `use` changes.
+  `5 km` resolves through the stored `use` and prints `5 km`; `:ls` alone
+  lists the root's own names and one line `namespace std (794 names)`, `:ls
+  std` the library, `:ls --all` everything by full path; `let c = 3e8 m/s`
+  shadows `std.c` without ceremony, since a root name comes before a stored
+  `use` (§7.6), and `std.c` still reaches the library's; `:rename std.h
+  std.hour` (then `3 hour`), `:unname std.AU` and `:edit std.km` all work;
+  `:export` leaves `std` out, and `:export std` writes the library.
+- **A stored `use`.** A `use` statement lasts for the session (§7.6). The
+  codebase also keeps a list of stored uses, `use std` from seeding,
+  written as log lines (`<time> use std`, `<time> unuse std`) and replayed
+  with the other labels. They resolve after the root, last of all. `:uses`
+  lists them first, marked `(stored)`, then the session's. The rule for
+  changing them is the one the commands already had, plus one command:
+  `:use path [as alias]` adds a stored use (a `use` statement stays the
+  session's); `:unuse path` removes a stored use when one matches the path
+  or alias, and says so (`removed the stored use std; :use std puts it
+  back`), and otherwise the session's. A change to the stored uses is
+  refused when the pending scratch would no longer check without it. After
+  `:unuse std`, library names need their path (`5 std.km`), and so does
+  `×`, which is the library's `cross`.
 - **Upgrading** is an open question in general (how a definition in one
-  codebase takes a newer version from another). For the library the sketch
-  is `:stdlib upgrade`: enter the shipped library as a scratch group and
-  apply `:update`'s rules against the codebase, reporting `added` for new
-  names, `updated` for names the user never touched, and `kept` for names
-  whose current binding is the user's own (the user's wins), then the
-  ordinary `:upgrade` for dependents. `--merge` is the wrong tool here: its
-  last-writer rule would override the user's edits.
+  codebase takes a newer version from another). For the library there is a
+  sketch, `:stdlib upgrade`: the shipped library's labels under `std`
+  against the codebase's. A name the codebase has never had is `added`; a
+  name whose binding is still the one it was seeded with (its history is
+  that one entry) and whose shipped version differs is `updated`, and its
+  dependents are upgraded as `:update` does; a name the user rebound or
+  unnamed is `kept` (the user's wins). "Never touched" is read off the
+  history because the codebase does not know which versions earlier
+  libraries shipped, so a name moved by an earlier upgrade counts as the
+  user's: the honest limit of a sketch. `--merge` is the wrong tool here:
+  its last-writer rule would override the user's edits.
 - **Base units stay primitives.** `m`, `kg`, `s` and the other base symbols
   are not names (§3.2.12); they need no namespace and cannot be renamed.
 
-Consequences: the format-3 store does not change (a path is a name, a `use`
-line is one more label-level line); the loader no longer enters a prelude,
-so an empty store really is empty; the test suite's "session with the
-prelude" becomes "a seeded session", the same thing by another route.
+Consequences: the store's format is 4 (a format-3 store is migrated by
+seeding it before its own log, §7.4); the loader no longer enters a
+prelude, so an empty store really is empty; the test suite's "session with
+the prelude" became "a seeded session", the same thing by another route.
 
 
 ## 8. Evaluation
@@ -3007,8 +3104,11 @@ tuned, and compilation is a later milestone.
 
 ---
 10. **Codebase as the single truth.** In order, each on the last: namespaces
-    and `:export` (§7.6, in progress); the standard library seeded under
-    `std` with a stored `use std` (§7.7); `:edit` as an editor round trip
+    and `:export` (§7.6, done); the standard library seeded under `std` with
+    a stored `use std` (§7.7, done: seeding, store format 4 and the 3 to 4
+    migration, `:use`, `:uses` and `:unuse` for stored uses, the bare `:ls`
+    by namespace, the `:stdlib upgrade` sketch, and owner stamps by full
+    path with re-hashing renames); `:edit` as an editor round trip
     (§7.3): export the codebase, a namespace or one definition to a file,
     open `$EDITOR`, and on return enter the file as one group and reconcile
     it against the scope, adding, updating (with propagation) and unnaming
@@ -3045,20 +3145,15 @@ tuned, and compilation is a later milestone.
   is whether the store may then be dropped, which would lose history.
 - Should `:view` of a stale reference print `x#a3f9k` (Unison style) or `#a3f9k`
   alone?
-- Owner stamps and namespaces: a `±` definition's owner label and a nominal
-  type's stamp take the *last segment* of the name, so moving a definition
-  between namespaces never changes a hash, and `std.G` keeps the hash `G` had.
-  The price is that `a.x = 1 ± 0.1` and `b.x = 1 ± 0.1` are one term and one
-  measurement. Stamp with the full path (a move then re-hashes, as a rename
-  already does), or keep the last segment?
 - Equality on declared types is derived structurally when every field is
   comparable (§4.2), the rule tuples and lists follow. Still open: whether a
   type may opt out, or give its own equality (a fraction kept as an
   unreduced pair, which structural equality calls unequal to its reduced
   form).
 - `==` on data evaluates every field even after one is unequal, so `Pair 1 (2 ± 0.1) == Pair 2 2` says "cannot decide" where false was knowable; tensors, tuples and lists do the same. Short-circuit, or keep the uniform rule?
-- A constructor that takes a prelude unit's name (`data Temp = T …`) unnames
-  the tesla silently. Warn, refuse, or keep the newer-label rule?
+- A root constructor named like a library unit (`data Temp = T …`) shadows
+  the tesla `std.T` silently, as any root name shadows the library's (§7.7).
+  Warn, or keep the shadowing rule?
 
 ---
 
@@ -3116,10 +3211,14 @@ Cov(v, v) : [m^2 s^-2]   [[…], […], […]]
 > let kepler_E m e = newton_E m e 50 ± 1e-12    -- a solver declaring its tolerance
 ```
 
-After CODATA publishes a new `G`, the new prelude definition is entered:
+After CODATA publishes a new `G`, the library's definition is entered again
+under `std` (or a newer library brings it with `:stdlib upgrade`, §7.7); a
+root `let G` would only shadow it:
 
 ```
-> let G = 6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2
+> namespace std
+…   let G = 6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2
+…
 > :update
 updated G #b7x2q -> #q2m8d
 upgraded mu #c40ue -> #p91sm

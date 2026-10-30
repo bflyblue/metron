@@ -11,7 +11,8 @@ module Eval.Driver (
   Session (..),
   LastExpr (..),
   emptySession,
-  preludeSession,
+  seededSession,
+  stdlibUpgrade,
   feed,
   feedFile,
   exportRequest,
@@ -45,9 +46,8 @@ import Eval.Dimension (Dim, Spelling (..), dimPow, dimVar, renderDimIn)
 import Eval.Eval
 import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
-import Eval.Lexer (prepare)
 import Eval.Parser (parseExpr, parseProgram, parseType)
-import Eval.Prelude (preludeNames, preludeSource)
+import Eval.Prelude (stdlibCodebase, stdlibNamespace)
 import Eval.Pretty
 import Eval.Resolve
 import Eval.Syntax qualified as S
@@ -112,15 +112,15 @@ emptySession =
     Nothing
     S.rootScope
 
-{- | A session with the prelude (design §3.2.11) entered and added, as every
-interactive session starts. Fails only if the prelude itself does not
-check, which is a build error.
+{- | A session on a seeded codebase (design §7.7): the standard library
+entered under @std@ as one group and added, with the stored default @use
+std@, as a new codebase starts and as @--no-codebase@ runs. Fails only if
+the library itself does not check, which is a build error.
 -}
-preludeSession :: Either Text Session
-preludeSession = do
-  (s, _) <- feed emptySession preludeSource
-  (s', _) <- feed s ":add"
-  pure s'{lastExpr = Nothing}
+seededSession :: Either Text Session
+seededSession = do
+  cb <- stdlibCodebase
+  pure emptySession{codebase = cb, staging = cb}
 
 {- | Parse and run one input (a REPL input, a file). Returns the new session and
 the lines to print, or the first error.
@@ -566,13 +566,16 @@ command session src = \case
         new' = newPath new
     pairs <- relabelPairs old' new'
     (cb', k) <- relabel False pairs cb
+    re <- restamp pairs cb'
     commit
-      cb'
-      [ if labelled old'
-          then "renamed `" <> old <> "` to `" <> new <> "`"
-          else
-            "renamed the " <> labelsText k <> " under `" <> old <> "` to `" <> new <> "`"
-      ]
+      re.codebase
+      ( ( if labelled old'
+            then "renamed `" <> old <> "` to `" <> new <> "`"
+            else
+              "renamed the " <> labelsText k <> " under `" <> old <> "` to `" <> new <> "`"
+        )
+          : restampReport pairs re
+      )
   ("move" : args@(_ : _ : _)) -> do
     let target = newPath (last args)
         pathFor o = if T.null target then S.lastSegment o else target <> "." <> S.lastSegment o
@@ -582,7 +585,12 @@ command session src = \case
           (\o -> let o' = argIn session.codebase o in relabelPairs o' (pathFor o'))
           (init args)
     (cb', k) <- relabel False pairs cb
-    commit cb' ["moved " <> labelsText k <> " to `" <> last args <> "`"]
+    re <- restamp pairs cb'
+    commit
+      re.codebase
+      ( ("moved " <> labelsText k <> " to `" <> last args <> "`")
+          : restampReport pairs re
+      )
   -- The current namespace and the uses (design §7.6), for the session.
   ["namespace"] -> keep (Right [namespaceLine scope.namespace])
   ["namespace", p] -> do
@@ -602,20 +610,43 @@ command session src = \case
           )
       [] | any T.null path -> Left ("not a namespace path: " <> p)
       [] -> Right (session{scope = scope{S.namespace = path}}, [namespaceLine path])
+  -- The codebase's stored uses, then the session's (design §7.7).
   ["uses"] ->
     keep
       ( Right
-          ( if null scope.uses
-              then ["no uses"]
-              else ["use " <> u.path <> maybe "" (" as " <>) u.alias | u <- scope.uses]
+          ( case ["use " <> S.renderUse u <> " (stored)" | u <- session.codebase.uses]
+              ++ ["use " <> S.renderUse u | u <- scope.uses] of
+              [] -> ["no uses"]
+              ls -> ls
           )
       )
+  -- A stored use when there is one, else the session's (design §7.7).
   ["unuse", p] ->
     let path = fromMaybe p (T.stripPrefix "." p)
-        (gone, kept) = partition (\u -> u.path == path || u.alias == Just path) scope.uses
-     in if null gone
-          then Left ("`" <> p <> "` is not in use; :uses lists them")
-          else Right (session{scope = scope{S.uses = kept}}, [])
+        matches u = u.path == path || u.alias == Just path
+        (gone, kept) = partition matches scope.uses
+        storedGone = filter matches session.codebase.uses
+     in if not (null storedGone)
+          then
+            storedUses
+              (foldr removeStoredUse session.codebase storedGone)
+              [ "removed the stored use "
+                  <> S.renderUse u
+                  <> "; :use "
+                  <> S.renderUse u
+                  <> " puts it back"
+              | u <- storedGone
+              ]
+          else
+            if null gone
+              then Left ("`" <> p <> "` is not in use; :uses lists them")
+              else Right (session{scope = scope{S.uses = kept}}, [])
+  -- A stored use (design §7.7); a `use` statement is the session's own.
+  ("use" : args) -> case args of
+    [p] -> storeUse (S.Use (unDot p) Nothing)
+    [p, "as", a] -> storeUse (S.Use (unDot p) (Just a))
+    _ -> Left "usage: :use path [as alias], a use the codebase keeps"
+  ["stdlib", "upgrade"] -> stdlibCodebase >>= \lib -> stdlibUpgrade lib session
   -- The codebase as source (design §7.4); the REPL writes it to a file.
   ("export" : args) ->
     exportRequest session args >>= \case
@@ -626,7 +657,7 @@ command session src = \case
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
           <> "          :ls [glob|namespace] [--all|--units|--scales|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
           <> "          :history name  :dependents name  :alias new old  :unname name  :rename old new  :move name… namespace\n"
-          <> "          :namespace [path|.]  :uses  :unuse path  :export [namespace] [file]\n"
+          <> "          :namespace [path|.]  :uses  :use path [as alias]  :unuse path  :export [namespace] [file]  :stdlib upgrade\n"
           <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k | unicode on|off]  :prefer [unit]  :unprefer unit  :colour on|off"
       )
  where
@@ -650,11 +681,52 @@ command session src = \case
   inputPrinter h = (printerFor cfg scope ecb){refName = inputNamer h}
   preferenceOf = preferenceHint cfg cb
   commit cb' outs = Right (session{codebase = cb', staging = cb'}, outs)
+  -- What a relabelling re-hashed (design §7.2): the stamped definitions and
+  -- types it moved, then what was upgraded to follow them. A type's hash
+  -- prints as its name wherever it is named, so a type line has no hashes.
+  restampReport pairs re =
+    [ "re-hashed data " <> shortestNameOf TypeLabel scope re.codebase n
+    | (n, _, _) <- re.types
+    ]
+      ++ [ verb
+             <> short re.codebase n
+             <> " "
+             <> showReference old
+             <> " -> "
+             <> showReference new
+         | (verb, n, old, new) <-
+             sortOn
+               (\(verb, n, _, _) -> (verb /= "re-hashed ", n))
+               [ (if n `elem` map snd pairs then "re-hashed " else "upgraded ", n, old, new)
+               | (n, old, new) <- re.terms
+               ]
+         ]
+  unDot p = fromMaybe p (T.stripPrefix "." p)
+  storeUse u
+    | u `elem` session.codebase.uses =
+        Left ("use " <> S.renderUse u <> " is already stored")
+    | otherwise =
+        storedUses (addStoredUse u session.codebase) ["stored use " <> S.renderUse u]
+  -- A change to the stored uses re-resolves the scratch and the
+  -- preferences, which may have reached names through them.
+  storedUses cb' outs = do
+    staging' <-
+      either
+        ( \err ->
+            Left
+              ( "the pending definitions would not check; nothing was changed:\n"
+                  <> renderResolveError err
+              )
+        )
+        Right
+        (processGroup cb' session.scratch)
+    s <- refreshPreferences session{codebase = cb', staging = staging'}
+    pure (s, outs)
   -- A name given to a command: relative to the current namespace, through
   -- the uses, or absolute with a leading dot (design §7.6).
   argIn c n
     | Just p <- T.stripPrefix "." n = p
-    | otherwise = case qualifyWith (known c) scope n of
+    | otherwise = case qualifyWith c.uses (known c) scope n of
         Found full -> full
         _ -> n
   known c x =
@@ -666,7 +738,11 @@ command session src = \case
   -- A name to create: under the current namespace, or absolute.
   newPath n = fromMaybe (S.qualify scope.namespace n) (T.stripPrefix "." n)
   pendingName n =
-    case qualifyWith (`elem` map (.name.text) session.scratch) scope n of
+    case qualifyWith
+      session.codebase.uses
+      (`elem` map (.name.text) session.scratch)
+      scope
+      n of
       Found full -> full
       _ -> n
   withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName (argIn cb n) cb)
@@ -956,6 +1032,74 @@ upgrade n session = case lookupName n session.codebase of
               else upgradeReport (shortestName session.scope cb') result
           )
 
+{- | @:stdlib upgrade@ (design §7.7), a sketch of upgrading a library from a
+newer version of it: the shipped library's labels under @std@ against the
+codebase's. A name the codebase has never had is added. A name still on
+the binding it was seeded with (its history is that one entry) and whose
+shipped version differs is updated, and its dependents are upgraded as
+@:update@ does. A name the user rebound or unnamed is kept: the user's
+choice wins. The codebase cannot know which versions earlier libraries
+shipped, so a name rebound by an earlier upgrade counts as the user's.
+-}
+stdlibUpgrade :: Codebase -> Session -> Either Text (Session, [Text])
+stdlibUpgrade shipped session =
+  let cb0 = session.codebase
+      library =
+        [ (n, r)
+        | (n, r) <- Map.toList shipped.names
+        , (stdlibNamespace <> ".") `T.isPrefixOf` n
+        ]
+      added =
+        [ (n, r) | (n, r) <- library, isNothing (lookupName n cb0), null (historyOf n cb0)
+        ]
+      updated =
+        [ (n, old, r)
+        | (n, r) <- library
+        , Just old <- [lookupName n cb0]
+        , old /= r
+        , length (historyOf n cb0) == 1
+        ]
+      kept =
+        [ n
+        | (n, r) <- library
+        , lookupName n cb0 /= Just r
+        , n `notElem` map fst added
+        , n `notElem` [m | (m, _, _) <- updated]
+        ]
+      -- The shipped terms, with their types, are content and never conflict.
+      withContent =
+        cb0
+          { terms = Map.union cb0.terms shipped.terms
+          , derived = Map.union cb0.derived shipped.derived
+          , typeDefs = Map.union cb0.typeDefs shipped.typeDefs
+          }
+      flagged n =
+        (if isUnitName n shipped then markUnit n else id)
+          . (if isScaleName n shipped then markScale n else id)
+      cb1 =
+        foldl
+          (\acc (n, r) -> bindName n r acc)
+          (foldl (\acc (n, r) -> flagged n (bindName n r acc)) withContent added)
+          [(n, r) | (n, _, r) <- updated]
+      result = propagate (Map.fromList [(old, r) | (_, old, r) <- updated]) cb1
+      cb' = result.codebase
+      short = shortestName session.scope cb'
+   in do
+        staging' <-
+          either (Left . renderResolveError) Right (processGroup cb' session.scratch)
+        refreshed <- refreshPreferences session{codebase = cb', staging = staging'}
+        pure
+          ( refreshed
+          , case ["added " <> short n | (n, _) <- added]
+              ++ [ "updated " <> short n <> " " <> showReference old <> " -> " <> showReference r
+                 | (n, old, r) <- updated
+                 ]
+              ++ ["kept " <> short n <> " (yours)" | n <- kept]
+              ++ upgradeReport short result of
+              [] -> ["the library is up to date"]
+              ls -> ls
+          )
+
 todo :: Session -> Either Text [Text]
 todo session =
   Right
@@ -1143,13 +1287,17 @@ nameTypes scope cb
             _ -> before <> "#" <> go (T.drop 1 rest)
   isBase32 c = isDigit c || (c >= 'a' && c <= 'v')
 
-{- | @:ls [glob] [--all | --units | --scales | --types] [: type]@ (design
-§7.3): every name in the codebase with its type, one per line, sorted.
-Without a filter the prelude is hidden; a glob (@*@ anywhere, else a
-case-insensitive substring), a kind flag or a type query searches everything.
-The type query is a written type whose unknown names are variables, matched
-by unification both ways, so @: a -> a@ finds @Num [m] -> Num [m]@ and
-@: Num -> Num@ finds @a -> a@.
+{- | @:ls [glob|namespace] [--all | --units | --scales | --types] [: type]@
+(design §7.3): names in the codebase with their types, one per line,
+sorted. Alone, the current namespace's own labels (the root's at the
+root), then a line for each namespace directly under it with the number of
+names in it (@namespace std (794 names)@). A word that names a namespace
+lists everything under it, relative to it; @--all@ lists everything by its
+full path; a glob (@*@ anywhere, else a case-insensitive substring; on the
+full path or its last segment), a
+kind flag or a type query searches everything. The type query is a written
+type whose unknown names are variables, matched by unification both ways,
+so @: a -> a@ finds @Num [m] -> Num [m]@ and @: Num -> Num@ finds @a -> a@.
 -}
 listNames :: Session -> [Text] -> Either Text [Text]
 listNames session args = do
@@ -1184,8 +1332,8 @@ listNames session args = do
           (Left . renderResolveError)
           (Right . Just)
           (queryScheme session.scope cb t)
-  let filtered = not (null globs) || not (null flags) || isJust query || isJust nsFilter
-      hidePrelude = not filtered
+  let own = null args
+      allPaths = "--all" `elem` flags && isNothing nsFilter
       kindOk n
         | "--units" `elem` flags = isUnitName n cb
         | "--scales" `elem` flags = isScaleName n cb
@@ -1194,15 +1342,20 @@ listNames session args = do
       inNamespace n = maybe True (\ns -> (ns <> ".") `T.isPrefixOf` n) nsFilter
       nameOk n =
         inNamespace n
-          && all (`matchesGlob` n) globs
-          && (not hidePrelude || n `Set.notMember` preludeSet)
-      -- Relative to the namespace listed, else as short as the scope allows.
+          && all (\g -> matchesGlob g n || matchesGlob g (S.lastSegment n)) globs
+          && (not own || maybe False (not . T.any (== '.')) (relative n))
+      -- Relative to the namespace listed, in full with --all, else as short
+      -- as the scope allows.
       shown n = case nsFilter of
         Just ns -> T.drop (T.length ns + 1) n
-        Nothing -> shortestName session.scope cb n
+        Nothing
+          | allPaths -> n
+          | otherwise -> shortestName session.scope cb n
       shownType n = case nsFilter of
         Just ns -> T.drop (T.length ns + 1) n
-        Nothing -> shortestNameOf TypeLabel session.scope cb n
+        Nothing
+          | allPaths -> n
+          | otherwise -> shortestNameOf TypeLabel session.scope cb n
       typeOk sc = maybe True (`I.matchesQuery` sc) query
       definitions =
         [ prefix n <> shown n <> " : " <> renderSchemeIn (spellingOf session.config) sc
@@ -1231,29 +1384,46 @@ listNames session args = do
                  , typeOk sc
                  ]
         ]
-      hidden =
-        if hidePrelude
-          then length (filter (`Set.member` preludeSet) (Map.keys cb.names))
-          else 0
+      -- Alone: the namespaces directly under the current one, with their size.
       footer =
-        [ "("
-            <> tshow hidden
-            <> " prelude names hidden; :ls --all or a filter shows them)"
-        | hidden > 0
+        [ "namespace "
+            <> child
+            <> " ("
+            <> namesText (length (namespaceLabels cb full))
+            <> ")"
+        | own
+        , child <-
+            Set.toList
+              ( Set.fromList
+                  [ T.takeWhile (/= '.') r
+                  | n <- labelPaths
+                  , Just r <- [relative n]
+                  , T.any (== '.') r
+                  ]
+              )
+        , let full = if T.null here then child else here <> "." <> child
         ]
       -- A namespace's listing names its types relative to it too.
       listScope = case nsFilter of
         Just ns -> session.scope{S.namespace = T.splitOn "." ns}
         Nothing -> session.scope
   pure
-    ( case map (nameTypes listScope cb) (definitions ++ types) of
-        [] -> "nothing matches" : footer
-        ls -> ls ++ footer
+    ( case map (nameTypes listScope cb) (definitions ++ types) ++ footer of
+        [] -> ["nothing matches"]
+        ls -> ls
     )
  where
   cb = session.staging
   tshow = T.pack . show
-  preludeSet = Set.fromList (map prepare preludeNames)
+  -- The current namespace, and a path relative to it when it is under it.
+  here = T.intercalate "." session.scope.namespace
+  relative n = if T.null here then Just n else T.stripPrefix (here <> ".") n
+  labelPaths =
+    Map.keys cb.names
+      ++ Map.keys cb.typeNames
+      ++ Map.keys cb.conNames
+      ++ Map.keys cb.fieldNames
+  namesText k = tshow k <> (if k == 1 then " name" else " names")
   prefix n
     | isUnitName n cb = "unit "
     | isScaleName n cb = "scale "
@@ -1274,10 +1444,10 @@ listNames session args = do
   namespaceOf w
     | T.any (== '*') w = Nothing
     | Just p <- T.stripPrefix "." w = if isNamespace cb p then Just p else Nothing
-    | here <- S.qualify session.scope.namespace w
+    | inside <- S.qualify session.scope.namespace w
     , not (null session.scope.namespace)
-    , isNamespace cb here =
-        Just here
+    , isNamespace cb inside =
+        Just inside
     | isNamespace cb w = Just w
     | otherwise = Nothing
   -- A constructor's type: its fields to the type at its own parameters.
@@ -1337,8 +1507,10 @@ absorbLast session le = case session.lastExpr of
 {- | @:export [path] [file]@: what to export and where. No argument, or
 @.@, is the whole codebase; a word that names a namespace (relative to the
 current one, or absolute) is that namespace; any other single word is the
-file. With two words, the first is the path and the second the file.
-Returns the file, if any, and the source.
+file when it looks like a path (it has a @/@ or a @.@), and otherwise most
+likely a misspelt namespace, which is refused rather than written to a
+file of that name. With two words, the first is the path and the second
+the file. Returns the file, if any, and the source.
 -}
 exportRequest :: Session -> [Text] -> Either Text (Maybe FilePath, Text)
 exportRequest session = \case
@@ -1346,7 +1518,16 @@ exportRequest session = \case
   [w]
     | w == "." -> (Nothing,) <$> exportSource session Nothing
     | Just ns <- namespaceArg w -> (Nothing,) <$> exportSource session (Just ns)
-    | otherwise -> (Just (T.unpack w),) <$> exportSource session Nothing
+    | T.any (`elem` ['/', '.']) w ->
+        (Just (T.unpack w),) <$> exportSource session Nothing
+    | otherwise ->
+        Left
+          ( "`"
+              <> w
+              <> "` is not a namespace; to write a file give a path like "
+              <> w
+              <> ".ev"
+          )
   [p, f]
     | p == "." -> (Just (T.unpack f),) <$> exportSource session Nothing
     | Just ns <- namespaceArg p ->
@@ -1364,20 +1545,20 @@ exportRequest session = \case
     | isNamespace cb w = Just w
     | otherwise = Nothing
 
--- | The prelude's labels, as every session starts with them.
-preludeLabels :: Codebase
-preludeLabels = either (const emptyCodebase) (.codebase) preludeSession
-
 {- | The stored codebase, or the namespace at a path, as source that @:load@
-reads back (design §7.4): every label the prelude does not give (a prelude
-name rebound by the user is exported), as a @namespace@ block per
+reads back (design §7.4): every label, except the standard library's under
+@std@ unless that is the path asked for, as a @namespace@ block per
 namespace, nested as the paths nest, with root definitions outside any
-block. Types come first, each after the types it uses, then the terms,
+block. The codebase's stored @use@s head it as @use@ statements (design
+§7.7), and every name is spelled for them: a @use@ in a file comes before
+the root, so a root name that a stored @use@ also offers prints with its
+leading dot, and the text means the same in any codebase that has the
+library. Types come first, each after the types it uses, then the terms,
 each after what it references and a cycle's members together. Inside a
-block, names print as that block's scope spells them (design §7.6), with
-no @use@. The pending scratch is not exported; a closing comment says so.
-A definition that refers to a version no name points at any more cannot be
-written as source, and refuses the export.
+block, names print as that block's scope spells them (design §7.6). The
+pending scratch is not exported; a closing comment says so. A definition
+that refers to a version no name points at any more cannot be written as
+source, and refuses the export.
 -}
 exportSource :: Session -> Maybe Text -> Either Text Text
 exportSource session path = do
@@ -1399,30 +1580,24 @@ exportSource session path = do
   typeItems <- mapM typeItem orderedTypes
   termItems <- concat <$> mapM termItems' orderedTerms
   let body = nest [] (typeItems ++ termItems)
+      header = ["use " <> S.renderUse u | not (null body), u <- stored]
       pendingNote =
         [ "-- not exported: "
             <> T.pack (show (length session.scratch))
             <> " pending definitions (:add or :update them first)"
         | not (null session.scratch)
         ]
-  pure (T.intercalate "\n" (body ++ pendingNote))
+  pure (T.intercalate "\n" (header ++ body ++ pendingNote))
  where
-  cb = session.codebase
-  under n = maybe True (\p -> (p <> ".") `T.isPrefixOf` n) path
-  -- A label the prelude gives, pointing where the prelude points.
-  fromPrelude m n v = Map.lookup n (m preludeLabels) == Just v
-  terms =
-    [ (n, r)
-    | (n, r) <- Map.toList cb.names
-    , under n
-    , not (fromPrelude (.names) n r)
-    ]
-  types =
-    [ (n, h)
-    | (n, h) <- Map.toList cb.typeNames
-    , under n
-    , not (fromPrelude (.typeNames) n h)
-    ]
+  -- The stored uses are written as statements, so they spell the names as
+  -- a file's uses do, before the root, and not as the codebase's fallback.
+  stored = session.codebase.uses
+  cb = session.codebase{uses = []}
+  under n = case path of
+    Just p -> (p <> ".") `T.isPrefixOf` n
+    Nothing -> not ((stdlibNamespace <> ".") `T.isPrefixOf` n)
+  terms = [(n, r) | (n, r) <- Map.toList cb.names, under n]
+  types = [(n, h) | (n, h) <- Map.toList cb.typeNames, under n]
   namespaceOf n = init (T.splitOn "." n)
   -- Types after the types their fields use.
   orderedTypes =
@@ -1434,7 +1609,7 @@ exportSource session path = do
     let used = Set.delete self (foldMap (foldMap typeRefs) def.constructors)
      in [n | (n, h) <- types, h `Set.member` used]
   typeItem (n, _) =
-    let scope = S.Scope (namespaceOf n) []
+    let scope = S.Scope (namespaceOf n) stored
      in (namespaceOf n,) . map (nameTypes scope cb) <$> viewData Ascii scope cb n
   -- Terms by hash, so that a cycle's members and aliases stay together,
   -- after what they reference.
@@ -1452,7 +1627,7 @@ exportSource session path = do
       | (h, members) <- Map.toList byHash
       ]
   termItems' = mapM $ \(n, r) ->
-    let scope = S.Scope (namespaceOf n) []
+    let scope = S.Scope (namespaceOf n) stored
         keyword
           | isUnitName n cb = "unit "
           | isScaleName n cb = "scale "

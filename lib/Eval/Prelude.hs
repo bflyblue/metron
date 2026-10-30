@@ -1,16 +1,34 @@
-{- | The prelude (design §3.2.11): derived SI units, prefixes, accepted units,
-exact constants, the Levi-Civita tensor and the cross product, as source
-text in the language itself. It is entered into every session as one
-binding group, so every unit is an ordinary hashed, viewable definition.
-The prefix table is generated here rather than typed by hand.
+{- | The standard library (design §3.2.11, §7.7): derived SI units, prefixes,
+accepted units, exact constants, the Levi-Civita tensor and the cross
+product, as source text in the language itself, under the namespace @std@.
+A new codebase is seeded with it as one binding group, so every unit is an
+ordinary hashed, viewable definition that lives in the codebase like any
+other. The prefix table is generated here rather than typed by hand.
 -}
 module Eval.Prelude (
+  stdlibSource,
+  stdlibNames,
+  stdlibNamespace,
+  stdlibCodebase,
+  stdlibMoved,
   preludeSource,
-  preludeNames,
 ) where
 
+import Data.Bifunctor (first)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+import Eval.Codebase (
+  Codebase (..),
+  Reference,
+  addStoredUse,
+  emptyCodebase,
+  lookupName,
+ )
+import Eval.Lexer (prepare)
+import Eval.Parser (parseProgram)
+import Eval.Resolve (processGroup, renderResolveError)
+import Eval.Syntax qualified as S
 
 {- | Derived and accepted units, in dependency order is not required: the
 prelude is one binding group.
@@ -200,6 +218,11 @@ structural =
   , ("range", "\\a b -> if a > b then {} else a : range (a + 1) b")
   ]
 
+{- | The library's statements at the root, one per line, as the prelude was
+entered before it moved under @std@ (design §7.7). 'stdlibSource' is this
+inside a @namespace std@ block; the tests enter both to check that the
+move kept every hash, and build a format-3 store from this one.
+-}
 preludeSource :: Text
 preludeSource =
   T.unlines
@@ -218,12 +241,62 @@ preludeSource =
   unitDef n e = "unit " <> n <> " = " <> e
   scaleDef n e = "scale " <> n <> " = " <> e
 
--- | Every name the prelude defines.
-preludeNames :: [Text]
-preludeNames =
-  map fst derived
-    ++ [p <> u | (p, _) <- prefixes, u <- prefixable, p <> u /= "kg"]
-    ++ map fst constants
-    ++ map fst scales
-    ++ map fst algebra
-    ++ map fst structural
+-- | The namespace the library lives under (design §7.7).
+stdlibNamespace :: Text
+stdlibNamespace = "std"
+
+-- | The standard library as source: every statement inside @namespace std@.
+stdlibSource :: Text
+stdlibSource =
+  T.unlines
+    ( ("namespace " <> stdlibNamespace)
+        : map ("  " <>) (T.lines preludeSource)
+    )
+
+{- | Every name the library defines, by its full path (@std.km@), spelled as
+the lexer reads it.
+-}
+stdlibNames :: [Text]
+stdlibNames =
+  map
+    (\n -> stdlibNamespace <> "." <> prepare n)
+    ( map fst derived
+        ++ [p <> u | (p, _) <- prefixes, u <- prefixable, p <> u /= "kg"]
+        ++ map fst constants
+        ++ map fst scales
+        ++ map fst algebra
+        ++ map fst structural
+    )
+
+{- | A codebase seeded with the library (design §7.7): 'stdlibSource'
+entered into the empty codebase as one binding group, as @:add@ enters
+it, with the stored default @use std@. Fails only if the library itself
+does not check, which is a build error the tests catch.
+-}
+stdlibCodebase :: Either Text Codebase
+stdlibCodebase =
+  addStoredUse (S.Use stdlibNamespace Nothing) <$> entered stdlibSource
+
+{- | The library names whose reference the move under @std@ changed, each
+with the reference the old root prelude gave the bare name: a @±@ is
+stamped with its definition's full path (design §3.2.4), so @std.G@ is not
+the root @G@, and the masses derived from it differ too. The format 3 to 4
+migration records these as history (design §7.4).
+-}
+stdlibMoved :: Either Text [(Text, Reference)]
+stdlibMoved = do
+  new <- stdlibCodebase
+  old <- entered preludeSource
+  pure
+    [ (full, r)
+    | (n, r) <- Map.toList old.names
+    , let full = stdlibNamespace <> "." <> n
+    , lookupName full new /= Just r
+    ]
+
+-- | Source entered into the empty codebase as one binding group.
+entered :: Text -> Either Text Codebase
+entered src = do
+  stmts <- parseProgram src
+  let (decls, _, _) = S.flatten S.rootScope stmts
+  first renderResolveError (processGroup emptyCodebase decls)

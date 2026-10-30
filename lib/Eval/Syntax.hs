@@ -23,6 +23,7 @@ module Eval.Syntax (
   Path (..),
   renderPath,
   Use (..),
+  renderUse,
   Scope (..),
   rootScope,
   qualify,
@@ -255,6 +256,10 @@ resolve bare, or, with an alias, under the alias as a prefix.
 -}
 data Use = Use {path :: Text, alias :: Maybe Text}
   deriving stock (Eq, Show)
+
+-- | @orbital@, @orbital.kepler as k@: a use as it is written after @use@.
+renderUse :: Use -> Text
+renderUse u = u.path <> maybe "" (" as " <>) u.alias
 
 {- | Where a name is written: the namespace it is under (empty at the root)
 and the @use@s in effect, oldest first.

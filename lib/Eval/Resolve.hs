@@ -113,12 +113,16 @@ data Qualified
 (design §7.6). A leading dot writes an absolute path. Otherwise, in order:
 the current namespace (@x@ is @current.x@), then the @use@d namespaces
 (@u.x@ for each @use u@, and @u.y@ for @k.y@ under @use u as k@), which
-must not offer it twice, then the root (@x@ itself). A local binder comes
-before all of these, in the desugarer. A full path written out resolves as
-itself at the root step, unless something nearer takes it first.
+must not offer it twice, then the root (@x@ itself), and last the
+codebase's stored default @use@s (design §7.7), which must not offer it
+twice either. So a root name shadows the library's @std.x@ that @use std@
+offers, while a @use@ of the session still beats a root name. A local
+binder comes before all of these, in the desugarer. A full path written
+out resolves as itself at the root step, unless something nearer takes it
+first.
 -}
-qualifyWith :: (Text -> Bool) -> S.Scope -> Text -> Qualified
-qualifyWith exists scope written
+qualifyWith :: [S.Use] -> (Text -> Bool) -> S.Scope -> Text -> Qualified
+qualifyWith stored exists scope written
   | Just p <- T.stripPrefix "." written = if exists p then Found p else NotFound
   | here : _ <-
       [ n
@@ -127,22 +131,24 @@ qualifyWith exists scope written
       , exists n
       ] =
       Found here
-  | otherwise = case nubOrd (filter exists used) of
+  | otherwise = case offered scope.uses of
       [one] -> Found one
       many@(_ : _ : _) -> Ambiguous many
-      [] -> if exists written then Found written else NotFound
+      []
+        | exists written -> Found written
+        | otherwise -> case offered stored of
+            [one] -> Found one
+            many@(_ : _ : _) -> Ambiguous many
+            [] -> NotFound
  where
-  used =
-    mapMaybe
-      ( \u -> case u.alias of
-          Nothing -> Just (u.path <> "." <> written)
-          Just k -> (\rest -> u.path <> "." <> rest) <$> T.stripPrefix (k <> ".") written
-      )
-      scope.uses
+  offered = nubOrd . filter exists . mapMaybe through
+  through u = case u.alias of
+    Nothing -> Just (u.path <> "." <> written)
+    Just k -> (\rest -> u.path <> "." <> rest) <$> T.stripPrefix (k <> ".") written
 
 -- | 'qualifyWith' over the labels of one kind in a codebase.
 qualifyName :: LabelKind -> S.Scope -> Codebase -> Text -> Qualified
-qualifyName kind scope cb = qualifyWith (isLabel kind cb) scope
+qualifyName kind scope cb = qualifyWith cb.uses (isLabel kind cb) scope
 
 {- | A free name in an expression, resolved through the scope: its full path
 and what it names. Two @use@s that both offer it give 'AAmbiguous'.
@@ -202,7 +208,7 @@ groupResolver group members scope cb query
   | otherwise =
       let written = maybe query ("." <>) (T.stripPrefix "§" query)
           exists n = isLabel TermLabel cb n || Set.member n group
-       in case qualifyWith exists scope written of
+       in case qualifyWith cb.uses exists scope written of
             Found full
               | Set.member full members -> Just (ALocal full)
               | full == query -> resolvedAt cb full
@@ -213,10 +219,12 @@ groupResolver group members scope cb query
 {- | How a full path prints in a scope (design §7.6), as Unison prints names:
 the shortest spelling that resolves back to the same label. Tried in order:
 the last segment alone; the path relative to the current namespace; the
-path relative to each @use@ (under its alias, if it has one); the full
+path relative to each @use@ (under its alias, if it has one), the
+session's and then the codebase's stored ones (design §7.7); the full
 path; and, only when the full path itself would resolve to something else
 here, the absolute @.full.path@. At the root with no @use@, every root
-name prints as itself.
+name prints as itself, and so does every library name the stored @use
+std@ reaches and no root name shadows.
 -}
 shortestName :: S.Scope -> Codebase -> Text -> Text
 shortestName = shortestNameOf TermLabel
@@ -236,7 +244,7 @@ shortestNameOf kind scope cb n =
          , Just rel <- [T.stripPrefix (S.qualify scope.namespace "") n]
          ]
       ++ [ maybe rel (\k -> k <> "." <> rel) u.alias
-         | u <- scope.uses
+         | u <- scope.uses ++ cb.uses
          , Just rel <- [T.stripPrefix (u.path <> ".") n]
          ]
       ++ [n, "." <> n]
@@ -330,7 +338,7 @@ processGroup cb0 decls = do
           ( Set.fromList
               [ full
               | w <- Set.toList (freeNames (asLambda b))
-              , Found full <- [qualifyWith exists s w]
+              , Found full <- [qualifyWith cb1.uses exists s w]
               , Set.member full groupNames
               ]
           )
@@ -361,8 +369,8 @@ asLambda b = case b.params of
   _ -> S.Expr b.span (S.Lam b.params b.body)
 
 {- | Enter one component. A definition's declared uncertainties are labelled
-with the last segment of its name, so that the namespace never reaches the
-hash (design §7.6).
+with its full path (design §3.2.4), so that @lab.offset = 1 ± 0.1@ and
+@field.offset = 1 ± 0.1@ are two measurements, not one.
 -}
 enterComponent ::
   Set Text -> Codebase -> SCC (S.Scope, S.Binding) -> Either ResolveError Codebase
@@ -373,7 +381,7 @@ enterComponent group cb = \case
         (Left . Desugar)
         Right
         ( desugarDefinition
-            (S.lastSegment b.name.text)
+            b.name.text
             (groupResolver group Set.empty scope cb)
             (asLambda b)
         )
@@ -452,7 +460,7 @@ enterCycle group cb sbs = do
       (Left . Desugar)
       Right
       ( D.desugarMember
-          (S.lastSegment b.name.text)
+          b.name.text
           (groupResolver group memberNames scope cb)
           ctx
           (asLambda b)
@@ -588,11 +596,11 @@ enterData scope cb decl = do
         TypeDef
           params
           fieldss
-          -- The declared name without its namespace, which never reaches
-          -- the hash (design §7.6).
+          -- The declared full path (design §2.3, §7.6): @a.Body@ and
+          -- @b.Body@ with the same fields are two types.
           ( if decl.structural
               then structuralLabel
-              else Owner (S.lastSegment decl.name.text)
+              else Owner decl.name.text
           )
       h = hashTypeDef def
       cb' = bindTypeName decl.name.text h (addTypeDef h def cb)
@@ -745,6 +753,7 @@ applied env t n args
   -- The type's own name exists before it is entered.
   resolved =
     qualifyWith
+      env.codebase.uses
       (\x -> x == env.self.text || isLabel TypeLabel env.codebase x)
       env.scope
       n

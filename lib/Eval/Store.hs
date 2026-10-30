@@ -3,29 +3,33 @@
 A store is a directory:
 
 @
-format          "eval codebase 1"
+format          "eval codebase 4"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
-names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j
+names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias]
 @
 
 Terms are content-addressed, so they never conflict and are only ever
-added. Everything label-level (names, their history, unit declarations) is
-the log replayed in order, which is also what makes two stores mergeable:
-concatenate the logs and sort by time, which is what 'mergeStore' does.
+added. Everything label-level (names, their history, unit declarations,
+the stored default @use@s) is the log replayed in order, which is also
+what makes two stores mergeable: concatenate the logs and sort by time,
+which is what 'mergeStore' does.
 
-The prelude is not stored as bindings. Every session enters it first, in
-memory, and the store's log is replayed on top, so a user who rebinds a
-prelude name keeps that binding and a prelude that changes a definition
-leaves the user's dependents pointing at the old hash, visible in @:todo@.
-Prelude /terms/ that a stored definition references are written beside it,
-so a store is self-contained whatever the prelude later becomes.
+The standard library lives in the store like everything else (design
+§7.7). A new store is seeded with it: its terms and types are written,
+and its labels and its @use std@ are written to the log stamped with time
+0, so they sort before every line of the user's and are the same lines in
+every store, which a merge then recognises. A store is loaded on top of
+the empty codebase; nothing is entered in memory first.
 -}
 module Eval.Store (
   Store (..),
+  Seed (..),
+  stdlibSeed,
   formatVersion,
   locateStore,
   openStore,
+  seedStore,
   loadStore,
   sync,
   MergeReport (..),
@@ -33,7 +37,7 @@ module Eval.Store (
   mergeStores,
 ) where
 
-import Control.Monad (foldM, foldM_, forM_, unless, void, when)
+import Control.Monad (filterM, foldM, foldM_, forM_, unless, void, when)
 import Data.ByteString qualified as BS
 import Data.Either (lefts, rights)
 import Data.List (sortOn)
@@ -50,7 +54,9 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Eval.Codebase
 import Eval.Core
 import Eval.Hash
+import Eval.Prelude (stdlibCodebase, stdlibMoved)
 import Eval.Resolve (storeTerm)
+import Eval.Syntax (Use (..), renderUse)
 import Eval.Type (TypeDef)
 import System.Directory
 import System.FilePath
@@ -60,9 +66,13 @@ newtype Store = Store {dir :: FilePath}
 formatLine :: Int -> Text
 formatLine v = "eval codebase " <> tshow v
 
--- | Bumped whenever the storage encoding changes; see core.md on hash stability.
+{- | Bumped whenever the store's layout changes: the storage encoding
+('storageVersion', 3), or what a store holds. Format 4 holds the standard
+library as seeded labels instead of assuming a prelude entered in memory
+(design §7.7); see core.md on hash stability and migrations.
+-}
 formatVersion :: Int
-formatVersion = storageVersion
+formatVersion = 4
 
 {- | The store to use: the directory given, else a @.eval@ directory found by
 walking up from the working directory, else the user store under
@@ -85,15 +95,35 @@ locateStore = \case
         let parent = takeDirectory d
          in if parent == d then pure Nothing else findUp parent
 
--- | Create the directory if needed, or check that an existing one is ours.
-openStore :: FilePath -> IO (Either Text Store)
-openStore d = do
+{- | What a new store is seeded with (design §7.7), and what a format-3
+store is migrated with: the library's codebase, with its stored @use
+std@, and the references the old root prelude gave the library's names
+where the move under @std@ changed them (the definitions whose @±@ is
+stamped with their name, design §3.2.4, and those that use them).
+-}
+data Seed = Seed
+  { library :: Codebase
+  , moved :: [(Text, Reference)]
+  -- ^ @std.G@ and the reference the root @G@ had
+  }
+
+-- | The standard library as a 'Seed'.
+stdlibSeed :: Either Text Seed
+stdlibSeed = Seed <$> stdlibCodebase <*> stdlibMoved
+
+{- | Create the directory if needed and seed it, or check that an existing
+one is ours, migrating an older format in place.
+-}
+openStore :: Seed -> FilePath -> IO (Either Text Store)
+openStore seed d = do
   createDirectoryIfMissing True (d </> "terms")
   createDirectoryIfMissing True (d </> "types")
   let formatFile = d </> "format"
   present <- doesFileExist formatFile
   if not present
     then do
+      -- The format file last, so an interrupted seeding is seeded again.
+      seedStore (Store d) seed.library
       TIO.writeFile formatFile (formatLine formatVersion <> "\n")
       pure (Right (Store d))
     else do
@@ -102,21 +132,24 @@ openStore d = do
         then pure (Right (Store d))
         else
           if line == formatLine (1 :: Int)
-            then migrate1to2 >> migrate2to3 >> pure (Right (Store d))
+            then migrate1to2 >> migrate2to3 >> migrate3to4 >> pure (Right (Store d))
             else
               if line == formatLine (2 :: Int)
-                then migrate2to3 >> pure (Right (Store d))
+                then migrate2to3 >> migrate3to4 >> pure (Right (Store d))
                 else
-                  pure
-                    ( Left
-                        ( T.pack d
-                            <> " is not an eval codebase of format "
-                            <> tshow formatVersion
-                            <> " (found \""
-                            <> line
-                            <> "\"); see core.md on migrations"
+                  if line == formatLine (3 :: Int)
+                    then migrate3to4 >> pure (Right (Store d))
+                    else
+                      pure
+                        ( Left
+                            ( T.pack d
+                                <> " is not an eval codebase of format "
+                                <> tshow formatVersion
+                                <> " (found \""
+                                <> line
+                                <> "\"); see core.md on migrations"
+                            )
                         )
-                    )
  where
   -- Format 2 added the written name after each reference (design §7.4).
   -- Hashes are unchanged, so every term file is rewritten in place with
@@ -171,11 +204,59 @@ openStore d = do
             (hex : rest) | Just new <- Map.lookup hex hexMap -> T.intercalate "." (new : rest)
             _ -> w
       TIO.writeFile logFile (T.unlines (map (T.unwords . map fixWord . T.words) ls))
+    TIO.writeFile (d </> "format") (formatLine (3 :: Int) <> "\n")
+  -- Format 4 holds the standard library instead of assuming a prelude
+  -- entered in memory under every session (design §7.4, §7.7). The store is
+  -- seeded as a new one is, before its own log, so a user's root binding
+  -- that shadows a library name still wins. Where the move under `std`
+  -- changed a reference (a `±` is stamped with the full path, so `std.G`
+  -- is not the root `G`) and a user term still uses the old one, whose file
+  -- the store therefore holds, the name's history gets the old reference
+  -- first, so `:todo` reports the user's term as stale and `:upgrade std.G`
+  -- moves it. The current one is bound again at time 1, so a merge with a
+  -- store seeded fresh, whose time-0 lines sort first, ends on it too.
+  migrate3to4 = do
+    old <-
+      filterM
+        (\(_, r) -> doesFileExist (d </> "terms" </> T.unpack (hashHex r.hash)))
+        seed.moved
+    let current = [(n, r) | (n, _) <- old, Just r <- [lookupName n seed.library]]
+        history = [seedStamp <> " bind " <> n <> " " <> refText r | (n, r) <- old]
+        rebound = ["1 bind " <> n <> " " <> refText r | (n, r) <- current]
+    seedStoreWith history rebound (Store d) seed.library
     TIO.writeFile (d </> "format") (formatLine formatVersion <> "\n")
 
-{- | Load the store on top of a codebase (the prelude's): decode every term,
-check and add them dependencies first, then replay the log. Problems are
-reported as notes and the rest still loads.
+{- | The time a seeded store's library lines carry (design §7.7): 0, before
+any line of the user's, and the same in every store, so a merge of two
+seeded stores adds nothing for the library.
+-}
+seedStamp :: Text
+seedStamp = "0"
+
+{- | Seed a store with a codebase, the library (design §7.7): its type and
+term files, then its labels and stored @use@s as log lines at time 0,
+before whatever the log already holds. The log is written whole, through a
+temporary file, after the terms.
+-}
+seedStore :: Store -> Codebase -> IO ()
+seedStore = seedStoreWith [] []
+
+-- | 'seedStore' with log lines to put before the seed's and after them.
+seedStoreWith :: [Text] -> [Text] -> Store -> Codebase -> IO ()
+seedStoreWith before after store seed = do
+  writeContent store emptyCodebase seed
+  let logFile = store.dir </> "names.log"
+  present <- doesFileExist logFile
+  old <- if present then TIO.readFile logFile else pure ""
+  let tmp = store.dir </> "names.log.seed"
+  TIO.writeFile
+    tmp
+    (T.unlines (before ++ logEntries seedStamp emptyCodebase seed ++ after) <> old)
+  renameFile tmp logFile
+
+{- | Load the store on top of a codebase, the empty one at start: decode
+every term, check and add them dependencies first, then replay the log.
+Problems are reported as notes and the rest still loads.
 -}
 loadStore :: Store -> Codebase -> IO (Codebase, [Text])
 loadStore store base = do
@@ -283,6 +364,9 @@ loadStore store base = do
     [_, "scale", target] -> (flagNames markScale target cb, notes)
     (_ : "prefer" : rest) -> (addPreference (T.unwords rest) cb, notes)
     (_ : "unprefer" : rest) -> (removePreference (T.unwords rest) cb, notes)
+    -- The codebase's stored default uses (design §7.7).
+    (_ : "use" : rest) | Just u <- parseUse rest -> (addStoredUse u cb, notes)
+    (_ : "unuse" : rest) | Just u <- parseUse rest -> (removeStoredUse u cb, notes)
     [] -> (cb, notes)
     _ -> (cb, ("names.log:" <> tshow lineNo <> ": unreadable line, skipped") : notes)
 
@@ -294,15 +378,41 @@ pointing at a missing term.
 -}
 sync :: Store -> Codebase -> Codebase -> IO ()
 sync store old new = do
+  writeContent store old new
+  now <- (round <$> getPOSIXTime) :: IO Integer
+  let entries = logEntries (tshow now) old new
+  unless (null entries)
+    $ TIO.appendFile (store.dir </> "names.log") (T.unlines entries)
+
+{- | The type and term files for what one codebase has and another lacks,
+each term after the terms it references.
+-}
+writeContent :: Store -> Codebase -> Codebase -> IO ()
+writeContent store old new = do
   forM_ (Map.toList (Map.difference new.typeDefs old.typeDefs)) $ \(h, def) ->
     BS.writeFile
       (store.dir </> "types" </> T.unpack (hashHex h))
       (encodeTypeDef def)
   let fresh = Map.keys (Map.difference new.terms old.terms)
   foldM_ writeClosure Set.empty fresh
-  now <- (round <$> getPOSIXTime) :: IO Integer
-  let stamp = tshow now
-      binds =
+ where
+  writeClosure :: Set Hash -> Hash -> IO (Set Hash)
+  writeClosure written h
+    | Set.member h written = pure written
+    | otherwise = do
+        let path = store.dir </> "terms" </> T.unpack (hashHex h)
+        present <- doesFileExist path
+        case Map.lookup h new.terms of
+          Just t | not present -> do
+            written' <- foldM writeClosure (Set.insert h written) (Set.toList (refs t))
+            BS.writeFile path (encodeStored t)
+            pure written'
+          _ -> pure (Set.insert h written)
+
+-- | The log lines that take one codebase's labels to another's, at a time.
+logEntries :: Text -> Codebase -> Codebase -> [Text]
+logEntries stamp old new =
+  let binds =
         [ stamp <> " bind " <> name <> " " <> refText r
         | (name, r) <- Map.toList new.names
         , Map.lookup name old.names /= Just r
@@ -368,33 +478,29 @@ sync store old new = do
               ++ Map.keys (Map.difference old.conNames new.conNames)
         , gone name
         ]
-      entries =
-        types
-          ++ cons
-          ++ fields
-          ++ binds
-          ++ unnames
-          ++ unnamedTypes
-          ++ unnamedFields
-          ++ units
-          ++ scales
-          ++ prefers
-          ++ unprefers
-  unless (null entries)
-    $ TIO.appendFile (store.dir </> "names.log") (T.unlines entries)
- where
-  writeClosure :: Set Hash -> Hash -> IO (Set Hash)
-  writeClosure written h
-    | Set.member h written = pure written
-    | otherwise = do
-        let path = store.dir </> "terms" </> T.unpack (hashHex h)
-        present <- doesFileExist path
-        case Map.lookup h new.terms of
-          Just t | not present -> do
-            written' <- foldM writeClosure (Set.insert h written) (Set.toList (refs t))
-            BS.writeFile path (encodeStored t)
-            pure written'
-          _ -> pure (Set.insert h written)
+      -- The stored default uses (design §7.7).
+      unuses = [stamp <> " unuse " <> renderUse u | u <- old.uses, u `notElem` new.uses]
+      uses = [stamp <> " use " <> renderUse u | u <- new.uses, u `notElem` old.uses]
+   in types
+        ++ cons
+        ++ fields
+        ++ binds
+        ++ unnames
+        ++ unnamedTypes
+        ++ unnamedFields
+        ++ units
+        ++ scales
+        ++ prefers
+        ++ unprefers
+        ++ unuses
+        ++ uses
+
+-- | A stored use as its log line spells it: @std@, @orbital as o@.
+parseUse :: [Text] -> Maybe Use
+parseUse = \case
+  [p] -> Just (Use p Nothing)
+  [p, "as", a] -> Just (Use p (Just a))
+  _ -> Nothing
 
 -- | A type file's content, checked against the hash that names it.
 verifyType :: FilePath -> BS.ByteString -> Either Text (Hash, TypeDef)
@@ -428,12 +534,12 @@ data MergeReport = MergeReport
   deriving (Eq, Show)
 
 {- | Merge the store at the second path into the store at the first (design
-§7.4). The target is opened as 'openStore' does, so it is created if
+§7.4). The target is opened as 'openStore' does, so it is created and seeded if
 missing; the source must already be a store and is only read, apart from a
 migration to the current format on open, which the notes mention.
 -}
-mergeStores :: FilePath -> FilePath -> IO (Either Text MergeReport)
-mergeStores target source = do
+mergeStores :: Seed -> FilePath -> FilePath -> IO (Either Text MergeReport)
+mergeStores seed target source = do
   isDir <- doesDirectoryExist source
   hasFormat <- doesFileExist (source </> "format")
   same <- (==) <$> canonicalizePath target <*> canonicalizePath source
@@ -450,9 +556,10 @@ mergeStores target source = do
             else do
               -- The source first: if it is refused, the target is not touched.
               sourceWas <- formatOf source
-              openedSource <- openStore source
+              openedSource <- openStore seed source
               targetWas <- formatOf target
-              openedTarget <- either (pure . Left) (const (openStore target)) openedSource
+              openedTarget <-
+                either (pure . Left) (const (openStore seed target)) openedSource
               case (,) <$> openedSource <*> openedTarget of
                 Left err -> pure (Left err)
                 Right (src, dst) -> do
