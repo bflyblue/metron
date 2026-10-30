@@ -3503,9 +3503,22 @@ tuned, and compilation is a later milestone.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's
      architecture (§3.2.9).
-   - *Anything hash-changing.* Re-expressing `Bool`, tuples and lists as
-     prelude declarations, or mutually recursive types. Each is a numbered
-     migration (core.md §6); a mistake there corrupts stores.
+   - *`Bool`, tuples and lists as library declarations.* Decided (format 6,
+     hashes change). The three types become structural declarations the
+     compiler holds as values and refers to by hash: `structural data Bool =
+     False | True`, `structural data Pair a b = Pair a b`, `structural data
+     List a = Nil | Cons a (List a)`. `ConRef` loses `Builtin`; the type
+     language loses `TBool`, `TTuple`, `TList` for `TData` on the three
+     hashes; the desugarer, the primitive type table, the evaluator and the
+     printer (which still prints `true`, `(1, 2)` and `{1, 2}` for those
+     hashes) go by hash, never by name. The library seeds the same three
+     declarations and names them under `std`; renaming or unnaming them
+     changes nothing but printing. The migration decodes old terms and type
+     files by the old rules, rewrites the built-in constructors and types to
+     the hashes, re-hashes types then terms in dependency order and remaps
+     references, labels and the log, as the format-3 migration did for `If`;
+     refusing stores older than 6 is the accepted fallback. Core shrinks to
+     13 constructors (core.md §5). Mutually recursive types stay open.
    - *Type annotations.* The parser and inference interplay, and what the
      error messages say when an annotation and the inferred type disagree
      (§4.6).
