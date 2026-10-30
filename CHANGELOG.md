@@ -658,3 +658,32 @@
 - `linalg.vimap` is now `timap (\i x -> f i.0 x)` with the signature
   `(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1`, which keeps it
   vector-only; the library source can carry signatures. Its hash changed.
+- Charts, phase B: turned charts convert (design §3.8). `by` takes one
+  generator or a sequence, `by rotz Ω then rotx i then rotz ω` (`then`
+  separates generators in the chart statement only; an `if` keeps its own),
+  parsed into a list literal: `mkChart4 : Num d -> Vec n d -> Chart (Vec n
+  d) -> {Mat n n} -> Chart (Vec n d)`, each generator checked exactly
+  antisymmetric, applied in order; `:view` and `:edit` print the sequence
+  with `then` and read back to the same hash. `euler313` stays the composed
+  matrix. Every chart keeps its absolute frame: `R = R_parent · expm g₁ ·
+  expm g₂ · …` and its inverse from the negated generators in reverse
+  order, computed once per chart value when first used, and the origin
+  `o_parent + R_parent · a` for the amount `a` it is given at along the
+  parent's axes (fixing the origin under a turned parent). A point written
+  on a chart is `o + R (step · c)` and prints as `R⁻¹ (p − o) / step`; the
+  "coming with expm" refusals are gone. `.-` and `.+` stay along the base
+  axes on any chart, so `q .+ (p .- q)` is `p`. New: the primitive
+  `rotationOf : Chart (Vec n d) -> Mat n n` (exactly `I` when not turned),
+  and in `linalg` `inChart c x = transformBy (rotationOf c) x` (a tensor
+  along `c`'s axes, along the base axes) and `inChartCov2`, a `Cov2` block
+  by block. A component of a point on a turned chart (`p.0`) is refused.
+  A definition's value is now shared by every reference to it within one
+  evaluation, so a chart named many times computes its rotation once.
+  A chart with `by`, re-entered, gets a new hash (its generator is now a
+  list of one). One already stored by phase A keeps its stored Core,
+  `mkChart4 … B` with a bare matrix, which no longer typechecks: on open
+  the store skips that term, and the terms that use it, each with a note
+  ("does not typecheck … skipped"), and loads the rest; re-enter the chart
+  from its source to get it back. Translated and temperature charts, the
+  rest of the library, Core, hashing, encodings and the store format are
+  unchanged.
