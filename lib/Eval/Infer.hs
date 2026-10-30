@@ -44,7 +44,7 @@ data TypeError = TypeError {path :: Path, message :: Text}
 data Constraint
   = -- | @s3 ~ s1 ++ s2@
     Append Shape Shape Shape
-  | -- | @Eq τ@: τ is a tensor or Bool
+  | -- | @Eq τ@: τ is a tensor, Bool, point, or data whose components are (design §4.2)
     EqInstance Type
   | -- | lt, le, gt, ge: a number or a point (design §3.6)
     OrdInstance Type
@@ -54,6 +54,8 @@ data St = St
   , next :: Int
   , pending :: [(Path, Constraint)]
   -- ^ reversed paths, as 'failAt' takes them
+  , typeDefs :: Hash -> Maybe TypeDef
+  -- ^ the declared types, for equality on them
   }
 
 type Infer = StateT St (Either TypeError)
@@ -63,7 +65,7 @@ and the Typed Core term with all metavariables resolved.
 -}
 elaborateClosed :: TypeLookup -> Term Z -> Either TypeError ([Scheme], TTerm Z)
 elaborateClosed look term = do
-  ((schemes, tt), st) <- runStateT go (St emptySubst 0 [])
+  ((schemes, tt), st) <- runStateT go (St emptySubst 0 [] look.typeDefOf)
   pure (map (applyScheme st.subst) schemes, zonk st.subst tt)
  where
   go = case term of
@@ -372,6 +374,12 @@ solveOne p = \case
       -- Structured data compares when its components do.
       TTuple ts -> mapM_ (defer p . EqInstance) ts >> pure True
       TList elt -> defer p (EqInstance elt) >> pure True
+      -- A declared type compares when its fields do (design §4.2).
+      TData h as -> do
+        defs <- gets (.typeDefs)
+        case equalityArgs defs h as of
+          Just ts -> mapM_ (defer p . EqInstance) ts >> pure True
+          Nothing -> failAt p ("no equality on " <> renderType t')
       TVar _ -> pure False
       _ -> failAt p ("no equality on " <> renderType t')
   OrdInstance t -> do

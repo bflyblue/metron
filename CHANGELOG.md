@@ -222,3 +222,11 @@
 - `Rect 3 m 4 m` is four arguments again, not two quantities; a type error
   that lands on such a literal or unit now carries a hint to write `(3 m)`.
   Provenance carries hints beside spans.
+- `==` and `/=` on declared types (design §2.3, §4.2), derived structurally
+  as for tuples and lists: a type has equality when every field of every
+  constructor, at the type's arguments, has it. `Circle (1 m) == Circle (1
+  m)` is true, values of different constructors are unequal, and `Just 1 ==
+  Just 1` works. A recursive occurrence counts as the instance being
+  derived, and which parameters need equality is a fixed point over the
+  fields, so nested types (`data N a = Z a | S (N (a, a))`) are decided
+  too. A type with a function field still has none.

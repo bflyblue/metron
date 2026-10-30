@@ -11,6 +11,7 @@ module Eval.Type (
   VarId,
   Type (..),
   dataConstructors,
+  equalityArgs,
   TypeDef (..),
   TypeLookup (..),
   noLookup,
@@ -446,6 +447,55 @@ dataConstructors defs = \case
     goArg = \case
       AType t -> AType (go t)
       a -> a
+
+{- | What the equality of a declared type rests on (design §4.2): the type
+arguments that must themselves have equality, or 'Nothing' when no
+arguments would do, because a field is a function or a scale, or the type
+is unknown. Equality on @T as@ is derived structurally: it holds when every
+field of every constructor, at @as@, has equality.
+
+A recursive occurrence of the type is assumed to have equality, as the
+instance being derived (coinductively), and asks only for its own
+arguments at the parameters that need it. Which parameters need it is a
+least fixed point over the fields, so a nested type such as
+@data N a = Z a | S (N (a, a))@ is decided without unfolding: @N τ@ needs
+equality on @τ@ alone.
+-}
+equalityArgs :: (Hash -> Maybe TypeDef) -> Hash -> [Arg] -> Maybe [Type]
+equalityArgs defs h as = do
+  def <- defs h
+  need <- equalityParams defs def
+  Just [t | (True, AType t) <- zip need as]
+
+{- | For each parameter of a declaration, whether its equality depends on
+that parameter's: the least solution, from "none", of the fields'
+requirements. 'Nothing' when a field can never have equality.
+-}
+equalityParams :: (Hash -> Maybe TypeDef) -> TypeDef -> Maybe [Bool]
+equalityParams defs def = go (map (const False) def.params)
+ where
+  go need = do
+    vs <- concat <$> mapM (needs need) (concat def.constructors)
+    let need' = [v `elem` vs | (v, _) <- def.params]
+    if need' == need then Just need else go need'
+  -- The parameters a field's equality rests on, given what the type's own
+  -- parameters are assumed to need.
+  needs need = \case
+    TTensor _ _ -> Just []
+    TBool -> Just []
+    TPoint _ _ -> Just []
+    TVar v -> Just [v]
+    TTuple ts -> concat <$> mapM (needs need) ts
+    TList t -> needs need t
+    TData h' as'
+      | h' == selfType -> picked need as'
+      | otherwise -> do
+          d <- defs h'
+          need' <- equalityParams defs d
+          picked need' as'
+    _ -> Nothing
+   where
+    picked which as' = concat <$> sequence [needs need t | (True, AType t) <- zip which as']
 
 {- | What inference and lint need from the codebase: the schemes of a stored
 definition, and the declaration of a data type.

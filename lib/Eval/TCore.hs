@@ -226,7 +226,7 @@ lint look ctx = \case
               <> ", not an instance of "
               <> renderScheme general
           )
-      Nothing -> lintConstrained name ty
+      Nothing -> lintConstrained look name ty
     let go t = \case
           [] -> Right t
           arg : rest -> case t of
@@ -393,8 +393,8 @@ lint look ctx = \case
 §4.2). Inference solved or defaulted their constraints; lint re-checks the
 relation on the elaborated type.
 -}
-lintConstrained :: Text -> Type -> Either Text ()
-lintConstrained name ty = case (name, ty) of
+lintConstrained :: TypeLookup -> Text -> Type -> Either Text ()
+lintConstrained look name ty = case (name, ty) of
   ("outer", TFun (TTensor s1 d1) (TFun (TTensor s2 d2) (TTensor s3 d3))) -> do
     ls <-
       maybe (Left "outer: the left operand's rank is not known") Right (closedLens s1)
@@ -423,7 +423,7 @@ lintConstrained name ty = case (name, ty) of
   (eqName, TFun t (TFun t' TBool))
     | eqName `elem` ["eq", "ne"] -> do
         require (t == t') (eqName <> ": operands differ in type")
-        equatable t
+        equatable look.typeDefOf t
     | eqName `elem` ["lt", "le", "gt", "ge"] -> do
         require (t == t') (eqName <> ": operands differ in type")
         case t of
@@ -646,13 +646,14 @@ patternText c names = case (c, names) of
   _ -> T.unwords (conText c : names)
 
 {- | The types `==` is defined at (design §4.2): tensors, booleans, points,
-and structured data whose components are.
+and structured data whose components are: tuples, lists and declared types.
 -}
-equatable :: Type -> Either Text ()
-equatable t = case t of
+equatable :: (Hash -> Maybe TypeDef) -> Type -> Either Text ()
+equatable defs t = case t of
   TTensor _ _ -> Right ()
   TBool -> Right ()
   TPoint _ _ -> Right ()
-  TTuple ts -> mapM_ equatable ts
-  TList e -> equatable e
+  TTuple ts -> mapM_ (equatable defs) ts
+  TList e -> equatable defs e
+  TData h as | Just ts <- equalityArgs defs h as -> mapM_ (equatable defs) ts
   _ -> Left ("no equality on " <> renderType t)

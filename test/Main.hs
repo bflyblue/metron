@@ -2689,6 +2689,89 @@ dataTests =
             , "5 kg"
             , "data E = E (Num [kg m^2 s^-2]) (Num [kg m s^-2]) (Num [m s^-2]) (Point [K]) Bool (Num, {Num [m]})"
             ]
+    , testCase "declared types: == and /= when every field compares" $ do
+        runLinesP
+          [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+          , "Circle (1 m) == Circle (1 m)"
+          , "Circle (1 m) == Circle (100 cm)"
+          , "Circle (1 m) == Circle (2 m)"
+          , "Circle (1 m) == Rect (1 m) (1 m)"
+          , "Rect (1 m) (2 m) /= Rect (1 m) (2 m)"
+          , "{Circle (1 m)} == {Circle (1 m)}"
+          , "(Circle (1 m), true) == (Circle (1 m), false)"
+          , "data Maybe a = Nothing | Just a"
+          , "Just 1 == Just 1"
+          , "Nothing == Just 1"
+          , "Just (Circle (1 m)) == Just (Circle (1 m))"
+          , "Just {1, 2} /= Just {1, 2, 3}"
+          , ":type \\x -> Just x == Nothing"
+          ]
+          @?= Right
+            [ "true"
+            , "true"
+            , "false"
+            , "false"
+            , "false"
+            , "true"
+            , "false"
+            , "true"
+            , "false"
+            , "true"
+            , "true"
+            , "Num -> Bool"
+            ]
+        -- Recursive types: the self occurrence is the instance being derived.
+        runLinesP
+          [ "data Tree a = Leaf | Node (Tree a) a (Tree a)"
+          , "let t = Node (Node Leaf (1 kg) Leaf) (2 kg) Leaf"
+          , "t == Node (Node Leaf (1 kg) Leaf) (2 kg) Leaf"
+          , "t == Node (Node Leaf (1 kg) Leaf) (2 kg) (Node Leaf (3 kg) Leaf)"
+          , "t == Node Leaf (2 kg) Leaf"
+          , "Leaf == Node Leaf 1 Leaf"
+          , "data Pair a b = Pair a b"
+          , "Pair 1 2 == Pair 1 2"
+          , "Pair 1 (2 m) == Pair 1 (3 m)"
+          , "Pair (Leaf, true) {1} == Pair (Leaf, true) {1}"
+          , -- a nested type: the recursion is at another argument
+            "data Nest a = Flat a | Deep (Nest (a, a))"
+          , "Deep (Flat (1, 2)) == Deep (Flat (1, 2))"
+          , "Deep (Flat (1, 2)) == Flat 1"
+          , -- a parameter no field compares asks nothing of its argument
+            "data Tag a = Tag | Wrap (Tag (a -> a))"
+          , "Wrap Tag == Wrap Tag"
+          ]
+          @?= Right
+            [ "true"
+            , "false"
+            , "false"
+            , "false"
+            , "true"
+            , "false"
+            , "true"
+            , "true"
+            , "false"
+            , "true"
+            ]
+        -- Uncertain fields compare as numbers do.
+        runLinesP
+          [ "data Shape = Circle (Num [m])"
+          , "let c = Circle (1 m ± 1 mm)"
+          , "c == c"
+          , "c == Circle (2 m)"
+          ]
+          @?= Right ["true", "false"]
+        let refused src needle = case runLinesP src of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+        refused
+          ["data F = F (Num -> Num)", "F (\\x -> x) == F (\\x -> x)"]
+          "no equality on F"
+        refused
+          ["data H = H Num | G (Num, Num -> Num)", "H 1 == H 1"]
+          "no equality on H"
+        refused
+          ["data Maybe a = Nothing | Just a", "Just (\\x -> x + 1) == Nothing"]
+          "no equality on Num -> Num"
     , testCase "records: named fields, construction, access, update, printing" $ do
         runLinesP
           [ "data Body = Body {mass :: Num [kg], pos :: Vec 3 [m], vel :: Vec 3 [m/s]}"
@@ -2804,9 +2887,6 @@ dataTests =
         refused
           ["data Maybe a = Nothing | Just a", "case Just 1 of Nothing -> 0; Just -> 1"]
           "has 1 fields"
-        refused
-          ["data Maybe a = Nothing | Just a", "Just 1 == Just 1"]
-          "no equality on Maybe"
         refused
           ["data Shape = Circle (Num [m])", "Circle 1"]
           "expected Num [m], got Num"

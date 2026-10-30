@@ -224,8 +224,11 @@ Circle` leaves the constructor printing as `#a3f9k.0`, `:view Shape` prints
 the declaration back, and a constructor name and a definition name share one
 namespace, the newer label winning (declaring `data Temp = T (Num [K])`
 unnames the tesla until a `let T = …` takes the name back). A declaration is
-pending in the scratch (§7.5) until `:add`, like a definition. There is no
-`==` on declared types yet, and no records; both are open (§11).
+pending in the scratch (§7.5) until `:add`, like a definition. `==` and `/=`
+work on a declared type when every field of every constructor has equality
+(§4.2), as on tuples and lists: `Circle (1 m) == Circle (1 m)` is true, values
+built by different constructors are unequal, and a type with a function field
+has no equality.
 
 **Records.** A constructor may name its fields, which makes the type a record:
 
@@ -1305,10 +1308,20 @@ unresolved constraint becomes a parameter of the definition instead of a
 default, and `\k v -> k * v` becomes polymorphic in the rank of `k`.
 
 Equality is the single overloaded primitive. `==` and `/=` take two values of one
-type `τ` and emit an **instance constraint** `Eq τ` with exactly two instances,
-`Tensor s` and `Bool`. It is solved the same way: as soon as `τ` is known it is
-checked, at generalisation an unresolved `τ` defaults to `Num`, and any other
-type is a static error ("no equality on functions"). Lint re-checks every solved
+type `τ` and emit an **instance constraint** `Eq τ`. Its instances are
+`Tensor s`, `Bool` and `Point s d`, and structured data whose components have
+equality: a tuple when every component does, a list when its element does,
+and a declared type `T τ…` when every field of every constructor, at those
+arguments, does. Values of data types are equal when their constructors are
+the same and their fields are pairwise equal. For a declared type the
+instance is derived structurally: a recursive occurrence of `T` in its own
+fields is the instance being derived (coinductively), and which of `T`'s
+parameters need equality is a least fixed point over the fields, so `Eq (Tree
+τ)` reduces to `Eq τ`, `Eq Shape` holds outright, and a nested type such as
+`data N a = Z a | S (N (a, a))` is decided without unfolding. It is solved
+the same way: as soon as `τ` is known it is checked, at generalisation an
+unresolved `τ` defaults to `Num`, and any other type is a static error ("no
+equality on Num -> Num"; a declared type with a function field has none). Lint re-checks every solved
 constraint on the elaborated term, so a primitive is never evaluated at a type
 its implementation cannot handle (core.md §9).
 
@@ -2166,8 +2179,11 @@ tuned, and compilation is a later milestone.
   source files (text, reviewable in diffs) and treat the store as a cache?
 - Should `:view` of a stale reference print `x#a3f9k` (Unison style) or `#a3f9k`
   alone?
-- Equality on declared types: derive `==` structurally when every field is
-  comparable (the rule tuples and lists follow), or make it opt-in per type?
+- Equality on declared types is derived structurally when every field is
+  comparable (§4.2), the rule tuples and lists follow. Still open: whether a
+  type may opt out, or give its own equality (a fraction kept as an
+  unreduced pair, which structural equality calls unequal to its reduced
+  form).
 - Record values print positionally. Printing `Body {mass = 5 kg, …}` needs
   the field labels at print time, which the hash-only printer does not have;
   a namer for fields, as for references, would give it.
