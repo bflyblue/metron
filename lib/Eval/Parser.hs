@@ -134,8 +134,69 @@ statement =
     P.<|> unitStatement
     P.<|> scaleStatement
     P.<|> dataStatement
+    P.<|> namespaceStatement
+    P.<|> useStatement
     P.<|> SExpr
     <$> expr
+
+{- | @namespace a.b@ and an indented block of statements (design §7.6). The
+block opens at the first token after the path, as after @where@; it must be
+indented further than the line of the @namespace@.
+-}
+namespaceStatement :: Parser Statement
+namespaceStatement = do
+  _ <- kw KNamespace
+  p <- pathP False
+  stmts <- P.sepEndBy statement (P.some (tok TSep))
+  o <- P.getOffset
+  _ <- tok TBlockEnd
+  if null stmts
+    then
+      P.setOffset o
+        >> fail
+          ( "namespace "
+              <> T.unpack (renderPath p)
+              <> " has no statements: indent them under it, or write them on the same line"
+          )
+    else pure (SNamespace p stmts)
+
+-- | @use a.b@ or @use a.b as k@ (design §7.6). @as@ is not a keyword: it is also attoseconds.
+useStatement :: Parser Statement
+useStatement = do
+  _ <- kw KUse
+  p <- pathP True
+  alias <-
+    P.optional
+      (match "as" (\case TIdent "as" -> Just (); _ -> Nothing) *> name)
+  pure (SUse p alias)
+
+{- | A dotted path, @orbital.kepler@: a name and the fields glued to it. With
+the flag, a leading dot (an absolute name) is allowed and dropped.
+-}
+pathP :: Bool -> Parser Path
+pathP absolute = do
+  (s, first) <-
+    match "path" $ \case
+      TIdent t -> Just t
+      TAbs t | absolute -> Just t
+      _ -> Nothing
+  rest <- P.many (match "path segment" (\case TField t -> Just t; _ -> Nothing))
+  let end = if null rest then s else fst (last rest)
+  pure (Path (spanUnion s end) (first :| map snd rest))
+
+{- | A name that may be qualified, @orbital.Body@, or absolute, @.Body@
+(design §7.6), as one 'Name' with the dots in its text.
+-}
+qualifiedName :: Parser Name
+qualifiedName = do
+  (s, first) <-
+    match "name" $ \case
+      TIdent t -> Just t
+      TAbs t -> Just ("." <> t)
+      _ -> Nothing
+  rest <- P.many (match "name segment" (\case TField t -> Just t; _ -> Nothing))
+  let end = if null rest then s else fst (last rest)
+  pure (Name (spanUnion s end) (T.intercalate "." (first : map snd rest)))
 
 -- | @unit name = expr@: a definition that is also a display unit.
 unitStatement :: Parser Statement
@@ -249,7 +310,7 @@ typeApp :: Parser TyExpr
 typeApp =
   P.choice
     [ do
-        hd <- name
+        hd <- qualifiedName
         args <- P.many typeAtom
         pure $ case args of
           [] -> TyExpr hd.span (TyName hd.text)
@@ -260,7 +321,7 @@ typeApp =
 typeAtom :: Parser TyExpr
 typeAtom =
   P.choice
-    [ (\n -> TyExpr n.span (TyName n.text)) <$> name
+    [ (\n -> TyExpr n.span (TyName n.text)) <$> qualifiedName
     , (\(sp, k) -> TyExpr sp (TyInt k))
         <$> match
           "length"
@@ -291,7 +352,7 @@ typeAtom =
   factor = do
     f <-
       P.choice
-        [ (\n -> TyExpr n.span (TyName n.text)) <$> name
+        [ (\n -> TyExpr n.span (TyName n.text)) <$> qualifiedName
         , (\(sp, k) -> TyExpr sp (TyInt k))
             <$> match
               "number"
@@ -493,6 +554,9 @@ primary =
     , (\sp -> Expr sp (Bool True)) <$> kw KTrue
     , (\sp -> Expr sp (Bool False)) <$> kw KFalse
     , (\n -> Expr n.span (Var n.text)) <$> name
+    , -- An absolute name, @.km@ (design §7.6): the root's, whatever the scope.
+      (\(sp, n) -> Expr sp (Var ("." <> n)))
+        <$> match "absolute name" (\case TAbs n -> Just n; _ -> Nothing)
     , parens
     , vecOrMat
     , listLit
@@ -571,6 +635,19 @@ patternP =
         pure (Pattern (spanUnion s e) (PCon "Nil" []))
     , (\sp -> Pattern sp (PCon "True" [])) <$> kw KTrue
     , (\sp -> Pattern sp (PCon "False" [])) <$> kw KFalse
+    , -- A qualified or absolute constructor (design §7.6), with its fields.
+      do
+        c <-
+          P.try
+            ( qualifiedName >>= \n ->
+                if T.any (== '.') n.text then pure n else fail "a qualified constructor"
+            )
+        fields <- P.many name
+        pure
+          ( Pattern
+              (if null fields then c.span else spanUnion c.span (last fields).span)
+              (PCon c.text fields)
+          )
     , do
         x <- name
         P.choice

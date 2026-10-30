@@ -117,7 +117,17 @@ startSession opts = do
 
 -- | Run one input and persist whatever it changed.
 step :: Live -> Text -> IO (Either Text (Live, [Text]))
-step live src = case feed live.session src of
+step = stepWith feed
+
+{- | 'step' with a chosen way to feed: a file read by @:load@ keeps its
+@use@s to itself (design §7.6).
+-}
+stepWith ::
+  (Session -> Text -> Either Text (Session, [Text])) ->
+  Live ->
+  Text ->
+  IO (Either Text (Live, [Text]))
+stepWith feeder live src = case feeder live.session src of
   Left err -> pure (Left err)
   Right (session', outs) -> do
     mapM_ (\st -> sync st live.session.codebase session'.codebase) live.store
@@ -211,12 +221,12 @@ repl opts interactive = do
       -- A file is one input too, its later lines continuations by layout.
       [":load", path] -> do
         src <- liftIO (TIO.readFile (T.unpack path))
-        run src
-      _ -> run input
+        run feedFile src
+      _ -> run feed input
     again = loop ref colourRef
-    run src = do
+    run feeder src = do
       live <- liftIO (readIORef ref)
-      result <- liftIO (step live src)
+      result <- liftIO (stepWith feeder live src)
       colour <- liftIO (readIORef colourRef)
       case result of
         Left err -> emit ref colour (Left err)

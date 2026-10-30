@@ -396,3 +396,20 @@
   is coloured by its kind, as before. New in `Eval.Repl`: `Names`,
   `namesOf`, `highlight`, `highlightType`, `render` and `echoInput`.
   `paint` now takes the `Names`. Without colour every byte is as before.
+- Namespaces (design §7.6). A name is a dotted path, `orbital.period`; a
+  namespace is only a prefix on labels, so terms, hashes, the store and its
+  log are unchanged. `namespace a.b` opens an indented block of statements
+  (`let`, `unit`, `scale`, `data`, nested `namespace`, `use`) whose labels
+  get the path; `use a.b` and `use a.b as k` make its names resolve bare or
+  under `k.`. A free name resolves to a local binder, then the current
+  namespace, then the `use`d namespaces (two offering it is an error), then
+  the root; `.name` is absolute. A dot chain on a free name is a qualified
+  name when its longest prefix names a definition or constructor, else
+  field access. A name is never both a label and a namespace. The
+  namespace never reaches a hash: `±` labels and nominal types take the
+  last segment. Names print as Unison prints them, the shortest spelling
+  that resolves back. New commands `:namespace [path|.]`, `:uses`,
+  `:unuse`, `:rename old new` and `:move name… namespace`; `:alias`,
+  `:unname` and `:ls` take a namespace. `:load` keeps a file's `use`s to
+  the file. New tokens: the keywords `namespace` and `use` (`as` stays a
+  name: it is attoseconds), and `TAbs` for a dot not glued to a value.

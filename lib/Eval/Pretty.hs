@@ -183,6 +183,8 @@ data Printer = Printer
   { refName :: RefNamer
   , fieldNames :: FieldNamer
   , spelling :: Spelling
+  , unitName :: Text -> Text
+  -- ^ how the full name of a unit or scale prints (design §7.6)
   }
 
 {- | A printer that knows no field names, for callers without a codebase:
@@ -194,6 +196,7 @@ plainPrinter namer =
     { refName = namer
     , fieldNames = \_ _ n -> replicate n Nothing
     , spelling = Ascii
+    , unitName = id
     }
 
 {- | Print a value. A tensor with a display unit whose dimension matches
@@ -253,14 +256,14 @@ renderValueWith printer scale prefs showMagnitude = \case
               (zip xs (V.toList s.origin)) ->
             renderNested showMagnitude dims steps
               <> " "
-              <> atomNameWith printer.refName atom
+              <> atomNameWith printer.unitName atom
       _ ->
         renderNested showMagnitude dims xs
           <> unitSuffix d
           <> " (point)"
   VScale s ->
     Right $ case s.name of
-      Just atom -> "scale " <> atomNameWith printer.refName atom
+      Just atom -> "scale " <> atomNameWith printer.unitName atom
       Nothing ->
         "scale: step "
           <> showMagnitude s.step
@@ -280,9 +283,9 @@ renderValueWith printer scale prefs showMagnitude = \case
     units -> " " <> units
 
 -- | The current name of a unit or scale atom.
-atomNameWith :: RefNamer -> UnitAtom -> Text
-atomNameWith _ = \case
-  UnitNamed n -> n
+atomNameWith :: (Text -> Text) -> UnitAtom -> Text
+atomNameWith named = \case
+  UnitNamed n -> named n
   UnitBase u -> u
 
 {- | What a tensor prints as: its shape, its magnitudes in the display unit
@@ -315,7 +318,7 @@ displayParts printer scale prefs = \case
   -- Positive exponents first, otherwise in the order the units appeared.
   renderHint h =
     T.unwords
-      [ atomNameWith printer.refName u.atom
+      [ atomNameWith printer.unitName u.atom
           <> (if u.power == 1 then "" else exponentText printer.spelling (toInteger u.power))
       | u <- filter ((> 0) . (.power)) h.atoms ++ filter ((< 0) . (.power)) h.atoms
       ]
@@ -764,6 +767,7 @@ respellEdits text = go Nothing
     L.TProj _ -> True
     L.TWild -> True
     L.TField _ -> True
+    L.TAbs _ -> True
     L.TNum _ -> True
     L.TSup _ -> True
     L.TKw L.KTrue -> True

@@ -13,6 +13,7 @@ module Eval.Driver (
   emptySession,
   preludeSession,
   feed,
+  feedFile,
   refreshPreferences,
 ) where
 
@@ -79,6 +80,10 @@ data Session = Session
   {- ^ the last expression statement that evaluated, which expressions and
   inspection commands see as @it@ (design §7.3); never stored
   -}
+  , scope :: S.Scope
+  {- ^ the current namespace, set with @:namespace@, and the @use@s in
+  effect (design §7.6); never stored
+  -}
   }
 
 {- | An expression as it was checked: its Core, types and Typed Core, and the
@@ -94,7 +99,15 @@ data LastExpr = LastExpr
 
 emptySession :: Session
 emptySession =
-  Session emptyCodebase [] Map.empty emptyCodebase defaultConfig Map.empty Nothing
+  Session
+    emptyCodebase
+    []
+    Map.empty
+    emptyCodebase
+    defaultConfig
+    Map.empty
+    Nothing
+    S.rootScope
 
 {- | A session with the prelude (design §3.2.11) entered and added, as every
 interactive session starts. Fails only if the prelude itself does not
@@ -112,8 +125,9 @@ the lines to print, or the first error.
 feed :: Session -> Text -> Either Text (Session, [Text])
 feed session src = case feed' session src of
   -- Declared types print by hash below here; the session names them (design §7.2).
-  Left err -> Left (nameTypes session.staging err)
-  Right (session', outs) -> Right (session', echo ++ map (nameTypes session'.staging) outs)
+  Left err -> Left (nameTypes session.scope session.staging err)
+  Right (session', outs) ->
+    Right (session', echo ++ map (nameTypes session'.scope session'.staging) outs)
  where
   -- With unicode on, a statement line is echoed in its unicode spelling
   -- (design §7.3). A file is not: it is many lines.
@@ -132,17 +146,26 @@ feed' session src
       command session src (T.words cmd)
   | otherwise = do
       stmts <- parseProgram src
-      let decls = mapMaybe S.declOf stmts
-          exprs = [e | S.SExpr e <- stmts]
+      -- Namespaces flattened (design §7.6): full paths, each with its scope.
+      -- The top-level `use`s last for the session.
+      let (decls, exprs, scope') = S.flatten session.scope stmts
       (session', notes) <-
         if null decls then Right (session, []) else propose session src decls
       -- Each expression that evaluates becomes `it` for the next one.
-      let step (s, outs) e = do
-            (out, le) <- evalExpr s.config s.preferred (exprCodebase s) src e
+      let step (s, outs) (scope, e) = do
+            (out, le) <- evalExpr s.config s.preferred scope (exprCodebase s) src e
             le' <- absorbLast s le
             pure (s{lastExpr = Just le'}, out : outs)
       (session'', outs) <- foldM step (session', []) exprs
-      pure (session'', notes ++ reverse outs)
+      pure (session''{scope = scope'}, notes ++ reverse outs)
+
+{- | A file read with @:load@: one input, whose top-level @use@s last for
+the file only (design §7.6), not for the session.
+-}
+feedFile :: Session -> Text -> Either Text (Session, [Text])
+feedFile session src = do
+  (session', outs) <- feed session src
+  pure (session'{scope = session.scope}, outs)
 
 {- | What expressions and inspection commands resolve names against: the
 staging codebase with @it@ bound to the last expression (design §7.3). It
@@ -183,7 +206,7 @@ propose session src decls = do
       scratch' = kept ++ decls
       sources' = foldr (\b -> Map.insert b.name.text src) session.sources decls
   -- `it` is session-local (design §7.5): it is neither defined nor stored.
-  case [b.name | S.DBind b <- decls, b.name.text == "it"] of
+  case [b.name | S.DBind _ b <- decls, b.name.text == "it"] of
     n : _ ->
       Left
         ( S.renderSpanError
@@ -234,31 +257,38 @@ renderResolveErrorWith sources src = \case
 evalExpr ::
   Config ->
   Preferences ->
+  S.Scope ->
   Codebase ->
   Text ->
   S.Expr ->
   Either Text (Text, LastExpr)
-evalExpr cfg prefs cb src e = do
-  (_, v, le) <- evalChecked cfg cb src e
+evalExpr cfg prefs scope cb src e = do
+  (_, v, le) <- evalChecked cfg scope cb src e
   out <-
     either
       (Left . renderEvalError)
       Right
-      (renderValue (printerFor cfg cb) cfg.precision prefs v)
+      (renderValue (printerFor cfg scope cb) cfg.precision prefs v)
   pure (out, le)
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design
 §3.2.4), so re-evaluating the same text gives the same nudges.
 -}
-evalValue :: Config -> Codebase -> Text -> S.Expr -> Either Text (Hash, Value)
-evalValue cfg cb src e = (\(h, v, _) -> (h, v)) <$> evalChecked cfg cb src e
+evalValue ::
+  Config -> S.Scope -> Codebase -> Text -> S.Expr -> Either Text (Hash, Value)
+evalValue cfg scope cb src e = (\(h, v, _) -> (h, v)) <$> evalChecked cfg scope cb src e
 
 -- | 'evalValue', keeping what was checked, to become @it@.
 evalChecked ::
-  Config -> Codebase -> Text -> S.Expr -> Either Text (Hash, Value, LastExpr)
-evalChecked cfg cb src e = do
-  (term, typed, _, linted) <- checkExpr cb src e
+  Config ->
+  S.Scope ->
+  Codebase ->
+  Text ->
+  S.Expr ->
+  Either Text (Hash, Value, LastExpr)
+evalChecked cfg scope cb src e = do
+  (term, typed, _, linted) <- checkExpr scope cb src e
   let h = hashTerm term
   v <- either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cb) h typed)
   pure (h, v, LastExpr term linted typed cb)
@@ -276,16 +306,17 @@ Returns the Core, the Typed Core, the inferred type and the types lint
 found, which are what a stored term carries.
 -}
 checkExpr ::
+  S.Scope ->
   Codebase ->
   Text ->
   S.Expr ->
   Either Text (Term Z, TTerm Z, Maybe Scheme, [Scheme])
-checkExpr cb src e = do
+checkExpr scope cb src e = do
   (term, prov) <-
     either
       (Left . renderResolveErrorWith Map.empty src . Desugar)
       Right
-      (desugarClosed (resolverFor cb) e)
+      (desugarClosed (resolverFor scope cb) e)
   (schemes, typed) <-
     either (Left . typeErr prov) Right (I.elaborateClosed (typeLookupFor cb) term)
   linted <-
@@ -439,119 +470,351 @@ command session src = \case
   ["add"] -> add session
   ["update"] -> update True session
   ["update", "--no-upgrade"] -> update False session
-  ["upgrade", n] -> upgrade n session
+  ["upgrade", n] -> upgrade (argIn session.codebase n) session
   ["todo"] -> keep (todo session)
   ["scratch"] -> keep (Right (map pending session.scratch))
-  ["forget", n] -> forget n session
+  ["forget", n] -> forget (pendingName n) session
   ("type" : rest) -> keep $ do
     e <- parseExpr (T.unwords rest)
-    (_, _, ty, _) <- checkExpr ecb (T.unwords rest) e
+    (_, _, ty, _) <- checkExpr scope ecb (T.unwords rest) e
     pure [maybe "" (renderSchemeIn spelling) ty]
-  ["edit", n] -> keep $ case lookupName n cb of
-    Just r ->
-      let keyword
-            | isUnitName n cb = "unit "
-            | isScaleName n cb = "scale "
-            | otherwise = "let "
-       in (\body -> [keyword <> n <> " = " <> body]) <$> viewReference spelling cb r
-    Nothing -> viewData n
-  ["lint", n] -> keep $ withExprName n $ \r -> case lookupTyped r.hash ecb of
+  ["edit", n] -> keep (editSource spelling scope cb (argIn cb n))
+  ["lint", n] -> keep $ withExprName n $ \_ r -> case lookupTyped r.hash ecb of
     Nothing -> Left ("no typed core for " <> showHash r.hash)
     Just t -> case lintClosed (typeLookupFor ecb) t of
       Left err -> Left ("lint failed: " <> err)
       Right schemes -> pure (map renderScheme schemes)
-  ["core", n] -> keep $ withExprName n $ fmap ((: []) . ((n <> " = ") <>)) . viewTyped ecb
+  ["core", n] -> keep $ withExprName n $ \full ->
+    fmap ((: []) . ((short ecb full <> " = ") <>)) . viewTyped scope ecb
   -- Browse the codebase (design §7.3): names with their types, filtered.
   ("ls" : rest) -> keep (listNames session rest)
-  ["hash", n] -> keep $ withExprName n $ \r -> pure [showReference r]
+  ["hash", n] -> keep $ withExprName n $ \_ r -> pure [showReference r]
   ["names", h] -> keep $ case findByPrefix h cb of
     [] -> Left ("no definition with hash " <> h)
     hs ->
       pure
         [ showHash h'
             <> " "
-            <> T.unwords (historicalNamesOf (Reference h' Nothing) cb ++ cycleNames h')
+            <> T.unwords
+              (map (short cb) (historicalNamesOf (Reference h' Nothing) cb) ++ cycleNames h')
         | h' <- hs
         ]
-  ["history", n] -> keep $ case historyOf n cb of
+  ["history", n] -> keep $ case historyOf (argIn cb n) cb of
     [] -> Left ("unknown name `" <> n <> "`")
     r : rs -> pure ((showReference r <> "  (current)") : map showReference rs)
-  ["view", n] -> keep $ case lookupName n ecb of
-    Just r -> (: []) . ((n <> " = ") <>) <$> viewReference spelling ecb r
-    Nothing -> viewData n
-  ["dependents", n] -> keep $ withName n $ \r -> pure (dependents r.hash cb)
-  -- An alias of a unit or scale is one too.
-  ["alias", new, old] -> withName' old $ \r ->
-    let flagged =
-          (if isUnitName old cb then markUnit new else id)
-            . (if isScaleName old cb then markScale new else id)
-     in commit
-          (flagged (bindName new r cb))
+  ["view", n] ->
+    keep
+      $ let full = argIn ecb n
+         in case lookupName full ecb of
+              Just r ->
+                (: []) . ((short ecb full <> " = ") <>) <$> viewReference spelling scope ecb r
+              Nothing -> viewData spelling scope cb full
+  ["dependents", n] -> keep $ withName n $ \r -> pure (map (short cb) (dependents r.hash cb))
+  -- An alias of a unit or scale is one too; an alias of a namespace aliases
+  -- every label under it (design §7.6).
+  ["alias", new, old]
+    | Just r <- lookupName (argIn session.codebase old) session.codebase -> do
+        let old' = argIn session.codebase old
+            new' = newPath new
+            flagged =
+              (if isUnitName old' cb then markUnit new' else id)
+                . (if isScaleName old' cb then markScale new' else id)
+        refuseClash cb [(new', "definition")]
+        commit
+          (flagged (bindName new' r cb))
           ["`" <> new <> "` now also names " <> showReference r]
+    | isNamespace session.codebase (argIn session.codebase old) -> do
+        let old' = argIn session.codebase old
+        (cb', k) <- relabel True (underNamespace old' (newPath new)) cb
+        commit
+          cb'
+          [ "`"
+              <> new
+              <> "` now also names the "
+              <> labelsText k
+              <> " under `"
+              <> old
+              <> "`"
+          ]
+    | otherwise -> Left ("unknown name `" <> old <> "`")
   ["unname", n]
-    | labelled n -> commit (unbindName n cb) ["removed the label `" <> n <> "`"]
+    | Just f <- T.stripPrefix "." n
+    , Found full <- qualifyName FieldLabel scope session.codebase f ->
+        commit (unbindName ("." <> full) cb) ["removed the label `" <> n <> "`"]
+    | labelled (argIn session.codebase n) ->
+        commit
+          (unbindName (argIn session.codebase n) cb)
+          ["removed the label `" <> n <> "`"]
+    | isNamespace session.codebase (argIn session.codebase n) ->
+        let ns = argIn session.codebase n
+            gone = namespaceLabels session.codebase ns
+         in commit
+              (foldr removeLabel cb gone)
+              [ "removed the "
+                  <> labelsText (length (labelKinds session.codebase gone))
+                  <> " under `"
+                  <> n
+                  <> "`; :history name still finds them"
+              ]
     | otherwise -> Left ("unknown name `" <> n <> "`")
+  -- Relabelling (design §7.2, §7.6): a label, or a namespace and all under it.
+  ["rename", old, new] -> do
+    let old' = argIn session.codebase old
+        new' = newPath new
+    pairs <- relabelPairs old' new'
+    (cb', k) <- relabel False pairs cb
+    commit
+      cb'
+      [ if labelled old'
+          then "renamed `" <> old <> "` to `" <> new <> "`"
+          else
+            "renamed the " <> labelsText k <> " under `" <> old <> "` to `" <> new <> "`"
+      ]
+  ("move" : args@(_ : _ : _)) -> do
+    let target = newPath (last args)
+        pathFor o = if T.null target then S.lastSegment o else target <> "." <> S.lastSegment o
+    pairs <-
+      concat
+        <$> mapM
+          (\o -> let o' = argIn session.codebase o in relabelPairs o' (pathFor o'))
+          (init args)
+    (cb', k) <- relabel False pairs cb
+    commit cb' ["moved " <> labelsText k <> " to `" <> last args <> "`"]
+  -- The current namespace and the uses (design §7.6), for the session.
+  ["namespace"] -> keep (Right [namespaceLine scope.namespace])
+  ["namespace", p] -> do
+    let path = case T.stripPrefix "." p of
+          Just "" -> []
+          Just rest -> T.splitOn "." rest
+          Nothing -> T.splitOn "." p
+    case [ q | k <- [1 .. length path], let q = T.intercalate "." (take k path), labelled q
+         ] of
+      q : _ ->
+        Left
+          ( "`"
+              <> q
+              <> "` is a "
+              <> labelNoun session.codebase q
+              <> "; it cannot also be a namespace"
+          )
+      [] | any T.null path -> Left ("not a namespace path: " <> p)
+      [] -> Right (session{scope = scope{S.namespace = path}}, [namespaceLine path])
+  ["uses"] ->
+    keep
+      ( Right
+          ( if null scope.uses
+              then ["no uses"]
+              else ["use " <> u.path <> maybe "" (" as " <>) u.alias | u <- scope.uses]
+          )
+      )
+  ["unuse", p] ->
+    let path = fromMaybe p (T.stripPrefix "." p)
+        (gone, kept) = partition (\u -> u.path == path || u.alias == Just path) scope.uses
+     in if null gone
+          then Left ("`" <> p <> "` is not in use; :uses lists them")
+          else Right (session{scope = scope{S.uses = kept}}, [])
   _ ->
     Left
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
-          <> "          :ls [glob] [--all|--units|--scales|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
-          <> "          :history name  :dependents name  :alias new old  :unname name\n"
+          <> "          :ls [glob|namespace] [--all|--units|--scales|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
+          <> "          :history name  :dependents name  :alias new old  :unname name  :rename old new  :move name… namespace\n"
+          <> "          :namespace [path|.]  :uses  :unuse path\n"
           <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k | unicode on|off]  :prefer [unit]  :unprefer unit  :colour on|off"
       )
  where
   cb = session.staging
+  scope = session.scope
   -- Read-only commands also see `it`; nothing built from this is kept.
   ecb = exprCodebase session
   cfg = session.config
   spelling = spellingOf cfg
   keep = fmap (session,)
+  short = shortestName scope
   tshow = T.pack . show
   setting n adjust err = case reads (T.unpack n) of
     [(k, "")] | k >= (0 :: Int) -> Right (session{config = adjust k}, [])
     _ -> Left err
   evalOf rest = do
     e <- parseExpr (T.unwords rest)
-    evalValue cfg ecb (T.unwords rest) e
+    evalValue cfg scope ecb (T.unwords rest) e
   -- Nudges declared in the expression itself are labelled "input".
-  inputNamer h h' i written = if h' == h then "input" else refNamer ecb h' i written
-  inputPrinter h = (printerFor cfg ecb){refName = inputNamer h}
+  inputNamer h h' i written = if h' == h then "input" else refNamer scope ecb h' i written
+  inputPrinter h = (printerFor cfg scope ecb){refName = inputNamer h}
   preferenceOf = preferenceHint cfg cb
   commit cb' outs = Right (session{codebase = cb', staging = cb'}, outs)
-  withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n cb)
-  withExprName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n ecb)
-  withName' n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n session.codebase)
+  -- A name given to a command: relative to the current namespace, through
+  -- the uses, or absolute with a leading dot (design §7.6).
+  argIn c n
+    | Just p <- T.stripPrefix "." n = p
+    | otherwise = case qualifyWith (known c) scope n of
+        Found full -> full
+        _ -> n
+  known c x =
+    isLabel TermLabel c x
+      || isLabel TypeLabel c x
+      || isLabel FieldLabel c x
+      || Map.member x c.history
+      || isNamespace c x
+  -- A name to create: under the current namespace, or absolute.
+  newPath n = fromMaybe (S.qualify scope.namespace n) (T.stripPrefix "." n)
+  pendingName n =
+    case qualifyWith (`elem` map (.name.text) session.scratch) scope n of
+      Found full -> full
+      _ -> n
+  withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName (argIn cb n) cb)
+  withExprName n k =
+    let full = argIn ecb n
+     in maybe (Left ("unknown name `" <> n <> "`")) (k full) (lookupName full ecb)
   cycleNames h' = case lookupTerm h' cb of
     Just (Cycle hints _) ->
-      [ T.intercalate "," (historicalNamesOf (Reference h' (Just i)) cb)
+      [ T.intercalate
+          ","
+          (map (short cb) (historicalNamesOf (Reference h' (Just i)) cb))
       | i <- [0 .. vecLength hints - 1]
       ]
     _ -> []
   pending = \case
-    S.DBind b -> "pending: " <> b.name.text
-    S.DData d -> "pending: data " <> d.name.text
-  -- A declared type as it could be written again (design §7.2).
-  viewData n = case lookupTypeName n cb >>= \h -> (h,) <$> lookupTypeDef h cb of
+    S.DBind _ b -> "pending: " <> short cb b.name.text
+    S.DData _ d -> "pending: data " <> shortestNameOf TypeLabel scope cb d.name.text
+  -- A label of any kind: a definition, a type, a constructor or a field.
+  labelled n =
+    Map.member n session.codebase.names
+      || Map.member n session.codebase.typeNames
+      || Map.member n session.codebase.conNames
+  -- What to relabel for a label or a namespace given to :rename or :move.
+  relabelPairs old new
+    | labelled old || Map.member old session.codebase.fieldNames =
+        Right [(old, new)]
+    | isNamespace session.codebase old = Right (underNamespace old new)
+    | otherwise = Left ("unknown name `" <> old <> "`")
+  underNamespace old new =
+    [ (l, new <> T.drop (T.length old) l) | l <- namespaceLabels session.codebase old
+    ]
+  refuseClash c new =
+    case disjointness c [(n, what, S.Span (S.Pos 1 1) (S.Pos 1 1)) | (n, what) <- new] of
+      Just (_, msg) -> Left msg
+      Nothing -> Right ()
+  _ = src
+
+-- | @namespace orbital@, or the root.
+namespaceLine :: [Text] -> Text
+namespaceLine = \case
+  [] -> "namespace . (the root)"
+  ns -> "namespace " <> T.intercalate "." ns
+
+-- | @1 label@, @5 labels@.
+labelsText :: Int -> Text
+labelsText k = T.pack (show k) <> (if k == 1 then " label" else " labels")
+
+-- | What a label names, for messages.
+labelNoun :: Codebase -> Text -> Text
+labelNoun cb n
+  | Map.member n cb.names = "definition"
+  | Map.member n cb.conNames = "constructor"
+  | Map.member n cb.typeNames = "type"
+  | Map.member n cb.fieldNames = "field"
+  | otherwise = "name"
+
+-- | The labels of each kind among some paths: a type and its constructor of one name are two.
+labelKinds :: Codebase -> [Text] -> [(Text, LabelKind)]
+labelKinds cb paths =
+  [(p, k) | p <- paths, k <- [TermLabel, TypeLabel, FieldLabel], isLabel k cb p]
+
+-- | Remove a label of every kind; history keeps it.
+removeLabel :: Text -> Codebase -> Codebase
+removeLabel n = unbindName n . unbindName ("." <> n)
+
+{- | Relabel (design §7.2, §7.6): each new path gets the labels of every kind
+its old path has, with their unit and scale flags, and unless aliasing the
+old labels go. History keeps both. All or nothing: a new path that is
+already a label of the same kind, two old paths given one new path, or a
+new path that would be both a label and a namespace refuses the whole
+change. Returns the codebase and the number of labels given.
+-}
+relabel :: Bool -> [(Text, Text)] -> Codebase -> Either Text (Codebase, Int)
+relabel keepOld pairs cb = do
+  let moves = [(o, n, k) | (o, n) <- pairs, (_, k) <- labelKinds cb [o]]
+      base = if keepOld then cb else foldr (removeLabel . fst) cb pairs
+      clashes =
+        [ n
+        | (i, (o, n, k)) <- zip [0 :: Int ..] moves
+        , (o /= n && isLabel k base n)
+            || any (\(_, n', k') -> n' == n && k' == k) (take i moves)
+        ]
+  case clashes of
+    n : _ -> Left ("`" <> n <> "` is already a label; nothing was changed")
+    [] -> Right ()
+  case disjointness
+    base
+    [(n, labelNoun cb o, S.Span (S.Pos 1 1) (S.Pos 1 1)) | (o, n, _) <- moves] of
+    Just (_, msg) -> Left (msg <> "; nothing was changed")
+    Nothing -> Right ()
+  pure (foldl copy base moves, length moves)
+ where
+  copy acc (o, n, k) = case k of
+    TermLabel
+      | Just r <- lookupName o cb ->
+          (if isUnitName o cb then markUnit n else id)
+            . (if isScaleName o cb then markScale n else id)
+            $ bindName n r acc
+      | Just (h, i) <- lookupConName o cb -> bindConName n h i acc
+    TypeLabel | Just h <- lookupTypeName o cb -> bindTypeName n h acc
+    FieldLabel | Just (h, i, j) <- lookupFieldName o cb -> bindFieldName n h i j acc
+    _ -> acc
+
+{- | @:edit@ (design §7.5): a stored definition or a data declaration as
+source to paste back. A name outside the current namespace is printed in a
+@namespace@ block, its names relative to that block (design §7.6), for
+pasting at the root.
+-}
+editSource :: Spelling -> S.Scope -> Codebase -> Text -> Either Text [Text]
+editSource spelling scope cb full
+  | ns == scope.namespace = definitionSource spelling scope cb full
+  | null ns = definitionSource spelling scope{S.namespace = []} cb full
+  | otherwise =
+      (\ls -> ("namespace " <> T.intercalate "." ns) : map ("  " <>) ls)
+        <$> definitionSource spelling scope{S.namespace = ns} cb full
+ where
+  ns = init (T.splitOn "." full)
+
+{- | A stored definition or data declaration as source in a scope: @let@,
+@unit@ or @scale@ and the name relative to the scope's namespace, or the
+@data@ declaration. Declared types are named in the scope too.
+-}
+definitionSource ::
+  Spelling -> S.Scope -> Codebase -> Text -> Either Text [Text]
+definitionSource spelling scope cb full = case lookupName full cb of
+  Just r ->
+    let keyword
+          | isUnitName full cb = "unit "
+          | isScaleName full cb = "scale "
+          | otherwise = "let "
+     in (\body -> [nameTypes scope cb (keyword <> S.lastSegment full <> " = " <> body)])
+          <$> viewReference spelling scope cb r
+  Nothing -> map (nameTypes scope cb) <$> viewData spelling scope cb full
+
+-- | A declared type as it could be written again (design §7.2), named in a scope.
+viewData :: Spelling -> S.Scope -> Codebase -> Text -> Either Text [Text]
+viewData spelling scope cb n =
+  case lookupTypeName n cb >>= \h -> (h,) <$> lookupTypeDef h cb of
     Just (h, def) ->
       pure
         [ renderTypeDef
             spelling
             h
-            n
-            [ fromMaybe (showHash h <> "." <> tshow i) (conNameOf h i cb)
+            (shortestNameOf TypeLabel scope cb n)
+            [ maybe
+                (showHash h <> "." <> T.pack (show i))
+                (shortestName scope cb)
+                (conNameOf h i cb)
             | i <- [0 .. length def.constructors - 1]
             ]
-            [fieldNamesOf h i (length fs) cb | (i, fs) <- zip [0 ..] def.constructors]
+            [ map (fmap S.lastSegment) (fieldNamesOf h i (length fs) cb)
+            | (i, fs) <- zip [0 ..] def.constructors
+            ]
             def
         ]
     Nothing -> Left ("unknown name `" <> n <> "`")
-  -- A label of any kind: a definition, a type, a constructor, or a field written with its dot.
-  labelled n = case T.stripPrefix "." n of
-    Just f -> Map.member f session.codebase.fieldNames
-    Nothing ->
-      Map.member n session.codebase.names
-        || Map.member n session.codebase.typeNames
-        || Map.member n session.codebase.conNames
-  _ = src
 
 {- | Store scratch definitions whose names are new (or unchanged). A name
 that exists with a different definition is a conflict.
@@ -576,7 +839,7 @@ add session
             , sources = Map.empty
             , staging = session.staging
             }
-        , ["added " <> n | n <- names]
+        , ["added " <> shortestName session.scope session.staging n | n <- names]
         )
  where
   names = map (.name.text) session.scratch
@@ -610,7 +873,7 @@ update doUpgrade session
             ]
           added =
             [ n
-            | S.DBind b <- session.scratch
+            | S.DBind _ b <- session.scratch
             , let n = b.name.text
             , Nothing <- [lookupName n session.codebase]
             ]
@@ -619,8 +882,8 @@ update doUpgrade session
                   then "updated data "
                   else "added data "
               )
-                <> n
-            | S.DData d <- session.scratch
+                <> shortestNameOf TypeLabel session.scope session.staging n
+            | S.DData _ d <- session.scratch
             , let n = d.name.text
             , lookupTypeName n session.codebase /= lookupTypeName n session.staging
             ]
@@ -629,15 +892,16 @@ update doUpgrade session
             if doUpgrade
               then propagate refmap session.staging
               else Propagation session.staging [] []
+          short = shortestName session.scope result.codebase
           report =
             types
-              ++ ["added " <> n | n <- added]
-              ++ [ "updated " <> n <> " " <> showReference old <> " -> " <> showReference new
+              ++ ["added " <> short n | n <- added]
+              ++ [ "updated " <> short n <> " " <> showReference old <> " -> " <> showReference new
                  | (n, old, new) <- changed
                  ]
-              ++ upgradeReport result
+              ++ upgradeReport short result
               ++ [ "dependents left on old versions: "
-                     <> T.unwords [n | (n, _, _) <- staleReferences result.codebase]
+                     <> T.unwords [short n | (n, _, _) <- staleReferences result.codebase]
                  | not doUpgrade
                  , not (null (staleReferences result.codebase))
                  ]
@@ -651,12 +915,18 @@ update doUpgrade session
             , report
             )
 
-upgradeReport :: Propagation -> [Text]
-upgradeReport result =
-  [ "upgraded " <> n <> " " <> showReference old <> " -> " <> showReference new
+-- | What propagation did, with names spelled by the given namer (design §7.6).
+upgradeReport :: (Text -> Text) -> Propagation -> [Text]
+upgradeReport short result =
+  [ "upgraded "
+      <> short n
+      <> " "
+      <> showReference old
+      <> " -> "
+      <> showReference new
   | (n, old, new) <- result.upgraded
   ]
-    ++ [ "left " <> n <> " on " <> showReference r <> ": " <> why
+    ++ [ "left " <> short n <> " on " <> showReference r <> ": " <> why
        | (n, r, why) <- result.skipped
        ]
 
@@ -675,25 +945,31 @@ upgrade n session = case lookupName n session.codebase of
           ( session{codebase = cb', staging = staging'}
           , if null result.upgraded && null result.skipped
               then ["nothing to upgrade"]
-              else upgradeReport result
+              else upgradeReport (shortestName session.scope cb') result
           )
 
 todo :: Session -> Either Text [Text]
 todo session =
   Right
-    $ ["pending: " <> b.name.text <> " (use :add or :update)" | b <- session.scratch]
+    $ [ "pending: " <> pendingText b <> " (use :add or :update)" | b <- session.scratch
+      ]
       ++ [ "stale: "
-             <> n
+             <> short n
              <> " uses "
-             <> m
+             <> short m
              <> showReference r
              <> " (use :upgrade "
-             <> m
+             <> short m
              <> ")"
          | (n, r, m) <- staleReferences session.codebase
          ]
       ++ [ "nothing to do" | null session.scratch, null (staleReferences session.codebase)
          ]
+ where
+  short = shortestName session.scope session.staging
+  pendingText = \case
+    S.DBind _ b -> short b.name.text
+    S.DData _ d -> shortestNameOf TypeLabel session.scope session.staging d.name.text
 
 forget :: Text -> Session -> Either Text (Session, [Text])
 forget n session
@@ -716,30 +992,39 @@ forget n session
 {- | Print the definition behind a reference (design §7.2). Cycle members
 are shown one at a time, with the other members by name.
 -}
-viewReference :: Spelling -> Codebase -> Reference -> Either Text Text
-viewReference spelling cb (Reference h idx) = case lookupTerm h cb of
+viewReference ::
+  Spelling -> S.Scope -> Codebase -> Reference -> Either Text Text
+viewReference spelling scope cb (Reference h idx) = case lookupTerm h cb of
   Nothing -> Left ("missing term " <> showHash h)
   Just t -> case (idx, t) of
-    (Nothing, _) -> Right (renderTermIn spelling (refNamer cb) VNil t)
+    (Nothing, _) -> Right (renderTermIn spelling (refNamer scope cb) VNil t)
     (Just i, Cycle hints bodies) ->
-      let memberName j (Hint hint) = fromMaybe hint (listToMaybe (namesOf (Reference h (Just j)) cb))
+      let memberName j (Hint hint) =
+            shortestName
+              scope
+              cb
+              (fromMaybe hint (listToMaybe (namesOf (Reference h (Just j)) cb)))
           ctx = vecAppend (vecMapIndexed memberName hints) VNil
        in case vecIndex i bodies of
-            Just body -> Right (renderTermIn spelling (refNamer cb) ctx body)
+            Just body -> Right (renderTermIn spelling (refNamer scope cb) ctx body)
             Nothing -> Left ("no member " <> T.pack (show i) <> " in " <> showHash h)
     (Just _, _) -> Left (showHash h <> " is not a cycle")
 
 -- | Print the Typed Core behind a reference (design §5.3), for inspection.
-viewTyped :: Codebase -> Reference -> Either Text Text
-viewTyped cb (Reference h idx) = case lookupTyped h cb of
+viewTyped :: S.Scope -> Codebase -> Reference -> Either Text Text
+viewTyped scope cb (Reference h idx) = case lookupTyped h cb of
   Nothing -> Left ("no typed core for " <> showHash h)
   Just t -> case (idx, t) of
-    (Nothing, _) -> Right (renderTTerm (refNamer cb) VNil t)
+    (Nothing, _) -> Right (renderTTerm (refNamer scope cb) VNil t)
     (Just i, TCycle _ members bodies) ->
-      let memberName j (Hint hint, _) = fromMaybe hint (listToMaybe (namesOf (Reference h (Just j)) cb))
+      let memberName j (Hint hint, _) =
+            shortestName
+              scope
+              cb
+              (fromMaybe hint (listToMaybe (namesOf (Reference h (Just j)) cb)))
           ctx = vecAppend (vecMapIndexed memberName members) VNil
        in case vecIndex i bodies of
-            Just body -> Right (renderTTerm (refNamer cb) ctx body)
+            Just body -> Right (renderTTerm (refNamer scope cb) ctx body)
             Nothing -> Left ("no member " <> T.pack (show i) <> " in " <> showHash h)
     (Just _, _) -> Left (showHash h <> " is not a cycle")
 
@@ -750,28 +1035,33 @@ vecMapIndexed f = go 0
   go _ VNil = VNil
   go i (VCons x xs) = VCons (f i x) (go (i + 1) xs)
 
--- | A current name, else a stale @name#hash@, else a bare @#hash@.
-refNamer :: Codebase -> RefNamer
-refNamer cb h idx written =
+{- | A current name, else a stale @name#hash@, else a bare @#hash@, each
+spelled as shortly as the scope allows (design §7.6).
+-}
+refNamer :: S.Scope -> Codebase -> RefNamer
+refNamer scope cb h idx written =
   let r = Reference h idx
+      short = shortestName scope cb
    in -- `it` only stands in when nothing else names the reference.
       case filter (/= "it") (namesOf r cb) ++ filter (== "it") (namesOf r cb) of
         -- The name the author wrote, while it still points here; else any current name.
-        ns | written `elem` ns -> written
-        n : _ -> n
+        ns | written `elem` ns -> short written
+        n : _ -> short n
         [] -> case historicalNamesOf r cb of
-          n : _ -> n <> showReference r
+          n : _ -> short n <> showReference r
           [] -> showReference r
 
-{- | How values print in a session: names for references and record fields
-from the codebase, in the configured spelling.
+{- | How values print in a session: names for references, units and record
+fields from the codebase, in the configured spelling. A record's fields
+print by their last segment, as a record is built (design §7.6).
 -}
-printerFor :: Config -> Codebase -> Printer
-printerFor cfg cb =
+printerFor :: Config -> S.Scope -> Codebase -> Printer
+printerFor cfg scope cb =
   Printer
-    { refName = refNamer cb
-    , fieldNames = \h i arity -> fieldNamesOf h i arity cb
+    { refName = refNamer scope cb
+    , fieldNames = \h i arity -> map (fmap S.lastSegment) (fieldNamesOf h i arity cb)
     , spelling = spellingOf cfg
+    , unitName = shortestName scope cb
     }
 
 -- | The spelling output uses (design §7.3, @:set unicode@).
@@ -794,7 +1084,7 @@ dimension it applies to. It must be a scalar with a display unit.
 preferenceHint :: Config -> Codebase -> Text -> Either Text (Dim, UnitHint)
 preferenceHint cfg cb text = do
   e <- parseExpr text
-  (_, v) <- evalValue cfg cb text e
+  (_, v) <- evalValue cfg S.rootScope cb text e
   case v of
     VTensor [] d (Just h) _ | h.dim == d -> Right (d, h)
     VTensor [] _ Nothing _ ->
@@ -816,10 +1106,11 @@ refreshPreferences session =
 
 {- | Declared types and their constructors print by hash (@#a3f9k@,
 @#a3f9k.1@) wherever a type or a value is rendered; here those become the
-current names (design §7.2). A type without a name keeps its hash.
+current names (design §7.2), spelled for the scope (design §7.6). A type
+without a name keeps its hash.
 -}
-nameTypes :: Codebase -> Text -> Text
-nameTypes cb
+nameTypes :: S.Scope -> Codebase -> Text -> Text
+nameTypes scope cb
   | Map.null cb.typeDefs = id
   | otherwise = go
  where
@@ -835,8 +1126,12 @@ nameTypes cb
             _ -> (Nothing, after)
        in case [h | h <- Map.keys cb.typeDefs, showHash h == "#" <> hex] of
             h : _
-              | Just i <- idx, Just c <- conNameOf h i cb -> before <> c <> go after'
-              | Nothing <- idx, Just n <- typeNameOf h cb -> before <> n <> go after'
+              | Just i <- idx
+              , Just c <- conNameOf h i cb ->
+                  before <> shortestName scope cb c <> go after'
+              | Nothing <- idx
+              , Just n <- typeNameOf h cb ->
+                  before <> shortestNameOf TypeLabel scope cb n <> go after'
             _ -> before <> "#" <> go (T.drop 1 rest)
   isBase32 c = isDigit c || (c >= 'a' && c <= 'v')
 
@@ -852,7 +1147,17 @@ listNames :: Session -> [Text] -> Either Text [Text]
 listNames session args = do
   let (before, after) = break (== ":") args
       flags = filter (T.isPrefixOf "--") before
-      globs = filter (not . T.isPrefixOf "--") before
+      words' = filter (not . T.isPrefixOf "--") before
+      -- A word that names a namespace lists that namespace (design §7.6);
+      -- the others are globs. With no argument at all, the current namespace.
+      (spaces, globs) = partition (isJust . namespaceOf) words'
+      nsFilter = case mapMaybe namespaceOf spaces of
+        ns : _ -> Just ns
+        []
+          | null args
+          , not (null session.scope.namespace) ->
+              Just (T.intercalate "." session.scope.namespace)
+          | otherwise -> Nothing
       typeText = T.unwords (drop 1 after)
   mapM_
     ( \f ->
@@ -867,19 +1172,32 @@ listNames session args = do
       then Right Nothing
       else do
         t <- parseType typeText
-        either (Left . renderResolveError) (Right . Just) (queryScheme cb t)
-  let filtered = not (null globs) || not (null flags) || isJust query
+        either
+          (Left . renderResolveError)
+          (Right . Just)
+          (queryScheme session.scope cb t)
+  let filtered = not (null globs) || not (null flags) || isJust query || isJust nsFilter
       hidePrelude = not filtered
       kindOk n
         | "--units" `elem` flags = isUnitName n cb
         | "--scales" `elem` flags = isScaleName n cb
         | "--types" `elem` flags = False
         | otherwise = True
+      inNamespace n = maybe True (\ns -> (ns <> ".") `T.isPrefixOf` n) nsFilter
       nameOk n =
-        all (`matchesGlob` n) globs && (not hidePrelude || n `Set.notMember` preludeSet)
+        inNamespace n
+          && all (`matchesGlob` n) globs
+          && (not hidePrelude || n `Set.notMember` preludeSet)
+      -- Relative to the namespace listed, else as short as the scope allows.
+      shown n = case nsFilter of
+        Just ns -> T.drop (T.length ns + 1) n
+        Nothing -> shortestName session.scope cb n
+      shownType n = case nsFilter of
+        Just ns -> T.drop (T.length ns + 1) n
+        Nothing -> shortestNameOf TypeLabel session.scope cb n
       typeOk sc = maybe True (`I.matchesQuery` sc) query
       definitions =
-        [ prefix n <> n <> " : " <> renderSchemeIn (spellingOf session.config) sc
+        [ prefix n <> shown n <> " : " <> renderSchemeIn (spellingOf session.config) sc
         | (n, r) <- sortOn (T.toLower . fst) (Map.toList cb.names)
         , kindOk n
         , nameOk n
@@ -893,11 +1211,11 @@ listNames session args = do
         , (n, h) <- sortOn (T.toLower . fst) (Map.toList cb.typeNames)
         , Just def <- [lookupTypeDef h cb]
         , line <-
-            [ declaration h n def
+            [ declaration shownType shown h n def
             | nameOk n
             , isNothing query
             ]
-              ++ [ c <> " : " <> renderSchemeIn (spellingOf session.config) sc
+              ++ [ shown c <> " : " <> renderSchemeIn (spellingOf session.config) sc
                  | (i, fields) <- zip [0 ..] def.constructors
                  , Just c <- [conNameOf h i cb]
                  , nameOk c
@@ -915,8 +1233,12 @@ listNames session args = do
             <> " prelude names hidden; :ls --all or a filter shows them)"
         | hidden > 0
         ]
+      -- A namespace's listing names its types relative to it too.
+      listScope = case nsFilter of
+        Just ns -> session.scope{S.namespace = T.splitOn "." ns}
+        Nothing -> session.scope
   pure
-    ( case definitions ++ types of
+    ( case map (nameTypes listScope cb) (definitions ++ types) of
         [] -> "nothing matches" : footer
         ls -> ls ++ footer
     )
@@ -928,16 +1250,28 @@ listNames session args = do
     | isUnitName n cb = "unit "
     | isScaleName n cb = "scale "
     | otherwise = ""
-  declaration h n def =
+  declaration shownType shown h n def =
     renderTypeDef
       (spellingOf session.config)
       h
-      n
-      [ fromMaybe (showHash h <> "." <> tshow i) (conNameOf h i cb)
+      (shownType n)
+      [ maybe (showHash h <> "." <> tshow i) shown (conNameOf h i cb)
       | i <- [0 .. length def.constructors - 1]
       ]
-      [fieldNamesOf h i (length fs) cb | (i, fs) <- zip [0 ..] def.constructors]
+      [ map (fmap S.lastSegment) (fieldNamesOf h i (length fs) cb)
+      | (i, fs) <- zip [0 ..] def.constructors
+      ]
       def
+  -- A word naming a namespace: relative to the current one, or absolute.
+  namespaceOf w
+    | T.any (== '*') w = Nothing
+    | Just p <- T.stripPrefix "." w = if isNamespace cb p then Just p else Nothing
+    | here <- S.qualify session.scope.namespace w
+    , not (null session.scope.namespace)
+    , isNamespace cb here =
+        Just here
+    | isNamespace cb w = Just w
+    | otherwise = Nothing
   -- A constructor's type: its fields to the type at its own parameters.
   constructorScheme h def i fields =
     let tyArgs = [paramArg v k | (v, k) <- def.params]
