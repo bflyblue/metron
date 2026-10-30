@@ -2078,7 +2078,7 @@ m at [0, 0, 0] m` is a root like any chart without a parent).
 §3.9, to be decided with charts: a chart is an axis set with an origin, and
 what `p to lvlh` returns is what decides whether `Vec lvlh` exists.
 
-### 3.9 Axis sets: named positions and index types (design; later)
+### 3.9 Axis sets: named positions and index types (design; to build after charts)
 
 Two layers, the first a sugar and the second a type-system extension; the
 first can be built alone and does not prejudge the second.
@@ -2090,48 +2090,78 @@ the same hash as the numeric form, so `:view` prints whichever was written
 and projection's static bound applies (`v.z` on a `Vec 2` is refused). It
 works at any rank (`m.y.x` is row 1, column 0). `linalg` seeds `axes x y z`.
 
-**Layer 2, axis sets as types.** A kind `Axes`. A shape is a list of axis
-sets; a plain length is the *anonymous* set of that size (`Vec 3` is
-`Vec (Anon 3)`), `axes Euclid = [x, y, z]` declares a named one, and `Vec a`
-has an axis variable. `card : Axes -> Len` is a type function normalising
-like `rank` (§4.1): `card Euclid = 3`, `card (Anon k) = k`, a residual on a
-variable. `card a ~ 3` and `card a ~ card b` are pending constraints like
-`Rank` and `Append` (§4.2): solved when the set is known, kept in the scheme
-otherwise.
+**Layer 2, axis sets as types (design, to build after charts).** Amounts
+carry the axes they are measured along, so mixing components of two frames
+is a type error and a displacement taken inside a frame prints along that
+frame's axes. The decisions:
+
+1. **An axis set is a static, type-level name.** §4.1 keeps terms out of
+   types, so `Vec (ecef t)` cannot exist. Each `chart` declaration, and each
+   `axes Euclid = [x, y, z]`, introduces one axis-set name; a moving chart
+   has one axis set for all `t` (its axes turn, its identity does not). A
+   plain length is the *anonymous* set of that size: `Vec 3` is
+   `Vec (Anon 3)`. Two named sets never unify with each other, nor with an
+   anonymous one.
+2. **`card` and constraints.** A kind `Axes`; a shape is a list of axis sets;
+   `card : Axes -> Len` normalises like `rank` (`card lvlh = 3`,
+   `card (Anon k) = k`, a residual on a variable). `card a ~ 3` and
+   `card a ~ card b` are pending constraints like `Rank` and `Append`,
+   solved when the set is known and kept in the scheme otherwise. `rank s`
+   counts axis sets as it counts lengths today.
+3. **Matrices carry a row and a column axis set.** This is where the safety
+   comes from. `rotationOf lvlh : Mat eci lvlh` (rows along the parent's
+   axes, columns along lvlh's), and `@` requires the contracted axes to
+   match, so `rotationOf lvlh @ v` with `v : Vec lvlh` is a `Vec eci`, and
+   applying the wrong rotation is a type error. Route A for mixed dimensions
+   (§3.7) needs the same row and column machinery for dimensions; the two
+   should share it, but stay separate designs.
+4. **Points stay axis-free; amounts carry axes.** A point is a place, stored
+   in base form (§3.8), so `p == p to eci` stays well typed. `.-` between
+   points returns an amount on the base axes; `coordinates p c : Vec c [m]`
+   gives a point's coordinates on a chart, and `along c v : Vec c d` an
+   amount's components along a chart's axes. These are the typed
+   constructors of labelled amounts, with `inChart` as the inverse.
+5. **Literals are anonymous**, so a labelled vector comes only from
+   something that knows its axes: a chart conversion (`coordinates`,
+   `along`), or an explicit `withAxes lvlh v`. An ascription does not coerce
+   axes: an ascription narrows and never relabels (§4.8), so a relabelling
+   is always visible as a function call.
+6. **Signatures take a constraint clause**: `cross :: Vec a d -> Vec a d1 ->
+   Vec a [d d1] where card a ~ 3`. A small grammar addition to §4.8.
+7. **The base axes.** OPEN, the owner's choice. If the base axes are the
+   anonymous set, every existing program keeps working (`p .+ [1, 0, 0] m`
+   stays legal) and only named frames are protected. If they are a named set
+   (`base`), literal displacements need `withAxes base`, which is stricter
+   and breaks today's examples. The same choice decides whether a
+   translated-only chart like `site` introduces its own axis set or shares
+   its parent's.
+8. **Encoding.** The anonymous set of size `k` encodes byte for byte as
+   today's length `k`, so stored `data` types and `sig` lines do not change;
+   a named set or an axis variable is an appended type tag. No format bump
+   is expected.
+9. **Existing primitives.** `slice`, `contract`, `permute` and `timap` move
+   or drop axis sets as they move or drop lengths; `transformBy` becomes
+   `Mat a a -> …` acting along axes of `a`, which turns its run-time length
+   check into a type rule (§4.3, §11); `cross`, `norm`, `dual` and the
+   rotation constructors generalise over `a` with `card a ~ 3`; the `Cov2`
+   blocks become `Mat a a [d²]`, `Mat a b [d d1]`.
 
 ```
-cross   : Vec a d -> Vec a d1 -> Vec a [d d1]   where card a ~ 3
-relabel : Vec a d -> Vec b d                    where card a ~ card b
-norm    : Vec a d -> Num d                      -- any axes
-v.0     : Vec a d -> Num d                      where card a ≥ 1   (today's n + 1)
-v.x     : Vec a d -> Num d                      where x ∈ a
+cross       : Vec a d -> Vec a d1 -> Vec a [d d1]          where card a ~ 3
+norm        : Vec a d -> Num d
+rotationOf  : Chart a … -> Mat (parent a) a                -- rows parent, columns a
+coordinates : Point (Vec n d) -> Chart a … -> Vec a d      where card a ~ n
+along       : Chart a … -> Vec n d -> Vec a d              where card a ~ n
+v.0         : Vec a d -> Num d                             where card a ≥ 1
+v.x         : Vec a d -> Num d                             where x ∈ a
 ```
 
-One signature serves `Vec Euclid`, `Vec RTN` and `Vec 3`, and returns a vector
-on the same axes. Two named sets never unify with each other, nor with an
-anonymous one: mixing the components of two frames is a type error, which is
-the point of the layer.
-
-Two design points this forces, written down so they are decided once:
-
-1. **Literals are anonymous, so labels come from something that knows the
-   axes.** `[1, 2, 3] m` is `Vec (Anon 3)` and does not unify with `Vec
-   Euclid` (otherwise `Euclid ~ Anon 3 ~ RTN` would make names meaningless).
-   A labelled vector therefore comes from a chart conversion (`p to lvlh :
-   Vec lvlh`, §3.8), from an ascription allowed to *coerce* axes (`[1, 2, 3]
-   m :: Vec Euclid`, a deliberate exception to "an ascription never widens",
-   §4.8), or from a primitive `withAxes Euclid v`. Which of the three to
-   offer, and whether coercion by ascription is too quiet, is the open
-   choice.
-2. **Signatures need a constraint clause.** `where card a ~ 3` has no syntax
-   today; inference carries such constraints, and `rank` never needed one
-   written, but axis-polymorphic library functions do. A `where` clause on a
-   signature (§4.8) is the natural form and is a small grammar addition.
-
-A chart is an axis set with an origin, so layer 2 is decided when charts are
-built (§3.8), by what `p to lvlh` returns. Until then layer 1 gives `.x .y .z`
-with nothing to undo.
-
+**Build in three stages, each neutral until the last:** (1) shapes carry
+axis sets but everything is anonymous, every existing test byte-identical
+and the property generator still producing well-typed programs, the risky
+refactor validated alone; (2) named axis sets from `chart` and `axes`,
+row/column-typed matrices, `rotationOf`, `coordinates`, `along`, `withAxes`;
+(3) `where` clauses in signatures and the library generalised.
 
 ## 4. Type system
 
