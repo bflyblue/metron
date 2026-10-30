@@ -460,13 +460,9 @@ processGroup cb0 decls = do
             | Just general <- typeOf r cb -> do
                 checkSignature sig.key sig.span n sig.scheme general
                 pure (setSignature n sig.scheme cb)
-          _ ->
-            Left
-              ( SignatureError
-                  sig.key
-                  sig.span
-                  ("`" <> n <> "` has a signature but no definition")
-              )
+          -- No definition yet: the signature waits in the scratch for one
+          -- (design §4.8); :add and :update refuse it if none comes.
+          _ -> pure (setSignature n sig.scheme cb)
       )
       cb1
       [(n, sig) | (n, sig) <- Map.toList signed, Set.notMember n groupNames]

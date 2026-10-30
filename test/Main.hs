@@ -6263,7 +6263,26 @@ annotationTests :: TestTree
 annotationTests =
   testGroup
     "type annotations"
-    [ testCase "a signature before or after its definition; :type and :ls print it" $ do
+    [ testCase "a signature may come before its definition, in a later input" $ do
+        runLinesP
+          [ "f :: Num [m] -> Num [m]"
+          , ":scratch"
+          , "let f x = x"
+          , ":type f"
+          , ":add"
+          , ":type f"
+          ]
+          @?= Right
+            [ "pending: f :: Num [m] -> Num [m]"
+            , "Num [m] -> Num [m]"
+            , "added f"
+            , "Num [m] -> Num [m]"
+            ]
+        case runLinesP ["f :: Num [m] -> Num [m]", ":add"] of
+          Left err -> T.isInfixOf "has a signature but no definition" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        runLinesP ["f :: Num [m] -> Num [m]", ":forget f", ":scratch"] @?= Right ["forgot `f`"]
+    , testCase "a signature before or after its definition; :type and :ls print it" $ do
         forM_
           [ ["double :: Num [m] -> Num [m]", "let double x = x + x"]
           , ["let double x = x + x", "double :: Num [m] -> Num [m]"]
@@ -6354,7 +6373,10 @@ annotationTests =
         expectError
           (runLinesP [multiline ["h :: Nope -> Num", "let h x = x"]])
           "unknown type `Nope`"
-        expectError (runLinesP ["k :: Num"]) "`k` has a signature but no definition"
+        expectError
+          (runLinesP ["k :: Num", ":add"])
+          "`k` has a signature but no definition"
+        runLinesP ["k :: Num", ":scratch"] @?= Right ["pending: k :: Num"]
         expectError
           (runLinesP [multiline ["k :: Num", "k :: Num [m]", "let k = 1"]])
           "`k` has two signatures in the same group"

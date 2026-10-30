@@ -995,6 +995,7 @@ that exists with a different definition is a conflict.
 add :: Session -> Either Text (Session, [Text])
 add session
   | null session.scratch = Right (session, ["nothing to add"])
+  | Just err <- orphanSignature session = Left err
   | not (null conflicts) =
       Left
         ( T.intercalate "\n"
@@ -1039,6 +1040,7 @@ propagate the new versions to every dependent that still typechecks
 update :: Bool -> Session -> Either Text (Session, [Text])
 update doUpgrade session
   | null session.scratch = Right (session, ["nothing to update"])
+  | Just err <- orphanSignature session = Left err
   | otherwise =
       let names = nubOrd (map (.name.text) session.scratch)
           changed =
@@ -2287,3 +2289,24 @@ removeKind (k, n) cb = case k of
       }
   TypeLabel -> cb{typeNames = Map.delete n cb.typeNames}
   FieldLabel -> unbindName ("." <> n) cb
+
+{- | A pending signature whose definition has not arrived (design §4.8): it
+waits in the scratch, and storing the scratch refuses until it does.
+-}
+orphanSignature :: Session -> Maybe Text
+orphanSignature session = case orphans of
+  n : _ ->
+    Just
+      ( "`"
+          <> shortestName session.scope session.staging n
+          <> "` has a signature but no definition; define it, or :forget "
+          <> shortestName session.scope session.staging n
+      )
+  [] -> Nothing
+ where
+  orphans =
+    [ n.text
+    | S.DSig _ n _ <- session.scratch
+    , n.text `notElem` [b.name.text | S.DBind _ b <- session.scratch]
+    , isNothing (lookupName n.text session.staging)
+    ]
