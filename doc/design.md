@@ -2523,6 +2523,70 @@ semi-automated upgrade is the propagation report: what moved, and what did not
 and why.
 
 ---
+### 7.6 Namespaces (design; not yet built)
+
+A name is a dotted path, `orbital.kepler.period`, and nothing else changes: a
+namespace is a prefix on a label. Terms, hashes and the store never see it,
+since a `Ref` carries only a hash and, in the storage encoding, the name as
+written. Moving `period` under `orbital` is a relabelling (§7.2), so history
+keeps the old name and nothing is re-hashed. Types, constructors and fields
+are labels too and move the same way. The prelude's units and constants stay
+at the root: `5 km` must not become `5 si.km`.
+
+**Resolution.** A name written in an expression resolves in this order:
+
+1. a local binder (a lambda parameter, a `let`, a pattern variable);
+2. the current namespace: `period` inside `namespace orbital` means
+   `orbital.period` when that exists;
+3. the `use`d namespaces, in no particular order, and it is an error, not a
+   silent choice, if two of them offer the same name ("`period` is both
+   `orbital.period` and `rotation.period`; write one of them");
+4. the root, which is where every name that has no dot lives today.
+
+A fully qualified path works from anywhere and is never ambiguous. Names
+print relative to the current namespace, so `:view` and `:ls` show short
+names while you work inside one and full paths for anything outside it.
+
+**Statements and commands.**
+
+```
+namespace orbital            -- later definitions in this input go under orbital.;
+                             -- in the REPL, for the session
+use orbital                  -- bare names from orbital.* resolve
+use orbital as o             -- a shorthand prefix: o.period
+:move orbital kepler         -- relabel every orbital.* as kepler.*; history keeps both
+:ls orbital                  -- the namespace's names, relative
+```
+
+`namespace` and `use` are statements, so a file can carry its own at the top
+and is self-describing; in the REPL they last for the session. Neither is
+stored: `use` lines are not labels, and a definition's stored term already
+holds full references, so a reader of the codebase needs no imports to make
+sense of it. A project-local `.eval/` may later carry a default `use` list
+beside its preferences if that proves wanted.
+
+**The dot.** `b.mass` is a field access and `v.0` a projection, so
+`orbital.period` lexes as "field `period` of `orbital`". The desugarer
+already resolves field chains through the codebase, so the rule lives there:
+for a chain whose head is not a local binder, if the longest dotted prefix
+names a definition, a type or a constructor, it is a qualified reference;
+otherwise it is the field access it is today. The one ambiguous case, a
+value `orbital` with a field `period` beside a definition `orbital.period`,
+is refused when the second of them is declared. A separate separator
+(`orbital::period`) would avoid the rule and read worse in a calculator.
+
+**What the codebase needs.** Nothing in `Codebase`'s shape: `names` keeps full
+paths. `Session` gains the current namespace and the `use` list; the
+resolver takes them; `:ls` learns to list a prefix and print relative; the
+printer's namer prints relative to the current namespace; `:move` is a loop
+over `:alias` and `:unname`. The store format is unchanged, since a path is
+a name.
+
+**Open.** Whether `:ls` shows a tree; whether a `use` may be stored per
+codebase; whether the prelude should itself live under `prelude.*` with an
+implied `use prelude`, which would let a user shadow it wholesale and costs
+nothing until wanted.
+
 
 ## 8. Evaluation
 
