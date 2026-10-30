@@ -970,7 +970,7 @@ with fresh variables and the two are unified, so @a -> a@ matches a query
 @Num -> Num@ and @Num [m] -> Num [m]@ matches a query @a -> a@.
 -}
 matchesQuery :: Scheme -> Scheme -> Bool
-matchesQuery query sc = case runStateT go (St emptySubst 0 []) of
+matchesQuery query sc = case runStateT go (St emptySubst 0 [] (const Nothing)) of
   Right _ -> True
   Left _ -> False
  where
