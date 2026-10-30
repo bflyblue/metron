@@ -593,3 +593,27 @@
   keeps its Core's type. Design §11 now records that provenance paths and
   inference paths disagree inside `case`, `if` and list literals, which
   the markers sidestep.
+- `Bool`, tuples and lists are library declarations (design §2.3, §10 item
+  9). They are the `structural data` declarations `Bool = False | True`,
+  `Pair a b = Pair a b` and `List a = Nil | Cons a (List a)`, and a tuple
+  of `k` components (at most 32) the structural type of one constructor
+  with `k` fields, which the compiler holds as values and refers to by
+  hash (`Eval.Builtin`). `ConRef` lost `Builtin`, the type language lost
+  `TBool`, `TTuple` and `TList` for `TData` on those hashes, and the
+  evaluator's booleans are ordinary constructors; the desugarer, inference,
+  lint, equality, the evaluator and the printers go by hash, and still
+  print `true`, `(1, 2)`, `{1, 2}`, `if … then … else`, `Bool`, `(a, b)`
+  and `{a}`. `std` seeds the three declarations as `std.Bool` (`std.False`,
+  `std.True`), `std.Pair` and `std.List` (`std.Nil`, `std.Cons`), so
+  `True`, `Pair 1 2` and `Cons 1 Nil` work and `:view std.List` prints the
+  declaration; renaming them changes only how names print, and a user's
+  own `structural data Bool = False | True` is the same type. The type
+  language's data and the type encoder moved below the renderer
+  (`Eval.Type.Base`, `Eval.Encode`) so that the hashes are computed from the
+  declarations. **Hash-affecting**: every definition that uses booleans,
+  tuples or lists changes hash (`std.map` was `#v2enr.0`, now `#hba29.0`).
+  Store format 6 and storage version 4: a constructor is stored by hash
+  only and the type tags 0x20, 0x24 and 0x25 are retired; a store of format
+  3 to 5 is re-hashed on first open (types, then terms, in dependency
+  order, with the log's hashes remapped) and gains the library's labels for
+  the three types.

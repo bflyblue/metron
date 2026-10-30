@@ -141,7 +141,7 @@ larger than it will eventually need to be.
 | `Lam hint (Term (S n))` | one-parameter abstraction | fundamental |
 | `App` | application | fundamental |
 | `Let hint e (Term (S n))` | non-recursive, generalising local binding; cannot be `App (Lam …)` because `Let` is where let-polymorphism happens | fundamental |
-| `Con con [Term n]` | a saturated data constructor: the built-in `True`, `False`, `Tuple`, `Nil`, `Cons`, or constructor `i` of a declared type, referenced by the type's definition hash; structured data with fields of different types, which no tensor can hold | fundamental |
+| `Con con [Term n]` | a saturated data constructor: constructor `i` of a declared type, referenced by the type's definition hash, `true`, tuples and lists among them (the declarations the compiler holds, design §2.3); structured data with fields of different types, which no tensor can hold | fundamental |
 | `Case scrutinee [Alt]` | first-class choice between alternatives, one per constructor in canonical order, each binding the fields; lazy in the bodies. Cannot be a primitive because a primitive cannot select which argument to evaluate | fundamental; absorbed `If` and the boolean literal |
 | `Pow t Integer` | `e ^ n` with a literal exponent, so the dimension of the result is static | special form: stays, because the exponent is syntax, not a value |
 | `Noise kind n` | `n` fresh nudges with definition-site identity (design §3.2.4); the identity depends on the node's path, which no primitive can see | special form: stays |
@@ -195,8 +195,8 @@ at every rank:
   the `TLit` arguments and checks the recorded instance against it. `Proj`
   keeps its own node: `slice 0 i t` is the same tensor as `t.i` but a
   different term. The §7 test stops at step 1.
-- **Overloaded**: `==` and `/=` only, over tensors and `Bool`, through an
-  instance constraint with those two instances. Everything else in the language
+- **Overloaded**: `==` and `/=` only, over tensors, points and data (`Bool`,
+  tuples and lists among the declared types), through an instance constraint. Everything else in the language
   has one type.
 - **Scalar only**: `/` takes a scalar divisor; comparisons `< <= > >=`, `floor`,
   `ceil`, `round`, the transcendental functions, `^`, and `±`. A tensor has no
@@ -208,11 +208,20 @@ at every rank:
 - **A default alternative in `Case`.** The desugarer expands `_` into the
   missing constructors, so every `Case` is exhaustive and canonically ordered
   and two terms that mean the same case analysis hash the same.
-- **Constructor names.** A declared constructor is `UserCon hash i`: the
-  definition hash of its type and its position. Names are labels in the
-  codebase, so renaming a constructor or a type changes no term, and the
-  declaration itself is hashed from kinds, field types and label alone
-  (design §6.1).
+- **Constructor names.** A constructor is `UserCon hash i`: the definition
+  hash of its type and its position. Names are labels in the codebase, so
+  renaming a constructor or a type changes no term, and the declaration
+  itself is hashed from kinds, field types and label alone (design §6.1).
+- **Built-in data types.** No constructor and no type is built in. `true`,
+  `(a, b)` and `x : xs` are constructors of three `structural data`
+  declarations the compiler holds as values (`Eval.Builtin`: `Bool`, the
+  tuple types, `List`), whose hashes the declarations alone fix; until
+  format 6 they were names in the constructor reference (`Builtin "True"`)
+  and forms of the type language (`TBool`, `TTuple`, `TList`). The
+  desugarer, inference, lint, the evaluator and the printers know them by
+  hash, so the one table that `Con` and `Case` are checked against is the
+  declarations', for these three as for any other, and the library's names
+  for them (`std.Bool`, design §7.7) are labels like any other.
 - **Local recursion.** `Let` is non-recursive. Recursion is a top-level affair
   through `Cycle`, which is where hashing needs it. A local recursive helper
   can be a top-level definition.
@@ -291,11 +300,11 @@ The policy, now that stores exist (design §7.4):
   stored `±` definition keeps its hash, and the same text entered again, or
   under a namespace, gets the new one.
 - **Encoding and Core changes are versioned.** The store carries a format
-  number (`format`, currently 5). Any change to the canonical encoding or to
+  number (`format`, currently 6). Any change to the canonical encoding or to
   a Core constructor (the label field on `Noise` and `Uncertain` was the last,
   made before any store existed) bumps it, and the loader refuses a store of
   another version it cannot migrate. The format number is no longer the
-  storage encoding's version (`storageVersion`, still 3): format 4 changed
+  storage encoding's version (`storageVersion`, now 4): format 4 changed
   what a store holds, not how a term is encoded. A format-3 store assumed a
   prelude entered in memory at every start; a format-4 store holds the
   standard library as labels under `std`, seeded into it (design §7.7). The
@@ -313,7 +322,16 @@ The policy, now that stores exist (design §7.4):
   stale and `:upgrade si.km` moves it), and replaces the stored `use std`
   by the six; the user's labels and every term file stay (design §7.4).
   The format-4 library is kept as `Eval.Prelude.stdlib4Source` for the 3
-  to 4 and 4 to 5 steps, which chain. Opening an old store then means a numbered migration:
+  to 4 and 4 to 5 steps, which chain. Format 6 (storage version 4) changed
+  the encoding: `Bool`, tuples and lists became declarations the compiler
+  holds, so a constructor reference is always a type's hash and a position,
+  never a built-in name, and the type tags 0x20, 0x24 and 0x25 are retired
+  for 0x28 on the declarations' hashes. Every definition that uses them has
+  a new hash, so the migration re-hashes: types, then terms, in dependency
+  order, with the log's hashes remapped; it runs before the library steps,
+  which compare the store with the library as the current build enters it,
+  and the 5 to 6 step then adds the library's labels for the three types
+  (design §7.4). Opening an old store then means a numbered migration:
   decode with the old decoder, re-encode, map every old hash to its new one,
   rewrite the references in dependency order (the `propagate` machinery), and
   rewrite the log. The first, format 1 to 2 (a written name after each
@@ -374,6 +392,15 @@ Applying the test to the roadmap, in order:
   added constructors to the table, not forms to Core: a constructor reference
   became a built-in name or a type hash with a position, encoded so that the
   built-in ones kept their bytes, and no format bump was needed.
+- **`Bool`, tuples and lists as declarations (format 6).** With user data
+  types in place, the built-in ones were a second mechanism for the same
+  thing. They became `structural data` declarations the compiler holds and
+  refers to by hash (`Eval.Builtin`), named by the library under `std`: the
+  constructor reference lost its built-in alternative and the type language
+  lost `Bool`, tuples and lists as forms of their own, so nothing in Core,
+  inference, lint or the evaluator knows a data type by name. No term
+  constructor came or went; Core stays at 15. It was the second
+  hash-changing migration (format 5 to 6).
 - **Points and scales (design §3.6).** Two constructors in the *type* language,
   `Point δ` and `Scale δ`, five saturated primitives, and a `scale`
   declaration that is label-level metadata like `unit`. No Core change: a
@@ -392,7 +419,9 @@ Applying the test to the roadmap, in order:
   representation of its own.
 
 So in the foreseeable roadmap Core has grown by exactly one mechanism, `Case`
-with constructors, and shrunk by one, `If`, as predicted. That is the shape SPJ's discipline predicts: long stretches where
+with constructors, and shrunk by one, `If`, as predicted, and the built-in
+data types it once special-cased have since left for declarations, so the
+constructor table is one table. That is the shape SPJ's discipline predicts: long stretches where
 the surface grows and the core does not.
 
 ## 9. Correctness strategy
@@ -446,7 +475,7 @@ Core is small so that it can be made correct, and these are the means:
 | Term constructors | about 10 | 15 untyped, 17 typed |
 | Typing | explicit, Lint-checked | explicit, lint-checked |
 | Polymorphism | type abstraction and application | same, plus lengths; dimensions next |
-| Data | `case` over constructors; `Bool` is data | `case` over constructors; `Bool` is data; vectors and matrices built in |
+| Data | `case` over constructors; `Bool` is data | `case` over constructors; `Bool`, tuples and lists are declared data; vectors and matrices built in |
 | Recursion | `let rec`, local | top-level `Cycle` only |
 | Coercions | `Cast` with proofs | none needed |
 | Kinds | full kind system | fixed kinds: type, length, soon dimension |

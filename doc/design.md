@@ -219,6 +219,26 @@ are the one unbounded structure; `map`, `filter`, `foldl`, `foldr`, `length`,
 `sum`, `zip`, `range` and `reverse` are prelude definitions, recursive through
 `Cycle` like any other.
 
+`Bool`, tuples and lists are not built into the language: they are three
+`structural data` declarations (below) that the compiler holds as values and
+refers to by hash, which the declarations alone fix:
+
+```
+structural data Bool = False | True
+structural data Pair a b = Pair a b
+structural data List a = Nil | Cons a (List a)
+```
+
+`true`, `if`, `(a, b)`, `{a, b}` and `x : xs` are syntax for their
+constructors and `case`, and print back as written whatever names the types.
+A tuple of `k` components is the structural type of one constructor with `k`
+fields, `Pair` the case `k = 2`; a tuple has at most 32 components, so that
+its type is known from its hash. The standard library names the three under
+`std` (§7.7), so `True`, `Pair 1 2` and `Cons 1 Nil` are `true`, `(1, 2)` and
+`{1}`, and `:view std.List` prints the declaration; renaming or unnaming them
+changes only how a name prints. A user's `structural data Bool = False | True`
+is the same type; `Bool` is otherwise reserved.
+
 **Declared data types.** A `data` statement declares a type as a sum of
 products, as in Haskell, with parameters of any kind:
 
@@ -628,10 +648,10 @@ as that constructor's own, wherever the type lives.
 | Static type | Runtime value | Notes |
 |---|---|---|
 | `Num δ` | a magnitude (§3.2) plus a dimension vector and a display-unit hint | `δ` is checked statically; the runtime dimension vector exists only for printing. `Num δ` is the rank-zero tensor `Tensor [] δ` (§3.3) |
-| `Bool` | `true` or `false` | a data type with two constructors; `if` is `case` on it |
-| `(a, b, …)` | a tuple of values | components of any types, so a state `(r, v)` has two dimensions |
-| `{a}` | a list: `{}` or `x : xs` | the one unbounded structure; lazy, so `range` and `map` stream |
-| `T α…` (declared, §2.3) | a constructor and its fields, as thunks | `Shape`, `Maybe (Num [m])`, `Tree a`; the same runtime shape as tuples and lists |
+| `Bool` | `true` or `false`: constructor `False` or `True`, no fields | `structural data Bool = False \| True` (§2.3); `if` is `case` on it |
+| `(a, b, …)` | a tuple of values: the one constructor, its fields as thunks | the structural tuple type of its arity, `Pair a b` for two; components of any types, so a state `(r, v)` has two dimensions |
+| `{a}` | a list: `{}` or `x : xs`, constructor `Nil` or `Cons` | `structural data List a`; the one unbounded structure; lazy, so `range` and `map` stream |
+| `T α…` (declared, §2.3) | a constructor and its fields, as thunks | `Shape`, `Maybe (Num [m])`, `Tree a`; `Bool`, tuples and lists are three of them |
 | `a -> b` | a closure: core term plus environment | first class; hashed like everything else |
 | `Tensor s δ` | a flat row-major buffer of magnitudes, its shape `s`, one shared dimension vector and hint | `s` is a type-level list of lengths. `Vec n δ` and `Mat m n δ` are how `Tensor [n] δ` and `Tensor [m, n] δ` print; rotations are `Mat 3 3 1` |
 
@@ -641,9 +661,10 @@ an exact rational with denominator 1, and positions that need an integer (the
 exponent of `^`, the argument of `noise` and `gauss`) are syntactic restrictions,
 not types.
 
-Tuples, lists, `Bool` and declared types are the data types; `case` (§2.3) is
-how they are consumed. The built-in ones differ from declared ones only in
-having syntax of their own.
+Declared types are the data types; `case` (§2.3) is how they are consumed.
+`Bool`, tuples and lists are declared types the compiler holds (§2.3), and
+differ from the others only in having syntax of their own; at runtime a
+boolean is a constructor with no fields like any other.
 
 ### 3.2 Magnitudes: exact rationals and affine forms
 
@@ -1760,7 +1781,7 @@ concatenation for the products and an equality instance (§4.2).
 ### 4.1 Types
 
 ```
-τ ::= Tensor σ δ | Point σ δ | Scale σ δ | Bool | (τ, τ, …) | {τ} | T a… | τ -> τ | α
+τ ::= Tensor σ δ | Point σ δ | Scale σ δ | T a… | τ -> τ | α
 a ::= τ | σ | δ | ν                     -- an argument of a declared type T, by the kind of its parameter
 σ ::= [] | ν : σ | s                   -- a shape: a list of lengths, possibly ending in a shape variable
 δ ::= 1 | B | d | δ·δ | δ⁻¹          -- an abelian group, normalised
@@ -1779,6 +1800,15 @@ parameter. Two applications unify when they are of the same type (the same
 definition hash, §6.1) and their arguments unify kind by kind. A declared type
 is identified by the hash of its definition, not by its name; the type that
 inference prints as `#a3f9k` the driver renames (§7.2).
+
+`Bool`, `(τ, τ, …)` and `{τ}` are not forms of their own: they are `T a…` on
+the hashes of the three declarations the compiler holds (§2.3), `Bool` with
+no arguments, a tuple of `k` components the tuple type of arity `k` applied to
+them, and `{τ}` the list type applied to `τ`. They are written and printed in
+their own syntax, by hash, whatever names them; `Bool` in a written type is the
+built-in one. Unification, equality, exhaustiveness and lint treat them as any
+declared type, except that two tuples of different arities fail with "expected
+a tuple of 2 components, got one of 3".
 
 **Variables are kinded.** There is one namespace of variables, each with a kind:
 `Type`, `Len`, `Shape`, and `Dim` when dimensions arrive. Each kind is an index
@@ -1918,10 +1948,11 @@ rank of the recorded shape.
 
 Equality is the single overloaded primitive. `==` and `/=` take two values of one
 type `τ` and emit an **instance constraint** `Eq τ`. Its instances are
-`Tensor s`, `Bool` and `Point s d`, and structured data whose components have
-equality: a tuple when every component does, a list when its element does,
-and a declared type `T τ…` when every field of every constructor, at those
-arguments, does. Values of data types are equal when their constructors are
+`Tensor s` and `Point s d`, and structured data whose components have
+equality: a declared type `T τ…` when every field of every constructor, at
+those arguments, does. `Bool`, tuples and lists are declared types (§4.1),
+so `Bool` has equality outright, a tuple when every component does and a list
+when its element does, by the same rule and no rule of their own. Values of data types are equal when their constructors are
 the same and their fields are pairwise equal. For a declared type the
 instance is derived structurally: a recursive occurrence of `T` in its own
 fields is the instance being derived (coinductively), and which of `T`'s
@@ -2337,20 +2368,23 @@ Term n ::= Var (Fin n)                -- bound variable
          | Proj (Term n) Int          -- t.i, i a literal position: peel the first length
          | Cycle (Vec k hint) (Vec k (Term (k + n)))  -- k mutually recursive bodies
 Alt n  ::= Alt con (Vec k hint) (Term (k + n))   -- binds the constructor's k fields
-con    ::= Builtin name                    -- True, False, Tuple, Nil, Cons
-         | UserCon hash i                  -- constructor i of the declared type with that definition hash
+con    ::= UserCon hash i                  -- constructor i of the declared type with that definition hash
 Kind ::= Bound | Stat
 ```
 
-`if c then a else b` is `Case c [Alt False [] b, Alt True [] a]`; `true` is
-`Con True []`; `(a, b)` is `Con Tuple [a, b]` (the arity is the argument count);
-`{a, b}` is `Con Cons [a, Con Cons [b, Con Nil []]]`. Alternatives follow the
-constructors' declaration order (`False, True`; `Nil, Cons`; a declared
-type's as written) and cover every constructor of the scrutinee's type; a
-surface `_` is expanded into the missing alternatives, so Core has no default
-case. A declared constructor is referenced by its type's definition hash and
-its position, never by name, so renaming a constructor changes no term (§7.2)
-and a term's hash depends on the type's definition, not on what it is called.
+There are no built-in constructors: `true`, tuples and lists are constructors
+of the three declarations the compiler holds (§2.3), referenced by hash like
+any other. With `False`, `True`, `Pair`, `Nil` and `Cons` standing for those
+references, `if c then a else b` is `Case c [Alt False [] b, Alt True [] a]`;
+`true` is `Con True []`; `(a, b)` is `Con Pair [a, b]` and `(a, b, c)` the
+constructor of the three-component tuple type; `{a, b}` is `Con Cons [a, Con
+Cons [b, Con Nil []]]`. Alternatives follow the constructors' declaration order
+(`False, True`; `Nil, Cons`; a declared type's as written) and cover every
+constructor of the scrutinee's type; a surface `_` is expanded into the
+missing alternatives, so Core has no default case. A constructor is
+referenced by its type's definition hash and its position, never by name, so
+renaming a constructor changes no term (§7.2) and a term's hash depends on
+the type's definition, not on what it is called.
 
 Rules:
 
@@ -2466,7 +2500,7 @@ SHA-256 of the encoding, displayed as a base32hex prefix: `#a3f9k`.
 | 0x01 | `Ref h idx` | 32 bytes `h`, varint `idx + 1` (0 means no index) |
 | 0x02 | `PrimApp name args` | varint length, UTF-8 bytes, then each argument (count is fixed by the arity table) |
 | 0x03 | `Lit tensor` | varint rank, each length as varint, then each value as sint numerator, varint denominator, row-major |
-| 0x04 | retired | was `Lit bool`; read by the format-2 decoder as `Con True/False`, never written |
+| 0x04 | retired | was `Lit bool`; read by the format-2 decoder as the constructor `True` or `False` of `Bool`, never written |
 | 0x05 | `Lam t` | `t` |
 | 0x06 | `App f a` | `f`, `a` |
 | 0x07 | `Let e b` | `e`, `b` |
@@ -2489,11 +2523,13 @@ else in the hash does.
 | 0x11 | `Con con args` | constructor reference, varint count, each argument |
 | 0x12 | `Case s alts` | `s`, varint count, each alternative: constructor reference, varint `k`, (`k` hints in the storage encoding), body at depth `+ k` |
 
-A constructor reference is the text name for a built-in constructor, or an
-empty text followed by the 32-byte definition hash of the declared type and
-the varint position of the constructor in it. Built-in constructors therefore
-encode as they did before declared types existed, and no format bump was
-needed.
+A constructor reference is an empty text, the 32-byte definition hash of its
+type and the varint position of the constructor in it. Until storage version
+4 (format 6, §7.4) a built-in constructor was its text name (`True`, `False`,
+`Tuple`, `Nil`, `Cons`), which is why a reference begins with a text; the
+decoder reads those names from stores of storage version 3 and before as the
+constructors of the built-in declarations (`Tuple` by its field count), and
+the encoder writes only hashes. A declared constructor's bytes never changed.
 
 A declared type (§2.3) is hashed separately, from its own canonical encoding:
 varint parameter count and one kind byte per parameter (0 type, 1 length, 2
@@ -2503,12 +2539,12 @@ or 1 and an empty text for `structural`). Types use tags of their own:
 
 | Tag | Type | Payload |
 |---|---|---|
-| 0x20 | `Bool` | |
+| 0x20 | retired | was `Bool`; read from storage version 3 and before as `0x28` on the hash of `Bool`, never written |
 | 0x21 | `Tensor σ δ` | shape, dimension |
 | 0x22 | `Point σ δ` | shape, dimension |
 | 0x23 | `Scale σ δ` | shape, dimension |
-| 0x24 | tuple | varint count, each type |
-| 0x25 | list | element type |
+| 0x24 | retired | was a tuple: varint count, each type; read as `0x28` on the tuple type of that arity |
+| 0x25 | retired | was a list: the element type; read as `0x28` on the hash of `List` |
 | 0x26 | `a -> b` | `a`, `b` |
 | 0x27 | variable | varint id (a parameter: 0 .. k-1) |
 | 0x28 | `T a…` | 32-byte hash, varint count, each argument as a kind byte and a type, length, shape or dimension |
@@ -2520,7 +2556,10 @@ earlier encodings decode unchanged); a
 dimension is a varint atom count and per atom 0 and a base-dimension byte or 1
 and a variable id, then the sint exponent. A recursive occurrence of the type
 being declared is `0x28` with the all-zero hash, so the definition never
-contains its own hash.
+contains its own hash. `Bool`, tuples and lists are `0x28` on the hashes of
+their declarations (§2.3), which are therefore fixed by this encoding:
+`structural data Bool = False | True` is no parameters, two constructors of
+no fields and the structural label, and so on.
 
 `varint` is unsigned LEB128. `sint` is one sign byte followed by a varint byte
 length and big-endian magnitude bytes, so arbitrarily large integers encode
@@ -3040,7 +3079,7 @@ eval --merge OTHER       merge the store at OTHER into this one, leaving OTHER a
 A codebase on disk is a directory:
 
 ```
-format             "eval codebase 5": the store's format version
+format             "eval codebase 6": the store's format version
 terms/<hex hash>   one term per file: the canonical encoding of 6.1 with each
                    binder's name hint after its tag and each reference's written
                    name after it, so :view keeps the author's names and units are
@@ -3178,7 +3217,7 @@ used them is decoded by the format-2 rules, re-encoded, and re-hashed, and the
 references to it and the `bind` lines of the log are rewritten to the new hash in
 dependency order. Old term files are removed.
 
-Format 3 stores are migrated to 4 on first open, and then to 5 (below);
+Format 3 stores are migrated to 4 on first open, and then to 5 and 6 (below);
 formats 1 and 2 chain through 3. A format-3 store held only the user's
 labels and assumed the prelude entered in memory at the root; format 4
 holds the library (§7.7), as it was then, everything under `std` (kept as
@@ -3243,6 +3282,33 @@ keeps its `std` path, so a bare `km` that both `std.km` (rebound) and
 `si.km` offer is ambiguous until one is unnamed; a format-4 library name
 the user renamed or aliased keeps that label on the old term; and the names
 that moved to `astro`, `physics` and `imperial` need `:use` (§7.7).
+
+Format 5 stores are migrated to 6 on first open, and this one changes hashes
+again: `Bool`, tuples and lists became declarations the compiler holds
+(§2.3), so a constructor is no longer stored by name (`True`, `Tuple`,
+`Nil`) but by the declaration's hash, and a type no longer uses tags 0x20,
+0x24 and 0x25 but `0x28` on those hashes (§6.1; storage version 4). Every
+type file is decoded by the old rules, which read those forms as the
+declared ones, and re-hashed, each after the types its fields use; then
+every term, its constructors moved to the re-hashed types and its
+references to the re-hashed terms, in dependency order, as the format-3
+migration did for `If`. Files are written under their new hashes and the
+old ones removed, and every hash in the log (`bind`, `type`, `con`,
+`field`) is replaced by its new one, so labels, history, unit flags,
+constructors and fields follow; signature lines name types by path and need
+nothing. A re-hashed type or term is the one the same source gets when
+entered now, with one exception: a cycle of several members keeps the order
+its old placeholder hashes gave it (§6.2), which the source entered again
+may not have. The library's labels for the three types, which a format-5
+library did not have, are then written at time 0 before the log (`0 type
+std.Bool …`, `0 con std.True …`), where the store does not bind them
+already, and `eval codebase 6` last. The re-hash changes nothing on a store
+already at format 6's hashes, and it runs before the 3 to 4 and 4 to 5 steps
+as well, since those compare the store with the library as the current
+build enters it; so formats 3 and 4 chain through it, and 1 and 2 through
+the format-3 step, whose decoder already reads the old forms as the
+declared ones.
+
 ### 7.5 Scratch, add, update, upgrade
 
 The codebase is never written by typing a definition. This follows Unison, whose
@@ -3483,8 +3549,10 @@ prelude change rebind names behind the user's back. Now:
   start reads it from disk; nothing is entered in memory first.
   `--no-codebase` seeds the same library in memory. A definition is the
   term it is written as, wherever it lives: `si.N`, `time.min` and
-  `std.map` have the hashes the root prelude gave `N`, `min` and `map`,
-  and `si.km`, written `kilo * metre`, has its own. One with a `±` is
+  `std.map` have the hashes the root prelude gave `N`, `min` and `map`
+  (`map` until format 6 made lists a declared type, which re-hashed
+  everything that uses booleans, tuples or lists), and `si.km`, written
+  `kilo * metre`, has its own. One with a `±` is
   stamped with its full path (§3.2.4), so `astro.G`, and `astro.M_earth`
   and `astro.M_sun` built on it, have hashes of their own too.
 - **Nothing is special afterwards.** The library is names in the database.
@@ -3542,21 +3610,34 @@ prelude change rebind names behind the user's back. Now:
   is `time.h`), and the tests check that it still has the hashes the root
   prelude had.
 
-Consequences: the store's format is 5 (a format-4 store is re-seeded and a
-format-3 one goes through 4, §7.4); the loader enters no prelude, so an
-empty store really is empty; the test suite's "session with the prelude"
-became "a seeded session", the same thing by another route.
+- **The built-in types.** `std` begins with `structural data Bool = False |
+  True`, `structural data Pair a b = Pair a b` and `structural data List a =
+  Nil | Cons a (List a)`, written exactly as the compiler holds them
+  (§2.3), so entering them gives the compiler's hashes: `std.Bool` is the
+  type of `true`, and `:view std.List` prints the declaration. The labels
+  only name them: `true`, `(1, 2)` and `{1, 2}` print by hash, so renaming
+  or unnaming `std.Bool` changes how `Bool` is named in `:view` of a
+  declaration and nothing else, and the language works the same in a
+  codebase without them. Under the stored `use std`, `True`, `Pair 1 2` and
+  `Cons 1 Nil` are the constructors. The larger tuples' types (`(a, b, c)`)
+  are known to the compiler but named by no library.
+
+Consequences: the store's format is 6 (a format-5 store is re-hashed, a
+format-4 one re-seeded and a format-3 one goes through 4, §7.4); the loader
+enters no prelude, so an empty store really is empty; the test suite's
+"session with the prelude" became "a seeded session", the same thing by
+another route.
 
 #### Layout
 
 The library is split by domain into sibling namespaces, each a `namespace`
 block in the seed source, with the basic functions alone in `std`. The
 counts are labels, as `:ls` counts them (aliases and record fields
-included), 876 in all:
+included), 883 in all:
 
 | namespace | contents | labels | stored `use` by default |
 |---|---|---|---|
-| `std` | the structural functions `fst snd map filter foldr foldl length reverse zip range` | 10 | yes |
+| `std` | the types `Bool` (`False True`), `Pair` and `List` (`Nil Cons`), the compiler's own declarations; the structural functions `fst snd map filter foldr foldl length reverse zip range` | 17 | yes |
 | `linalg` | `ε levi cross trace vimap`; the record `Cov2` with its fields `rr rv vv`, and `jointCovariance propagateCov2 innovationCov2 gain2 updateCov2` (§3.7) | 14 | yes |
 | `si` | the spelled-out base units `metre second kilogram ampere mole candela radian`; the 24 prefixes as plain numbers, `quetta` to `quecto` (`let kilo = 10^3`); the 22 coherent derived and accepted units by symbol (`N J W Pa Hz C V Ω F S T H Wb lm lx Bq Gy Sv kat g L t`), each with its name as an alias on the same term (`newton`, …, `ohm`, …, `gram`, `litre`, `tonne`); the scale `gauge`; the 699 prefixed units, each written from the prefix's name (`unit km = kilo * metre`, `unit kPa = kilo * Pa`), with `kohm` and the other prefixed ohms aliases of `kΩ` | 800 | yes |
 | `time` | `min hr day week year`, with `h` an alias of `hr` (`unit hr = 60 * min`); the scales `JD MJD J2000 unix` | 10 | yes |
@@ -3759,8 +3840,8 @@ tuned, and compilation is a later milestone.
    structural identity, and persistence in `types/`. Records: done, as field
    labels on one-constructor types with `b.f`, `C {f = e}` and `b {f = e}`
    desugaring to `case`; record values print with their field names.
-   Remaining: `==` on declared types, mutually recursive types, and
-   re-expressing `Bool`, tuples and lists as prelude declarations.
+   `Bool`, tuples and lists are library declarations the compiler holds
+   (format 6, §2.3, item 9). Remaining: mutually recursive types.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
    (re-evaluate at higher `p`); mixed-dimension matrices
@@ -3789,22 +3870,27 @@ tuned, and compilation is a later milestone.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's
      architecture (§3.2.9).
-   - *`Bool`, tuples and lists as library declarations.* Decided (format 6,
-     hashes change). The three types become structural declarations the
-     compiler holds as values and refers to by hash: `structural data Bool =
-     False | True`, `structural data Pair a b = Pair a b`, `structural data
-     List a = Nil | Cons a (List a)`. `ConRef` loses `Builtin`; the type
-     language loses `TBool`, `TTuple`, `TList` for `TData` on the three
-     hashes; the desugarer, the primitive type table, the evaluator and the
-     printer (which still prints `true`, `(1, 2)` and `{1, 2}` for those
-     hashes) go by hash, never by name. The library seeds the same three
-     declarations and names them under `std`; renaming or unnaming them
-     changes nothing but printing. The migration decodes old terms and type
-     files by the old rules, rewrites the built-in constructors and types to
-     the hashes, re-hashes types then terms in dependency order and remaps
-     references, labels and the log, as the format-3 migration did for `If`;
-     refusing stores older than 6 is the accepted fallback. Core shrinks to
-     13 constructors (core.md §5). Mutually recursive types stay open.
+   - *`Bool`, tuples and lists as library declarations.* Decided and built
+     (format 6, hashes change). The three types are structural declarations
+     the compiler holds as values and refers to by hash (`Eval.Builtin`):
+     `structural data Bool = False | True`, `structural data Pair a b = Pair
+     a b`, `structural data List a = Nil | Cons a (List a)`, and a tuple of
+     `k` components, up to 32, the structural type of one constructor with
+     `k` fields, so `(a, b, c)` is one constructor with three fields rather
+     than nested pairs. `ConRef` lost `Builtin`; the type language lost
+     `TBool`, `TTuple`, `TList` for `TData` on the hashes; the desugarer,
+     the primitive type table, inference, lint, the evaluator and the
+     printers (which still print `true`, `(1, 2)`, `{1, 2}`, `Bool`, `(a,
+     b)` and `{a}` for those hashes) go by hash, never by name. The library
+     seeds the same three declarations and names them under `std` (§7.7);
+     renaming or unnaming them changes nothing but printing. The migration
+     (§7.4) decodes old terms and type files by the old rules, rewrites the
+     built-in constructors and types to the hashes, re-hashes types then
+     terms in dependency order and remaps references, labels and the log,
+     as the format-3 migration did for `If`. Core keeps its fifteen
+     constructors (core.md §5): what left was the built-in alternative of
+     the constructor reference and three forms of the type language, not
+     term constructors. Mutually recursive types stay open.
    - *Type annotations.* Decided and built (§4.8): a signature `name ::
      type` is label-level, checked after inference as an instance of the
      inferred scheme, and seen by uses of the name; the error says the
