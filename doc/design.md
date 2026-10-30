@@ -2200,6 +2200,18 @@ lexes to the same tokens as its ASCII form, a superscript standing for its
 caret, so output reads back either way. Error messages, `:core` and `:lint`
 stay in ASCII.
 
+**The last result.** After an expression statement evaluates, `it` names that
+expression for later expressions and for the inspection commands: `1 + 2`
+then `it * 2` prints `6`, `:type it` gives its type, `:view it` prints `it =
+1 + 2`, and `:exact`, `:budget`, `:covariance`, `:core`, `:hash` and `:lint`
+take it as they take a definition. On a line with several expressions, each
+one is `it` for the next. `it` is the expression, not its printed value: it is
+hashed as a definition is, so a `±` in it is the same nudge every time it is
+used, and `:exact it` labels that nudge `it`. An input that fails leaves the
+previous `it`; before the first expression, `it` is an unknown name. `it` is
+local to the session (§7.5): `:ls`, `:edit`, `:alias` and `:dependents` do
+not see it.
+
 ### 7.4 CLI and persistence
 
 ```
@@ -2315,6 +2327,13 @@ acts.
   a historical version of `name` is moved to its current version, where it checks.
 - **`:todo`** lists pending definitions and stale references, so nothing is
   forgotten. `:edit name` prints a stored definition as source for the scratch.
+- **`it`**, the last expression (§7.3), is never stored. It is not in the
+  scratch, so `:add` and `:update` do not see it, and nothing reaches the
+  codebase or the store through it. A definition that mentions it is refused
+  with "`it` is the last result and cannot be stored; paste its definition
+  (:view it) instead", and so is a definition named `it`. `it` keeps the
+  terms it was checked against, so replacing or forgetting a pending
+  definition it used does not break it.
 
 `:add` and `:update` together are the only way a label changes. History records
 every binding, `:view` shows exactly which version a definition uses, and the

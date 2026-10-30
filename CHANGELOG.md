@@ -334,3 +334,14 @@
   prelude's `vimap` is unchanged. One primitive appended (arity 2); the type
   encoding gains length tag 2 for `rank s + k`, appended, so Core, stored
   terms and hashes are unchanged.
+- `it`, the last result (design §7.3, §7.5). After an expression statement
+  evaluates, `it` names that expression for later expressions and for
+  `:type`, `:view` (`it = 1 + 2`), `:exact`, `:budget`, `:covariance`,
+  `:core`, `:hash` and `:lint`; each expression on a line is `it` for the
+  next, and an input that fails leaves the previous one. It is bound in a
+  codebase built for each expression on top of the staging one, which keeps
+  the terms `it` was checked against, so it survives a replaced or forgotten
+  pending definition. It is never stored: `:ls` does not list it, `:add` and
+  `:update` do not see it, and a definition that mentions it is refused
+  ("`it` is the last result and cannot be stored; paste its definition (:view
+  it) instead"), as is a definition named `it`.

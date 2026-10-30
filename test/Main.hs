@@ -71,6 +71,7 @@ main =
         , affineTests
         , storeTests
         , dataTests
+        , itTests
         ]
     )
 
@@ -3766,3 +3767,92 @@ sessionP = go withPrelude
  where
   go s [] = Right s
   go s (l : ls) = feed s l >>= \(s', _) -> go s' ls
+
+-- The last result -------------------------------------------------------------------
+
+{- | Feed lines as the REPL does: an input that fails prints its error and
+leaves the session as it was.
+-}
+replLinesP :: [Text] -> [Either Text [Text]]
+replLinesP = go withPrelude
+ where
+  go _ [] = []
+  go s (l : ls) = case feed s l of
+    Left err -> Left err : go s ls
+    Right (s', outs) -> Right outs : go s' ls
+
+itTests :: TestTree
+itTests =
+  testGroup
+    "it, the last result"
+    [ testCase "it is the last expression" $ do
+        runLinesP ["1 + 2", "it * 2"] @?= Right ["3", "6"]
+        runLinesP ["1 + 2", "it * 2", "it + 1"] @?= Right ["3", "6", "7"]
+        -- On one line, each expression is `it` for the next.
+        runLinesP ["1 + 2; it * 10"] @?= Right ["3", "30"]
+    , testCase ":type, :view and :exact see it" $ do
+        runLinesP ["3 m + 2 m", ":type it"] @?= Right ["5 m", "Num [m]"]
+        runLinesP ["1 + 2", ":view it"] @?= Right ["3", "it = 1 + 2"]
+        -- A nudge declared in the last expression is labelled with its name.
+        runLinesP ["2 ± 0.1", ":exact it"]
+          @?= Right ["2.0 ± 0.1", "2 + 0.1·e[bound, it]"]
+    , testCase "it before any expression is an unknown name" $ do
+        case evalP "it" of
+          Left err -> T.isInfixOf "unknown name `it`" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case runLinesP [":type it"] of
+          Left err -> T.isInfixOf "unknown name `it`" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        -- and a definition that uses it is refused as unknown, not as `it`
+        case runLinesP ["let x = it"] of
+          Left err -> T.isInfixOf "unknown name `it`" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "a definition cannot store it, nor define it" $ do
+        let refused input = case runLinesP ["1 + 2", input] of
+              Left err ->
+                T.isInfixOf
+                  "`it` is the last result and cannot be stored; paste its definition (:view it) instead"
+                  err
+                  @? T.unpack err
+              Right v -> assertFailure (show v)
+        refused "let x = it"
+        refused "let x = it + 1"
+        case runLinesP ["let it = 5"] of
+          Left err ->
+            T.isInfixOf "`it` is the last result and cannot be defined" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        -- A parameter called `it` is not the last result.
+        runLinesP ["1 + 2", "let f it = it + 1", "f 1"] @?= Right ["3", "2"]
+    , testCase "it is never stored or listed" $ do
+        case sessionP ["let y = 5", "y + 1", "it * 2", ":add"] of
+          Left err -> assertFailure (T.unpack err)
+          Right s -> do
+            Map.member "it" s.codebase.names @?= False
+            Map.member "it" s.staging.names @?= False
+            Map.member "y" s.codebase.names @?= True
+            -- still usable after the add
+            snd <$> feed s "it" @?= Right ["12"]
+        case runLinesP ["1 + 2", ":ls --all"] of
+          Left err -> assertFailure (T.unpack err)
+          Right outs -> filter ("it " `T.isPrefixOf`) outs @?= []
+    , testCase "an error leaves the previous it" $ do
+        let results = replLinesP ["1 + 2", "1 / 0", "it +", "it * 2"]
+        map (either (const Nothing) Just) results
+          @?= [Just ["3"], Nothing, Nothing, Just ["6"]]
+        take 1 (drop 1 results) @?= [Left "error: division by zero"]
+    , testCase "it outlives the scratch definitions it used" $ do
+        runLinesP ["let y = 5", "y + 1", "let y = 6", "it", "y + 1"]
+          @?= Right ["6", "replaced pending definition of `y`", "6", "7"]
+        runLinesP ["let y = 5", "y + 1", ":forget y", "it * 2"]
+          @?= Right ["6", "forgot `y`", "12"]
+    , testCase "it names a reference only when nothing else does" $ do
+        -- `5` and `x` share a hash; `x` is renamed `w`, so `z` prints the
+        -- current name, and `it`, which sorts first, does not take its place.
+        let setup = ["let x = 5", "let z = x + 1", ":add", ":alias w x", ":unname x", "5"]
+        expecting (runLinesP (setup ++ [":hash w", ":hash it"])) $ \outs ->
+          case lastN 2 outs of
+            [hw, hi] -> hw @?= hi
+            other -> assertFailure (show other)
+        expecting (runLinesP (setup ++ [":view z"])) $ \outs ->
+          lastN 1 outs @?= ["z = w + 1"]
+    ]

@@ -9,12 +9,14 @@ that still typecheck.
 -}
 module Eval.Driver (
   Session (..),
+  LastExpr (..),
   emptySession,
   preludeSession,
   feed,
   refreshPreferences,
 ) where
 
+import Control.Monad (foldM)
 import Data.Char (isDigit)
 import Data.List (partition, sortOn)
 import Data.Map.Strict (Map)
@@ -69,14 +71,29 @@ data Session = Session
   , staging :: Codebase
   -- ^ codebase with the scratch entered on top; what expressions see
   , config :: Config
+  -- ^ evaluation settings, changed with @:set@
   , preferred :: Preferences
-  {- ^ the codebase's preference texts, evaluated to hints keyed by dimension (design §3.2.12)
-  ^ evaluation settings, changed with @:set@
+  -- ^ the codebase's preference texts, evaluated to hints keyed by dimension (design §3.2.12)
+  , lastExpr :: Maybe LastExpr
+  {- ^ the last expression statement that evaluated, which expressions and
+  inspection commands see as @it@ (design §7.3); never stored
   -}
   }
 
+{- | An expression as it was checked: its Core, types and Typed Core, and the
+codebase it was checked against, whose terms it may reference after the
+scratch that defined them has changed.
+-}
+data LastExpr = LastExpr
+  { term :: Term Z
+  , schemes :: [Scheme]
+  , typed :: TTerm Z
+  , base :: !Codebase
+  }
+
 emptySession :: Session
-emptySession = Session emptyCodebase [] Map.empty emptyCodebase defaultConfig Map.empty
+emptySession =
+  Session emptyCodebase [] Map.empty emptyCodebase defaultConfig Map.empty Nothing
 
 {- | A session with the prelude (design §3.2.11) entered and added, as every
 interactive session starts. Fails only if the prelude itself does not
@@ -86,7 +103,7 @@ preludeSession :: Either Text Session
 preludeSession = do
   (s, _) <- feed emptySession preludeSource
   (s', _) <- feed s ":add"
-  pure s'
+  pure s'{lastExpr = Nothing}
 
 {- | Parse and run one input (a line, a file). Returns the new session and
 the lines to print, or the first error.
@@ -107,9 +124,39 @@ feed' session src
           exprs = [e | S.SExpr e <- stmts]
       (session', notes) <-
         if null decls then Right (session, []) else propose session src decls
-      outs <-
-        mapM (evalExpr session'.config session'.preferred session'.staging src) exprs
-      pure (session', notes ++ outs)
+      -- Each expression that evaluates becomes `it` for the next one.
+      let step (s, outs) e = do
+            (out, le) <- evalExpr s.config s.preferred (exprCodebase s) src e
+            pure (s{lastExpr = Just le}, out : outs)
+      (session'', outs) <- foldM step (session', []) exprs
+      pure (session'', notes ++ reverse outs)
+
+{- | What expressions and inspection commands resolve names against: the
+staging codebase with @it@ bound to the last expression (design §7.3). It
+is built on the fly and never becomes the staging codebase, so @it@ never
+reaches the codebase or the store.
+-}
+exprCodebase :: Session -> Codebase
+exprCodebase session = case session.lastExpr of
+  Nothing -> session.staging
+  Just le ->
+    let h = hashTerm le.term
+        cb = session.staging
+        -- What the expression referenced stays reachable, by content, even
+        -- if the scratch that defined it has changed since.
+        withBase =
+          cb
+            { terms = Map.union cb.terms le.base.terms
+            , derived = Map.union cb.derived le.base.derived
+            , typeDefs = Map.union cb.typeDefs le.base.typeDefs
+            }
+     in clearFlags
+          "it"
+          ( bindName
+              "it"
+              (Reference h Nothing)
+              (addTerm h le.term le.schemes le.typed withBase)
+          )
 
 {- | Put definitions into the scratch. A name already pending is replaced
 (the scratch is a workspace, not a scope); a name defined twice in one
@@ -122,14 +169,35 @@ propose session src decls = do
       (replaced, kept) = partition (\b -> b.name.text `elem` incoming) session.scratch
       scratch' = kept ++ decls
       sources' = foldr (\b -> Map.insert b.name.text src) session.sources decls
+  -- `it` is session-local (design §7.5): it is neither defined nor stored.
+  case [b.name | S.DBind b <- decls, b.name.text == "it"] of
+    n : _ ->
+      Left
+        ( S.renderSpanError
+            (Just src)
+            n.span
+            "`it` is the last result and cannot be defined; choose another name"
+        )
+    [] -> Right ()
   staging' <-
     either
-      (Left . renderResolveErrorWith sources' src)
+      (Left . renderProposeError sources')
       Right
       (processGroup session.codebase scratch')
   let notes = ["replaced pending definition of `" <> b.name.text <> "`" | b <- replaced]
   pure
     (session{scratch = scratch', sources = sources', staging = staging'}, notes)
+ where
+  -- The staging codebase has no `it`, so a definition that uses it does not
+  -- resolve; say why rather than that the name is unknown.
+  renderProposeError sources' = \case
+    Desugar (UnknownName sp "it")
+      | isJust session.lastExpr ->
+          S.renderSpanError
+            (Just src)
+            sp
+            "`it` is the last result and cannot be stored; paste its definition (:view it) instead"
+    err -> renderResolveErrorWith sources' src err
 
 -- | Type errors point into the input that defined the offending name.
 renderResolveErrorWith :: Map Text Text -> Text -> ResolveError -> Text
@@ -151,24 +219,36 @@ renderResolveErrorWith sources src = \case
 
 -- | Desugar, typecheck and elaborate, lint, evaluate, print.
 evalExpr ::
-  Config -> Preferences -> Codebase -> Text -> S.Expr -> Either Text Text
+  Config ->
+  Preferences ->
+  Codebase ->
+  Text ->
+  S.Expr ->
+  Either Text (Text, LastExpr)
 evalExpr cfg prefs cb src e = do
-  (_, v) <- evalValue cfg cb src e
-  either
-    (Left . renderEvalError)
-    Right
-    (renderValue (printerFor cfg cb) cfg.precision prefs v)
+  (_, v, le) <- evalChecked cfg cb src e
+  out <-
+    either
+      (Left . renderEvalError)
+      Right
+      (renderValue (printerFor cfg cb) cfg.precision prefs v)
+  pure (out, le)
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design
 §3.2.4), so re-evaluating the same text gives the same nudges.
 -}
 evalValue :: Config -> Codebase -> Text -> S.Expr -> Either Text (Hash, Value)
-evalValue cfg cb src e = do
-  (term, typed, _) <- checkExpr cb src e
+evalValue cfg cb src e = (\(h, v, _) -> (h, v)) <$> evalChecked cfg cb src e
+
+-- | 'evalValue', keeping what was checked, to become @it@.
+evalChecked ::
+  Config -> Codebase -> Text -> S.Expr -> Either Text (Hash, Value, LastExpr)
+evalChecked cfg cb src e = do
+  (term, typed, _, linted) <- checkExpr cb src e
   let h = hashTerm term
-  (h,)
-    <$> either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cb) h typed)
+  v <- either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cb) h typed)
+  pure (h, v, LastExpr term linted typed cb)
 
 runtimeOf :: Codebase -> Runtime
 runtimeOf cb =
@@ -179,10 +259,14 @@ runtimeOf cb =
     }
 
 {- | Desugar, typecheck, elaborate and lint an expression against a codebase.
-Returns the Core, the Typed Core and the type.
+Returns the Core, the Typed Core, the inferred type and the types lint
+found, which are what a stored term carries.
 -}
 checkExpr ::
-  Codebase -> Text -> S.Expr -> Either Text (Term Z, TTerm Z, Maybe Scheme)
+  Codebase ->
+  Text ->
+  S.Expr ->
+  Either Text (Term Z, TTerm Z, Maybe Scheme, [Scheme])
 checkExpr cb src e = do
   (term, prov) <-
     either
@@ -191,12 +275,12 @@ checkExpr cb src e = do
       (desugarClosed (resolverFor cb) e)
   (schemes, typed) <-
     either (Left . typeErr prov) Right (I.elaborateClosed (typeLookupFor cb) term)
-  _ <-
+  linted <-
     either
       (Left . ("internal error: elaboration produced ill-typed core: " <>))
       Right
       (lintClosed (typeLookupFor cb) typed)
-  pure (term, typed, listToMaybe schemes)
+  pure (term, typed, listToMaybe schemes, linted)
  where
   typeErr prov err = case provenanceAt err.path prov of
     Just (sp, hint) -> S.renderSpanError (Just src) sp (withHint hint err.message)
@@ -348,7 +432,7 @@ command session src = \case
   ["forget", n] -> forget n session
   ("type" : rest) -> keep $ do
     e <- parseExpr (T.unwords rest)
-    (_, _, ty) <- checkExpr cb (T.unwords rest) e
+    (_, _, ty, _) <- checkExpr ecb (T.unwords rest) e
     pure [maybe "" (renderSchemeIn spelling) ty]
   ["edit", n] -> keep $ case lookupName n cb of
     Just r ->
@@ -358,15 +442,15 @@ command session src = \case
             | otherwise = "let "
        in (\body -> [keyword <> n <> " = " <> body]) <$> viewReference spelling cb r
     Nothing -> viewData n
-  ["lint", n] -> keep $ withName n $ \r -> case lookupTyped r.hash cb of
+  ["lint", n] -> keep $ withExprName n $ \r -> case lookupTyped r.hash ecb of
     Nothing -> Left ("no typed core for " <> showHash r.hash)
-    Just t -> case lintClosed (typeLookupFor cb) t of
+    Just t -> case lintClosed (typeLookupFor ecb) t of
       Left err -> Left ("lint failed: " <> err)
       Right schemes -> pure (map renderScheme schemes)
-  ["core", n] -> keep $ withName n $ \r -> (: []) . ((n <> " = ") <>) <$> viewTyped cb r
+  ["core", n] -> keep $ withExprName n $ \r -> (: []) . ((n <> " = ") <>) <$> viewTyped ecb r
   -- Browse the codebase (design §7.3): names with their types, filtered.
   ("ls" : rest) -> keep (listNames session rest)
-  ["hash", n] -> keep $ withName n $ \r -> pure [showReference r]
+  ["hash", n] -> keep $ withExprName n $ \r -> pure [showReference r]
   ["names", h] -> keep $ case findByPrefix h cb of
     [] -> Left ("no definition with hash " <> h)
     hs ->
@@ -379,8 +463,8 @@ command session src = \case
   ["history", n] -> keep $ case historyOf n cb of
     [] -> Left ("unknown name `" <> n <> "`")
     r : rs -> pure ((showReference r <> "  (current)") : map showReference rs)
-  ["view", n] -> keep $ case lookupName n cb of
-    Just r -> (: []) . ((n <> " = ") <>) <$> viewReference spelling cb r
+  ["view", n] -> keep $ case lookupName n ecb of
+    Just r -> (: []) . ((n <> " = ") <>) <$> viewReference spelling ecb r
     Nothing -> viewData n
   ["dependents", n] -> keep $ withName n $ \r -> pure (dependents r.hash cb)
   -- An alias of a unit or scale is one too.
@@ -403,6 +487,8 @@ command session src = \case
       )
  where
   cb = session.staging
+  -- Read-only commands also see `it`; nothing built from this is kept.
+  ecb = exprCodebase session
   cfg = session.config
   spelling = spellingOf cfg
   keep = fmap (session,)
@@ -412,13 +498,14 @@ command session src = \case
     _ -> Left err
   evalOf rest = do
     e <- parseExpr (T.unwords rest)
-    evalValue cfg cb (T.unwords rest) e
+    evalValue cfg ecb (T.unwords rest) e
   -- Nudges declared in the expression itself are labelled "input".
-  inputNamer h h' i written = if h' == h then "input" else refNamer cb h' i written
-  inputPrinter h = (printerFor cfg cb){refName = inputNamer h}
+  inputNamer h h' i written = if h' == h then "input" else refNamer ecb h' i written
+  inputPrinter h = (printerFor cfg ecb){refName = inputNamer h}
   preferenceOf = preferenceHint cfg cb
   commit cb' outs = Right (session{codebase = cb', staging = cb'}, outs)
   withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n cb)
+  withExprName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n ecb)
   withName' n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n session.codebase)
   cycleNames h' = case lookupTerm h' cb of
     Just (Cycle hints _) ->
@@ -654,7 +741,8 @@ vecMapIndexed f = go 0
 refNamer :: Codebase -> RefNamer
 refNamer cb h idx written =
   let r = Reference h idx
-   in case namesOf r cb of
+   in -- `it` only stands in when nothing else names the reference.
+      case filter (/= "it") (namesOf r cb) ++ filter (== "it") (namesOf r cb) of
         -- The name the author wrote, while it still points here; else any current name.
         ns | written `elem` ns -> written
         n : _ -> n
