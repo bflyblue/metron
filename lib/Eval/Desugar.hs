@@ -28,7 +28,6 @@ import Control.Monad (when, zipWithM)
 import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (StateT, modify', runStateT)
 import Control.Monad.Trans.Class (lift)
-import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing)
@@ -151,24 +150,17 @@ desugar path ctx e = do
         (zip [0 ..] es)
     S.CaseOf scrut alts -> caseOf path ctx e.span scrut alts
     S.Var x -> headApp path ctx e x []
-    S.App _ _ -> do
-      let (hd, args0) = spine e
-      -- The quantity rule (§2.6) inside an application: `Rect 3 m 4 m` passes
-      -- two quantities. A literal argument takes the unit names after it.
-      args <- regroup ctx args0
-      let rebuilt = foldl (\f a -> S.Expr (S.spanUnion f.span a.span) (S.App f a)) hd args
-          chain = case rebuilt.node of
-            S.App f a -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
-            _ -> desugar path ctx rebuilt
-      case hd.node of
-        S.Var x | Nothing <- lookupCtx x ctx -> do
-          bound <- asks (\env -> env.resolve x >>= asTerm)
-          case bound of
-            -- A codebase name: ordinary application of a reference.
-            Just _ -> chain
-            -- A primitive, constructor (or unknown): saturation and eta rules apply.
-            Nothing -> headApp path ctx hd x args
-        _ -> chain
+    S.App f a ->
+      let (hd, args) = spine e
+       in case hd.node of
+            S.Var x | Nothing <- lookupCtx x ctx -> do
+              bound <- asks (\env -> env.resolve x >>= asTerm)
+              case bound of
+                -- A codebase name: ordinary application of a reference.
+                Just _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
+                -- A primitive, constructor (or unknown): saturation and eta rules apply.
+                Nothing -> headApp path ctx hd x args
+            _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
     S.Lam names body -> lams path ctx e.span names body
     S.Let n params rhs body ->
       Let (Hint n.text)
@@ -645,51 +637,6 @@ asTerm :: Resolved -> Maybe Resolution
 asTerm = \case
   ATerm r -> Just r
   _ -> Nothing
-
-{- | Group a literal argument with the unit names that follow it into one
-quantity (§2.6): @f 3 m 4 m@ is @f (3 m) (4 m)@. A name bound in scope is
-never a unit here, so @\m -> f 2 m@ passes two arguments.
--}
-regroup :: Ctx n -> [S.Expr] -> M [S.Expr]
-regroup ctx = go
- where
-  go = \case
-    [] -> pure []
-    a : rest
-      | isLiteral a.node -> do
-          (units, rest') <- takeUnits rest
-          let q =
-                foldl
-                  (\acc u -> S.Expr (S.spanUnion acc.span u.span) (S.BinOp S.Scale acc u))
-                  a
-                  units
-          (q :) <$> go rest'
-      | otherwise -> (a :) <$> go rest
-  isLiteral = \case
-    S.Num _ -> True
-    S.Vec _ -> True
-    _ -> False
-  takeUnits = \case
-    [] -> pure ([], [])
-    u : rest -> do
-      unit <- isUnitName u
-      if unit
-        then first (u :) <$> takeUnits rest
-        else pure ([], u : rest)
-  -- Only names (and their powers): a number after a literal is not a unit,
-  -- and an unknown name is reported by the ordinary path.
-  isUnitName u = case u.node of
-    S.Var x
-      | Nothing <- lookupCtx x ctx ->
-          asks
-            ( \env ->
-                maybe
-                  (isJust (baseUnit x))
-                  (maybe False (.isUnit) . asTerm)
-                  (env.resolve x)
-            )
-    S.Pow b _ -> isUnitName b
-    _ -> pure False
 
 -- | The variable for field @i@ among @k@ fields bound innermost.
 fieldVar :: Vec k a -> Ctx n -> Int -> Maybe (Fin (Plus k n))

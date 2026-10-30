@@ -206,8 +206,9 @@ units (`[N]`, `[km/h]`) and parameters, with `^` or superscript exponents and
 annotation; using one both as a dimension and as a type is an error.
 
 Constructors are functions and values: `Circle` has type `Num [m] -> Shape`,
-`Nothing` type `Maybe a`, `map Just xs` works, and `Rect 3 m 4 m` passes two
-quantities because a literal argument takes the units after it (§2.6). A
+`Nothing` type `Maybe a`, and `map Just xs` works. Arguments are plain
+application: `Rect (3 m) (4 m)` passes two quantities, while `Rect 3 m 4 m`
+would pass four arguments, the metre twice among them (§2.6). A
 `case` takes a value apart one constructor deep, naming the fields in order;
 `_` and variables fill in the constructors not written, as for lists. Values
 print with each compound field in parentheses, `Rect (3 m) (4 m)` and
@@ -345,13 +346,11 @@ variable needs an explicit operator on either side: `x * km`, `5 * a`.
 
 The rule is a parse-time rewrite to `*`. Core (§5.1) never sees it.
 
-Inside an application the same rule groups each literal argument with the unit
-names after it: `Rect 3 m 4 m` is `Rect (3 m) (4 m)` and `f 2 km 500 m` adds
-two lengths, while `range 1 n` passes two arguments because `n` is not a unit
-and `\m -> f 2 m` passes two because the bound `m` shadows the metre. An
-operator after the arguments still applies to the whole application, so a
-compound unit in argument position is parenthesised: `Body (5 kg) ([1, 2, 3]
-km) ([4, 5, 6] km/s)`.
+Inside an application there is no such grouping: `f 3 m` applies `f` to `3`
+and then to `m`, exactly as `f x y` would, so a quantity in argument position
+is parenthesised, `Rect (3 m) (4 m)` and `Body (5 kg) ([1, 2, 3] km)`. The
+rule applies only where a literal itself is the head of the expression; a
+number applied to something is not a function and is reported as such.
 
 ### 2.7 Grammar
 

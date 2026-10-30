@@ -2468,7 +2468,7 @@ storeTests =
           loaded.codebase.fieldNames @?= s.codebase.fieldNames
           linesIn
             loaded
-            ["area (Rect 2 m 3 m)", "(Wrap (Rect 1 m 1 m) 2).shape", ":view Wrap"]
+            ["area (Rect (2 m) (3 m))", "(Wrap (Rect (1 m) (1 m)) 2).shape", ":view Wrap"]
             @?= Right
               ["6 m^2", "Rect (1 m) (1 m)", "data Wrap a = Wrap {shape :: Shape, extra :: a}"]
     , testCase ":unname persists" $ withTempStore $ \dir -> do
@@ -2625,12 +2625,12 @@ dataTests =
         runLinesP
           [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
           , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
-          , "area (Rect 3 m 4 m)"
+          , "area (Rect (3 m) (4 m))"
           , ":type Circle"
           , ":type area"
-          , "Rect 1 m 2 m"
-          , "map area {Circle 1 m, Rect 1 m 2 m}"
-          , ":type {Circle 1 m}"
+          , "Rect (1 m) (2 m)"
+          , "map area {Circle (1 m), Rect (1 m) (2 m)}"
+          , ":type {Circle (1 m)}"
           , ":view Shape"
           , ":edit Shape"
           , ":scratch"
@@ -2662,19 +2662,19 @@ dataTests =
         runLinesP
           [ "data Q d = Q (Num d) (Num d)"
           , "let lo q = case q of Q a _ -> a"
-          , "lo (Q 1 m 2 m)"
+          , "lo (Q (1 m) (2 m))"
           , ":type Q"
           , ":type lo"
           , "data V n = V (Vec n [m]) (Vec n [m/s])"
           , ":type V"
           , "data Tree a = Leaf | Node (Tree a) a (Tree a)"
           , "let sumTree z t = case t of Leaf -> z; Node l x r -> sumTree z l + x + sumTree z r"
-          , "sumTree (0 kg) (Node (Node Leaf 1 kg Leaf) 2 kg (Node Leaf 3 kg Leaf))"
+          , "sumTree (0 kg) (Node (Node Leaf (1 kg) Leaf) (2 kg) (Node Leaf (3 kg) Leaf))"
           , ":type sumTree"
           , ":view Tree"
           , "data Body = Body (Num [kg]) (Vec 3 [m]) (Vec 3 [m/s])"
           , "let mass b = case b of Body m _ _ -> m"
-          , "mass (Body 5 kg [1,2,3] km ([4,5,6] km/s))"
+          , "mass (Body (5 kg) ([1,2,3] km) ([4,5,6] km/s))"
           , "data E = E (Num [kg m^2 / s^2]) (Num [N]) (Num [m s⁻²]) (Point [K]) Bool (Num, {Num [m]})"
           , ":view E"
           ]
@@ -2811,7 +2811,7 @@ dataTests =
           ["data Shape = Circle (Num [m])", "Circle 1"]
           "expected Num [m], got Num"
         refused
-          ["data Shape = Circle (Num [m])", "Circle 1 m 2 m"]
+          ["data Shape = Circle (Num [m])", "Circle (1 m) (2 m)"]
           "Shape is not a function"
         -- :add refuses a type that exists with another definition.
         refused
@@ -2854,17 +2854,6 @@ dataTests =
           case runLinesP ["data Temp = T (Num [K])", "1 T"] of
             Left err -> T.isInfixOf "`T` is not a unit" err @? T.unpack err
             Right v -> assertFailure (show v)
-    , testCase "the quantity rule inside an application" $ do
-        runLinesP
-          [ "let f a b = a + b"
-          , "f 2 m 3 m"
-          , "f 2 3"
-          , "range 1 5"
-          , "let g m = f 2 m"
-          , "g 5"
-          , "f 2 km 500 m"
-          ]
-          @?= Right ["5 m", "5", "{1, 2, 3, 4, 5}", "7", "2500 m"]
     , testCase "the type grammar" $ do
         let ok src = case parseType src of
               Left err -> assertFailure (T.unpack err)

@@ -208,9 +208,8 @@
   as `types/<hash>` files and `type`/`con` log lines, and a type's identity
   is its definition stamped with its name, or structural with `structural
   data`. In Core a constructor is `UserCon hash i`; built-in constructors
-  encode as before, so no format bump. The quantity rule now applies inside
-  an application: `Rect 3 m 4 m` passes two quantities. Constructors and
-  definitions share one namespace, the newer label winning. Not yet: `==`
+  encode as before, so no format bump. Constructors and definitions share
+  one namespace, the newer label winning. Not yet: `==`
   on declared types, records, mutually recursive types.
 - Records (design §2.3). `data Body = Body {mass :: Num [kg], pos :: Vec 3
   [m]}` names the fields of a one-constructor type; `b.mass` reads one,
