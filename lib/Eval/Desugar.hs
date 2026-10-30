@@ -9,7 +9,8 @@ produced it, keyed by its path from the root.
 -}
 module Eval.Desugar (
   Path,
-  Provenance,
+  Provenance (..),
+  provenanceAt,
   Resolver,
   noResolver,
   DesugarError (..),
@@ -42,7 +43,17 @@ import Eval.Type (conText)
 -- | Child positions from the root of a Core term.
 type Path = [Int]
 
-type Provenance = Map Path S.Span
+{- | Where each Core node came from, and advice attached to some spans for the
+type error that may land there (design §4.7).
+-}
+data Provenance = Provenance {spans :: Map Path S.Span, hints :: Map S.Span Text}
+
+emptyProvenance :: Provenance
+emptyProvenance = Provenance Map.empty Map.empty
+
+-- | The span of a Core node, and the hint for an error there, if any.
+provenanceAt :: Path -> Provenance -> Maybe (S.Span, Maybe Text)
+provenanceAt path prov = (\sp -> (sp, Map.lookup sp prov.hints)) <$> Map.lookup path prov.spans
 
 data DesugarError
   = UnknownName S.Span Text
@@ -113,13 +124,19 @@ desugarIn = desugarMember ""
 desugarMember ::
   Text -> Resolver -> Ctx n -> S.Expr -> Either DesugarError (Term n, Provenance)
 desugarMember name resolve ctx e =
-  runStateT (runReaderT (desugar [] ctx e) (Env resolve (Owner name))) Map.empty
+  runStateT
+    (runReaderT (desugar [] ctx e) (Env resolve (Owner name)))
+    emptyProvenance
 
 failWith :: DesugarError -> M a
 failWith = lift . lift . Left
 
 record :: Path -> S.Span -> M ()
-record path sp = lift (modify' (Map.insert (reverse path) sp))
+record path sp = lift (modify' (\p -> p{spans = Map.insert (reverse path) sp p.spans}))
+
+-- | Advice for a type error at a span.
+hintAt :: S.Span -> Text -> M ()
+hintAt sp msg = lift (modify' (\p -> p{hints = Map.insert sp msg p.hints}))
 
 lookupCtx :: Text -> Ctx n -> Maybe (Fin n)
 lookupCtx x = \case
@@ -150,17 +167,18 @@ desugar path ctx e = do
         (zip [0 ..] es)
     S.CaseOf scrut alts -> caseOf path ctx e.span scrut alts
     S.Var x -> headApp path ctx e x []
-    S.App f a ->
+    S.App f a -> do
       let (hd, args) = spine e
-       in case hd.node of
-            S.Var x | Nothing <- lookupCtx x ctx -> do
-              bound <- asks (\env -> env.resolve x >>= asTerm)
-              case bound of
-                -- A codebase name: ordinary application of a reference.
-                Just _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
-                -- A primitive, constructor (or unknown): saturation and eta rules apply.
-                Nothing -> headApp path ctx hd x args
-            _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
+      quantityHints ctx hd args
+      case hd.node of
+        S.Var x | Nothing <- lookupCtx x ctx -> do
+          bound <- asks (\env -> env.resolve x >>= asTerm)
+          case bound of
+            -- A codebase name: ordinary application of a reference.
+            Just _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
+            -- A primitive, constructor (or unknown): saturation and eta rules apply.
+            Nothing -> headApp path ctx hd x args
+        _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
     S.Lam names body -> lams path ctx e.span names body
     S.Let n params rhs body ->
       Let (Hint n.text)
@@ -724,3 +742,38 @@ recordExpr path ctx e hd fields = do
               )
               [0 .. leadInfo.arity - 1]
           pure (Case hd' [Alt leadInfo.con (vecMap Hint hs) (Con leadInfo.con args)])
+
+{- | A literal argument followed by a unit name is two arguments, which is
+rarely meant; should a type error land on either, say how to write the
+quantity (design §2.6).
+-}
+quantityHints :: Ctx n -> S.Expr -> [S.Expr] -> M ()
+quantityHints ctx hd args = mapM_ check (zip args (drop 1 args))
+ where
+  check (a, u) = case (a.node, u.node) of
+    (lit, S.Var x)
+      | Just shown <- literalText lit
+      , Nothing <- lookupCtx x ctx -> do
+          unit <- unitExpr ctx u
+          when unit $ do
+            let msg =
+                  shown
+                    <> " and `"
+                    <> x
+                    <> "` are two separate arguments here; a quantity in argument position needs parentheses: ("
+                    <> shown
+                    <> " "
+                    <> x
+                    <> ")"
+            -- The error may land on the literal, the unit, or the application
+            -- of the head to either.
+            mapM_
+              (`hintAt` msg)
+              [a.span, u.span, S.spanUnion hd.span a.span, S.spanUnion hd.span u.span]
+    _ -> pure ()
+  literalText = \case
+    S.Num r
+      | denominator r == 1 -> Just (T.pack (show (numerator r)))
+      | otherwise -> Just "the number"
+    S.Vec _ -> Just "the vector"
+    _ -> Nothing

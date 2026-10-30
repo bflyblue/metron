@@ -184,11 +184,9 @@ checkExpr cb src e = do
       (lintClosed (typeLookupFor cb) typed)
   pure (term, typed, maybe "" renderScheme (listToMaybe schemes))
  where
-  typeErr prov err =
-    S.renderSpanError
-      (Just src)
-      (fromMaybe e.span (Map.lookup err.path prov))
-      err.message
+  typeErr prov err = case provenanceAt err.path prov of
+    Just (sp, hint) -> S.renderSpanError (Just src) sp (withHint hint err.message)
+    Nothing -> S.renderSpanError (Just src) e.span err.message
 
 -- Commands ----------------------------------------------------------------------
 

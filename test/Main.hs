@@ -690,12 +690,12 @@ desugarTests =
     , testCase "provenance records the root span"
         $ case parseExpr "1 + 2"
           >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
-          Right (_, prov) -> Map.lookup [] prov @?= Just (S.Span (S.Pos 1 1) (S.Pos 1 6))
+          Right (_, prov) -> Map.lookup [] prov.spans @?= Just (S.Span (S.Pos 1 1) (S.Pos 1 6))
           Left err -> assertFailure (T.unpack err)
     , testCase "provenance records children by path"
         $ case parseExpr "1 + 20"
           >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
-          Right (_, prov) -> Map.lookup [1] prov @?= Just (S.Span (S.Pos 1 5) (S.Pos 1 7))
+          Right (_, prov) -> Map.lookup [1] prov.spans @?= Just (S.Span (S.Pos 1 5) (S.Pos 1 7))
           Left err -> assertFailure (T.unpack err)
     , testCase "a resolver turns free names into references"
         $ let resolver n =
@@ -2813,6 +2813,19 @@ dataTests =
         refused
           ["data Shape = Circle (Num [m])", "Circle (1 m) (2 m)"]
           "Shape is not a function"
+        -- `1 m` is an application too: the unit is the second argument, and
+        -- the type error says how to write the quantity
+        refused
+          ["data Shape = Circle (Num [m])", "Circle 1 m"]
+          "hint: 1 and `m` are two separate arguments here; a quantity in argument position needs parentheses: (1 m)"
+        refused
+          ["data Shape = Circle (Num [m])", "let c = Circle 1 m"]
+          "hint: 1 and `m` are two separate arguments"
+        refused ["let f a b = a + b", "f [1,2] km 3"] "parentheses: (the vector km)"
+        -- a bound name is not a unit, so no hint
+        case runLinesP ["let g m = sqrt 2 m"] of
+          Left err -> not (T.isInfixOf "hint:" err) @? T.unpack err
+          Right v -> assertFailure (show v)
         -- :add refuses a type that exists with another definition.
         refused
           [ "data Shape = Circle (Num [m])"

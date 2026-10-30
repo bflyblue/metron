@@ -10,6 +10,7 @@ module Eval.Resolve (
   processGroup,
   enterData,
   storeTerm,
+  withHint,
 ) where
 
 import Control.Monad (when, zipWithM)
@@ -158,7 +159,16 @@ preferLint :: [Scheme] -> [Scheme] -> [Scheme]
 preferLint _ linted = linted
 
 typeErrorIn :: S.Binding -> Provenance -> TypeError -> ResolveError
-typeErrorIn b prov err = TypeErrorIn b.name (Map.lookup err.path prov) err.message
+typeErrorIn b prov err = located b.name (provenanceAt err.path prov) err.message
+
+-- | A type error at a located node, with the node's hint under the message.
+located :: S.Name -> Maybe (S.Span, Maybe Text) -> Text -> ResolveError
+located n at msg = case at of
+  Just (sp, hint) -> TypeErrorIn n (Just sp) (withHint hint msg)
+  Nothing -> TypeErrorIn n Nothing msg
+
+withHint :: Maybe Text -> Text -> Text
+withHint hint msg = maybe msg (\h -> msg <> "\n  hint: " <> h) hint
 
 {- | Design §6.2. The members are first desugared in their input order to
 compute ordering hashes with the cycle variables as placeholders, then
@@ -212,7 +222,7 @@ enterCycle cb bs = do
     i : rest
       | Just b <- nth i sorted
       , Just prov <- nth i provs ->
-          TypeErrorIn b.name (Map.lookup rest prov) err.message
+          located b.name (provenanceAt rest prov) err.message
     _ -> TypeErrorIn (headName sorted) Nothing err.message
   nth i xs = case drop i xs of
     x : _ | i >= 0 -> Just x

@@ -219,3 +219,6 @@
   looked up by the field alone. A dot glued on both sides is now a field
   access; composition is `f . g` or `∘`. Printed data values parenthesise
   every compound field: `Rect (1 m) (2 m)`.
+- `Rect 3 m 4 m` is four arguments again, not two quantities; a type error
+  that lands on such a literal or unit now carries a hint to write `(3 m)`.
+  Provenance carries hints beside spans.

@@ -1461,7 +1461,11 @@ type system cannot remove them without dependent types.
 **Provenance.** Core has no source positions, because they would change the hash.
 Instead the desugarer returns the Core term together with a *provenance table*: a
 map from a path into the term (the sequence of child positions from the root) to
-the surface span that produced that node, the same idea as a source map.
+the surface span that produced that node, the same idea as a source map. The
+table also carries *hints*: advice the desugarer attaches to a span while it
+still sees the syntax, printed under a type error that lands there. The one
+hint so far: a literal argument followed by a unit name (`Rect 3 m 4 m`) is two
+arguments, and the error says to write `(3 m)` (§2.6).
 
 - Inference tracks the current path as it walks the term, and every constraint it
   emits records the path of the node that generated it. A failed unification
