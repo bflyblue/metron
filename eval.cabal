@@ -25,10 +25,12 @@ library
   hs-source-dirs:  lib
   exposed-modules:
     , Eval.Affine
+    , Eval.Builtin
     , Eval.Codebase
     , Eval.Core
     , Eval.Desugar
     , Eval.Dimension
+    , Eval.Encode
     , Eval.Driver
     , Eval.Eval
     , Eval.Hash
@@ -43,6 +45,7 @@ library
     , Eval.Syntax
     , Eval.TCore
     , Eval.Type
+    , Eval.Type.Base
     , Eval.Unicode
     , Eval.Update
   build-depends:

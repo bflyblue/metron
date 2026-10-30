@@ -15,6 +15,7 @@ import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Eval.Affine hiding (Builtin, DivideByZero)
 import Eval.Affine qualified as A
+import Eval.Builtin
 import Eval.Codebase (
   Codebase (..),
   emptyCodebase,
@@ -4259,6 +4260,27 @@ dataTests =
         runLinesP
           ["data P a b = P a b", "P 1 2", "structural data T a = T a", "T (T 1)"]
           @?= Right ["P 1 2", "T (T 1)"]
+    , testCase "the built-in types are the structural declarations of their shape" $ do
+        s <-
+          either (assertFailure . T.unpack) pure
+            $ sessionP
+              [ "structural data B = F | T"
+              , "structural data P2 a b = P2 a b"
+              , "structural data T3 a b c = T3 a b c"
+              , "structural data L a = N | C a (L a)"
+              , ":add"
+              ]
+        let tyOf n = fromMaybe (error (T.unpack n)) (lookupTypeName n s.codebase)
+        tyOf "B" @?= boolHash
+        tyOf "P2" @?= pairHash
+        tyOf "T3" @?= tupleHash 3
+        tyOf "L" @?= listHash
+        Map.lookup (tyOf "L") s.codebase.typeDefs @?= Just listDef
+        -- Every hash a tuple can have is recognised, and none other.
+        map (tupleArity . tupleHash) [2 .. maxTupleArity]
+          @?= map Just [2 .. maxTupleArity]
+        tupleArity boolHash @?= Nothing
+        builtinDefs pairHash @?= Just pairDef
     , testCase "declared types: what is refused" $ do
         let refused src needle = case runLinesP src of
               Left err -> T.isInfixOf needle err @? T.unpack err
@@ -6281,7 +6303,8 @@ annotationTests =
         case runLinesP ["f :: Num [m] -> Num [m]", ":add"] of
           Left err -> T.isInfixOf "has a signature but no definition" err @? T.unpack err
           Right v -> assertFailure (show v)
-        runLinesP ["f :: Num [m] -> Num [m]", ":forget f", ":scratch"] @?= Right ["forgot `f`"]
+        runLinesP ["f :: Num [m] -> Num [m]", ":forget f", ":scratch"]
+          @?= Right ["forgot `f`"]
     , testCase "a signature before or after its definition; :type and :ls print it" $ do
         forM_
           [ ["double :: Num [m] -> Num [m]", "let double x = x + x"]
