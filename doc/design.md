@@ -1770,32 +1770,63 @@ distinction is what refuses `20 degC + 30 degC`. Per-axis units in one chart
 A.
 
 
-**Axis sets as index types (open, to decide with charts).** Named positions
-`.x .y .z` can be a scoped sugar over numeric projection (an `axes x y z`
-declaration binding labels to positions, hash-neutral), or axis sets can be
-types. The typed version, written down so it is decided once: a kind `Axes`;
-a shape is a list of axis sets, a plain length being the anonymous set of
-that size (`Vec 3` is `Vec (Anon 3)`), `axes Euclid = [x, y, z]` a declared
-one, `Vec a` an axis variable; `card : Axes -> Len` is a type function
-normalising like `rank` (`card Euclid = 3`, `card (Anon k) = k`, a residual on
-a variable), and `card a ~ 3` or `card a ~ card b` are pending constraints
-like `Rank` and `Append`, solved when the set is known and otherwise kept in
-the scheme, so `cross : Vec a d -> Vec a d1 -> Vec a [d d1] where card a ~ 3`
-serves `Vec Euclid`, `Vec RTN` and `Vec 3` and returns a vector on the same
-axes. Two named sets never unify with each other, nor with an anonymous one,
-which is the point: mixing components of two frames is a type error. Labelled
-vectors therefore come only from something that knows the axes: a chart
-conversion (`p to lvlh : Vec lvlh`), a coercing ascription, or `withAxes`;
-literals are anonymous. `.x` is a projection with the constraint `x ∈ a`;
-`.0` keeps today's `card a ≥ 1`. Needs a constraint clause in signatures,
-which `rank` never required. A chart is an axis set with an origin, so this
-is decided when charts are built, by what `p to lvlh` returns.
-**Open, to settle when building:** the exact syntax of the three optional
-parts (`by`, `spinning`, `relative to` or `in`); whether `eci` is a library
-definition or a primitive root; whether `rotz` and friends return the
-bivector or a `Rot n` wrapper (the bivector, unless a wrapper is needed to
-keep `by` from accepting an arbitrary matrix); and the matrix exponential's
-series on enclosures beyond a single plane.
+**Axis sets.** Named positions and vectors typed by their axes are designed in
+§3.9, to be decided with charts: a chart is an axis set with an origin, and
+what `p to lvlh` returns is what decides whether `Vec lvlh` exists.
+
+### 3.9 Axis sets: named positions and index types (design; later)
+
+Two layers, the first a sugar and the second a type-system extension; the
+first can be built alone and does not prejudge the second.
+
+**Layer 1, named positions.** `axes x y z` declares labels for positions 0,
+1, 2 in the current namespace, persisted as label lines like fields, moved by
+`:rename`, resolved through scope. `v.x` desugars to `v.0`: the same Core and
+the same hash as the numeric form, so `:view` prints whichever was written
+and projection's static bound applies (`v.z` on a `Vec 2` is refused). It
+works at any rank (`m.y.x` is row 1, column 0). `linalg` seeds `axes x y z`.
+
+**Layer 2, axis sets as types.** A kind `Axes`. A shape is a list of axis
+sets; a plain length is the *anonymous* set of that size (`Vec 3` is
+`Vec (Anon 3)`), `axes Euclid = [x, y, z]` declares a named one, and `Vec a`
+has an axis variable. `card : Axes -> Len` is a type function normalising
+like `rank` (§4.1): `card Euclid = 3`, `card (Anon k) = k`, a residual on a
+variable. `card a ~ 3` and `card a ~ card b` are pending constraints like
+`Rank` and `Append` (§4.2): solved when the set is known, kept in the scheme
+otherwise.
+
+```
+cross   : Vec a d -> Vec a d1 -> Vec a [d d1]   where card a ~ 3
+relabel : Vec a d -> Vec b d                    where card a ~ card b
+norm    : Vec a d -> Num d                      -- any axes
+v.0     : Vec a d -> Num d                      where card a ≥ 1   (today's n + 1)
+v.x     : Vec a d -> Num d                      where x ∈ a
+```
+
+One signature serves `Vec Euclid`, `Vec RTN` and `Vec 3`, and returns a vector
+on the same axes. Two named sets never unify with each other, nor with an
+anonymous one: mixing the components of two frames is a type error, which is
+the point of the layer.
+
+Two design points this forces, written down so they are decided once:
+
+1. **Literals are anonymous, so labels come from something that knows the
+   axes.** `[1, 2, 3] m` is `Vec (Anon 3)` and does not unify with `Vec
+   Euclid` (otherwise `Euclid ~ Anon 3 ~ RTN` would make names meaningless).
+   A labelled vector therefore comes from a chart conversion (`p to lvlh :
+   Vec lvlh`, §3.8), from an ascription allowed to *coerce* axes (`[1, 2, 3]
+   m :: Vec Euclid`, a deliberate exception to "an ascription never widens",
+   §4.8), or from a primitive `withAxes Euclid v`. Which of the three to
+   offer, and whether coercion by ascription is too quiet, is the open
+   choice.
+2. **Signatures need a constraint clause.** `where card a ~ 3` has no syntax
+   today; inference carries such constraints, and `rank` never needed one
+   written, but axis-polymorphic library functions do. A `where` clause on a
+   signature (§4.8) is the natural form and is a small grammar addition.
+
+A chart is an axis set with an origin, so layer 2 is decided when charts are
+built (§3.8), by what `p to lvlh` returns. Until then layer 1 gives `.x .y .z`
+with nothing to undo.
 
 
 ## 4. Type system
@@ -3894,6 +3925,10 @@ tuned, and compilation is a later milestone.
      bivector, moving charts as functions of an epoch carried by a state, the
      transport term from a declared angular velocity. Build constant
      orientations first (`by B`), then moving charts and states.
+   - *Axis sets as index types.* Designed in §3.9, layer 2: a kind `Axes`,
+     `card` as a type function, `card a ~ k` constraints, literals anonymous,
+     labels from charts or a coercion, a `where` clause on signatures. Decided
+     with charts. Layer 1, the `axes x y z` sugar, can be built any time.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's
      architecture (§3.2.9).
