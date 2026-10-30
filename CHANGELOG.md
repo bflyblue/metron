@@ -372,3 +372,14 @@
   is bold. The REPL-level command `:colour on|off` overrides the default.
   The logic is pure, in the new module `Eval.Repl`. The text that `feed`
   prints is unchanged.
+- Multi-line input in the REPL (design §7.3). An input goes on at the
+  continuation prompt `… ` while a bracket is open, while its last token
+  cannot end an input (`=`, `->`, `\`, `|`, `,`, `;`, an infix operator,
+  `±`, or a keyword such as `of`, `in`, `then`, `else`), or after a line
+  that ends in `of` or `where`, whose block runs to a blank line. A blank
+  line ends the input as it stands; Ctrl-C or Ctrl-D at the continuation
+  prompt abandons it. The decision reads the lexer's tokens, so comments
+  never count, and a `:` command never goes on. `eval -i` does the same and
+  echoes each line after its prompt. Each physical line is its own history
+  entry. The pure part is `Eval.Repl.needsMore`; one-line inputs and what
+  `feed` prints are unchanged.

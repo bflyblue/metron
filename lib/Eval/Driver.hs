@@ -105,7 +105,7 @@ preludeSession = do
   (s', _) <- feed s ":add"
   pure s'{lastExpr = Nothing}
 
-{- | Parse and run one input (a line, a file). Returns the new session and
+{- | Parse and run one input (a REPL input, a file). Returns the new session and
 the lines to print, or the first error.
 -}
 feed :: Session -> Text -> Either Text (Session, [Text])

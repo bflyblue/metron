@@ -133,8 +133,10 @@ runOnce opts src = do
 
 {- | The REPL. With a terminal, haskeline gives line editing, completion
 (design §7.3) and a history file kept beside the codebase; scripted, lines
-are read plainly. Output is coloured when stdout is a terminal, @TERM@ is
-not @dumb@ and @NO_COLOR@ is unset, or as @:colour on|off@ says.
+are read plainly. An input goes on at a continuation line while
+'R.needsMore' says so, in both modes. Output is coloured when stdout is a
+terminal, @TERM@ is not @dumb@ and @NO_COLOR@ is unset, or as
+@:colour on|off@ says.
 -}
 repl :: Options -> Bool -> IO ()
 repl opts interactive = do
@@ -160,30 +162,54 @@ repl opts interactive = do
     case line of
       Nothing -> pure ()
       Just raw -> do
-        let input = T.strip (T.pack raw)
-        unless interactive (outputStrLn ("> " <> T.unpack input))
-        case T.words input of
-          [cmd] | cmd `elem` [":quit", ":q"] -> pure ()
-          [] -> again
-          [":store"] -> do
-            live <- liftIO (readIORef ref)
-            outputStrLn (maybe "no codebase: running in memory" (.dir) live.store)
+        let first = T.strip (T.pack raw)
+        echo "> " first
+        whole <- more colour first
+        case whole of
+          Nothing -> do
+            let note = "(input abandoned)"
+            outputStrLn (T.unpack (if colour then R.paint R.Note note else note))
             again
-          -- A REPL-level setting: the Driver never sees it.
-          cmd : args | cmd `elem` [":colour", ":color"] -> do
-            case args of
-              [] -> outputStrLn ("colour " <> if colour then "on" else "off")
-              ["on"] -> liftIO (writeIORef colourRef True)
-              ["off"] -> liftIO (writeIORef colourRef False)
-              _ -> emit colour (Left "usage: :colour [on|off]")
-            again
-          -- Multi-line definitions come from a file: the layout rule treats
-          -- later lines as continuations, and a REPL line is one input.
-          [":load", path] -> do
-            src <- liftIO (TIO.readFile (T.unpack path))
-            run src
-          _ -> run input
+          Just input -> dispatch colour input
    where
+    -- Scripted, each line is echoed after the prompt it was read at.
+    echo p l = unless interactive (outputStrLn (p <> T.unpack l))
+    -- Continuation lines (design §7.3): read on at the "… " prompt while
+    -- the input so far needs more. A continuation line keeps its
+    -- indentation, which layout reads. Ctrl-C or end of input abandons it.
+    more colour input
+      | R.needsMore input = do
+          next <-
+            handleInterrupt
+              (pure Nothing)
+              (withInterrupt (getInputLine (if interactive then prompt colour "… " else "")))
+          case next of
+            Nothing -> pure Nothing
+            Just raw -> do
+              let l = T.stripEnd (T.pack raw)
+              echo "… " l
+              more colour (input <> "\n" <> l)
+      | otherwise = pure (Just (T.stripEnd input))
+    dispatch colour input = case T.words input of
+      [cmd] | cmd `elem` [":quit", ":q"] -> pure ()
+      [] -> again
+      [":store"] -> do
+        live <- liftIO (readIORef ref)
+        outputStrLn (maybe "no codebase: running in memory" (.dir) live.store)
+        again
+      -- A REPL-level setting: the Driver never sees it.
+      cmd : args | cmd `elem` [":colour", ":color"] -> do
+        case args of
+          [] -> outputStrLn ("colour " <> if colour then "on" else "off")
+          ["on"] -> liftIO (writeIORef colourRef True)
+          ["off"] -> liftIO (writeIORef colourRef False)
+          _ -> emit colour (Left "usage: :colour [on|off]")
+        again
+      -- A file is one input too, its later lines continuations by layout.
+      [":load", path] -> do
+        src <- liftIO (TIO.readFile (T.unpack path))
+        run src
+      _ -> run input
     again = loop ref colourRef
     run src = do
       live <- liftIO (readIORef ref)
