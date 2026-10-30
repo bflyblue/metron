@@ -814,14 +814,14 @@ storeTerm h term cb = do
 
 {- | Record what a binding declared besides its value.
 | Record what a binding declared besides its value. A plain `let` clears
-any unit or scale flag the name carried: `let g = 9.81 m/s^2` is a
+any unit or chart flag the name carried: `let g = 9.81 m/s^2` is a
 quantity even though `g` was the gram.
 -}
 markKind :: S.BindKind -> Text -> Codebase -> Codebase
 markKind kind n cb = case kind of
   S.Plain -> clearFlags n cb
   S.Unit -> markUnit n cb
-  S.ScaleDecl -> markScale n cb
+  S.ChartDecl -> markScale n cb
 
 -- | The variables a pattern binds.
 patternNames :: S.Pattern -> [S.Name]
@@ -914,7 +914,7 @@ enterData scope cb decl = do
       | otherwise = go (Set.insert n.text seen) ns
 
 builtinTypeNames :: [Text]
-builtinTypeNames = ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Scale"]
+builtinTypeNames = ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale"]
 
 data DataEnv = DataEnv
   { codebase :: Codebase
@@ -990,6 +990,8 @@ tyType env t = case t.node of
         ("Tensor", [sh]) -> (`TTensor` dimOne) <$> tyShape env sh
         ("Tensor", [sh, d]) -> TTensor <$> tyShape env sh <*> tyDim env d
         ("Point", [a]) -> affine TPoint a
+        ("Chart", [a]) -> affine TScale a
+        -- The old spelling of @Chart@ (design §3.6).
         ("Scale", [a]) -> affine TScale a
         (n, _)
           | n `elem` builtinTypeNames ->
@@ -1008,7 +1010,7 @@ tyType env t = case t.node of
     _ ->
       tyType env a >>= \case
         TTensor sh d -> pure (mk sh d)
-        _ -> bad a "a point or scale is over a dimension or a tensor type"
+        _ -> bad a "a point or chart is over a dimension or a tensor type"
 
 -- | A declared type, or the one being declared, applied to its arguments.
 applied :: DataEnv -> S.TyExpr -> Text -> [S.TyExpr] -> Kinds Type

@@ -387,7 +387,7 @@ point = \case
 scaleOf :: Value -> Either EvalError ScaleHint
 scaleOf = \case
   VScale s -> Right s
-  _ -> Left (Internal "expected a scale")
+  _ -> Left (Internal "expected a chart")
 
 -- | A number or a point: what the comparisons order.
 ordered :: Value -> Either EvalError Magnitude
@@ -1076,7 +1076,7 @@ render = \case
     rs <- sequence (V.toList buf)
     pure (nested dims rs)
   VPoint dims _ _ buf -> ("point " <>) . nested dims <$> sequence (V.toList buf)
-  VScale _ -> Right "<scale>"
+  VScale _ -> Right "<chart>"
   VBool True -> Right "true"
   VBool False -> Right "false"
   VData c fields -> do

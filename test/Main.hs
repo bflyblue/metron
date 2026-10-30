@@ -965,7 +965,9 @@ codebaseTests =
               , "unit kohm : Num [kg m^2 s^-3 A^-2]"
               ]
           ls "--units furl" @?= Right ["unit furlong : Num [m]"]
-          ls "--scales degC" @?= Right ["scale degC : Scale [K]"]
+          ls "--charts degC" @?= Right ["chart degC : Chart [K]"]
+          -- The old spelling of the flag.
+          ls "--scales degC" @?= Right ["chart degC : Chart [K]"]
           ls "--types"
             @?= withBuiltinTypes
               [ -- The library's types: the joint covariance in blocks, then Bool,
@@ -2017,7 +2019,7 @@ generatorProperty =
     TData _ _ -> "data"
     TFun _ _ -> "function"
     TPoint _ _ -> "Point"
-    TScale _ _ -> "Scale"
+    TScale _ _ -> "Chart"
     TupleT _ -> "tuple"
     ListT _ -> "list"
     TTensor sh d ->
@@ -3066,7 +3068,7 @@ affineTests =
         evalP "20 degC == 68 degF" @?= Right ["true"]
         evalP "0 J2000 < 0 MJD" @?= Right ["false"]
         typeOfTextP "20 degC" @?= Right "Point [K]"
-        typeOfTextP "degC" @?= Right "Scale [K]"
+        typeOfTextP "degC" @?= Right "Chart [K]"
         typeOfTextP "\\p q -> p .- q"
           @?= Right "Point (Tensor s d) -> Point (Tensor s d) -> Tensor s d"
         typeOfTextP "\\p v -> p .+ v"
@@ -3079,7 +3081,7 @@ affineTests =
           Left err -> T.isInfixOf "a point has no sum" err @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP "20 degC to K" of
-          Left err -> T.isInfixOf "to with a scale" err @? T.unpack err
+          Left err -> T.isInfixOf "to with a chart" err @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP "[1, 2] < [1, 3]" of
           Left err -> T.isInfixOf "no ordering on Vec 2" err @? T.unpack err
@@ -3095,8 +3097,37 @@ affineTests =
         runLinesP ["let boil = 100 degC", ":view boil"] @?= Right ["boil = 100 degC"]
         -- The library lives in namespaces, so :edit prints its definitions in their block.
         runLinesP [":edit degC"]
-          @?= Right ["namespace temperature", "  scale degC = K at 273.15 * K"]
+          @?= Right ["namespace temperature", "  chart degC = K at 273.15 * K"]
         runLinesP [":edit km"] @?= Right ["namespace si", "  unit km = kilo * metre"]
+    , testCase
+        "chart is the keyword, scale its old spelling: one declaration, one hash" $ do
+        runLinesP
+          [ "unit mmHg = 133.322 * Pa"
+          , "chart bp = mmHg at 0 mmHg"
+          , "120 bp .+ 10 mmHg"
+          , ":type bp"
+          , ":view bp"
+          , ":ls --charts bp"
+          , "bp"
+          ]
+          @?= Right
+            [ "130 bp"
+            , "Chart [kg m^-1 s^-2]"
+            , "chart bp = mmHg at 0 * mmHg"
+            , "chart bp : Chart [kg m^-1 s^-2]"
+            , "chart bp"
+            ]
+        -- The keyword is a label flag, not part of the hash.
+        let hashOf kw' =
+              runLinesP
+                ["unit mmHg = 133.322 * Pa", kw' <> " bp = mmHg at 0 mmHg", ":hash bp"]
+        hashOf "chart" @?= hashOf "scale"
+        typeOfTextP "\\c -> (c :: Chart [K])" @?= Right "Chart [K] -> Chart [K]"
+        typeOfTextP "\\c -> (c :: Scale [K])" @?= Right "Chart [K] -> Chart [K]"
+        -- `chart` is a keyword now, not a name.
+        case runLinesP ["let chart = 3"] of
+          Left _ -> pure ()
+          Right v -> assertFailure (show v)
     , testCase "display units of one dimension cancel against each other" $ do
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
         evalP "3 h / min" @?= Right ["180"]
@@ -6260,7 +6291,7 @@ stdlibTests =
           ("unit newton : Num [kg m s^-2]" `elem` outs) @? "newton"
           ("kilo : Num" `elem` outs) @? "kilo"
         expecting (runLinesP [":ls temperature"]) $ \outs ->
-          ("scale degC : Scale [K]" `elem` outs) @? "degC"
+          ("chart degC : Chart [K]" `elem` outs) @? "degC"
         -- :ls lists a type and its constructor on two lines and no fields:
         -- linalg.Cov2 and std.Pair are one label and two lines each, Cov2's
         -- three fields none.

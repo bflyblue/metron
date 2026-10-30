@@ -33,7 +33,7 @@ import Text.Megaparsec.Char.Lexer qualified as L
 data Keyword
   = KLet
   | KUnit
-  | KScale
+  | KChart
   | KAt
   | KCase
   | KOf
@@ -232,7 +232,9 @@ identifierOrKeyword = do
   pure $ case name of
     "let" -> TKw KLet
     "unit" -> TKw KUnit
-    "scale" -> TKw KScale
+    "chart" -> TKw KChart
+    -- The old spelling of @chart@ (design §3.6), accepted for a release.
+    "scale" -> TKw KChart
     "at" -> TKw KAt
     "case" -> TKw KCase
     "of" -> TKw KOf

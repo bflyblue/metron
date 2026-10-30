@@ -168,8 +168,8 @@ renderWithNamed typeName spelling names prec = \case
   -- A scalar point is `Point [K]`; a point over a vector space, `Point (Vec 3 [m])`.
   TPoint SNil d -> "Point" <> dim d
   TPoint sh d -> "Point (" <> tensor sh <> dim d <> ")"
-  TScale SNil d -> "Scale" <> dim d
-  TScale sh d -> "Scale (" <> tensor sh <> dim d <> ")"
+  TScale SNil d -> "Chart" <> dim d
+  TScale sh d -> "Chart (" <> tensor sh <> dim d <> ")"
   -- A declared type prints by its short hash here; the driver replaces that
   -- with the current name (design §7.2), so inference needs no name table.
   TData h as ->

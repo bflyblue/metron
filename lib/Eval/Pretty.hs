@@ -264,9 +264,9 @@ renderValueWith printer scale prefs showMagnitude = \case
           <> " (point)"
   VScale s ->
     Right $ case s.name of
-      Just atom -> "scale " <> atomNameWith printer.unitName atom
+      Just atom -> "chart " <> atomNameWith printer.unitName atom
       Nothing ->
-        "scale: step "
+        "chart: step "
           <> showMagnitude s.step
           <> " at "
           <> renderNested showMagnitude s.dims (V.toList s.origin)

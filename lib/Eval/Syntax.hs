@@ -166,7 +166,7 @@ in terms of it.
 -}
 
 -- | What a top-level definition declares besides a value (design §3.2.12, §3.6).
-data BindKind = Plain | Unit | ScaleDecl
+data BindKind = Plain | Unit | ChartDecl
   deriving stock (Eq, Show)
 
 data Binding = Binding

@@ -75,7 +75,7 @@ data Codebase = Codebase
   , units :: Set.Set Text
   -- ^ names declared with @unit@ (design §3.2.12); label-level metadata like names
   , scales :: Set.Set Text
-  -- ^ names declared with @scale@ (design §3.6)
+  -- ^ names declared with @chart@, a scale in the store (design §3.6)
   , preferences :: Set.Set Text
   -- ^ display preferences as written (@km/h@), label-level metadata (design §3.2.12)
   , typeDefs :: Map Hash TypeDef

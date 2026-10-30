@@ -132,7 +132,7 @@ statement :: Parser Statement
 statement =
   letStatement
     P.<|> unitStatement
-    P.<|> scaleStatement
+    P.<|> chartStatement
     P.<|> dataStatement
     P.<|> namespaceStatement
     P.<|> useStatement
@@ -217,12 +217,12 @@ unitStatement = do
   e <- expr
   pure (SLet (Binding (spanUnion s e.span) n [] e Unit))
 
-{- | @scale name = step at origin@ (design §3.6): a definition whose value is
-@mkScale step origin@, marked as a scale.
+{- | @chart name = step at origin@ (design §3.6; @scale@ is the old spelling): a
+definition whose value is @mkScale step origin@, marked as a chart.
 -}
-scaleStatement :: Parser Statement
-scaleStatement = do
-  s <- kw KScale
+chartStatement :: Parser Statement
+chartStatement = do
+  s <- kw KChart
   n <- name
   _ <- tok TEquals
   step <- expr
@@ -230,7 +230,7 @@ scaleStatement = do
   origin <- expr
   let sp = spanUnion s origin.span
       body = Expr sp (App (Expr sp (App (Expr s (Var "mkScale")) step)) origin)
-  pure (SLet (Binding sp n [] body ScaleDecl))
+  pure (SLet (Binding sp n [] body ChartDecl))
 
 {- | @let b@ as a definition (optionally with @where@), or @let b in e@ as an
 expression statement. Both start the same way, so they share a prefix.

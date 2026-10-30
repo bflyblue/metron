@@ -556,11 +556,15 @@ command session src = \case
     keep
       $ let full = argIn ecb n
          in case lookupName full ecb of
+              -- A chart's right-hand side, `step at origin`, is not an
+              -- expression, so it is viewed with its keyword (design §3.8).
               Just r ->
-                (: []) . ((short ecb full <> " = ") <>) <$> viewReference spelling scope ecb r
+                (: [])
+                  . (((if isScaleName full ecb then "chart " else "") <> short ecb full <> " = ") <>)
+                  <$> viewReference spelling scope ecb r
               Nothing -> viewData spelling scope cb full
   ["dependents", n] -> keep $ withName n $ \r -> pure (map (short cb) (dependents (argIn cb n) r.hash cb))
-  -- An alias of a unit or scale is one too; an alias of a namespace aliases
+  -- An alias of a unit or chart is one too; an alias of a namespace aliases
   -- every label under it (design §7.6).
   ["alias", new, old]
     | Just r <- lookupName (argIn session.codebase old) session.codebase -> do
@@ -705,7 +709,7 @@ command session src = \case
   _ ->
     Left
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit [name|namespace]  :type expr\n"
-          <> "          :ls [glob|namespace] [--all|--units|--scales|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
+          <> "          :ls [glob|namespace] [--all|--units|--charts|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
           <> "          :history name  :dependents name  :alias new old  :unname name  :rename old new  :move name… namespace\n"
           <> "          :namespace [path|.]  :uses  :use path [as alias]  :unuse path  :export [namespace] [file]  :stdlib upgrade\n"
           <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k | unicode on|off]  :prefer [unit]  :unprefer unit  :colour on|off"
@@ -880,7 +884,7 @@ removeLabel :: Text -> Codebase -> Codebase
 removeLabel n = unbindName n . unbindName ("." <> n)
 
 {- | Relabel (design §7.2, §7.6): each new path gets the labels of every kind
-its old path has, with their unit and scale flags, and unless aliasing the
+its old path has, with their unit and chart flags, and unless aliasing the
 old labels go. History keeps both. All or nothing: a new path that is
 already a label of the same kind, two old paths given one new path, or a
 new path that would be both a label and a namespace refuses the whole
@@ -936,7 +940,7 @@ editSource spelling scope cb full
   ns = init (T.splitOn "." full)
 
 {- | A stored definition or data declaration as source in a scope: @let@,
-@unit@ or @scale@ and the name relative to the scope's namespace, or the
+@unit@ or @chart@ and the name relative to the scope's namespace, or the
 @data@ declaration. Declared types are named in the scope too.
 -}
 definitionSource ::
@@ -945,7 +949,7 @@ definitionSource spelling scope cb full = case lookupName full cb of
   Just r ->
     let keyword
           | isUnitName full cb = "unit "
-          | isScaleName full cb = "scale "
+          | isScaleName full cb = "chart "
           | otherwise = "let "
      in ( \body ->
             map
@@ -1446,7 +1450,7 @@ nameTypes scope cb
             _ -> before <> "#" <> go (T.drop 1 rest)
   isBase32 c = isDigit c || (c >= 'a' && c <= 'v')
 
-{- | @:ls [glob|namespace] [--all | --units | --scales | --types] [: type]@
+{- | @:ls [glob|namespace] [--all | --units | --charts | --types] [: type]@
 (design §7.3): names in the codebase with their types, one per line,
 sorted. Alone, the current namespace's own labels (the root's at the
 root), then a line for each namespace directly under it with the number of
@@ -1461,7 +1465,11 @@ so @: a -> a@ finds @Num [m] -> Num [m]@ and @: Num -> Num@ finds @a -> a@.
 listNames :: Session -> [Text] -> Either Text [Text]
 listNames session args = do
   let (before, after) = break (== ":") args
-      flags = filter (T.isPrefixOf "--") before
+      -- @--scales@ is the old spelling of @--charts@ (design §3.6).
+      flags =
+        map
+          (\f -> if f == "--scales" then "--charts" else f)
+          (filter (T.isPrefixOf "--") before)
       words' = filter (not . T.isPrefixOf "--") before
       -- A word that names a namespace lists that namespace (design §7.6);
       -- the others are globs. With no argument at all, the current namespace.
@@ -1476,10 +1484,10 @@ listNames session args = do
       typeText = T.unwords (drop 1 after)
   mapM_
     ( \f ->
-        if f `elem` ["--all", "--units", "--scales", "--types"]
+        if f `elem` ["--all", "--units", "--charts", "--types"]
           then Right ()
           else
-            Left ("unknown flag " <> f <> "; :ls takes --all, --units, --scales, --types")
+            Left ("unknown flag " <> f <> "; :ls takes --all, --units, --charts, --types")
     )
     flags
   query <-
@@ -1495,7 +1503,7 @@ listNames session args = do
       allPaths = "--all" `elem` flags && isNothing nsFilter
       kindOk n
         | "--units" `elem` flags = isUnitName n cb
-        | "--scales" `elem` flags = isScaleName n cb
+        | "--charts" `elem` flags = isScaleName n cb
         | "--types" `elem` flags = False
         | otherwise = True
       inNamespace n = maybe True (\ns -> (ns <> ".") `T.isPrefixOf` n) nsFilter
@@ -1528,7 +1536,7 @@ listNames session args = do
       types =
         [ line
         | "--units" `notElem` flags
-        , "--scales" `notElem` flags
+        , "--charts" `notElem` flags
         , (n, h) <- sortOn (T.toLower . fst) (Map.toList cb.typeNames)
         , Just def <- [lookupTypeDef h cb]
         , line <-
@@ -1586,7 +1594,7 @@ listNames session args = do
   namesText k = tshow k <> (if k == 1 then " name" else " names")
   prefix n
     | isUnitName n cb = "unit "
-    | isScaleName n cb = "scale "
+    | isScaleName n cb = "chart "
     | otherwise = ""
   declaration shownType shown h n def =
     renderTypeDef
@@ -1785,7 +1793,7 @@ exportLabels session under = do
     let scope = S.Scope (namespaceOf n) stored
         keyword
           | isUnitName n cb = "unit "
-          | isScaleName n cb = "scale "
+          | isScaleName n cb = "chart "
           | otherwise = "let "
      in ( \b ->
             ( namespaceOf n
@@ -2144,7 +2152,7 @@ applyEdit target text session = case reconcile of
         -- A body unchanged under another keyword: @unit km@ became @let km@.
         keyword c n
           | isUnitName n c = "unit"
-          | isScaleName n c = "scale"
+          | isScaleName n c = "chart"
           | otherwise = "let" :: Text
         rekeyed =
           [ "updated " <> short n <> ": " <> keyword cb0 n <> " -> " <> keyword staged n
