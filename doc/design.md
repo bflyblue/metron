@@ -2275,8 +2275,14 @@ frame's axes. The decisions:
    one use and an inertial one in another; it meets a frame through `along`
    or a signature (`offset :: Vec body [m]`), and the first use against a
    frame says so. An ascription narrows and never relabels (§4.8).
-6. **Signatures take a constraint clause**: `cross :: Vec a d -> Vec a d1 ->
-   Vec a [d d1] where card a ~ 3`. A small grammar addition to §4.8.
+6. **Explicit `forall`, with kinds on binders.** Signatures keep quantifying
+   their lowercase variables implicitly (`offset :: Vec a [m]` already means
+   "any frame", the deliberate opt-in for decision 5), and may also say it:
+   `offset :: forall a. Vec a [m]`. A binder can carry a size, which replaces
+   a constraint clause: `cross :: forall (a : 3). Vec a d -> Vec a d1 -> Vec
+   a [d d1]` reads "any three-axis frame, the same one throughout". A
+   `forall` scopes its variables over the body, so an ascription inside
+   (`(v :: Vec a [m])`) refers to the signature's frame. Built in stage 4.
 7. **The base axes are named** (decided by the owner). Every chart without
    a parent names its own axis set; a translated child shares its parent's,
    a rotated child names its own. Two unrelated root charts (`eci`, a lab
@@ -2323,7 +2329,8 @@ v.x         : Vec a d -> Num d                             where x ∈ a
    `to` becomes the typed conversion between axis sets and needs a moving
    chart's arguments; `.-` on one chart gives that chart's `Vec`; `p.0` reads
    a chart coordinate; `velocityIn`/`stateFrom` retyped; `coordinates`.
-4. **Constraint clauses and the library.** `where card a ~ 3` in signatures;
+4. **Explicit `forall` and the library.** `forall (a : 3)` binders and scoped
+   variables in signatures (decision 6);
    `cross`, `norm`, `dual`, the rotation constructors, `Cov2`, `timap`
    generalised over axis sets; §12's sessions rewritten to the typed form.
 
