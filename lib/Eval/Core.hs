@@ -363,4 +363,6 @@ primArity = \case
   "pointAdd" -> Just 2
   "pointSub" -> Just 2
   "toScale" -> Just 2
+  "cholesky" -> Just 1
+  "covariance" -> Just 1
   _ -> Nothing

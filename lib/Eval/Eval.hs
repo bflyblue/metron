@@ -28,6 +28,7 @@ module Eval.Eval (
   UnitFactor (..),
   ScaleHint (..),
   Preferences,
+  hintPow,
   Site (..),
   eval,
   evalClosed,
@@ -40,6 +41,7 @@ module Eval.Eval (
 import Control.Monad (foldM)
 import Data.List (nub)
 import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -223,12 +225,36 @@ eval cfg rt = go
                 Nothing
                 (V.generate count (\i -> Right (unitNoise k (originOf site l i))))
             )
+    -- One independent nudge per component, the component index in its
+    -- identity (design §3.4); a scalar uncertainty applies to every component.
     TUncertain k l x e -> do
-      (xv, d, hint) <- scalarFull =<< go (child 0) env x
-      (ev, _, _) <- scalarFull =<< go (child 1) env e
-      Right (num d hint (uncertain k (originOf site l 0) xv ev))
-    -- Stack the component buffers; the shapes agree by lint. A component
-    -- that fails to evaluate becomes a block of failing elements of the
+      (dims, d, hint, xs) <- tensor =<< go (child 0) env x
+      (edims, _, _, es) <- tensor =<< go (child 1) env e
+      case (dims, edims) of
+        -- v ±σ P: v + cholesky P · gauss n, one statistical nudge per
+        -- component, identified by this site (design §3.5).
+        ([n], [en, _]) | en == n -> do
+          pRows <- chunksOf n <$> sequence (V.toList es)
+          lrows <- arith (choleskyRows (precisionOf cfg) pRows)
+          let noise j = unitNoise k (originOf site l j)
+              component i =
+                ( \vi ->
+                    foldl
+                      addM
+                      vi
+                      [mulM (precisionOf cfg) lij (noise j) | (j, lij) <- zip [0 ..] (lrows !! i)]
+                )
+                  <$> (xs V.! i)
+          Right (VTensor dims d hint (V.generate n component))
+        _ ->
+          let errAt i = if null edims then es V.! 0 else es V.! i
+           in Right
+                ( VTensor
+                    dims
+                    d
+                    hint
+                    (V.imap (\i xm -> uncertain k (originOf site l i) <$> xm <*> errAt i) xs)
+                )
     -- shape the other components have, so an error in one component is
     -- only raised when that component is used. The first component's
     -- display unit is kept.
@@ -592,6 +618,36 @@ runPrim cfg rt prim args = case (prim, args) of
         rows <- matrixRows n buf
         num dimOne Nothing <$> arith (determinant p n rows)
       _ -> Left (Internal "det of a non-square matrix")
+  ("cholesky", [a]) -> do
+    (dims, d, _, buf) <- tensor =<< a
+    case dims of
+      [n, n'] | n == n' -> do
+        rows <- matrixRows n buf
+        l <- arith (choleskyRows p rows)
+        d2 <-
+          maybe
+            (Left (Internal "cholesky of a dimension that is not a square"))
+            Right
+            (dimRoot 2 d)
+        Right (VTensor [n, n] d2 Nothing (V.fromList (map Right (concat l))))
+      _ -> Left (Internal "cholesky of a non-square matrix")
+  -- Σ cᵢ cᵢᵀ over the statistical nudges (design §3.5): exact, from the
+  -- coefficients.
+  ("covariance", [a]) -> do
+    (dims, d, _, buf) <- tensor =<< a
+    xs <- sequence (V.toList buf)
+    let n = case dims of
+          [k] -> k
+          _ -> V.length buf
+        cols = map statCoefficients xs
+        cov i j = Exact (sum (Map.elems (Map.intersectionWith (*) (cols !! i) (cols !! j))))
+    Right
+      ( VTensor
+          [n, n]
+          (dimPow 2 d)
+          Nothing
+          (V.fromList [Right (cov i j) | i <- [0 .. n - 1], j <- [0 .. n - 1]])
+      )
   ("inverse", [a]) -> do
     (dims, d, _, buf) <- tensor =<< a
     case dims of
@@ -869,3 +925,33 @@ render = \case
   headMay = \case
     x : _ -> Just x
     [] -> Nothing
+
+chunksOf :: Int -> [a] -> [[a]]
+chunksOf n xs
+  | null xs = []
+  | otherwise = let (r, rest) = splitAt n xs in r : chunksOf n rest
+
+{- | Cholesky–Banachiewicz on enclosures (design §3.5): @L Lᵀ = P@ with @L@
+lower triangular. A pivot whose enclosure reaches zero or below means the
+matrix may not be positive definite, which is a domain error.
+-}
+choleskyRows :: Precision -> [[Magnitude]] -> Either ArithError [[Magnitude]]
+choleskyRows p a = go 0 []
+ where
+  n = length a
+  go i done
+    | i == n = Right done
+    | otherwise = do
+        row <- rowFor i done
+        go (i + 1) (done ++ [row])
+  rowFor i done = do
+    let entry j prev
+          | j > i = Right (Exact 0)
+          | otherwise = do
+              let rowJ = if j == i then prev else done !! j
+                  s = foldl addM (Exact 0) [mulM p (prev !! k) (rowJ !! k) | k <- [0 .. j - 1]]
+                  rest = subM ((a !! i) !! j) s
+              if i == j
+                then sqrtM p rest
+                else divM p rest ((done !! j) !! j)
+    foldM (\acc j -> (\x -> acc ++ [x]) <$> entry j acc) [] [0 .. n - 1]

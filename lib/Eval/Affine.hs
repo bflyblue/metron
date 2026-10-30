@@ -28,6 +28,7 @@ module Eval.Affine (
   Collapsed (..),
   collapse,
   sigmaOf,
+  statCoefficients,
 
   -- * Arithmetic
   ArithError (..),
@@ -827,3 +828,11 @@ originId k origin m = NudgeId . SHA256.hash $ case origin of
   Declared (Hash h) path i -> h <> TE.encodeUtf8 (tshow (k, path, i, m))
   Tagged l i -> TE.encodeUtf8 ("#" <> l) <> TE.encodeUtf8 (tshow (k, i))
   Builtin name -> TE.encodeUtf8 name
+
+{- | The coefficients of the statistical nudges: one column of the
+square-root factor of the covariance (design §3.5).
+-}
+statCoefficients :: Magnitude -> Map NudgeId Rational
+statCoefficients = \case
+  Exact _ -> Map.empty
+  Affine _ ts _ -> Map.mapMaybe (\(c, n) -> if n.kind == Stat then Just c else Nothing) ts

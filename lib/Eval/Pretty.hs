@@ -4,6 +4,7 @@ Core terms back to surface syntax for @:view@.
 module Eval.Pretty (
   renderRational,
   renderMagnitude,
+  renderRough,
   renderValue,
   renderValueWith,
   displayParts,
@@ -485,3 +486,7 @@ binary = \case
   "or" -> Just ("||", 2, R)
   "to" -> Just ("to", 1, N)
   _ -> Nothing
+
+-- | A magnitude to two significant digits, for radii and bias boxes.
+renderRough :: Magnitude -> Text
+renderRough m = renderRadius (abs (midpoint m))

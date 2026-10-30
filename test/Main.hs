@@ -2052,6 +2052,59 @@ affineTests =
         case evalP ":prefer 5" of
           Left err -> T.isInfixOf "has no unit to prefer" err @? T.unpack err
           Right v -> assertFailure (show v)
+    , testCase "± on tensors: one independent nudge per component" $ do
+        evalP "[1, 1, 1] m ± 0.1 m" @?= Right ["[1.0 ± 0.1, 1.0 ± 0.1, 1.0 ± 0.1] m"]
+        runLinesP ["let v = [1, 1, 1] m ± 0.1 m", "v.0 - v.1", "v - v"]
+          @?= Right ["0.0 ± 0.2 m", "[0, 0, 0] m"]
+        evalP "[1, 2] ± [0.1, 0.2]" @?= Right ["[1.0 ± 0.1, 2.0 ± 0.2]"]
+        case evalP "[1, 2] ± [0.1, 0.2, 0.3]" of
+          Left err -> T.isInfixOf "shape and dimension of the value" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "covariance is the square-root factor's product; cholesky inverts it" $ do
+        evalP "let x = gauss 2 in covariance [x.0 + 3 * x.1, 2 * x.0]"
+          @?= Right ["[10, 2; 2, 4]"]
+        evalP "cholesky [[4, 2], [2, 10]]" @?= Right ["[2, 0; 1, 3]"]
+        evalP "cholesky [[4, 2], [2, 3]]"
+          @?= Right ["[2, 0; 1, 1.4142135623730950488…]"]
+        evalP "cholesky [[1, 2], [2, 1]]"
+          @?= Left "error: sqrt of a value that may be negative"
+        typeOfTextP "covariance" @?= Right "Vec n d -> Mat n n [d^2]"
+        typeOfTextP "cholesky" @?= Right "Mat n n [d^2] -> Mat n n d"
+    , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
+        runLinesP
+          [ "let w = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"
+          , "w"
+          , "covariance w"
+          , ":covariance w"
+          ]
+          @?= Right
+            [ "[0 ±σ 2, 0.0 ±σ 3.2] m"
+            , "[4, 2; 2, 10] m^2"
+            , "covariance [4, 2; 2, 10] m^2"
+            , "bound box [0, 0] m"
+            ]
+        runLinesP
+          [ "let w = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"
+          , "let w2 = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"
+          , "covariance (w - w2)"
+          ]
+          @?= Right ["[8, 4; 4, 20] m^2"]
+        runLinesP
+          [ "let w3 = [0, 0] m ±σ [[4, 2], [2, 10]] m^2 #gps"
+          , "let w4 = [0, 0] m ±σ [[4, 2], [2, 10]] m^2 #gps"
+          , "w3 - w4"
+          ]
+          @?= Right ["[0, 0] m"]
+        case evalP "[0, 0] m ± [[4, 2], [2, 10]] m^2" of
+          Left err -> T.isInfixOf "a bound has no covariance" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase ":covariance separates the statistical part from the bound box" $ do
+        evalP ":covariance 5 ±σ 0.1" @?= Right ["variance 0.01", "bound 0"]
+        runLinesP ["let t = 45 deg ± 0.001 rad", ":covariance [cos t, sin t, 0] km"]
+          @?= Right
+            [ "covariance [0, 0, 0; 0, 0, 0; 0, 0, 0] km^2"
+            , "bound box [0.00071, 0.00071, 0] km"
+            ]
     , testCase "points: scales, .+ and .-, printing on the written scale" $ do
         evalP "20 degC" @?= Right ["20 degC"]
         evalP "20 °C .+ 5 K" @?= Right ["25 degC"]

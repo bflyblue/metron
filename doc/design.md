@@ -983,14 +983,30 @@ let r = r0 + Lr * e           -- Lr : Mat 3 6 [m]
 let v = v0 + Lv * e           -- Lv : Mat 3 6 [m/s]
 ```
 
-`withCovariance v P` is sugar for `v + cholesky P * gauss n` for the single-vector
-case.
+For the single-vector case `v ±σ P`, with `P : Mat n n [d^2]` the covariance
+matrix, is `v + cholesky P · gauss n`: one statistical nudge per component,
+identified by the definition site like every `±`, so two identical
+declarations are independent and `#label` shares one. A bound has no covariance,
+so `v ± P` with a matrix is a type error.
 
-**Getting covariance out.** `covariance v` is an ordinary function on a homogeneous
-vector. For a tuple `(r, v)` the joint 6×6 has mixed units that the v1 type system
-cannot express, so the REPL view `:covariance e` prints the blocks
-`Cov(r, r) : [m^2]`, `Cov(r, v) : [m^2/s]`, `Cov(v, v) : [m^2/s^2]`. This is the
-strongest argument for mixed-dimension matrices on the roadmap.
+**Getting covariance out.** `covariance v : Vec n d -> Mat n n [d^2]` is an
+ordinary function on a homogeneous vector, exact in the coefficients, and
+`cholesky : Mat n n [d^2] -> Mat n n d` is its inverse on positive-definite
+matrices (it fails with a domain error when a pivot's enclosure reaches zero).
+The REPL view `:covariance e` prints the covariance of a vector, or the variance
+of a number, followed by the **bound box**: each component's rigorous radius
+from the bound nudges, which has no variance and is reported beside it:
+
+```
+> :covariance [cos t, sin t, 0] km        -- t = 45 deg ± 0.001 rad
+covariance [0, 0, 0; 0, 0, 0; 0, 0, 0] km^2
+bound box [0.00071, 0.00071, 0] km
+```
+
+For a tuple `(r, v)` the joint 6×6 has mixed units that the type system cannot
+express, so it would print the blocks `Cov(r, r) : [m^2]`, `Cov(r, v) : [m^2/s]`,
+`Cov(v, v) : [m^2/s^2]` once tuples exist. This is the strongest argument for
+mixed-dimension matrices on the roadmap.
 
 `:budget` and `:covariance` are two projections of one nudge set: budget sorts
 `|cᵢ|` within each kind, covariance sums `cᵢ cᵢᵀ` over the statistical kind. A
@@ -1212,6 +1228,10 @@ pointAdd    : Point s d -> Tensor s d -> Point s d      -- `.+`
 pointSub    : Point s d -> Point s d -> Tensor s d      -- `.-`
 toScale     : Point s d -> Scale s d -> Point s d       -- `p to s` when s is a scale
 p.i         : Point (n + i + 1 : s) d -> Point s d      -- a coordinate is a point
+covariance  : Vec n d -> Mat n n [d^2]                  -- Σ cᵢcᵢᵀ over the statistical nudges (3.5)
+cholesky    : Mat n n [d^2] -> Mat n n d
+x ± e, x ±σ e : Tensor s d -> Num d | Tensor s d -> Tensor s d   -- per component (3.4)
+v ±σ P      : Vec n d -> Mat n n [d^2] -> Vec n d       -- a vector with covariance P (3.5)
 pi e        : Num 1
 e ^ n       : Num d -> Num [d^n]            -- special form, n an integer literal
 noise n     : Vec n 1                        -- special form, n a natural literal
@@ -1675,7 +1695,7 @@ Session
 :set unicode on    pretty-print with unicode spellings (2.8); off for ASCII
 :exact e           raw rational, or midpoint and nudge list
 :budget e          error budget (3.2.6)
-:covariance e      covariance view (3.5)
+:covariance e      covariance (or variance) of the statistical nudges, and the bound box (3.5)
 :load file         enter a file into the scratch as one binding group
 :quit
 ```
@@ -1900,15 +1920,16 @@ tuned, and compilation is a later milestone.
 4. **Tensors.** Shape-indexed types, the product operators and their shape
    constraints, literals and printing: done. Remaining: `norm`, `inverse`,
    `det` kernels: done (Gaussian elimination with pivots whose enclosure
-   excludes zero). Remaining: `covariance`, `:covariance`, `cholesky`, `±` on
-   tensors (§3.4), and `contract`/`permute` for ranks above two.
+   excludes zero), `covariance`, `cholesky`, `:covariance`, `±` and `±σ` on
+   tensors and `v ±σ P` (§3.4, §3.5): done. Remaining: `contract`/`permute`
+   for ranks above two, mixed-dimension matrices for a joint state covariance.
    Points and scales (§3.6): done, over any shape; frames with a rotated
    basis remain.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),
-   haskeline with a history file beside the store, `:store`, `:prefer`.
-   Remaining: `:covariance`, `:set unicode`, a merge tool for two stores' logs.
+   haskeline with a history file beside the store, `:store`, `:prefer`,
+   `:covariance`. Remaining: `:set unicode`, a merge tool for two stores' logs.
 7. **Tuples**, then **lists** with a `case` construct in the core.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons

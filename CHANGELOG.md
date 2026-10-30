@@ -183,3 +183,10 @@
 - `:prefer unit` and `:unprefer unit` (design §3.2.12): a display unit per
   exact dimension, applied after `to` and before the written units, one per
   dimension, kept in the codebase so it persists. `:prefer` alone lists them.
+- Covariance (design §3.4, §3.5). `±` and `±σ` work on tensors with one
+  independent nudge per component (a scalar uncertainty or one of the
+  value's shape); `v ±σ P` with a covariance matrix is a vector with that
+  covariance, stamped like every `±`. `covariance v` gives Σ cᵢcᵢᵀ over the
+  statistical nudges exactly, `cholesky` its square-root factor, and
+  `:covariance e` prints the covariance (or variance) with the bound box
+  beside it. The design's `withCovariance` became `±σ` with a matrix.

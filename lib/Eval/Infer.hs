@@ -135,6 +135,9 @@ freshShape =
 resolve :: Type -> Infer Type
 resolve t = gets (\st -> applyType st.subst t)
 
+resolveShape :: Shape -> Infer Shape
+resolveShape s = gets (\st -> applyShape st.subst s)
+
 failAt :: Path -> Text -> Infer a
 failAt p msg = lift (Left (TypeError (reverse p) msg))
 
@@ -563,17 +566,43 @@ infer look p ctx = \case
     unify (0 : p) (numD d) tb
     pure (numD (dimPow (fromIntegral n) d), TPow b' n)
   Noise k l n -> pure (vecT (LLit (fromIntegral n)), TNoise k l n)
+  -- x ± e over any shape (design §3.4): the uncertainty is a scalar applied
+  -- to every component, or a tensor of the value's shape; in both cases one
+  -- independent nudge per component.
   Uncertain k l x e -> do
     d <- freshDim
+    s <- freshShape
     (tx, x') <- infer look (0 : p) ctx x
-    unify (0 : p) (numD d) tx
+    unify (0 : p) (TTensor s d) tx
     (te, e') <- infer look (1 : p) ctx e
-    unifyMsg
-      (1 : p)
-      (numD d)
-      te
-      "the uncertainty must have the dimension of the value"
-    pure (numD d, TUncertain k l x' e')
+    te' <- resolve te
+    s' <- resolveShape s
+    case (te', s') of
+      (TTensor SNil _, _) ->
+        unifyMsg
+          (1 : p)
+          (numD d)
+          te
+          "the uncertainty must have the dimension of the value"
+      -- v ±σ P: a vector with covariance P (design §3.5).
+      (TTensor (SCons _ (SCons _ SNil)) _, SCons n SNil)
+        | k == Stat ->
+            unifyMsg
+              (1 : p)
+              (TTensor (SCons n (SCons n SNil)) (dimPow 2 d))
+              te
+              "a covariance must be an n×n matrix of the value's dimension squared"
+        | otherwise ->
+            failAt
+              (1 : p)
+              "a covariance matrix goes with ±σ, not ±: a bound has no covariance"
+      _ ->
+        unifyMsg
+          (1 : p)
+          (TTensor s d)
+          te
+          "the uncertainty must be a scalar, have the shape and dimension of the value, or be its covariance matrix"
+    pure (TTensor s d, TUncertain k l x' e')
   Pack ts -> do
     elemShape <- freshShape
     elemDim <- freshDim

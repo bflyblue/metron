@@ -22,11 +22,18 @@ import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Eval.Affine (Magnitude (..), addM)
+import Data.Vector qualified as V
+import Eval.Affine (
+  Collapsed (..),
+  Magnitude (..),
+  addM,
+  collapse,
+  statCoefficients,
+ )
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
-import Eval.Dimension (Dim, renderDim)
+import Eval.Dimension (Dim, dimPow, renderDim)
 import Eval.Eval
 import Eval.Hash (hashTerm, showHash)
 import Eval.Infer qualified as I
@@ -246,6 +253,55 @@ command session src = \case
         pure (renderBudget (inputNamer h) cfg.precision units (foldr addM (Exact 0) xs))
       Left (Internal _) -> Left "budget: not a number"
       Left err -> Left (renderEvalError err)
+  -- The covariance view (design §3.5): Σ cᵢcᵢᵀ over the statistical nudges of
+  -- a vector, with the bound radii beside it as a bias box.
+  ("covariance" : rest) -> keep $ do
+    (h, v) <- evalOf rest
+    case v of
+      VTensor dims d hint buf | length dims <= 1 -> do
+        xs <- either (Left . renderEvalError) Right (sequence (V.toList buf))
+        let n = length xs
+            cols = map statCoefficients xs
+            cov i j = Exact (sum (Map.elems (Map.intersectionWith (*) (cols !! i) (cols !! j))))
+            covValue =
+              VTensor
+                [n, n]
+                (dimPow 2 d)
+                ((\hh -> hh{pinned = False}) <$> (hintPow (precisionOf cfg) 2 =<< hint))
+                (V.fromList [Right (cov i j) | i <- [0 .. n - 1], j <- [0 .. n - 1]])
+            bounds = VTensor dims d hint (V.fromList [Right (Exact (collapse x).bound) | x <- xs])
+        let scalarVar =
+              VTensor
+                []
+                (dimPow 2 d)
+                ((\hh -> hh{pinned = False}) <$> (hintPow (precisionOf cfg) 2 =<< hint))
+                (V.singleton (Right (cov 0 0)))
+        covText <-
+          either
+            (Left . renderEvalError)
+            Right
+            ( renderValue
+                (inputNamer h)
+                cfg.precision
+                session.preferred
+                (if null dims then scalarVar else covValue)
+            )
+        boundText <-
+          either
+            (Left . renderEvalError)
+            Right
+            ( renderValueWith
+                (inputNamer h)
+                cfg.precision
+                session.preferred
+                renderRough
+                bounds
+            )
+        pure
+          [ (if null dims then "variance " else "covariance ") <> covText
+          , (if null dims then "bound " else "bound box ") <> boundText
+          ]
+      _ -> Left "covariance: a number or a vector"
   ["add"] -> add session
   ["update"] -> update True session
   ["update", "--no-upgrade"] -> update False session
@@ -297,7 +353,7 @@ command session src = \case
     Left
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
           <> "          :view name  :core name  :hash name  :names #hash  :history name  :dependents name  :alias new old  :unname name\n"
-          <> "          :exact expr  :budget expr  :set [precision n | sigma k]  :prefer [unit]  :unprefer unit"
+          <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k]  :prefer [unit]  :unprefer unit"
       )
  where
   cb = session.staging

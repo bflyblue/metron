@@ -135,6 +135,10 @@ primScheme name = case name of
   -- det : Mat n n d -> Num [d^n] needs the length as an exponent; until that
   -- relation exists, det is on dimensionless matrices.
   "det" -> Just (Forall [nv] (TFun (matD n n dimOne) numT))
+  -- Covariance (design §3.5): a square-root factor, the covariance of a
+  -- vector's statistical nudges, and a vector with a given covariance.
+  "cholesky" -> Just (Forall [nv, dv] (TFun (matD n n (dimPow 2 d)) (matD n n d)))
+  "covariance" -> Just (Forall [nv, dv] (TFun (vecD n d) (matD n n (dimPow 2 d))))
   "vmap" ->
     Just
       (Forall [sv, dv, d2v] (TFun (TFun (numD d) (numD d2)) (TFun sd (TTensor s d2))))
@@ -275,9 +279,14 @@ lint look ctx = \case
   TUncertain _ _ x e -> do
     tx <- monoOf x
     te <- monoOf e
-    case tx of
-      TTensor SNil _ | tx == te -> mono tx
-      _ -> Left "± needs two numbers of one dimension"
+    case (tx, te) of
+      (TTensor _ d, TTensor SNil d') | d == d' -> mono tx
+      (TTensor _ _, _) | tx == te -> mono tx
+      (TTensor (SCons n SNil) d, TTensor (SCons n' (SCons n'' SNil)) d2)
+        | n == n', n == n'', d2 == dimPow 2 d -> mono tx
+      _ ->
+        Left
+          "± needs a tensor and an uncertainty of its dimension: scalar, of its shape, or its covariance matrix"
   TPack ts -> do
     tys <- mapM monoOf ts
     case tys of
