@@ -29,6 +29,8 @@ module Eval.Eval (
   ScaleHint (..),
   Preferences,
   hintPow,
+  hintProduct,
+  covarianceMatrix,
   Site (..),
   eval,
   evalClosed,
@@ -41,7 +43,6 @@ module Eval.Eval (
 import Control.Monad (foldM, zipWithM)
 import Data.List (nub)
 import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -488,6 +489,10 @@ combine _ (Just a) Nothing = Just a
 combine _ Nothing (Just b) = Just b
 combine _ Nothing Nothing = Nothing
 
+-- | The display unit of a product, as @outer@ gives it its operands'.
+hintProduct :: Precision -> Maybe UnitHint -> Maybe UnitHint -> Maybe UnitHint
+hintProduct p = combine (hintMul p)
+
 -- Primitives -------------------------------------------------------------------------
 
 {- | Run a saturated primitive. Arguments are in source order and are forced
@@ -654,22 +659,20 @@ runPrim cfg rt prim args = case (prim, args) of
         Right (VTensor [n, n] d2 Nothing (V.fromList (map Right (concat l))))
       _ -> Left (Internal "cholesky of a non-square matrix")
   -- Σ cᵢ cᵢᵀ over the statistical nudges (design §3.5): exact, from the
-  -- coefficients.
+  -- coefficients. The covariance is the cross-covariance of a vector with
+  -- itself, with no display unit of its own.
   ("covariance", [a]) -> do
-    (dims, d, _, buf) <- tensor =<< a
+    (_, d, _, buf) <- tensor =<< a
     xs <- sequence (V.toList buf)
-    let n = case dims of
-          [k] -> k
-          _ -> V.length buf
-        cols = map statCoefficients xs
-        cov i j = Exact (sum (Map.elems (Map.intersectionWith (*) (cols !! i) (cols !! j))))
-    Right
-      ( VTensor
-          [n, n]
-          (dimPow 2 d)
-          Nothing
-          (V.fromList [Right (cov i j) | i <- [0 .. n - 1], j <- [0 .. n - 1]])
-      )
+    Right (covarianceMatrix (dimPow 2 d) Nothing xs xs)
+  -- Σ cᵢ c'ⱼᵀ over the statistical nudges the two vectors share: exact, in
+  -- the product of their dimensions and display units, as for outer.
+  ("crossCovariance", [a, b]) -> do
+    (_, d1, h1, xs) <- tensor =<< a
+    (_, d2, h2, ys) <- tensor =<< b
+    as <- sequence (V.toList xs)
+    bs <- sequence (V.toList ys)
+    Right (covarianceMatrix (dimMul d1 d2) (hintProduct p h1 h2) as bs)
   ("inverse", [a]) -> do
     (dims, d, _, buf) <- tensor =<< a
     case dims of
@@ -1099,6 +1102,18 @@ chunksOf :: Int -> [a] -> [[a]]
 chunksOf n xs
   | null xs = []
   | otherwise = let (r, rest) = splitAt n xs in r : chunksOf n rest
+
+{- | The @m × n@ matrix of exact cross-covariances of two lists of
+magnitudes (design §3.5), in the given dimension and display unit. Shared
+by @covariance@, @crossCovariance@ and the REPL's @:covariance@.
+-}
+covarianceMatrix :: Dim -> Maybe UnitHint -> [Magnitude] -> [Magnitude] -> Value
+covarianceMatrix d hint as bs =
+  VTensor
+    [length as, length bs]
+    d
+    hint
+    (V.fromList [Right (Exact c) | row <- crossCovarianceRows as bs, c <- row])
 
 {- | Cholesky–Banachiewicz on enclosures (design §3.5): @L Lᵀ = P@ with @L@
 lower triangular. A pivot whose enclosure reaches zero or below means the

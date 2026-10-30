@@ -1,6 +1,8 @@
 {- | The standard library (design §3.2.11, §7.7): derived SI units, prefixes,
 accepted units, exact constants, the Levi-Civita tensor and the cross
-product, as source text in the language itself, under the namespace @std@.
+product, the structural functions, and a joint covariance in blocks with
+its Kalman filter steps (design §3.7), as source text in the language
+itself, under the namespace @std@.
 A new codebase is seeded with it as one binding group, so every unit is an
 ordinary hashed, viewable definition that lives in the codebase like any
 other. The prefix table is generated here rather than typed by hand.
@@ -218,6 +220,76 @@ structural =
   , ("range", "\\a b -> if a > b then {} else a : range (a + 1) b")
   ]
 
+{- | A joint covariance in blocks (design §3.7): the covariance of a state
+@(r, v)@ of two homogeneous vectors, @r : Vec n d1@ and @v : Vec n d2@, as
+the record of its three distinct blocks, @rr = Cov(r, r)@, @rv = Cov(r, v)@
+and @vv = Cov(v, v)@ (the fourth is @transpose rv@). Every block is
+homogeneous, so no matrix of mixed dimensions is needed, and the Kalman
+filter's steps are written on the blocks: propagation @Φ P Φᵀ@ with
+@Φ = [Φ_rr, Φ_rv; Φ_vr, Φ_vv]@, the innovation covariance @H P Hᵀ + R@ and
+the gain @P Hᵀ S⁻¹@ with @H = [H_r | H_v]@, and the update @(I − K H) P@.
+-}
+covarianceData :: Text
+covarianceData =
+  "data Cov2 n d1 d2 = Cov2 {rr :: Mat n n [d1^2], rv :: Mat n n [d1 d2], vv :: Mat n n [d2^2]}"
+
+{- | The block filter over 'covarianceData'. @propagateCov2@ forms the block
+rows of @Φ P@ first and multiplies them by the block columns of @Φᵀ@;
+expanded, @rr' = Φ_rr rr Φ_rrᵀ + Φ_rv rvᵀ Φ_rrᵀ + Φ_rr rv Φ_rvᵀ + Φ_rv vv
+Φ_rvᵀ@. @gain2@ returns the pair @(K_r, K_v)@ of the gain's block rows.
+@updateCov2@ is @P − K (H P)@ with @H P = (P Hᵀ)ᵀ@, since @P@ is
+symmetric: written with @transpose h_r@ the measurement matrices have a
+known rank, where @h_r \@ p.rr@ alone would default @h_r@ to a vector
+(design §4.2).
+-}
+covarianceBlocks :: [(Text, Text)]
+covarianceBlocks =
+  [
+    ( "jointCovariance"
+    , "\\state -> case state of (r, v) -> Cov2 {rr = crossCovariance r r, rv = crossCovariance r v, vv = crossCovariance v v}"
+    )
+  ,
+    ( "propagateCov2"
+    , T.unwords
+        [ "\\phi p -> case phi of (phi_rr, phi_rv, phi_vr, phi_vv) ->"
+        , "let rr_ = phi_rr @ p.rr + phi_rv @ transpose p.rv in"
+        , "let rv_ = phi_rr @ p.rv + phi_rv @ p.vv in"
+        , "let vr_ = phi_vr @ p.rr + phi_vv @ transpose p.rv in"
+        , "let vv_ = phi_vr @ p.rv + phi_vv @ p.vv in"
+        , "Cov2 {rr = rr_ @ transpose phi_rr + rv_ @ transpose phi_rv,"
+        , "rv = rr_ @ transpose phi_vr + rv_ @ transpose phi_vv,"
+        , "vv = vr_ @ transpose phi_vr + vv_ @ transpose phi_vv}"
+        ]
+    )
+  ,
+    ( "innovationCov2"
+    , T.unwords
+        [ "\\h_r h_v p r_meas ->"
+        , "h_r @ p.rr @ transpose h_r + h_r @ p.rv @ transpose h_v"
+        , "+ h_v @ transpose p.rv @ transpose h_r + h_v @ p.vv @ transpose h_v + r_meas"
+        ]
+    )
+  ,
+    ( "gain2"
+    , T.unwords
+        [ "\\h_r h_v p s_inv ->"
+        , "((p.rr @ transpose h_r + p.rv @ transpose h_v) @ s_inv,"
+        , "(transpose p.rv @ transpose h_r + p.vv @ transpose h_v) @ s_inv)"
+        ]
+    )
+  ,
+    ( "updateCov2"
+    , T.unwords
+        [ "\\k h_r h_v p -> case k of (k_r, k_v) ->"
+        , "let ph_r = p.rr @ transpose h_r + p.rv @ transpose h_v in"
+        , "let ph_v = transpose p.rv @ transpose h_r + p.vv @ transpose h_v in"
+        , "Cov2 {rr = p.rr - k_r @ transpose ph_r,"
+        , "rv = p.rv - k_r @ transpose ph_v,"
+        , "vv = p.vv - k_v @ transpose ph_v}"
+        ]
+    )
+  ]
+
 {- | The library's statements at the root, one per line, as the prelude was
 entered before it moved under @std@ (design §7.7). 'stdlibSource' is this
 inside a @namespace std@ block; the tests enter both to check that the
@@ -245,16 +317,27 @@ preludeSource =
 stdlibNamespace :: Text
 stdlibNamespace = "std"
 
+{- | Statements the library gained after it moved under @std@: they were
+never at the root, so they are not in 'preludeSource' and the migration
+records no root history for them (design §7.7).
+-}
+stdlibAdditions :: Text
+stdlibAdditions =
+  T.unlines
+    (covarianceData : ["let " <> n <> " = " <> e | (n, e) <- covarianceBlocks])
+
 -- | The standard library as source: every statement inside @namespace std@.
 stdlibSource :: Text
 stdlibSource =
   T.unlines
     ( ("namespace " <> stdlibNamespace)
-        : map ("  " <>) (T.lines preludeSource)
+        : map ("  " <>) (T.lines preludeSource ++ T.lines stdlibAdditions)
     )
 
-{- | Every name the library defines, by its full path (@std.km@), spelled as
-the lexer reads it.
+{- | Every label the library defines, by its full path (@std.km@), spelled as
+the lexer reads it: what @:ls@ counts for @namespace std@. A type and its
+constructor of one name are one path, and a record's fields are labels,
+which @:ls std@ does not list.
 -}
 stdlibNames :: [Text]
 stdlibNames =
@@ -266,6 +349,9 @@ stdlibNames =
         ++ map fst scales
         ++ map fst algebra
         ++ map fst structural
+        -- Cov2 names the type and its constructor; the fields are labels.
+        ++ ["Cov2", "rr", "rv", "vv"]
+        ++ map fst covarianceBlocks
     )
 
 {- | A codebase seeded with the library (design §7.7): 'stdlibSource'

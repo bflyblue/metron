@@ -29,6 +29,7 @@ module Eval.Affine (
   collapse,
   sigmaOf,
   statCoefficients,
+  crossCovarianceRows,
 
   -- * Arithmetic
   ArithError (..),
@@ -837,3 +838,16 @@ statCoefficients :: Magnitude -> Map NudgeId Rational
 statCoefficients = \case
   Exact _ -> Map.empty
   Affine _ ts _ -> Map.mapMaybe (\(c, n) -> if n.kind == Stat then Just c else Nothing) ts
+
+{- | The cross-covariance of two lists of magnitudes over their shared
+statistical nudges (design §3.5): entry @(i, j)@ is
+@Σ_k coeff(aᵢ, k) · coeff(bⱼ, k)@, exact. With @a = b@ it is the covariance
+@Σ cᵢcᵢᵀ@ of one vector.
+-}
+crossCovarianceRows :: [Magnitude] -> [Magnitude] -> [[Rational]]
+crossCovarianceRows as bs =
+  [ [sum (Map.elems (Map.intersectionWith (*) ca cb)) | cb <- colsB]
+  | ca <- map statCoefficients as
+  ]
+ where
+  colsB = map statCoefficients bs

@@ -44,12 +44,11 @@ import Eval.Affine (
   Magnitude (..),
   addM,
   collapse,
-  statCoefficients,
  )
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
-import Eval.Dimension (Dim, Spelling (..), dimPow, dimVar, renderDimIn)
+import Eval.Dimension (Dim, Spelling (..), dimMul, dimPow, dimVar, renderDimIn)
 import Eval.Eval
 import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
@@ -429,54 +428,56 @@ command session src = \case
       Left (Internal _) -> Left "budget: not a number"
       Left err -> Left (renderEvalError err)
   -- The covariance view (design §3.5): Σ cᵢcᵢᵀ over the statistical nudges of
-  -- a vector, with the bound radii beside it as a bias box.
+  -- a vector, with the bound radii beside it as a bias box. A pair of
+  -- vectors (r, v) prints its joint covariance as the three blocks of
+  -- std.jointCovariance, rr, rv and vv (design §3.7), and both boxes.
   ("covariance" : rest) -> keep $ do
     (h, v) <- evalOf rest
+    let shown =
+          either (Left . renderEvalError) Right
+            . renderValue (inputPrinter h) cfg.precision session.preferred
+        rough =
+          either (Left . renderEvalError) Right
+            . renderValueWith (inputPrinter h) cfg.precision session.preferred renderRough
+        components buf = either (Left . renderEvalError) Right (sequence (V.toList buf))
+        unpinned = fmap (\hh -> hh{pinned = False})
+        -- One vector's bound radii, in its own shape and unit.
+        boundsOf dims d hint xs = VTensor dims d hint (V.fromList [Right (Exact (collapse x).bound) | x <- xs])
+        vectorOf = \case
+          Right (VTensor [n] d hint buf) -> Just (n, d, hint, buf)
+          _ -> Nothing
     case v of
       VTensor dims d hint buf | length dims <= 1 -> do
-        xs <- either (Left . renderEvalError) Right (sequence (V.toList buf))
-        let n = length xs
-            cols = map statCoefficients xs
-            cov i j = Exact (sum (Map.elems (Map.intersectionWith (*) (cols !! i) (cols !! j))))
-            covValue =
-              VTensor
-                [n, n]
-                (dimPow 2 d)
-                ((\hh -> hh{pinned = False}) <$> (hintPow (precisionOf cfg) 2 =<< hint))
-                (V.fromList [Right (cov i j) | i <- [0 .. n - 1], j <- [0 .. n - 1]])
-            bounds = VTensor dims d hint (V.fromList [Right (Exact (collapse x).bound) | x <- xs])
-        let scalarVar =
-              VTensor
-                []
-                (dimPow 2 d)
-                ((\hh -> hh{pinned = False}) <$> (hintPow (precisionOf cfg) 2 =<< hint))
-                (V.singleton (Right (cov 0 0)))
-        covText <-
-          either
-            (Left . renderEvalError)
-            Right
-            ( renderValue
-                (inputPrinter h)
-                cfg.precision
-                session.preferred
-                (if null dims then scalarVar else covValue)
-            )
-        boundText <-
-          either
-            (Left . renderEvalError)
-            Right
-            ( renderValueWith
-                (inputPrinter h)
-                cfg.precision
-                session.preferred
-                renderRough
-                bounds
-            )
+        xs <- components buf
+        let covHint = unpinned (hintPow (precisionOf cfg) 2 =<< hint)
+            covValue = covarianceMatrix (dimPow 2 d) covHint xs xs
+            scalarVar = case covValue of
+              VTensor _ d' h' cs -> VTensor [] d' h' (V.take 1 cs)
+              other -> other
+        covText <- shown (if null dims then scalarVar else covValue)
+        boundText <- rough (boundsOf dims d hint xs)
         pure
           [ (if null dims then "variance " else "covariance ") <> covText
           , (if null dims then "bound " else "bound box ") <> boundText
           ]
-      _ -> Left "covariance: a number or a vector"
+      VData (Builtin "Tuple") [a, b]
+        | Just (n1, d1, h1, buf1) <- vectorOf a
+        , Just (n2, d2, h2, buf2) <- vectorOf b -> do
+            xs <- components buf1
+            ys <- components buf2
+            let p = precisionOf cfg
+                block d hh = covarianceMatrix d (unpinned hh)
+            rr <- shown (block (dimPow 2 d1) (hintPow p 2 =<< h1) xs xs)
+            rv <- shown (block (dimMul d1 d2) (hintProduct p h1 h2) xs ys)
+            vv <- shown (block (dimPow 2 d2) (hintPow p 2 =<< h2) ys ys)
+            boxes <-
+              rough
+                ( VData
+                    (Builtin "Tuple")
+                    [Right (boundsOf [n1] d1 h1 xs), Right (boundsOf [n2] d2 h2 ys)]
+                )
+            pure ["rr " <> rr, "rv " <> rv, "vv " <> vv, "bound box " <> boxes]
+      _ -> Left "covariance: a number, a vector, or a pair of vectors"
   ["add"] -> add session
   ["update"] -> update True session
   ["update", "--no-upgrade"] -> update False session
@@ -1070,7 +1071,8 @@ upgrade n session = case lookupName n session.codebase of
 
 {- | @:stdlib upgrade@ (design §7.7), a sketch of upgrading a library from a
 newer version of it: the shipped library's labels under @std@ against the
-codebase's. A name the codebase has never had is added. A name still on
+codebase's. A name the codebase has never had is added, and so is a type
+label, constructor label or field label it has never had. A name still on
 the binding it was seeded with and whose shipped version differs is
 updated, and its dependents are upgraded as @:update@ does. "Still on the
 binding it was seeded with" is read off the history: its one entry, or,
@@ -1119,10 +1121,30 @@ stdlibUpgrade shipped moved session =
       flagged n =
         (if isUnitName n shipped then markUnit n else id)
           . (if isScaleName n shipped then markScale n else id)
+      -- A type, constructor or field label the codebase has never had comes
+      -- with the library's type; one it has, the user's or an older
+      -- library's, is left alone.
+      newLabels :: Map.Map Text a -> (Text -> Codebase -> Maybe a) -> [(Text, a)]
+      newLabels m lookupIn =
+        [ (n, x)
+        | (n, x) <- Map.toList m
+        , (stdlibNamespace <> ".") `T.isPrefixOf` n
+        , isNothing (lookupIn n cb0)
+        ]
+      addedTypes = newLabels shipped.typeNames lookupTypeName
+      withLabels =
+        foldl
+          (\acc (n, (h, i, j)) -> bindFieldName n h i j acc)
+          ( foldl
+              (\acc (n, (h, i)) -> bindConName n h i acc)
+              (foldl (\acc (n, h) -> bindTypeName n h acc) withContent addedTypes)
+              (newLabels shipped.conNames lookupConName)
+          )
+          (newLabels shipped.fieldNames lookupFieldName)
       cb1 =
         foldl
           (\acc (n, r) -> bindName n r acc)
-          (foldl (\acc (n, r) -> flagged n (bindName n r acc)) withContent added)
+          (foldl (\acc (n, r) -> flagged n (bindName n r acc)) withLabels added)
           [(n, r) | (n, _, r) <- updated]
       result = propagate (Map.fromList [(old, r) | (_, old, r) <- updated]) cb1
       cb' = result.codebase
@@ -1133,7 +1155,10 @@ stdlibUpgrade shipped moved session =
         refreshed <- refreshPreferences session{codebase = cb', staging = staging'}
         pure
           ( refreshed
-          , case ["added " <> short n | (n, _) <- added]
+          , case [ "added data " <> shortestNameOf TypeLabel session.scope cb' n
+                 | (n, _) <- addedTypes
+                 ]
+              ++ ["added " <> short n | (n, _) <- added]
               ++ [ "updated " <> short n <> " " <> showReference old <> " -> " <> showReference r
                  | (n, old, r) <- updated
                  ]

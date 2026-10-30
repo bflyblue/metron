@@ -412,6 +412,7 @@ primArity = \case
   "toScale" -> Just 2
   "cholesky" -> Just 1
   "covariance" -> Just 1
+  "crossCovariance" -> Just 2
   -- The parts of an enclosure (design §3.2.9), to write a comparison policy.
   "mid" -> Just 1
   "bound" -> Just 1
