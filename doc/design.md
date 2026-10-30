@@ -222,7 +222,9 @@ structural data Pair a b = Pair a b
 A field is a type atom: a name (`Bool`, `Num`, a parameter, a declared type
 of no parameters) or a compound type in parentheses, written as `:type` prints
 it: `Num [m]`, `Vec 3 [m s^-2]`, `Mat 3 3`, `Tensor [2, 3] d`, `Point [K]`,
-`Point (Vec 3 [m])`, `(a, b)`, `{a}`, `a -> b`, `Maybe (Num [m])`. Inside a
+`Point (Vec 3 [m])`, `(a, b)`, `{a}`, `a -> b`, `Maybe (Num [m])`. A length may
+also be `rank s` for a shape parameter `s` (§4.1): `data Idx s = Idx (Vec (rank
+s))`. `rank` is the one type-level function and cannot name a parameter. Inside a
 dimension bracket the names are base units (`m kg s A K mol cd rad`), declared
 units (`[N]`, `[km/h]`) and parameters, with `^` or superscript exponents and
 `/`. A parameter's kind is read off the positions it appears in, so it needs no

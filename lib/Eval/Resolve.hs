@@ -572,6 +572,14 @@ and the type's and constructors' names bound to it.
 enterData :: S.Scope -> Codebase -> S.DataDecl -> Either ResolveError Codebase
 enterData scope cb decl = do
   distinct "parameter" decl.params
+  case [p | p <- decl.params, p.text == "rank"] of
+    p : _ ->
+      Left
+        ( DataError
+            p.span
+            "`rank` is the type function on shapes and cannot be a parameter"
+        )
+    [] -> pure ()
   distinct "constructor" (map fst decl.constructors)
   distinct "field" (map fst fieldLabels)
   -- Field names make a record: a type of one constructor, so that @r.f@ is total.
@@ -689,6 +697,10 @@ tyType env t = case t.node of
     | n `elem` builtinTypeNames -> bad t ("`" <> n <> "` needs its arguments")
     | otherwise -> applied env t n []
   S.TyApp hd args
+    | hd.text == "rank" ->
+        bad
+          t
+          "rank s is a length, not a type; write it where a length goes, as in Vec (rank s)"
     | Map.member hd.text env.params ->
         bad t ("parameter `" <> hd.text <> "` takes no arguments")
     | otherwise -> case (hd.text, args) of
@@ -781,7 +793,11 @@ tyLen :: DataEnv -> S.TyExpr -> Kinds Len
 tyLen env a = case a.node of
   S.TyInt k | k >= 0 -> pure (LLit (fromInteger k))
   S.TyName p | Map.member p env.params -> (`LVar` 0) <$> useParam env a p KLen
-  _ -> bad a "a length is a number or a parameter"
+  -- The one type-level function (design §4.1): the rank of a shape.
+  S.TyApp hd [sh] | hd.text == "rank" -> rankLen <$> tyShape env sh
+  S.TyName "rank" -> bad a "rank takes a shape: rank s"
+  S.TyApp hd _ | hd.text == "rank" -> bad a "rank takes one shape: rank s"
+  _ -> bad a "a length is a number, a parameter, or rank s"
 
 tyShape :: DataEnv -> S.TyExpr -> Kinds Shape
 tyShape env a = case a.node of
@@ -848,7 +864,7 @@ queryScheme scope cb t = do
   -- Names resolve through the scope (design §7.6).
   isVar n =
     maybe False (isLower . fst) (T.uncons n)
-      && n `notElem` builtinTypeNames
+      && n `notElem` ("rank" : builtinTypeNames)
       && qualifyName TypeLabel scope cb n == NotFound
       && n `notElem` [baseSymbol b | b <- [minBound .. maxBound]]
       && not (isUnit n)

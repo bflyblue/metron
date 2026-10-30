@@ -492,3 +492,6 @@
 - A `let` that takes over a unit or scale name now stays a plain quantity
   after a restart: the store logs `unflag name` when a bound name loses its
   flag. Before, the flag came back on reload.
+- `rank s` can be written as a length in a `data` declaration: `data Idx s =
+  Idx (Vec (rank s))` has `Idx : Vec (rank s) -> Idx s`. `rank` cannot name a
+  parameter.

@@ -3223,6 +3223,12 @@ storeTests =
         case linesIn loaded ["3 dozen"] of
           Left err -> T.isInfixOf "is not a unit" err @? T.unpack err
           Right v -> assertFailure (show v)
+    , testCase "a type indexed by rank survives a reload" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["data Idx s = Idx (Vec (rank s))", ":add"]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        linesIn loaded [":view Idx", ":type Idx [0, 1, 2]"]
+          @?= Right ["data Idx s = Idx (Vec (rank s))", "Idx [n, m, k]"]
     , testCase ":unname persists" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add", ":alias y x", ":unname y"]
         (loaded, _) <- reload dir
@@ -3815,6 +3821,38 @@ dataTests =
           Left err ->
             T.isInfixOf "field names need a type with one constructor" err @? T.unpack err
           Right v -> assertFailure (show v)
+    , testCase "rank in type syntax: a data declaration can index by a shape's rank" $ do
+        runLinesP
+          [ "data Idx s = Idx (Vec (rank s))"
+          , ":type Idx"
+          , ":view Idx"
+          , "data Tagged s d = Tagged (Tensor s d) (Vec (rank s))"
+          , ":type Tagged"
+          , "Tagged [1, 2; 3, 4] [0, 1]"
+          , ":type Tagged [1, 2; 3, 4] [0, 1]"
+          , "let tagged t idx = Tagged t idx"
+          , ":type tagged"
+          ]
+          @?= Right
+            [ "Vec (rank s) -> Idx s"
+            , "data Idx s = Idx (Vec (rank s))"
+            , "Tensor s d -> Vec (rank s) -> Tagged s d"
+            , "Tagged [1, 2; 3, 4] [0, 1]"
+            , "Tagged [2, 2] 1"
+            , "Tensor s d -> Vec (rank s) -> Tagged s d"
+            ]
+        let refused src needle = case runLinesP src of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+        refused
+          [ "data Tagged s d = Tagged (Tensor s d) (Vec (rank s))"
+          , "Tagged [1, 2; 3, 4] [0]"
+          ]
+          "lengths differ: 2 and 1"
+        refused ["data R rank = R (Vec rank)"] "cannot be a parameter"
+        refused ["data R s = R (rank s)"] "rank s is a length, not a type"
+        refused ["data R s = R (Vec rank)"] "rank takes a shape"
+        refused ["data R n = R (Vec (rank n n))"] "rank takes one shape"
     , testCase "declared types: identity is the stamped or structural definition" $ do
         s <-
           either (assertFailure . T.unpack) pure
@@ -3849,7 +3887,7 @@ dataTests =
           ["data Maybe a = Nothing | Just a", "data W = W Maybe"]
           "`Maybe` takes 1 argument, given 0"
         refused ["data W = W (Num [furlong])"] "a dimension is a product of base units"
-        refused ["data W = W (Vec [m])"] "a length is a number or a parameter"
+        refused ["data W = W (Vec [m])"] "a length is a number, a parameter, or rank s"
         refused
           ["data Maybe a = Nothing | Just a", "case Just 1 of Nothing -> 0"]
           "does not cover Just"
