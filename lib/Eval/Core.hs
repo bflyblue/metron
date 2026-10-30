@@ -405,7 +405,7 @@ primArity = \case
   -- The parts of an enclosure (design §3.2.9), to write a comparison policy.
   "mid" -> Just 1
   "bound" -> Just 1
-  "sigma" -> Just 1
+  "sd" -> Just 1
   _ -> Nothing
 
 -- Renaming and weakening ------------------------------------------------------

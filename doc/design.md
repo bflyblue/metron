@@ -472,7 +472,7 @@ in surface notation.
 | `45°` | `45 * deg` |
 | `√e` | `sqrt e` |
 | `a + b`, `a * b`, `a · b`, … | `add a b`, `outer a b`, `dot a b`, … (every operator is a saturated application of the primitive of the same name; the names work prefix and in backticks) |
-| `a ± e` | also spelled `within a e`; `±σ` has no prefix name (`sigma` is the accessor of §3.2.9) |
+| `a ± e`, `a ±σ e` | also spelled `within a e`, `sigma a e` |
 | `a ± e #s7` | the same, with the unknown named `s7` (§3.2.4) |
 | `v.2` | `proj v 2` (a node with a literal position, §5.1) |
 | `m.1.2` | `proj (proj m 1) 2` |
@@ -780,15 +780,15 @@ re-evaluating at higher `p` is a roadmap item; it can tighten `r`, never `σ`.
 Any other policy is written with three accessors that take a value apart the
 way printing collapses it (§3.2.10), per component on a tensor, keeping the
 operand's dimension and display unit: `mid x` is the midpoint, `bound x` the
-bound radius `r = Σ_bound |cᵢ| + slack`, and `sigma x` the standard deviation
+bound radius `r = Σ_bound |cᵢ| + slack`, and `sd x` the standard deviation
 `σ = √(Σ_stat cᵢ²)`. On an exact value they are the value, `0` and `0`.
-`mid` and `bound` are always exact; `sigma` is exact when the variance is the
-square of a rational (`sigma (1 ±σ 0.1)` is `0.1`) and otherwise an enclosure
+`mid` and `bound` are always exact; `sd` is exact when the variance is the
+square of a rational (`sd (1 ±σ 0.1)` is `0.1`) and otherwise an enclosure
 of the square root, as `sqrt` gives. So `bound (10 mm ± 0.1 mm)` is `0.1 mm`,
 and "consistent within the bound and three σ" is
 
 ```
-let consistent a b = let d = a - b in abs (mid d) <= bound d + 3 * sigma d
+let consistent a b = let d = a - b in abs (mid d) <= bound d + 3 * sd d
 ```
 
 #### 3.2.10 Printing
@@ -1379,7 +1379,7 @@ sqrt        : Num [d^2] -> Num d
 abs         : Num d -> Num d
 mid         : Tensor s d -> Tensor s d               -- per component: the midpoint, exact (3.2.9)
 bound       : Tensor s d -> Tensor s d               -- per component: Σ_bound |cᵢ| + slack, exact
-sigma       : Tensor s d -> Tensor s d               -- per component: √(Σ_stat cᵢ²), exact or enclosed
+sd          : Tensor s d -> Tensor s d               -- per component: √(Σ_stat cᵢ²), exact or enclosed
 floor ceil round : Num 1 -> Num 1
 sin cos tan : Num [rad] -> Num 1
 asin acos atan : Num 1 -> Num [rad]
@@ -2251,7 +2251,7 @@ tuned, and compilation is a later milestone.
 - Comparison operators beyond the certain `<` and `==` (§3.2.9): possible
   comparisons `<?` and `=?` ("consistent with", at `k` sigma for statistical
   nudges), tolerance equality `a ≈ b within t`, and enclosure containment. The
-  accessors `mid`, `bound`, `sigma` that let a user write any policy exist
+  accessors `mid`, `bound`, `sd` that let a user write any policy exist
   (§3.2.9), so each of these can be tried as a prelude definition before it
   earns an operator. A three-valued boolean that flows into `if` is ruled out.
 - Keep `h` for hour, given `h` is also the hecto prefix in compound names like

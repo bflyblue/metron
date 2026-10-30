@@ -155,7 +155,7 @@ primScheme name = case name of
   -- operand's dimension.
   "mid" -> Just (Forall [sv, dv] (TFun sd sd))
   "bound" -> Just (Forall [sv, dv] (TFun sd sd))
-  "sigma" -> Just (Forall [sv, dv] (TFun sd sd))
+  "sd" -> Just (Forall [sv, dv] (TFun sd sd))
   "vmap" ->
     Just
       (Forall [sv, dv, d2v] (TFun (TFun (numD d) (numD d2)) (TFun sd (TTensor s d2))))

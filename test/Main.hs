@@ -2069,8 +2069,8 @@ affineTests =
           evalText "(6.67430e-11 ±σ 1.5e-15) * (2 ± 0.1)"
             @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12)"]
           evalText "(1 ±σ 0.1) * (1 ±σ 0.1)" @?= Right ["1.00 ±σ 0.14 (bound 0.01)"]
-    , testCase "mid, bound and sigma take an enclosure apart" $ do
-        let parts x = map (\f -> evalP (f <> " (" <> x <> ")")) ["mid", "bound", "sigma"]
+    , testCase "mid, bound and sd take an enclosure apart" $ do
+        let parts x = map (\f -> evalP (f <> " (" <> x <> ")")) ["mid", "bound", "sd"]
         parts "1 ± 0.1" @?= [Right ["1"], Right ["0.1"], Right ["0"]]
         parts "1 ±σ 0.1" @?= [Right ["1"], Right ["0"], Right ["0.1"]]
         parts "(1 ± 0.1) + (2 ± 0.2)" @?= [Right ["3"], Right ["0.3"], Right ["0"]]
@@ -2083,27 +2083,38 @@ affineTests =
         -- the operand's dimension and display unit
         evalP "bound (10 mm ± 0.1 mm)" @?= Right ["0.1 mm"]
         evalP "mid (10 mm ± 0.1 mm)" @?= Right ["10 mm"]
-        evalP "sigma (2 km ±σ 3 m)" @?= Right ["0.003 km"]
+        evalP "sd (2 km ±σ 3 m)" @?= Right ["0.003 km"]
         -- elementwise on tensors
         evalP "bound ([1, 2] m ± 0.1 m)" @?= Right ["[0.1, 0.1] m"]
         evalP "mid ([1, 2; 3, 4] ±σ 0.5)" @?= Right ["[1, 2; 3, 4]"]
-        evalP "sigma ([1, 2] ±σ 0.5)" @?= Right ["[0.5, 0.5]"]
+        evalP "sd ([1, 2] ±σ 0.5)" @?= Right ["[0.5, 0.5]"]
         -- σ is a square root: exact when the variance is a square, an
         -- enclosure otherwise
-        case evalP "sigma ((1 ±σ 0.1) + (1 ±σ 0.1 #other))" of
+        case evalP "sd ((1 ±σ 0.1) + (1 ±σ 0.1 #other))" of
           Right [v] -> T.isPrefixOf "0.1414213562" v @? T.unpack v
           other -> assertFailure (show other)
         typeOfTextP "mid" @?= Right "Tensor s d -> Tensor s d"
         typeOfTextP "bound" @?= Right "Tensor s d -> Tensor s d"
-        typeOfTextP "sigma" @?= Right "Tensor s d -> Tensor s d"
+        typeOfTextP "sd" @?= Right "Tensor s d -> Tensor s d"
         typeOfTextP "bound (1 m ± 1 cm)" @?= Right "Num [m]"
         -- a policy of one's own: consistent within the bound and three σ
         runLinesP
-          [ "let consistent a b = let d = a - b in abs (mid d) <= bound d + 3 * sigma d"
+          [ "let consistent a b = let d = a - b in abs (mid d) <= bound d + 3 * sd d"
           , "consistent (5 ± 0.1) (5.05)"
           , "consistent (5 ±σ 0.01) (5.1)"
           ]
           @?= Right ["true", "false"]
+    , testCase "sigma a e is the prefix spelling of a ±σ e, beside within" $ do
+        evalP "sigma 1 0.1" @?= Right ["1.0 ±σ 0.1"]
+        evalP "1 `sigma` 0.1" @?= evalP "1 ±σ 0.1"
+        evalP "sd (sigma 1 0.1)" @?= Right ["0.1"]
+        runLinesP ["let x = sigma 1 0.1", ":view x"] @?= Right ["x = 1 ±σ 0.1"]
+        -- it declares an uncertainty, so a #label may follow it
+        evalP "(sigma 1 0.1 #a) - (1 ±σ 0.1 #a)" @?= Right ["0"]
+        -- and, like within, it is not a unit
+        case evalP "3 sigma" of
+          Left err -> T.isInfixOf "`sigma` is not a unit" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "noise and gauss are vectors of unit nudges" $ do
         evalText "noise 2" @?= Right ["[0 ± 1, 0 ± 1]"]
         evalText "gauss 1" @?= Right ["[0 ±σ 1]"]
