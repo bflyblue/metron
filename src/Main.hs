@@ -7,6 +7,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Eval.Driver
+import Eval.Repl qualified as R
 import Eval.Store
 import System.Console.Haskeline
 import System.Environment (getArgs)
@@ -129,8 +130,9 @@ runOnce opts src = do
     Left err -> TIO.hPutStrLn stderr err >> exitFailure
     Right (_, outs) -> mapM_ TIO.putStrLn outs
 
-{- | The REPL. With a terminal, haskeline gives line editing and a history
-file kept beside the codebase; scripted, lines are read plainly.
+{- | The REPL. With a terminal, haskeline gives line editing, completion
+(design §7.3) and a history file kept beside the codebase; scripted, lines
+are read plainly.
 -}
 repl :: Options -> Bool -> IO ()
 repl opts interactive = do
@@ -139,10 +141,12 @@ repl opts interactive = do
   ref <- newIORef live0
   let historyFile = (\st -> st.dir </> "history") <$> live0.store
       settings =
-        defaultSettings
-          { historyFile = if interactive then historyFile else Nothing
-          , autoAddHistory = interactive
-          }
+        setComplete
+          (completer ref)
+          defaultSettings
+            { historyFile = if interactive then historyFile else Nothing
+            , autoAddHistory = interactive
+            }
       behaviour = if interactive then defaultBehavior else useFileHandle stdin
   runInputTBehavior behaviour settings (loop ref)
  where
@@ -156,23 +160,36 @@ repl opts interactive = do
         unless interactive (outputStrLn ("> " <> T.unpack input))
         case T.words input of
           [cmd] | cmd `elem` [":quit", ":q"] -> pure ()
-          [] -> loop ref
+          [] -> again
           [":store"] -> do
             live <- liftIO (readIORef ref)
             outputStrLn (maybe "no codebase: running in memory" (.dir) live.store)
-            loop ref
+            again
           -- Multi-line definitions come from a file: the layout rule treats
           -- later lines as continuations, and a REPL line is one input.
           [":load", path] -> do
             src <- liftIO (TIO.readFile (T.unpack path))
-            run ref src
-          _ -> run ref input
-  run ref src = do
-    live <- liftIO (readIORef ref)
-    result <- liftIO (step live src)
-    case result of
-      Left err -> outputStrLn (T.unpack err)
-      Right (live', outs) -> do
-        liftIO (writeIORef ref live')
-        mapM_ (outputStrLn . T.unpack) outs
-    loop ref
+            run src
+          _ -> run input
+   where
+    again = loop ref
+    run src = do
+      live <- liftIO (readIORef ref)
+      result <- liftIO (step live src)
+      case result of
+        Left err -> outputStrLn (T.unpack err)
+        Right (live', outs) -> do
+          liftIO (writeIORef ref live')
+          mapM_ (outputStrLn . T.unpack) outs
+      again
+
+{- | Tab completion (design §7.3) against the session as it is when TAB is
+pressed; file names after @:load@.
+-}
+completer :: IORef Live -> CompletionFunc IO
+completer ref input = do
+  live <- readIORef ref
+  case R.complete live.session input of
+    Nothing -> completeFilename input
+    Just (prev, cs) ->
+      pure (prev, [Completion c.replacement c.display c.isFinished | c <- cs])

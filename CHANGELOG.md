@@ -334,3 +334,8 @@
   prelude's `vimap` is unchanged. One primitive appended (arity 2); the type
   encoding gains length tag 2 for `rank s + k`, appended, so Core, stored
   terms and hashes are unchanged.
+- REPL editing aids (design §7.3). TAB completes `:` commands at the
+  start of a line, the arguments of `:set`, file names after `:load`,
+  record fields after a glued `.` (`b.ma` gives `b.mass`), and otherwise
+  the session's names, types, constructors and keywords. The logic is
+  pure, in the new module `Eval.Repl`.

@@ -37,6 +37,7 @@ library
     , Eval.Parser
     , Eval.Prelude
     , Eval.Pretty
+    , Eval.Repl
     , Eval.Resolve
     , Eval.Store
     , Eval.Syntax

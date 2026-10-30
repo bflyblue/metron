@@ -25,6 +25,7 @@ import Eval.Lexer qualified as L
 import Eval.Parser
 import Eval.Prelude (preludeNames)
 import Eval.Pretty
+import Eval.Repl qualified as R
 import Eval.Store
 import Eval.Syntax qualified as S
 import Eval.TCore
@@ -71,6 +72,7 @@ main =
         , affineTests
         , storeTests
         , dataTests
+        , replTests
         ]
     )
 
@@ -3766,3 +3768,59 @@ sessionP = go withPrelude
  where
   go s [] = Right s
   go s (l : ls) = feed s l >>= \(s', _) -> go s' ls
+
+-- REPL: completion ------------------------------------------------------------------
+
+-- | Complete at the end of a line, as haskeline asks: reversed left text.
+completeAt :: Session -> String -> Maybe (String, [R.Completion])
+completeAt s line = R.complete s (reverse line, "")
+
+replacements :: Session -> String -> [String]
+replacements s line = maybe [] (map (.replacement) . snd) (completeAt s line)
+
+replTests :: TestTree
+replTests =
+  testGroup
+    "repl"
+    [ testCase "commands complete at the start of a line" $ do
+        let cs = replacements withPrelude ":l"
+        all (`elem` cs) [":ls", ":load"] @? show cs
+        all (":l" `isPrefixOfS`) cs @? show cs
+        replacements withPrelude "  :up" @?= [":update", ":upgrade"]
+        filter (":" `isPrefixOfS`) (replacements withPrelude "x :l") @?= []
+    , testCase ":set completes its arguments" $ do
+        replacements withPrelude ":set un" @?= ["unicode"]
+        replacements withPrelude ":set " @?= ["precision", "sigma", "unicode"]
+        replacements withPrelude ":set unicode o" @?= ["on", "off"]
+        R.completions withPrelude (reverse ":set ") "un"
+          @?= [R.Completion "unicode" "unicode" True]
+    , testCase "names complete from the session: units, constructors, keywords" $ do
+        -- The prelude's prefixed units are spelled with the SI symbol: km, kN.
+        let ks = replacements withPrelude "3 k"
+        all (`elem` ks) ["km", "kN", "kJ", "kPa", "kat"] @? show ks
+        all ("k" `isPrefixOfS`) ks @? show ks
+        replacements withPrelude "x + 3k" @?= ks
+        "where" `elem` replacements withPrelude "f x whe" @? "where"
+        replacements withPrelude "f x " @?= []
+        let s =
+              either (error . T.unpack) id
+                $ sessionP ["data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"]
+        replacements s "area (Ci" @?= ["Circle"]
+        "Shape" `elem` replacements s ":view Sh" @? "Shape"
+    , testCase "fields complete after a dot" $ do
+        let s =
+              either (error . T.unpack) id
+                $ sessionP
+                  [ "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m/s]}"
+                  , "let b = Body (5 kg) ([0, 0, 1] m/s)"
+                  ]
+        completeAt s "b.ma" @?= Just ("b", [R.Completion ".mass" "mass" True])
+        map (.display) (R.completions s "b" ".ma") @?= ["mass"]
+        map (.display) (R.completions s "b" ".") @?= ["mass", "vel"]
+    , testCase ":load completes file names" $ do
+        completeAt withPrelude ":load fo" @?= Nothing
+        R.loadsFile " :load " @? ":load"
+        not (R.loadsFile ":ls") @? ":ls"
+    ]
+ where
+  isPrefixOfS p x = take (length p) x == p

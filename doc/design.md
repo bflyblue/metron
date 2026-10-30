@@ -2200,6 +2200,26 @@ lexes to the same tokens as its ASCII form, a superscript standing for its
 caret, so output reads back either way. Error messages, `:core` and `:lint`
 stay in ASCII.
 
+#### The REPL
+
+The interactive REPL adds editing aids on top of the commands. None of them
+changes what an input means or the text it prints.
+
+**Completion.** TAB completes the word before the cursor:
+
+- at the start of a line, a `:` command;
+- after `:set`, the setting; after `:set unicode`, `on` or `off`;
+- after `:load`, a file name;
+- after a `.` glued to a value, a record field name (`b.ma` gives `b.mass`);
+- elsewhere, a name the session sees (definitions, units, types and
+  constructors, pending ones included) or a keyword.
+
+The prelude has many hundreds of names, so a short prefix can list many
+candidates.
+
+**History.** The line history is the file `history` in the codebase
+directory (§7.4). With `--no-codebase` there is no history file.
+
 ### 7.4 CLI and persistence
 
 ```
