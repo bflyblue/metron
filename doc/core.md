@@ -181,8 +181,15 @@ at every rank:
   `indices` (`Vec n d -> Vec n`, a vector's positions as values),
   `covariance` (`Vec n d -> Mat n n [d^2]`), `crossCovariance` (`Vec n d1 ->
   Vec m d2 -> Mat n m [d1 d2]`, the statistical nudges two vectors share,
-  design §3.5; arity 2, no Core change) and `cholesky`, each with a
+  design §3.5; arity 2, no Core change), `cholesky` and `expm` (`Mat n n ->
+  Mat n n`, dimensionless, the matrix exponential; arity 1), each with a
   fixed-rank signature.
+- **A matrix along every axis**: `transformBy` (`Mat n n -> Tensor s d ->
+  Tensor s d`, arity 2): `R v`, `R P Rᵀ`, `R` on every index at any rank.
+  Its scheme is fixed and polymorphic in the shape, but it needs every
+  length of `s` to be `n`, which the shape language cannot say, so it is
+  the one primitive whose evaluator checks a shape (design §4.3, §11). No
+  Core change.
 - **Indexed by literal positions, any rank**: `contract i j` (the trace over
   two positions of equal length), `permute [p…]` (reorder the leading
   positions) and `slice k i` (position `i` along axis `k`, dropping that axis;

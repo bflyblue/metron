@@ -215,6 +215,15 @@ Hodge dual of the wedge product, the trace as a contraction, and @vimap@,
 a map that also sees each component's position as a value (design §3.3).
 @vimap@ is for vectors, with the position as one number; the primitive
 @timap@ is the general form, at any rank, with the multi-index as a vector.
+
+Then rotations (design §3.3, §3.8): the unit vectors, and the bivectors
+that @expm@ turns into rotation matrices. @a ∧ b@ is @a bᵀ − b aᵀ@, which
+turns @b@ toward @a@, so @rotz θ@ is @θ (e2 ∧ e1)@ and the right-hand rule
+holds. @dual v = ε \@ v@ is the inverse of @⋆@ and @b ∧ a = dual (b × a)@,
+so a bivector built from a computed vector is formed as the dual of one
+vector, angle and all: every entry is then exactly the negation of its
+partner, even when the vector is an enclosure, and @B + Bᵀ@ is exactly
+zero.
 -}
 algebra :: [(Text, Text)]
 algebra =
@@ -226,6 +235,29 @@ algebra =
   , ("cross", "\\a b -> star (a /\\ b)")
   , ("trace", "\\a -> contract 0 1 a")
   , ("vimap", "\\f v -> vzipWith f (indices v) v")
+  , ("e1", "[1, 0, 0]")
+  , ("e2", "[0, 1, 0]")
+  , ("e3", "[0, 0, 1]")
+  , ("rotx", "\\θ -> (θ to rad) / rad * (e3 /\\ e2)")
+  , ("roty", "\\θ -> (θ to rad) / rad * (e1 /\\ e3)")
+  , ("rotz", "\\θ -> (θ to rad) / rad * (e2 /\\ e1)")
+  , ("dual", "\\v -> ε @ v")
+  , ("axisAngle", "\\n θ -> dual ((θ to rad) / rad * (-n) / norm n)")
+  ,
+    ( "rotation"
+    , T.unwords
+        [ "\\a b -> let c = cross a b in"
+        , "if c == 0 * c then"
+        , "(if a · b > 0 * (a · b) then [[0, 0, 0], [0, 0, 0], [0, 0, 0]]"
+        , "else let k = if cross a e3 == 0 * cross a e3 then e1 else e3 in"
+        , "dual (cross k a * pi / norm (cross k a)))"
+        , "else dual (-c * (atan2 (norm c) (a · b) / rad) / norm c)"
+        ]
+    )
+  ,
+    ( "euler313"
+    , "\\raan inc argp -> expm (rotz raan) @ expm (rotx inc) @ expm (rotz argp)"
+    )
   ]
 
 {- | Tuples and lists (design §2.3): the structural functions, recursive

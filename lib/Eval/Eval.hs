@@ -46,7 +46,7 @@ module Eval.Eval (
 ) where
 
 import Control.Monad (foldM, zipWithM)
-import Data.List (nub)
+import Data.List (nub, transpose)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import Data.Ratio (denominator, numerator)
@@ -770,6 +770,40 @@ runPrim cfg rt prim args = case (prim, args) of
               (V.generate (r * c) (\k -> let (j, i) = k `divMod` r in buf V.! (i * c + j)))
           )
       _ -> Left (Internal "transpose of a non-matrix")
+  -- The matrix exponential (design §3.3): Rodrigues' formula for a single
+  -- plane, the scaled and squared series otherwise ('matrixExp').
+  ("expm", [a]) -> do
+    (dims, _, _, buf) <- tensor =<< a
+    case dims of
+      [n, n'] | n == n' -> do
+        rows <- matrixRows n buf
+        r <- arith (matrixExp p n rows)
+        Right (VTensor [n, n] dimOne Nothing (V.fromList (map Right (concat r))))
+      _ -> Left (Internal "expm of a non-square matrix")
+  -- R applied along every axis of a tensor (design §3.3): R v, R P Rᵀ, and
+  -- R on each index at any rank, one contraction per axis. The type cannot
+  -- say that every length is R's, so this is the one primitive with a
+  -- runtime shape check (design §4.3).
+  ("transformBy", [r, a]) -> do
+    (rdims, _, _, rbuf) <- tensor =<< r
+    (dims, d, hint, buf) <- tensor =<< a
+    case rdims of
+      [n, n']
+        | n == n' ->
+            if all (== n) dims
+              then
+                Right
+                  (VTensor dims d hint (foldl (alongAxis n rbuf dims) buf [0 .. length dims - 1]))
+              else
+                Left
+                  ( Eval.Eval.Domain
+                      ( "transformBy: every axis must have length n: the matrix is "
+                          <> T.pack (show n <> " × " <> show n)
+                          <> " and the tensor's lengths are "
+                          <> ("[" <> T.intercalate ", " (map (T.pack . show) dims) <> "]")
+                      )
+                  )
+      _ -> Left (Internal "transformBy of a non-square matrix")
   -- Contraction (design §4.2): the sum over the diagonal of two positions
   -- of equal length, an affine sum, so shared nudges correlate as in norm.
   ("contract", [i, j, a]) -> do
@@ -1036,6 +1070,19 @@ runPrim cfg rt prim args = case (prim, args) of
   chunks n xs
     | null xs = []
     | otherwise = let (r, rest) = splitAt n xs in r : chunks n rest
+  -- R contracted into one axis of a tensor whose lengths are all n: the
+  -- component at index i on that axis is Σⱼ R_ij t_(…j…). Lazy per element.
+  alongAxis n rbuf dims buf ax =
+    let st = strides dims !! ax
+        element k =
+          let i = (k `div` st) `mod` n
+              base = k - i * st
+           in sumM
+                <$> sequence
+                  [ mulM p <$> (rbuf V.! (i * n + j)) <*> (buf V.! (base + j * st))
+                  | j <- [0 .. n - 1]
+                  ]
+     in V.generate (product dims) element
 
 sumM :: [Magnitude] -> Magnitude
 sumM = foldl' addM (Exact 0)
@@ -1134,6 +1181,113 @@ invert p n rows0 =
                 go
                   (k + 1)
                   [if j == k then normalised else eliminate r | (j, r) <- zip [0 ..] swapped]
+
+{- | The exponential of a square matrix of enclosures (design §3.3).
+
+/A single plane/. @B@ is split into its antisymmetric part
+@A = (B − Bᵀ) / 2@ and its symmetric part @S = (B + Bᵀ) / 2@, as affine
+forms. For every matrix in the enclosure the real @A@ is antisymmetric,
+whatever its forms look like, and when it is a single plane, @A³ = −t A@
+with @t = Σ_{i<j} a_ij²@, then @A^(k+2) = −t Aᵏ@ and the series collapses
+to Rodrigues' formula @I + f(t) A + g(t) A²@ with @f = sin θ / θ@ and
+@g = (1 − cos θ) / θ²@, @θ² = t@, both entire in @t@ ("Eval.Affine"
+'sincSqM', 'coscSqM'), so @θ@ near zero divides by nothing. Every
+antisymmetric matrix is a single plane when @n ≤ 3@; beyond, an exact @A@
+is checked exactly and an uncertain one takes the series. When @S@ is
+exactly zero this is @exp B@. When it is not but its bound @σ@ (the
+∞-norm of @|midpoint| + radius@, which bounds @‖S‖₂@ for a symmetric
+matrix) is below @10^−p@, as it is when @B@ was built antisymmetric
+through a product whose two entries got two fresh nudges (@θ * (b ∧ a) /
+norm c@), then @‖exp (A + S) − exp A‖₂ ≤ e^σ − 1 ≤ 2σ@ (@exp (τA)@ is
+orthogonal, and the logarithmic norm of @A + S@ is at most @σ@), and every
+entry gets @2σ@ as a fresh nudge of its own.
+
+/Otherwise/, the series with scaling and squaring. @β@ is the ∞-norm (the
+largest row sum) of @|midpoint| + radius@, an exact rational that bounds
+@‖B‖∞@ for every matrix in the enclosure; it is submultiplicative and
+bounds every entry. With @s@ the least power for which @β' = β / 2ˢ ≤ 1/2@
+and @A = B / 2ˢ@ (exact scaling), the sum of @Aᵏ / k!@ for @k < K@ is
+formed in affine arithmetic, @K@ the first with @β'ᴷ / K! @ below
+@10^−(p+4+s)@ (a guard digit per squaring). The remainder
+@Σ_{k≥K} Aᵏ / k!@ has ∞-norm at most @β'ᴷ / K! · 1 / (1 − β' / (K+1))
+≤ 2 β'ᴷ / K!@, so every entry gets that as a fresh bound nudge of its own
+(named with its position, so that no two entries share an unknown), and
+the result is squared @s@ times, rigorously. @β = 0@ is the zero matrix,
+whose exponential is exactly @I@.
+-}
+matrixExp ::
+  Precision -> Int -> [[Magnitude]] -> Either ArithError [[Magnitude]]
+matrixExp p n b
+  | singlePlane && sigma == 0 = rodrigues
+  | singlePlane && sigma <= 10 ^^ negate (p - 4) =
+      positioned "expm: symmetric part" (2 * sigma) <$> rodrigues
+  | beta == 0 = Right identity
+  | otherwise =
+      Right
+        (iterate (\m -> tidy (matMul m m)) (positioned "expm" remainder partial) !! s)
+ where
+  identity =
+    [[if i == j then Exact 1 else Exact 0 | j <- [0 .. n - 1]] | i <- [0 .. n - 1]]
+  at i j = b !! i !! j
+  matMul x y = [[sumM (zipWith (mulM p) row col) | col <- transpose y] | row <- x]
+  -- An independent fresh nudge on every entry, named with its position.
+  positioned name size m =
+    [ [ enclose name p (Exact (fromIntegral (i * n + j)) : concat b) size x
+      | (j, x) <- zip [0 :: Int ..] row
+      ]
+    | (i, row) <- zip [0 :: Int ..] m
+    ]
+  normBound m = maximum (0 : [sum [abs (midpoint x) + radius x | x <- row] | row <- m])
+  -- Rodrigues
+  anti =
+    [ [scaleM (1 / 2) (subM (at i j) (at j i)) | j <- [0 .. n - 1]]
+    | i <- [0 .. n - 1]
+    ]
+  sigma =
+    normBound
+      [ [scaleM (1 / 2) (addM (at i j) (at j i)) | j <- [0 .. n - 1]]
+      | i <- [0 .. n - 1]
+      ]
+  t =
+    sumM
+      [ mulM p (anti !! i !! j) (anti !! i !! j)
+      | i <- [0 .. n - 1]
+      , j <- [i + 1 .. n - 1]
+      ]
+  singlePlane =
+    n <= 3
+      || ( all (all isExact) anti
+             && all
+               (all (== Exact 0))
+               ( zipWith
+                   (zipWith addM)
+                   (matMul anti (matMul anti anti))
+                   (map (map (mulM p t)) anti)
+               )
+         )
+  rodrigues = do
+    f <- sincSqM p t
+    g <- coscSqM p t
+    Right
+      [ [addM d (addM (mulM p f x) (mulM p g y)) | (d, x, y) <- zip3 drow xrow yrow]
+      | (drow, xrow, yrow) <- zip3 identity anti (matMul anti anti)
+      ]
+  -- The series
+  beta = normBound b
+  s = length (takeWhile (> 1 / 2) (iterate (/ 2) beta))
+  beta' = beta / 2 ^ s
+  scaled = map (map (scaleM (recip (2 ^ s)))) b
+  tol = 10 ^^ negate (p + 4 + s) :: Rational
+  factorial k = fromInteger (product [1 .. k]) :: Rational
+  top = until (\k -> beta' ^ k / factorial k < tol) (+ 1) (1 :: Integer)
+  powers =
+    scanl
+      (\m k -> tidy (map (map (scaleM (recip (fromInteger k)))) (matMul m scaled)))
+      identity
+      [1 .. top - 1]
+  tidy = map (map (tidyM p))
+  partial = foldr1 (zipWith (zipWith addM)) powers
+  remainder = 2 * beta' ^ top / factorial top
 
 {- | A plain rendering for tests. Forces every element. Exact magnitudes
 print as @n/d@ in base units, affine ones as an approximate @mid±r@, and
