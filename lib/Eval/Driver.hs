@@ -138,7 +138,8 @@ feed' session src
       -- Each expression that evaluates becomes `it` for the next one.
       let step (s, outs) e = do
             (out, le) <- evalExpr s.config s.preferred (exprCodebase s) src e
-            pure (s{lastExpr = Just le}, out : outs)
+            le' <- absorbLast s le
+            pure (s{lastExpr = Just le'}, out : outs)
       (session'', outs) <- foldM step (session', []) exprs
       pure (session'', notes ++ reverse outs)
 
@@ -970,3 +971,20 @@ matchesGlob pat name
     (_, rest) -> case ps of
       [] -> p `T.isSuffixOf` s
       _ -> anywhere ps (T.drop (T.length p) rest)
+
+{- | A new last expression that mentions the previous @it@ takes that
+expression's term into itself, so @:view it@ after @1 + 2@ then @it * 2@
+prints @(1 + 2) * 2@ and not a reference nothing names. The inlined term
+is checked again, so the typed term and types stay those of what is shown.
+-}
+absorbLast :: Session -> LastExpr -> Either Text LastExpr
+absorbLast session le = case session.lastExpr of
+  Just previous
+    | let h = hashTerm previous.term
+    , h `Set.member` refs le.term -> do
+        let term' = inlineRef h previous.term le.term
+            look = typeLookupFor le.base
+        (_, typed') <- either (Left . (.message)) Right (I.elaborateClosed look term')
+        linted <- either (Left . ("internal error: " <>)) Right (lintClosed look typed')
+        pure le{term = term', schemes = linted, typed = typed'}
+  _ -> pure le

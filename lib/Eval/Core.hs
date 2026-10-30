@@ -44,6 +44,7 @@ module Eval.Core (
   refs,
   refsWithIndex,
   rewriteRefs,
+  inlineRef,
   primArity,
 ) where
 
@@ -493,3 +494,33 @@ base32hex (Hash bs) = T.pack (go (BS.unpack bs))
           | i <- [0 .. chars - 1]
           ]
      in digits ++ go rest
+
+{- | Replace every reference to a hash (with no cycle index) by a closed
+term: how @it@ absorbs the expression before it, so that @:view it@ shows
+the whole expression rather than a reference to one that has no name.
+-}
+inlineRef :: Hash -> Term Z -> Term n -> Term n
+inlineRef target replacement = go
+ where
+  go :: Term m -> Term m
+  go = \case
+    Var i -> Var i
+    Ref h Nothing _ | h == target -> closedIn replacement
+    r@(Ref _ _ _) -> r
+    PrimApp p as -> PrimApp p (map go as)
+    Lit l -> Lit l
+    Lam h b -> Lam h (go b)
+    App a b -> App (go a) (go b)
+    Let h e b -> Let h (go e) (go b)
+    Con c as -> Con c (map go as)
+    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
+    Pow t n -> Pow (go t) n
+    Noise k l n -> Noise k l n
+    Uncertain k l x e -> Uncertain k l (go x) (go e)
+    Pack ts -> Pack (map go ts)
+    Proj t i -> Proj (go t) i
+    Cycle hs bs -> Cycle hs (vecMap go bs)
+
+-- | A closed term is a term in any scope: it has no variables to rename.
+closedIn :: Term Z -> Term n
+closedIn = renameTerm (\case {})

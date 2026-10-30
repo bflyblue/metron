@@ -3808,6 +3808,9 @@ itTests =
     , testCase ":type, :view and :exact see it" $ do
         runLinesP ["3 m + 2 m", ":type it"] @?= Right ["5 m", "Num [m]"]
         runLinesP ["1 + 2", ":view it"] @?= Right ["3", "it = 1 + 2"]
+        -- a new it absorbs the previous one, so :view shows the whole expression
+        runLinesP ["1 + 2", "it * 2", ":view it", "it + 1", ":view it"]
+          @?= Right ["3", "6", "it = (1 + 2) * 2", "7", "it = (1 + 2) * 2 + 1"]
         -- A nudge declared in the last expression is labelled with its name.
         runLinesP ["2 ± 0.1", ":exact it"]
           @?= Right ["2.0 ± 0.1", "2 + 0.1·e[bound, it]"]
