@@ -246,7 +246,7 @@ evalTests =
     , testCase "rounding primitives"
         $ runClosed
           ( Pack
-              [ prim1 "floor" (num (-3 / 2))
+              [ prim1 "floor" (num (-(3 / 2)))
               , prim1 "ceil" (num (3 / 2))
               , prim1 "round" (num (5 / 2))
               ]
@@ -347,7 +347,7 @@ tcoreTests =
         $ showCore <$> elabText "1 == 2" @?= Right "eq 1.0 2.0"
     , testCase "lint accepts everything elaboration produces"
         $ mapM_
-          (\src -> either (assertFailure . T.unpack) (const (pure ())) (elabText src))
+          (either (assertFailure . T.unpack) (const (pure ())) . elabText)
           [ "\\f x -> f (f x)"
           , "let twice f x = f (f x) in twice (\\n -> n + 1) 0"
           , "[[1, 2], [3, 4]].1.0 + [1, 2, 3].2"
@@ -799,7 +799,7 @@ prettyTests =
         $ renderRational 20 (11 / 2) @?= "5.5"
     , testCase "repeating decimals are truncated with an ellipsis"
         $ renderRational 5 (1 / 3) @?= "0.33333…"
-    , testCase "negative" $ renderRational 20 (-1 / 4) @?= "-0.25"
+    , testCase "negative" $ renderRational 20 (-(1 / 4)) @?= "-0.25"
     , testCase "scale zero" $ renderRational 0 (1 / 3) @?= "0…"
     ]
 
@@ -1110,7 +1110,7 @@ codebaseTests =
         $ case runLines
           ["let x = 5", ":add", ":alias five x", ":unname x", "five", ":history x"] of
           Right outs -> do
-            drop 3 outs !! 0 @?= "5"
+            outs !! 3 @?= "5"
             length (drop 4 outs) @?= 1
           Left err -> assertFailure (T.unpack err)
     , testCase ":forget drops a pending definition"
@@ -2930,7 +2930,7 @@ affineTests =
    where
     eOf n = case n.origin of
       Tagged _ _ -> 0
-      Declared site _ _ -> maybe 0 (\e -> toRational (max (-1) (min 1 e))) (lookup site es)
+      Declared site _ _ -> maybe 0 (toRational . max (-1) . min 1) (lookup site es)
       A.Builtin _ -> 0
   -- Double arithmetic is only good to about 1e-15 relative.
   near z t = abs (t - midpoint z) <= radius z + abs t * 1e-12 + 1e-300

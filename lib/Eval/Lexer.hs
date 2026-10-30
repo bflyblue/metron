@@ -18,6 +18,7 @@ module Eval.Lexer (
 
 import Data.Char (isAlphaNum, isDigit, isLetter)
 import Data.Functor (($>))
+import Data.Maybe (fromMaybe)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -157,9 +158,9 @@ number = do
   intPart <- digits
   fracPart <- optional (try (char '.' *> digits))
   expPart <- optional (try exponentPart)
-  let mant = read (T.unpack (intPart <> maybe "" id fracPart)) :: Integer
+  let mant = read (T.unpack (intPart <> fromMaybe "" fracPart)) :: Integer
       fracLen = maybe 0 T.length fracPart
-      e = maybe 0 id expPart - fromIntegral fracLen
+      e = fromMaybe 0 expPart - fromIntegral fracLen
   pure (if e >= 0 then fromInteger (mant * 10 ^ e) else mant % (10 ^ negate e))
  where
   digits :: Lexer Text
@@ -446,7 +447,7 @@ layout = go [Block 1] Nothing False
     | Just p <- prev
     , t.span.from.line > p.to.line =
         let c = t.span.from.col
-            (closed, stack') = span (\f -> case f of Block k -> k > c; Open -> False) stack
+            (closed, stack') = span (\case Block k -> k > c; Open -> False) stack
             here = Span t.span.from t.span.from
             ends = map (const (Located here TBlockEnd)) closed
             -- An explicit ';' at the start of a line is already a separator.

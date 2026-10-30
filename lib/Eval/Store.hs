@@ -39,7 +39,7 @@ import Data.Either (lefts, rights)
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -148,7 +148,7 @@ openStore d = do
               _ -> Nothing
         )
         files
-    let old = Map.fromList [x | Just x <- decoded]
+    let old = Map.fromList (catMaybes decoded)
         visit acc h
           | Map.member h acc = acc
           | Just t <- Map.lookup h old =

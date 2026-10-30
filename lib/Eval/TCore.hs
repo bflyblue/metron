@@ -445,7 +445,7 @@ lint look ctx = \case
           <> T.intercalate ", " (map (conText . fst) table)
       )
     forM_ alts $ \(TAlt c bs body) -> do
-      let fts = maybe [] id (lookup c table)
+      let fts = fromMaybe [] (lookup c table)
       require
         (map snd (vecToList bs) == fts)
         ("fields of " <> conText c <> " bound at the wrong types")

@@ -506,7 +506,7 @@ inlineRef target replacement = go
   go = \case
     Var i -> Var i
     Ref h Nothing _ | h == target -> closedIn replacement
-    r@(Ref _ _ _) -> r
+    r@Ref{} -> r
     PrimApp p as -> PrimApp p (map go as)
     Lit l -> Lit l
     Lam h b -> Lam h (go b)

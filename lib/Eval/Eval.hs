@@ -38,7 +38,7 @@ module Eval.Eval (
   render,
 ) where
 
-import Control.Monad (foldM)
+import Control.Monad (foldM, zipWithM)
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -235,7 +235,7 @@ eval cfg rt = go
                 [count]
                 dimOne
                 Nothing
-                (V.generate count (\i -> Right (unitNoise k (originOf site l i))))
+                (V.generate count (Right . unitNoise k . originOf site l))
             )
     -- One independent nudge per component, the component index in its
     -- identity (design §3.4); a scalar uncertainty applies to every component.
@@ -388,7 +388,7 @@ scalar v = (\(x, _, _) -> x) <$> scalarFull v
 
 scalarFull :: Value -> Either EvalError (Magnitude, Dim, Maybe UnitHint)
 scalarFull = \case
-  VTensor [] d hint buf | V.length buf == 1 -> (\x -> (x, d, hint)) <$> V.head buf
+  VTensor [] d hint buf | V.length buf == 1 -> (,d,hint) <$> V.head buf
   _ -> Left (Internal "expected a number")
 
 bool :: Value -> Either EvalError Bool
@@ -791,7 +791,7 @@ runPrim cfg rt prim args = case (prim, args) of
     fv <- f
     (dims, d, _, buf) <- tensor =<< a
     let results =
-          V.map (\x -> apply cfg rt fv (Right (VTensor [] d Nothing (V.singleton x)))) buf
+          V.map (apply cfg rt fv . Right . VTensor [] d Nothing . V.singleton) buf
     -- The result dimension is a property of the function; read it off the
     -- first element, or keep the input's for an empty tensor.
     outDim <-
@@ -938,7 +938,7 @@ runPrim cfg rt prim args = case (prim, args) of
         and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
       (VBool m, VBool n) -> Right (m == n)
       (VData c xs, VData c' ys)
-        | c == c' && length xs == length ys -> and <$> mapM (uncurry equal) (zip xs ys)
+        | c == c' && length xs == length ys -> and <$> zipWithM equal xs ys
         | otherwise -> Right False
       (VPoint _ _ _ xs, VPoint _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)

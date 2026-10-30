@@ -18,6 +18,7 @@ module Eval.Driver (
 
 import Control.Monad (foldM)
 import Data.Char (isDigit)
+import Data.Either (fromRight)
 import Data.List (partition, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -459,7 +460,7 @@ command session src = \case
     Just t -> case lintClosed (typeLookupFor ecb) t of
       Left err -> Left ("lint failed: " <> err)
       Right schemes -> pure (map renderScheme schemes)
-  ["core", n] -> keep $ withExprName n $ \r -> (: []) . ((n <> " = ") <>) <$> viewTyped ecb r
+  ["core", n] -> keep $ withExprName n $ fmap ((: []) . ((n <> " = ") <>)) . viewTyped ecb
   -- Browse the codebase (design §7.3): names with their types, filtered.
   ("ls" : rest) -> keep (listNames session rest)
   ["hash", n] -> keep $ withExprName n $ \r -> pure [showReference r]
@@ -669,7 +670,7 @@ upgrade n session = case lookupName n session.codebase of
     let stale = [r | r <- historyOf n session.codebase, r /= current]
         result = propagate (Map.fromList [(r, current) | r <- stale]) session.codebase
         cb' = result.codebase
-        staging' = either (const cb') id (processGroup cb' session.scratch)
+        staging' = fromRight cb' (processGroup cb' session.scratch)
      in Right
           ( session{codebase = cb', staging = staging'}
           , if null result.upgraded && null result.skipped

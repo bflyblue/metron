@@ -13,7 +13,7 @@ import Control.Monad.Combinators.Expr
 import Data.Bifunctor (first)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -120,7 +120,7 @@ opTok o = P.try (tok (TOp o) <* P.notFollowedBy (tok TRParen))
 
 name :: Parser Name
 name =
-  (\(sp, t) -> Name sp t)
+  uncurry Name
     <$> match "identifier" (\case TIdent t -> Just t; _ -> Nothing)
 
 -- Statements ---------------------------------------------------------------------
@@ -176,7 +176,7 @@ letStatement = do
     , do
         wh <- P.optional whereClause
         let body' = maybe b.body (foldr wrapWhere b.body) wh
-            sp = foldr (spanUnion . (.span)) (spanUnion s b.span) (maybe [] id wh)
+            sp = foldr (spanUnion . (.span)) (spanUnion s b.span) (fromMaybe [] wh)
         pure (SLet (Binding sp b.name b.params body' Plain))
     ]
  where
@@ -460,13 +460,11 @@ atom = primary >>= postfixes
  where
   postfixes acc =
     P.choice
-      [ (\(sp, i) -> Expr (spanUnion acc.span sp) (Proj acc i))
-          <$> match "projection" (\case TProj i -> Just i; _ -> Nothing)
-          >>= postfixes
+      [ match "projection" (\case TProj i -> Just i; _ -> Nothing)
+          >>= \(sp, i) -> postfixes (Expr (spanUnion acc.span sp) (Proj acc i))
       , slice acc >>= postfixes
-      , (\(sp, f) -> Expr (spanUnion acc.span sp) (FieldOf acc f))
-          <$> match "field" (\case TField f -> Just f; _ -> Nothing)
-          >>= postfixes
+      , match "field" (\case TField f -> Just f; _ -> Nothing)
+          >>= \(sp, f) -> postfixes (Expr (spanUnion acc.span sp) (FieldOf acc f))
       , recordBraces acc >>= postfixes
       , pure acc
       ]

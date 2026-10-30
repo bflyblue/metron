@@ -192,8 +192,7 @@ desugar path ctx e = do
       pure (Case c' [Alt (Builtin "False") VNil f', Alt (Builtin "True") VNil t'])
     S.BinOp op a b -> case op of
       S.PlusMinus k ->
-        Uncertain k
-          <$> asks (.owner)
+        asks (Uncertain k . (.owner))
           <*> desugar (0 : path) ctx a
           <*> desugar (1 : path) ctx b
       -- A point moves to another scale; everything else to a display unit.
@@ -369,7 +368,7 @@ headApp path ctx hd x args = case lookupCtx x ctx of
               | S.Num n <- a.node
               , denominator n == 1
               , n >= 0 ->
-                  (\l -> Noise k l (numerator n)) <$> asks (.owner)
+                  asks (\r -> Noise k r.owner (numerator n))
             _ ->
               failWith
                 ( BadSpecialForm
@@ -529,7 +528,7 @@ specialForm l = \case
   "sigma" ->
     Just
       (2, Builder (\case [a, b] -> Uncertain Stat l a b; _ -> error "sigma: arity"))
-  p -> (\arity -> (arity, Builder (PrimApp p))) <$> primArity p
+  p -> (,Builder (PrimApp p)) <$> primArity p
 
 saturated :: Path -> Ctx n -> ([Term n] -> Term n) -> [S.Expr] -> M (Term n)
 saturated path ctx build args = build <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args

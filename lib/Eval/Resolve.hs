@@ -21,7 +21,7 @@ import Data.Foldable (foldlM)
 import Data.Graph (SCC (..), stronglyConnComp)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isNothing)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -64,7 +64,7 @@ renderResolveError = \case
   TypeErrorIn n sp msg ->
     S.renderSpanError
       Nothing
-      (maybe n.span id sp)
+      (fromMaybe n.span sp)
       ("in `" <> n.text <> "`: " <> msg)
   LintFailure n msg ->
     "internal error: elaboration of `"

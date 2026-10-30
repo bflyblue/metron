@@ -24,6 +24,7 @@ module Eval.Hash (
 ) where
 
 import Crypto.Hash.SHA256 qualified as SHA256
+import Data.Bifunctor (first)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -202,7 +203,7 @@ runDec :: Dec a -> ByteString -> Int -> Either Text (a, Int)
 runDec (Dec f) = f
 
 instance Functor Dec where
-  fmap f (Dec g) = Dec (\bs i -> (\(a, j) -> (f a, j)) <$> g bs i)
+  fmap f (Dec g) = Dec (\bs i -> first f <$> g bs i)
 
 instance Applicative Dec where
   pure a = Dec (\_ i -> Right (a, i))

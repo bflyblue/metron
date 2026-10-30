@@ -72,6 +72,7 @@ module Eval.Affine (
 ) where
 
 import Crypto.Hash.SHA256 qualified as SHA256
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
@@ -217,7 +218,7 @@ subM x y = addM x (negM y)
 scaleM :: Rational -> Magnitude -> Magnitude
 scaleM k = \case
   Exact a -> Exact (k * a)
-  Affine m ts s -> affine (k * m) (Map.map (\(c, n) -> (k * c, n)) ts) (abs k * s)
+  Affine m ts s -> affine (k * m) (Map.map (first (k *)) ts) (abs k * s)
 
 {- | Absolute value: exact when the enclosure does not straddle zero,
 otherwise the enclosure of @|x|@ with one fresh nudge.
@@ -246,8 +247,8 @@ mulM p x y =
       linear =
         Map.unionWith
           addCoeff
-          (Map.map (\(c, n) -> (m2 * c, n)) t1)
-          (Map.map (\(c, n) -> (m1 * c, n)) t2)
+          (Map.map (first (m2 *)) t1)
+          (Map.map (first (m1 *)) t2)
       -- The quadratic leftover. A nudge both sides share contributes
       -- cᵢdᵢ·eᵢ², which lies in [0, cᵢdᵢ] (or [cᵢdᵢ, 0]), so it is centred
       -- rather than taken as ±|cᵢdᵢ|; that is what makes x·x tight (design
@@ -305,7 +306,7 @@ by the slope. The caller adds the remainder.
 linearise :: Magnitude -> Rational -> Rational -> Magnitude
 linearise x f slope = case x of
   Exact _ -> Exact f
-  Affine _ ts s -> affine f (Map.map (\(c, n) -> (slope * c, n)) ts) (abs slope * s)
+  Affine _ ts s -> affine f (Map.map (first (slope *)) ts) (abs slope * s)
 
 {- | Add a fresh bound nudge named after the operation, its operands and the
 precision, so that identical computations share it (design §3.2.4).

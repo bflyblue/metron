@@ -20,6 +20,7 @@ module Eval.Pretty (
   respell,
 ) where
 
+import Control.Applicative ((<|>))
 import Data.Char (intToDigit, isAlphaNum)
 import Data.Map.Strict qualified as Map
 import Data.Ratio (denominator, numerator, (%))
@@ -301,9 +302,7 @@ displayParts printer scale prefs = \case
     -- was written in; base units.
     let chosen = case hint of
           Just h | h.pinned -> Just h
-          _ -> case Map.lookup d prefs of
-            Just pref -> Just pref
-            Nothing -> hint
+          _ -> Map.lookup d prefs <|> hint
     pure $ case chosen of
       Just h
         | h.dim == d

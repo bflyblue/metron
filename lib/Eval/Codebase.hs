@@ -44,6 +44,7 @@ module Eval.Codebase (
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -160,7 +161,7 @@ lookupTyped h cb = snd <$> Map.lookup h cb.derived
 typeOf :: Reference -> Codebase -> Maybe Scheme
 typeOf (Reference h idx) cb = do
   schemes <- lookupTypes h cb
-  case drop (maybe 0 id idx) schemes of
+  case drop (fromMaybe 0 idx) schemes of
     s : _ -> Just s
     [] -> Nothing
 
@@ -173,7 +174,7 @@ bindName n r cb
   | otherwise =
       cb
         { names = Map.insert n r cb.names
-        , history = Map.insertWith (\new old -> new ++ old) n [r] cb.history
+        , history = Map.insertWith (++) n [r] cb.history
         , -- Constructors and definitions share the expression namespace.
           conNames = Map.delete n cb.conNames
         }

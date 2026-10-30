@@ -27,6 +27,7 @@ module Eval.Infer (
 import Control.Monad (foldM, forM_, unless, zipWithM, zipWithM_)
 import Control.Monad.State.Strict (StateT, get, gets, modify', put, runStateT)
 import Control.Monad.Trans.Class (lift)
+import Data.Bifunctor (second)
 import Data.List (isSuffixOf, minimumBy, nubBy)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -107,7 +108,7 @@ inferClosed look term = fst <$> elaborateClosed look term
 
 -- | Wrap a term in the abstractions of a scheme.
 abstractOver :: [(VarId, Kind)] -> TTerm n -> TTerm n
-abstractOver vs t = foldr (\(v, k) -> TTyLam v k) t vs
+abstractOver vs t = foldr (uncurry TTyLam) t vs
 
 fresh :: Kind -> Infer Arg
 fresh k = do
@@ -962,7 +963,7 @@ zonk s = go
         (go sc)
         (applyType s ty)
         ( map
-            (\(TAlt c bs b) -> TAlt c (vecMap (\(h, t) -> (h, applyType s t)) bs) (go b))
+            (\(TAlt c bs b) -> TAlt c (vecMap (second (applyType s)) bs) (go b))
             alts
         )
     TPow b n -> TPow (go b) n
@@ -973,7 +974,7 @@ zonk s = go
     TTyLam v k b -> TTyLam v k (go b)
     TTyApp b arg -> TTyApp (go b) (applyArg s arg)
     TCycle vs members bodies ->
-      TCycle vs (vecMap (\(h, ty) -> (h, applyType s ty)) members) (vecMap go bodies)
+      TCycle vs (vecMap (second (applyType s)) members) (vecMap go bodies)
 
 -- Helpers ------------------------------------------------------------------------------
 
