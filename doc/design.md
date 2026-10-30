@@ -1883,6 +1883,7 @@ eval 'expr'              one-shot: print the value, exit 0; on error print to st
 eval -f file.ev          load a file as a binding group, print bare expressions
 echo 'expr' | eval       same as -f on stdin
 eval --codebase DIR …    use an explicit store
+eval --merge OTHER       merge the store at OTHER into this one, leaving OTHER as it was
 ```
 
 A codebase on disk is a directory:
@@ -1913,6 +1914,21 @@ typechecking and linting each term, dependencies first (cheap: the prelude's
 700 definitions take 30 ms). Terms are only ever added, so two stores never
 conflict on terms; the log is the one thing with order, and merging two stores
 is concatenating their logs and sorting by time, last writer winning per name.
+
+`eval [--codebase DIR] --merge OTHER` does that, into the store that `eval`
+would otherwise use. Both stores are opened as usual, so an older format is
+migrated in place, OTHER included, and the summary says so; a directory that is
+not a store is refused and left untouched. Every file in OTHER's `terms/` and
+`types/` that DIR lacks is copied after its hash is checked as on load; a file
+that is already there is the same content and is never overwritten, and a
+corrupt one is skipped with a note. Then OTHER's log lines that DIR does not
+already have are added, and the whole log is stably sorted by its leading time
+and written through a temporary file, after the terms, so an interrupted merge
+never leaves a name pointing at a missing term. On equal times DIR's line comes
+first and OTHER's wins. A line with no readable time sorts as if at time 0 and
+is reported. Merging again adds nothing. The `history` file is DIR's own and is
+neither copied nor touched. The summary gives the terms, types and log lines
+brought across, then the notes.
 
 The user store lives at `$XDG_DATA_HOME/eval/` and is what the daily calculator
 uses. A project-local `.eval/` directory, found by walking up from the current
@@ -2119,7 +2135,8 @@ tuned, and compilation is a later milestone.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),
    haskeline with a history file beside the store, `:store`, `:prefer`,
-   `:covariance`. Remaining: `:set unicode`, a merge tool for two stores' logs.
+   `:covariance`, and `eval --merge OTHER` to merge two stores (§7.4).
+   Remaining: `:set unicode`.
 7. **Tuples**, then **lists** with a `case` construct in the core. Status: done.
    `Con` and `Case` replaced `If` and the boolean literal (core.md §5). User
    data types (§2.3): done, as the same mechanism with declared constructors,

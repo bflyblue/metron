@@ -12,7 +12,7 @@ names.log       append-only: time, then  bind name ref | unname name | unit name
 Terms are content-addressed, so they never conflict and are only ever
 added. Everything label-level (names, their history, unit declarations) is
 the log replayed in order, which is also what makes two stores mergeable:
-concatenate the logs and sort by time.
+concatenate the logs and sort by time, which is what 'mergeStore' does.
 
 The prelude is not stored as bindings. Every session enters it first, in
 memory, and the store's log is replayed on top, so a user who rebinds a
@@ -28,27 +28,37 @@ module Eval.Store (
   openStore,
   loadStore,
   sync,
+  MergeReport (..),
+  mergeStore,
+  mergeStores,
 ) where
 
-import Control.Monad (foldM, foldM_, forM_, unless, when)
+import Control.Monad (foldM, foldM_, forM_, unless, void, when)
 import Data.ByteString qualified as BS
 import Data.Either (lefts, rights)
+import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import Data.Text.Read qualified as TR
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Eval.Codebase
 import Eval.Core
 import Eval.Hash
 import Eval.Resolve (storeTerm)
+import Eval.Type (TypeDef)
 import System.Directory
 import System.FilePath
 
 newtype Store = Store {dir :: FilePath}
+
+formatLine :: Int -> Text
+formatLine v = "eval codebase " <> tshow v
 
 -- | Bumped whenever the storage encoding changes; see core.md on hash stability.
 formatVersion :: Int
@@ -108,7 +118,6 @@ openStore d = do
                         )
                     )
  where
-  formatLine v = "eval codebase " <> tshow v
   -- Format 2 added the written name after each reference (design §7.4).
   -- Hashes are unchanged, so every term file is rewritten in place with
   -- empty hints and the log is kept; the loader reads its unit lines by
@@ -188,26 +197,8 @@ loadStore store base = do
   let (cb', logNotes) = foldl replay (cb, []) (zip [1 :: Int ..] logLines)
   pure (cb', decodeNotes ++ enterNotes ++ reverse logNotes)
  where
-  readType file = do
-    raw <- BS.readFile (store.dir </> "types" </> file)
-    pure $ case hashFromHex (T.pack file) of
-      Nothing -> Left ("types/" <> T.pack file <> ": not a hash, ignored")
-      Just h -> case decodeTypeDef raw of
-        Left err -> Left ("types/" <> T.pack file <> ": " <> err <> ", ignored")
-        Right def
-          | hashTypeDef def /= h ->
-              Left ("types/" <> T.pack file <> ": content does not match its hash, ignored")
-          | otherwise -> Right (h, def)
-  readTerm file = do
-    raw <- BS.readFile (store.dir </> "terms" </> file)
-    pure $ case hashFromHex (T.pack file) of
-      Nothing -> Left ("terms/" <> T.pack file <> ": not a hash, ignored")
-      Just h -> case decodeStored raw of
-        Left err -> Left ("terms/" <> T.pack file <> ": " <> err <> ", ignored")
-        Right t
-          | hashTerm t /= h ->
-              Left ("terms/" <> T.pack file <> ": content does not match its hash, ignored")
-          | otherwise -> Right (h, t)
+  readType file = verifyType file <$> BS.readFile (store.dir </> "types" </> file)
+  readTerm file = verifyTerm file <$> BS.readFile (store.dir </> "terms" </> file)
 
   -- Dependencies first; a term is skipped, with a note, if it does not check.
   enterAll :: Map Hash (Term Z) -> Codebase -> (Codebase, [Text])
@@ -404,6 +395,194 @@ sync store old new = do
             BS.writeFile path (encodeStored t)
             pure written'
           _ -> pure (Set.insert h written)
+
+-- | A type file's content, checked against the hash that names it.
+verifyType :: FilePath -> BS.ByteString -> Either Text (Hash, TypeDef)
+verifyType file raw = case hashFromHex (T.pack file) of
+  Nothing -> Left ("types/" <> T.pack file <> ": not a hash, ignored")
+  Just h -> case decodeTypeDef raw of
+    Left err -> Left ("types/" <> T.pack file <> ": " <> err <> ", ignored")
+    Right def
+      | hashTypeDef def /= h ->
+          Left ("types/" <> T.pack file <> ": content does not match its hash, ignored")
+      | otherwise -> Right (h, def)
+
+-- | A term file's content, checked against the hash that names it.
+verifyTerm :: FilePath -> BS.ByteString -> Either Text (Hash, Term Z)
+verifyTerm file raw = case hashFromHex (T.pack file) of
+  Nothing -> Left ("terms/" <> T.pack file <> ": not a hash, ignored")
+  Just h -> case decodeStored raw of
+    Left err -> Left ("terms/" <> T.pack file <> ": " <> err <> ", ignored")
+    Right t
+      | hashTerm t /= h ->
+          Left ("terms/" <> T.pack file <> ": content does not match its hash, ignored")
+      | otherwise -> Right (h, t)
+
+-- | What a merge brought across, and anything it skipped or noticed.
+data MergeReport = MergeReport
+  { termsCopied :: Int
+  , typesCopied :: Int
+  , linesAdded :: Int
+  , notes :: [Text]
+  }
+  deriving (Eq, Show)
+
+{- | Merge the store at the second path into the store at the first (design
+§7.4). The target is opened as 'openStore' does, so it is created if
+missing; the source must already be a store and is only read, apart from a
+migration to the current format on open, which the notes mention.
+-}
+mergeStores :: FilePath -> FilePath -> IO (Either Text MergeReport)
+mergeStores target source = do
+  isDir <- doesDirectoryExist source
+  hasFormat <- doesFileExist (source </> "format")
+  same <- (==) <$> canonicalizePath target <*> canonicalizePath source
+  if not isDir
+    then pure (Left (T.pack source <> ": no such directory"))
+    else
+      if not hasFormat
+        then
+          pure
+            (Left (T.pack source <> " is not an eval codebase (it has no format file)"))
+        else
+          if same
+            then pure (Left (T.pack source <> ": a store cannot be merged into itself"))
+            else do
+              -- The source first: if it is refused, the target is not touched.
+              sourceWas <- formatOf source
+              openedSource <- openStore source
+              targetWas <- formatOf target
+              openedTarget <- either (pure . Left) (const (openStore target)) openedSource
+              case (,) <$> openedSource <*> openedTarget of
+                Left err -> pure (Left err)
+                Right (src, dst) -> do
+                  report <- mergeStore dst src
+                  pure
+                    ( Right
+                        report
+                          { notes =
+                              migrated source sourceWas
+                                ++ migrated target targetWas
+                                ++ report.notes
+                          }
+                    )
+ where
+  formatOf d = do
+    present <- doesFileExist (d </> "format")
+    if not present
+      then pure Nothing
+      else do
+        line <- T.strip <$> TIO.readFile (d </> "format")
+        pure $ case TR.decimal <$> T.stripPrefix "eval codebase " line of
+          Just (Right (v, "")) -> Just (v :: Int)
+          _ -> Nothing
+  migrated d = \case
+    Just v
+      | v /= formatVersion ->
+          [ T.pack d
+              <> " was migrated in place from format "
+              <> tshow v
+              <> " to "
+              <> tshow formatVersion
+          ]
+    _ -> []
+
+{- | Merge one open store into another; the source is only read.
+
+Types and terms the target lacks are copied, each checked against its hash
+first as 'loadStore' does. A file of the same name is the same content, so
+nothing is overwritten. Then the logs are merged: the source's lines that
+the target already has are dropped (once for each copy the target has, so
+merging again adds nothing), the rest are appended, and the whole log is
+stably sorted by its leading time, so replay gives the last writer per name.
+On a tie the target's line comes first and the source's wins. A line with
+no readable time sorts as if at time 0 and is reported. The log is written
+last, through a temporary file, so an interrupted merge never leaves a name
+pointing at a missing term or a truncated log. The REPL @history@ file is
+the target's own and is neither copied nor touched.
+-}
+mergeStore :: Store -> Store -> IO MergeReport
+mergeStore target source = do
+  (types, typeNotes) <- copyVerified "types" (\f raw -> void (verifyType f raw))
+  (terms, termNotes) <- copyVerified "terms" (\f raw -> void (verifyTerm f raw))
+  (added, logNotes) <- mergeLogs
+  pure
+    MergeReport
+      { termsCopied = terms
+      , typesCopied = types
+      , linesAdded = added
+      , notes = typeNotes ++ termNotes ++ logNotes
+      }
+ where
+  copyVerified ::
+    FilePath -> (FilePath -> BS.ByteString -> Either Text ()) -> IO (Int, [Text])
+  copyVerified sub verify = do
+    let from = source.dir </> sub
+        to = target.dir </> sub
+    present <- doesDirectoryExist from
+    files <- if present then listDirectory from else pure []
+    results <-
+      mapM
+        ( \file -> do
+            have <- doesPathExist (to </> file)
+            isFile <- doesFileExist (from </> file)
+            if have || not isFile
+              then pure (Right False)
+              else do
+                raw <- BS.readFile (from </> file)
+                case verify file raw of
+                  Left err -> pure (Left (T.pack source.dir <> ": " <> err))
+                  Right () -> do
+                    let tmp = target.dir </> "merge.tmp"
+                    BS.writeFile tmp raw
+                    renameFile tmp (to </> file)
+                    pure (Right True)
+        )
+        files
+    pure (length (filter id (rights results)), lefts results)
+
+  mergeLogs :: IO (Int, [Text])
+  mergeLogs = do
+    let logFile = target.dir </> "names.log"
+    present <- doesFileExist logFile
+    old <- if present then TIO.readFile logFile else pure ""
+    theirsPresent <- doesFileExist (source.dir </> "names.log")
+    theirs <-
+      if theirsPresent
+        then numbered <$> TIO.readFile (source.dir </> "names.log")
+        else pure []
+    let mine = numbered old
+        known = Map.fromListWith (+) [(l, 1 :: Int) | (_, l) <- mine]
+        fresh = dropKnown known theirs
+        merged = sortOn (fromMaybe 0 . stampOf) (map snd mine ++ map snd fresh)
+        new = T.unlines merged
+    when (new /= old) $ do
+      let tmp = target.dir </> "names.log.merge"
+      TIO.writeFile tmp new
+      renameFile tmp logFile
+    pure (length fresh, unstamped target.dir mine ++ unstamped source.dir fresh)
+
+  -- Blank lines carry nothing and are dropped.
+  numbered = filter (not . T.null . T.strip . snd) . zip [1 :: Int ..] . T.lines
+
+  dropKnown _ [] = []
+  dropKnown known (x@(_, l) : rest) = case Map.lookup l known of
+    Just k | k > 0 -> dropKnown (Map.insert l (k - 1) known) rest
+    _ -> x : dropKnown known rest
+
+  unstamped d ls =
+    [ T.pack d
+        <> "/names.log:"
+        <> tshow n
+        <> ": no time at the start of the line, sorted to the beginning"
+    | (n, l) <- ls
+    , Nothing <- [stampOf l]
+    ]
+
+  stampOf :: Text -> Maybe Integer
+  stampOf l = case T.words l of
+    w : _ | Right (t, "") <- TR.decimal w -> Just t
+    _ -> Nothing
 
 flagNames :: (Text -> Codebase -> Codebase) -> Text -> Codebase -> Codebase
 flagNames mark target cb = case parseRef target of

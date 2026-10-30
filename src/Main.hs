@@ -21,7 +21,8 @@ it is not a terminal, so sessions can be scripted and tested.
 
 Every mode works against a codebase on disk (design §7.4): @--codebase DIR@
 names it, otherwise a @.eval@ directory above the working directory, else
-the user store. @--no-codebase@ runs in memory only.
+the user store. @--no-codebase@ runs in memory only. @--merge OTHER@ merges
+the store at OTHER into that codebase and exits.
 -}
 main :: IO ()
 main = do
@@ -30,19 +31,29 @@ main = do
   args <- getArgs
   let (opts, rest) = options args
   case rest of
+    _
+      | Just other <- opts.mergeFrom ->
+          if null rest && not opts.inMemory then merge opts other else usage
     ["-f", path] -> TIO.readFile path >>= runOnce opts
     ["-i"] -> repl opts False
     [src] -> runOnce opts (T.pack src)
     [] -> do
       interactive <- hIsTerminalDevice stdin
       if interactive then repl opts True else TIO.getContents >>= runOnce opts
-    _ -> do
-      hPutStrLn
-        stderr
-        "usage: eval [--codebase DIR | --no-codebase] ['expr' | -f file | -i]"
-      exitFailure
+    _ -> usage
+ where
+  usage = do
+    hPutStrLn
+      stderr
+      "usage: eval [--codebase DIR | --no-codebase] ['expr' | -f file | -i]\n\
+      \       eval [--codebase DIR] --merge OTHER"
+    exitFailure
 
-data Options = Options {storeDir :: Maybe FilePath, inMemory :: Bool}
+data Options = Options
+  { storeDir :: Maybe FilePath
+  , inMemory :: Bool
+  , mergeFrom :: Maybe FilePath
+  }
 
 options :: [String] -> (Options, [String])
 options args =
@@ -52,8 +63,28 @@ options args =
   go = \case
     "--codebase" : d : more -> let (o, r) = go more in (o{storeDir = Just d}, r)
     "--no-codebase" : more -> let (o, r) = go more in (o{inMemory = True}, r)
+    "--merge" : d : more -> let (o, r) = go more in (o{mergeFrom = Just d}, r)
     a : more -> let (o, r) = go more in (o, a : r)
-    [] -> (Options Nothing False, [])
+    [] -> (Options Nothing False Nothing, [])
+
+{- | Merge the store at OTHER into this codebase (design §7.4) and say what
+came across. OTHER is only read, apart from a migration to the current
+format, which is reported.
+-}
+merge :: Options -> FilePath -> IO ()
+merge opts other = do
+  d <- locateStore opts.storeDir
+  result <- mergeStores d other
+  case result of
+    Left err -> TIO.hPutStrLn stderr err >> exitFailure
+    Right report -> do
+      TIO.putStrLn ("merged " <> T.pack other <> " into " <> T.pack d)
+      TIO.putStrLn ("terms copied: " <> tshow report.termsCopied)
+      TIO.putStrLn ("types copied: " <> tshow report.typesCopied)
+      TIO.putStrLn ("log lines added: " <> tshow report.linesAdded)
+      mapM_ (TIO.putStrLn . ("note: " <>)) report.notes
+ where
+  tshow = T.pack . show
 
 -- | A session: the prelude, then the store on top of it.
 data Live = Live {session :: Session, store :: Maybe Store}

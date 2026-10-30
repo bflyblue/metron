@@ -222,3 +222,10 @@
 - `Rect 3 m 4 m` is four arguments again, not two quantities; a type error
   that lands on such a literal or unit now carries a hint to write `(3 m)`.
   Provenance carries hints beside spans.
+- `eval [--codebase DIR] --merge OTHER` merges another store into this one
+  (design §7.4): terms and types DIR lacks are copied after a hash check,
+  OTHER's new log lines are added and the log is stably sorted by time, so
+  the last writer per name wins. OTHER is only read (an older format is
+  migrated in place and reported), merging again adds nothing, and the
+  `history` file is left alone. `Eval.Store.mergeStores` and `mergeStore`
+  expose it as a library function returning a `MergeReport`.
