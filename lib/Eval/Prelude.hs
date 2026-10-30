@@ -226,6 +226,29 @@ algebra =
   , ("cross", "\\a b -> star (a /\\ b)")
   , ("trace", "\\a -> contract 0 1 a")
   , ("vimap", "\\f v -> vzipWith f (indices v) v")
+  , ("e1", "[1, 0, 0]")
+  , ("e2", "[0, 1, 0]")
+  , ("e3", "[0, 0, 1]")
+  , ("rotx", "\\θ -> (θ to rad) / rad * (e3 /\\ e2)")
+  , ("roty", "\\θ -> (θ to rad) / rad * (e1 /\\ e3)")
+  , ("rotz", "\\θ -> (θ to rad) / rad * (e2 /\\ e1)")
+  , ("dual", "\\v -> ε @ v")
+  , ("axisAngle", "\\n θ -> (θ to rad) / rad * dual (-n / norm n)")
+  ,
+    ( "rotation"
+    , T.unwords
+        [ "\\a b -> let c = cross a b in"
+        , "if c == 0 * c then"
+        , "(if a · b > 0 * (a · b) then [[0, 0, 0], [0, 0, 0], [0, 0, 0]]"
+        , "else let k = if cross a e3 == 0 * cross a e3 then e1 else e3 in"
+        , "pi * (k /\\ a) / norm (cross k a))"
+        , "else atan2 (norm c) (a · b) / rad * (b /\\ a) / norm c"
+        ]
+    )
+  ,
+    ( "euler313"
+    , "\\raan inc argp -> expm (rotz raan) @ expm (rotx inc) @ expm (rotz argp)"
+    )
   ]
 
 {- | Tuples and lists (design §2.3): the structural functions, recursive

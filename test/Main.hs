@@ -89,6 +89,7 @@ main =
         , productTests
         , contractionTests
         , sliceTests
+        , rotationTests
         , propertyTests
         , unitTests
         , lintRegressionTests
@@ -1743,6 +1744,296 @@ sliceTests =
           @?= Right ["g = \\t -> slice 0 1 t"]
         runLines ["let h t = (neg t)._.0", ":view h"]
           @?= Right ["h = \\t -> (-t)._.0"]
+    ]
+
+{- | An expression that is @true@ when every component of the dimensionless
+tensor @e@ encloses the matching component of @t@ (@|mid d| ≤ bound d@ for
+@d = e − t@) with a bound of at most @tol@.
+-}
+encloses :: Text -> Text -> Text -> Text
+encloses tol e t =
+  "let d = ("
+    <> e
+    <> ") - ("
+    <> t
+    <> ") in vmap (\\x -> if abs (mid x) <= bound x && bound x <= "
+    <> tol
+    <> " then 0 else 1) d == vmap (\\x -> 0) d"
+
+-- | Design §3.3, §3.8: @expm@, @transformBy@ and the bivector constructors.
+rotationTests :: TestTree
+rotationTests =
+  testGroup
+    "rotations"
+    [ testCase "expm of a bivector is a right-handed rotation about each axis" $ do
+        evalP "expm (rotz (90 deg)) @ [1, 0, 0]"
+          @?= Right ["[3.0e-24 ± 3.8e-24, 1.0000000000000000000…, 0]"]
+        evalP (encloses "1e-20" "expm (rotz (90 deg)) @ e1" "e2") @?= Right ["true"]
+        evalP (encloses "1e-20" "expm (rotx (90 deg)) @ e2" "e3") @?= Right ["true"]
+        evalP (encloses "1e-20" "expm (roty (90 deg)) @ e3" "e1") @?= Right ["true"]
+        evalP
+          (encloses "1e-20" "expm (rotz (30 deg)) @ e1" "[cos (30 deg), sin (30 deg), 0]")
+          @?= Right ["true"]
+    , testCase "expm of zero is the identity, exactly" $ do
+        evalP "expm [[0, 0, 0], [0, 0, 0], [0, 0, 0]]"
+          @?= Right ["[1, 0, 0; 0, 1, 0; 0, 0, 1]"]
+        evalP "expm [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]"
+          @?= Right ["[1, 0, 0, 0; 0, 1, 0, 0; 0, 0, 1, 0; 0, 0, 0, 1]"]
+        evalP "expm (rotz (0 deg)) == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]"
+          @?= Right ["true"]
+        case evalP "expm [[5]]" of
+          Right [v] -> T.isPrefixOf "[[148.41315910257660342" v @? T.unpack v
+          other -> assertFailure (show other)
+    , testCase "expm (-B) undoes expm B" $ do
+        let b = "axisAngle [1, 2, 2] (40 deg)"
+        evalP
+          ( encloses
+              "1e-20"
+              ("expm (-(" <> b <> ")) @ (expm (" <> b <> ") @ [3, -1, 2])")
+              "[3, -1, 2]"
+          )
+          @?= Right ["true"]
+        -- not antisymmetric: the series, with its remainder
+        let m = "[[0.1, 0.2], [0.3, -0.1]]"
+        evalP (encloses "1e-20" ("expm (-" <> m <> ") @ expm " <> m) "[[1, 0], [0, 1]]")
+          @?= Right ["true"]
+    , testCase "a rotation is orthogonal: Rᵀ R encloses I" $ do
+        let i3 = "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]"
+        evalP
+          ( encloses
+              "1e-20"
+              "let r = expm (axisAngle [1, 2, 2] (40 deg)) in transpose r @ r"
+              i3
+          )
+          @?= Right ["true"]
+        evalP
+          ( encloses
+              "1e-20"
+              "let r = euler313 (30 deg) (45 deg) (60 deg) in transpose r @ r"
+              i3
+          )
+          @?= Right ["true"]
+    , testCase "an uncertain angle carries its nudge into the entries" $ do
+        -- R00 = cos θ moves at the full rate, R01 = sin θ only to second order
+        evalP
+          "let b = bound (expm (rotz (90 deg ± 0.001 rad))) in b.0.0 >= 0.001 && b.0.0 <= 0.0011 && b.1.1 >= 0.001 && b.0.1 <= 1e-5 && b.2.2 == 0"
+          @?= Right ["true"]
+        -- an angle whose enclosure contains zero: nothing divides by it
+        evalP
+          ( encloses
+              "0.0011"
+              "expm (rotz (0 rad ± 0.001 rad))"
+              "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]"
+          )
+          @?= Right ["true"]
+        evalP
+          "let b = bound (expm (rotz (0 rad ± 0.001 rad))) in b.0.1 >= 0.001 && b.0.0 <= 1e-5"
+          @?= Right ["true"]
+        evalP
+          ( encloses
+              "1e-20"
+              "expm (rotz (1e-30 rad)) @ e1"
+              "[cos (1e-30 rad), sin (1e-30 rad), 0]"
+          )
+          @?= Right ["true"]
+    , testCase "four dimensions: two planes by the series, one plane by Rodrigues" $ do
+        evalP
+          ( encloses
+              "1e-20"
+              "expm [[0, 1/2, 0, 0], [-1/2, 0, 0, 0], [0, 0, 0, 1/3], [0, 0, -1/3, 0]]"
+              ( T.unwords
+                  [ "let a = 0.5 rad in let b = (1/3) * rad in"
+                  , "[[cos a, sin a, 0, 0], [-sin a, cos a, 0, 0],"
+                  , "[0, 0, cos b, sin b], [0, 0, -sin b, cos b]]"
+                  ]
+              )
+          )
+          @?= Right ["true"]
+        -- one plane, found exactly: the other two axes are untouched
+        evalP
+          "let r = expm [[0, 3, 0, 0], [-3, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]] in r.2 == [0, 0, 1, 0] && r.3 == [0, 0, 0, 1]"
+          @?= Right ["true"]
+        evalP
+          ( encloses
+              "1e-20"
+              "expm [[0, 3, 0, 0], [-3, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]"
+              "[[cos (3 rad), sin (3 rad), 0, 0], [-sin (3 rad), cos (3 rad), 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]"
+          )
+          @?= Right ["true"]
+    , testCase "expm of a general matrix: the scaled and squared series" $ do
+        evalP (encloses "1e-20" "expm [[1, 0], [0, 2]]" "[[exp 1, 0], [0, exp 2]]")
+          @?= Right ["true"]
+        evalP
+          ( encloses
+              "1e-20"
+              "expm [[0, 1, 0], [0, 0, 1], [0, 0, 0]]"
+              "[[1, 1, 1/2], [0, 1, 1], [0, 0, 1]]"
+          )
+          @?= Right ["true"]
+        -- uncertain entries: the enclosure holds the midpoint matrix's exponential
+        evalP
+          ( encloses
+              "0.1"
+              "expm ([[0.1, 0.2], [0.3, -0.1]] ± 0.01)"
+              "expm [[0.1, 0.2], [0.3, -0.1]]"
+          )
+          @?= Right ["true"]
+        -- nearly antisymmetric (two fresh nudges where one would cancel): Rodrigues
+        -- with the symmetric part's bound, not the slow series
+        evalP
+          ( encloses
+              "1e-20"
+              "let r = expm (rotation [1, 2, 3] [-2, 0, 1]) in transpose r @ r"
+              "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]"
+          )
+          @?= Right ["true"]
+        evalP "expm [[1, 2], [3, 4]]"
+          @?= Right
+            [ "[51.968956198705003658…, 74.736564567003212549…; 112.10484685050481882…, 164.07380304920982248…]"
+            ]
+    , testCase "expm is dimensionless" $ do
+        typeOfTextP "expm" @?= Right "Mat n n -> Mat n n"
+        expectError (evalP "expm [[1 m]]") "dimensions differ"
+        expectError (evalP "expm (rotz (1 m))") "expected Num [rad], got Num [m]"
+        expectError (evalP "rotz 1") "expected Num [rad], got Num"
+    , testCase "transformBy applies R along every axis" $ do
+        let r = "[[1, 2, 0], [3, 4, 1], [0, 1, 5]]"
+            s = "[[2, 0, 1], [1, 1, 0], [0, 3, 1]]"
+            p = "[[2, 1, 0], [1, 3, 1], [0, 7, 4]]"
+        evalP ("transformBy " <> r <> " [1, -2, 3] == " <> r <> " @ [1, -2, 3]")
+          @?= Right ["true"]
+        evalP
+          ( "transformBy "
+              <> r
+              <> " "
+              <> p
+              <> " == "
+              <> r
+              <> " @ "
+              <> p
+              <> " @ transpose "
+              <> r
+          )
+          @?= Right ["true"]
+        evalP
+          ( "let a = [1, 2, 3] in let b = [0, -1, 2] in let c = [4, 0, 1] in transformBy "
+              <> r
+              <> " (a ⊗ b ⊗ c) == ("
+              <> r
+              <> " @ a) ⊗ ("
+              <> r
+              <> " @ b) ⊗ ("
+              <> r
+              <> " @ c)"
+          )
+          @?= Right ["true"]
+        evalP
+          ( "transformBy "
+              <> r
+              <> " (transformBy "
+              <> s
+              <> " "
+              <> p
+              <> ") == transformBy ("
+              <> r
+              <> " @ "
+              <> s
+              <> ") "
+              <> p
+          )
+          @?= Right ["true"]
+        -- the identity keeps every component as it was, nudges and all
+        evalP "let t = [[1, 2], [3, 4]] ± 0.1 in transformBy [[1, 0], [0, 1]] t == t"
+          @?= Right ["true"]
+        -- a rotation of a covariance
+        evalP
+          ( encloses
+              "1e-20"
+              "transformBy (expm (rotz (90 deg))) [[4, 1, 0], [1, 9, 0], [0, 0, 1]]"
+              "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
+          )
+          @?= Right ["true"]
+    , testCase "transformBy keeps the dimension and the display unit" $ do
+        evalP "transformBy [[0, 1], [1, 0]] ([1, 2] km)" @?= Right ["[2, 1] km"]
+        evalP "transformBy [[0, 1], [1, 0]] ([[1, 2], [3, 4]] km)"
+          @?= Right ["[4, 3; 2, 1] km"]
+        evalP "transformBy [[0, 1], [1, 0]] (5 km)" @?= Right ["5 km"]
+        typeOfTextP "transformBy" @?= Right "Mat n n -> Tensor s d -> Tensor s d"
+        typeOfTextP "transformBy (expm (rotz (10 deg))) ([1, 2, 3] m)"
+          @?= Right "Vec 3 [m]"
+    , testCase "transformBy refuses an axis of another length, at run time" $ do
+        expectError
+          (evalP "transformBy [[1, 2], [3, 4]] [1, 2, 3]")
+          "transformBy: every axis must have length n: the matrix is 2 × 2 and the tensor's lengths are [3]"
+        expectError
+          (evalP "transformBy [[1, 2], [3, 4]] [[1, 2, 3], [4, 5, 6]]")
+          "every axis must have length n"
+    , testCase "the constructors' types" $ do
+        typeOfTextP "e1" @?= Right "Vec 3"
+        typeOfTextP "rotx" @?= Right "Num [rad] -> Mat 3 3"
+        typeOfTextP "roty" @?= Right "Num [rad] -> Mat 3 3"
+        typeOfTextP "rotz" @?= Right "Num [rad] -> Mat 3 3"
+        typeOfTextP "dual" @?= Right "Tensor (3 : s) d -> Tensor (3 : 3 : s) d"
+        typeOfTextP "axisAngle" @?= Right "Vec 3 d -> Num [rad] -> Mat 3 3"
+        typeOfTextP "rotation" @?= Right "Vec 3 d -> Vec 3 d1 -> Mat 3 3"
+        typeOfTextP "euler313"
+          @?= Right "Num [rad] -> Num [rad] -> Num [rad] -> Mat 3 3"
+    , testCase "rotz is θ (e2 ∧ e1): ∧ turns its second vector toward its first" $ do
+        evalP "e1 /\\ e2" @?= Right ["[0, 1, 0; -1, 0, 0; 0, 0, 0]"]
+        evalP "rotz (90 deg) == pi / 2 * (e2 /\\ e1)" @?= Right ["true"]
+        evalP "rotx (1 rad)" @?= Right ["[0, 0, 0; 0, 0, -1; 0, 1, 0]"]
+        evalP "roty (1 rad)" @?= Right ["[0, 0, 1; 0, 0, 0; -1, 0, 0]"]
+        evalP "rotz (1 rad)" @?= Right ["[0, -1, 0; 1, 0, 0; 0, 0, 0]"]
+    , testCase "axisAngle and dual" $ do
+        evalP "axisAngle [0, 0, 1] (30 deg) == rotz (30 deg)" @?= Right ["true"]
+        evalP "axisAngle [0, 0, 2] (30 deg) == rotz (30 deg)" @?= Right ["true"]
+        evalP "axisAngle e1 (1 rad) == rotx (1 rad)" @?= Right ["true"]
+        evalP "axisAngle e2 (1 rad) == roty (1 rad)" @?= Right ["true"]
+        -- dual is the inverse of ⋆; the generator about n is the dual of -n
+        evalP "star (dual [1, 2, 3])" @?= Right ["[1, 2, 3]"]
+        evalP "dual e3" @?= Right ["[0, 1, 0; -1, 0, 0; 0, 0, 0]"]
+        evalP "dual [1, 2, 3] @ [4, 5, 6] == cross [4, 5, 6] [1, 2, 3]"
+          @?= Right ["true"]
+        evalP (encloses "1e-20" "expm (axisAngle [1, 1, 1] (120 deg)) @ e1" "e2")
+          @?= Right ["true"]
+    , testCase "rotation a b takes a to b" $ do
+        evalP "rotation e1 e2 == rotz (90 deg)" @?= Right ["true"]
+        evalP (encloses "1e-20" "expm (rotation e1 e2)" "expm (rotz (90 deg))")
+          @?= Right ["true"]
+        evalP
+          ( encloses
+              "1e-20"
+              "expm (rotation [1, 2, 3] [-2, 0, 1]) @ [1, 2, 3]"
+              "norm [1, 2, 3] / norm [-2, 0, 1] * [-2, 0, 1]"
+          )
+          @?= Right ["true"]
+        -- any dimensions: only the directions matter
+        evalP "rotation ([1, 0, 0] m) ([0, 5, 0] s) == rotz (90 deg)" @?= Right ["true"]
+        -- parallel: the zero bivector; antiparallel: half a turn in the plane through e3
+        evalP "rotation [1, 1, 0] [2, 2, 0]" @?= Right ["[0, 0, 0; 0, 0, 0; 0, 0, 0]"]
+        evalP (encloses "1e-20" "expm (rotation e1 (-e1)) @ e1" "-e1")
+          @?= Right ["true"]
+        evalP (encloses "1e-20" "expm (rotation e1 (-e1)) @ e2" "e2") @?= Right ["true"]
+        -- along e3 itself, the plane through e1
+        evalP (encloses "1e-20" "expm (rotation e3 (-e3)) @ e3" "-e3")
+          @?= Right ["true"]
+    , testCase "euler313 is the perifocal-to-inertial matrix" $ do
+        -- Ω = 30°, i = 45°, ω = 60°, entries by the textbook formula
+        let q =
+              T.unwords
+                [ "let o = 30 deg in let i = 45 deg in let w = 60 deg in"
+                , "[[cos o * cos w - sin o * sin w * cos i, -cos o * sin w - sin o * cos i * cos w, sin o * sin i],"
+                , "[sin o * cos w + cos o * cos i * sin w, -sin o * sin w + cos o * cos i * cos w, -cos o * sin i],"
+                , "[sin i * sin w, sin i * cos w, cos i]]"
+                ]
+        evalP (encloses "1e-20" "euler313 (30 deg) (45 deg) (60 deg)" q)
+          @?= Right ["true"]
+    , testCase "an uncertain angle makes a bivector with nudged entries" $ do
+        evalP
+          "let b = bound (rotz (90 deg ± 0.001 rad)) in b.0.1 >= 0.001 && b.1.0 >= 0.001 && b.0.0 == 0"
+          @?= Right ["true"]
+        evalP "rotz (90 deg ± 0.001 rad)"
+          @?= Right ["[0, -1.5708 ± 0.0012, 0; 1.5708 ± 0.0012, 0, 0; 0, 0, 0]"]
     ]
 
 -- Properties ----------------------------------------------------------------------

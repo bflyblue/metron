@@ -199,6 +199,12 @@ primScheme name = case name of
               (TFun sd (TTensor s d2))
           )
       )
+  -- The matrix exponential (design §3.3): dimensionless in and out, so a
+  -- matrix with a unit is refused by the unifier.
+  "expm" -> Just (Forall [nv] (TFun (matD n n dimOne) (matD n n dimOne)))
+  -- R applied along every axis of a tensor. The type cannot say that every
+  -- length of s is n; the evaluator checks it (design §4.3).
+  "transformBy" -> Just (Forall [nv, sv, dv] (TFun (matD n n dimOne) (TFun sd sd)))
   _ -> case baseUnit name of
     Just b -> mono (numD (dimBase b))
     Nothing -> Nothing

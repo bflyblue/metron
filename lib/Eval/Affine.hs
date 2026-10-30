@@ -56,6 +56,10 @@ module Eval.Affine (
   coshM,
   tanhM,
   piM,
+  sincSqM,
+  coscSqM,
+  enclose,
+  tidyM,
   floorM,
   ceilM,
   roundM,
@@ -749,6 +753,87 @@ piM p =
   let (v, e) = piApprox p
       v' = roundAt (negate p) v
    in fresh "pi" p [] v' (e + abs (v - v'))
+
+-- Rodrigues' coefficients ---------------------------------------------------------------
+
+{- | @sin θ / θ@ and @(1 − cos θ) / θ²@ as functions of the squared angle
+@t = θ²@: the coefficients of Rodrigues' formula (design §3.3, @expm@).
+Both are entire in @t@, the series @Σ (−t)ᵏ/(2k+1)!@ and
+@Σ (−t)ᵏ/(2k+2)!@, so an enclosure of @t@ that reaches zero, or dips
+below it, is harmless: nothing takes the root of @t@ or divides by the
+angle. Near zero (@t@'s enclosure reaching below 1) the series is summed
+on the enclosure ('rodriguesSeries'); away from it, by @sqrt@, @sin@ and
+@cos@ and a division by an enclosure that excludes zero.
+-}
+sincSqM, coscSqM :: Precision -> Magnitude -> Either ArithError Magnitude
+sincSqM p t
+  | Exact 0 <- t = Right (Exact 1)
+  | lo t >= 1 = do
+      theta <- sqrtM p t
+      divM p (sinM p theta) theta
+  | otherwise = Right (rodriguesSeries "sinc" p 1 t)
+coscSqM p t
+  | Exact 0 <- t = Right (Exact (1 % 2))
+  | lo t >= 1 = do
+      theta <- sqrtM p t
+      divM p (subM (Exact 1) (cosM p theta)) t
+  | otherwise = Right (rodriguesSeries "cosc" p 2 t)
+
+{- | @Σₖ (−t)ᵏ / (2k + j)!@ on an enclosure of @t@, by Horner's rule in
+affine arithmetic up to the first term @K@ that is below the tolerance
+at @T = max |t|@ over the enclosure and from which the terms at least
+halve (@2T ≤ (2K+j+1)(2K+j+2)@, the ratio of one term to the last being
+@T / ((2k+j+1)(2k+j+2))@). The tail is then at most twice that term
+for every @t@ in the enclosure, and it is one fresh nudge.
+-}
+rodriguesSeries :: Text -> Precision -> Integer -> Magnitude -> Magnitude
+rodriguesSeries name p j t =
+  let big = max (abs (lo t)) (abs (hi t))
+      coeff k = (if even k then 1 else -1) % product [1 .. 2 * k + j]
+      size k = abs (coeff k) * big ^ k
+      stops k =
+        size k < tolerance (p + 4) 1
+          && 2 * big <= fromInteger ((2 * k + j + 1) * (2 * k + j + 2))
+      top = case filter stops [0 ..] of
+        k : _ -> k
+        [] -> 0
+      poly =
+        foldr (\k acc -> addM (Exact (coeff k)) (mulM p t acc)) (Exact 0) [0 .. top - 1]
+   in enclose name p [t] (2 * size top) poly
+
+{- | Add one fresh bound nudge of the given size to a value, named after
+the operation, its operands and the precision (design §3.2.4), and
+compact. For a remainder bounded outside this module, such as a matrix
+series' (@expm@): the operands must tell apart every value that is to
+get an unknown of its own, so two entries of one matrix pass their
+positions.
+-}
+enclose ::
+  Text -> Precision -> [Magnitude] -> Rational -> Magnitude -> Magnitude
+enclose name p operands size base = finish p (withFresh name p operands size base)
+
+{- | Round the bound coefficients and the slack of an affine form to
+@p + 4@ significant digits of its size, the error joining one fresh
+nudge, as a midpoint's rounding does (design §3.2.7, §3.2.8). 'mulM'
+rounds the midpoint it forms but not the coefficients it multiplies, so
+a long chain of products, a matrix series, would otherwise carry
+coefficients whose digits grow with every step. Statistical coefficients
+are kept as they are: their error would not be a bound.
+-}
+tidyM :: Precision -> Magnitude -> Magnitude
+tidyM p x = case x of
+  Exact _ -> x
+  Affine m ts s ->
+    let e = precisionExponent (p + 4) (max (abs m) (radius x))
+        grid = 10 ^^ e :: Rational
+        roundBound (c, nd)
+          | nd.kind == Bound = (roundAt e c, nd)
+          | otherwise = (c, nd)
+        ts' = Map.map roundBound ts
+        s' = fromInteger (ceiling (s / grid)) * grid
+        err =
+          sum (zipWith (\(c, _) (c', _) -> abs (c - c')) (Map.elems ts) (Map.elems ts'))
+     in finish p (withFresh "round" p [x] err (affine m ts' s'))
 
 -- Rounding to integers --------------------------------------------------------------------
 
