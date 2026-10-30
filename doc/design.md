@@ -1788,9 +1788,12 @@ chart ecef t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, ω_earth]  
 
 Why the generator and not the matrix: `exp` of an antisymmetric matrix is
 always a rotation, so there is nothing to check, and its inverse is
-`exp (-B)`, exact by negation. The inverse of a rotation stored as a matrix of
-enclosures would be the one place the affine arithmetic suffers (§3.3,
-`inverse`). The matrix is computed when a conversion needs it, by Rodrigues'
+`exp (-B)`: the *generator* is inverted exactly, by negation, while the
+matrices on either side are enclosures (`expm (rotz (90 deg)) @ [1, 0, 0]`
+prints `[3.0e-24 ± 3.8e-24, 1.000…, 0]`), so a round trip through a turned
+chart encloses the point it started from rather than equalling it. Inverting
+a rotation stored as a matrix of enclosures by Gaussian elimination would be
+the one place the affine arithmetic suffers (§3.3, `inverse`). The matrix is computed when a conversion needs it, by Rodrigues'
 formula for a single plane and by the exponential series in general, with
 the same rigorous enclosures as `sin` and `cos` (§3.2.3); `mkChart` checks
 `B + Bᵀ == 0` exactly, which holds for anything built with `∧` and for
@@ -1805,7 +1808,7 @@ in their names:
 rotz θ         = θ / rad * (e2 ∧ e1)  -- rotx, roty likewise; the right-hand rule: rotz (90 deg) turns x toward y
 axisAngle n θ  = dual (θ / rad * (-n) / norm n)   -- 3D: the axis is the dual of the plane
 rotation a b   = the bivector taking a to b, angle atan2 (norm (a × b)) (a · b)
-euler313 Ω i ω = three single-plane rotations composed at the matrix level
+euler313 Ω i ω = [rotz Ω, rotx i, rotz ω]   -- a list of generators, applied in order
 fromQuaternion q = the logarithm of the rotor, for input only
 ```
 
@@ -1813,6 +1816,15 @@ Euler angles have gimbal lock and twelve sequence conventions, so each
 sequence is its own function; quaternions double-cover (`q` and `-q` are one
 rotation), so they are accepted as input and never stored. The generator has
 neither problem: one plane, one angle.
+
+**A chart's orientation is a list of generators.** A composed rotation, such
+as an Euler sequence, is not `expm` of any single bivector, so `by` takes a
+list of generators applied in order: `by rotz θ` is a list of one, and
+`euler313 Ω i ω` returns `[rotz Ω, rotx i, rotz ω]`. Every element is checked
+antisymmetric as before, the inverse is the list reversed with each element
+negated, and nothing needs a matrix logarithm or an orthogonality check on
+enclosures. The chart computes its rotation `R = expm B₁ · expm B₂ · …` once,
+when its value is built, and keeps it beside the generators.
 
 **Conversion.** `p to c` gives `p`'s coordinates on chart `c`: `(exp (-B_c)
 (p .- o_c)) / step_c`, components of a vector in `c`'s axes. A displacement
