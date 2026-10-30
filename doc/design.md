@@ -2184,11 +2184,11 @@ hands, meet:
 
 - *An Earth chart.* None is shipped, and that is the owner's decision to
   make separately: an Earth-fixed chart honest at the kilometre level
-  needs precession and nutation (the equator of date has moved about
-  0.36° from J2000's by 2026), polar motion, and UT1 rather than UTC for
-  the Earth's angle, and this tool promises honest bounds. The library
-  ships the mechanism only; §12 defines a simple spinning Earth for
-  illustration, with its accuracy stated.
+  needs precession and nutation (the equinox of date has moved about
+  0.36° from J2000's by 2026, some 40 km at the equator), polar motion,
+  and UT1 rather than UTC for the Earth's angle, and this tool promises
+  honest bounds. The library ships the mechanism only; §12 defines a
+  simple spinning Earth for illustration, with its accuracy stated.
 - *Time scales.* `unix`, `J2000`, `JD` and `MJD` are charts on one time
   line with no notion of UTC, UT1, TAI or TT; an epoch's scale is the
   author's to keep, and leap seconds are not modelled.
@@ -4751,13 +4751,16 @@ chart's name.
 
 A ground station turns with the Earth, and its velocity in eci is the
 Earth's rotation alone (§3.8). The library ships no Earth chart, so the
-session defines a simple one for illustration: it ignores precession
-(about 0.36° by 2026), nutation, polar motion and UT1 − UTC, and a station
-on a sphere is no geodetic site, so its positions are good to a few
-kilometres and no better. The angle is a linear GMST from J2000.0 (Meeus,
-eq. 12.4, without its T² and T³ terms), and the spin is the same rate, so
-the two agree by construction. At 2026 Jan 1 0h UT1 it is 100.6608323°
-modulo 360°, 0.094″ short of the IAU 1982 GMST (Aoki et al. 1982),
+session defines a simple one for illustration only: it ignores precession,
+nutation, polar motion and UT1 − UTC, and puts the station on a sphere, so
+its positions are off by tens of kilometres. Precession alone, about 0.36°
+since J2000 by 2026, moves a point on the equator about 40 km, and the
+sphere puts this station about 25 km from its WGS84 place (`[3980.7, 0,
+4966.8] km` for latitude 51.4769° at sea level). The angle is a linear
+GMST from J2000.0 (Meeus, *Astronomical Algorithms*, without the T² and T³
+terms of the IAU 1982 expression), and the spin is the same rate, so the
+two agree by construction. At 2026 Jan 1 0h UT1 it is 100.6608323° modulo
+360°, 0.094″ short of the IAU 1982 GMST (Aoki et al. 1982, A&A 105, 359),
 100.6608585°, which the test checks. As before, the lines are the test suite's
 (`spinningEarthSession`, test "design §12: a spinning Earth, for
 illustration") at the default precision:
@@ -4784,8 +4787,8 @@ stored use astro
 ```
 
 `greenwich` is a moving chart under a moving chart: its time is passed to
-`earth`, its parent. At that epoch the station is at longitude 100.66° in
-eci, 3972.5 km from the axis, and `stateFrom` gives it `ω × r`, 289.68 m/s
+`earth`, its parent. At that epoch the station is at right ascension
+100.66° in eci, 3972.5 km from the axis, and `stateFrom` gives it `ω × r`, 289.68 m/s
 (`7.2921158553e-5 s⁻¹ × 3972.5 km`) eastward, with no velocity of its own.
 Read back on its own chart it is at rest. A body at rest in eci passing the
 station moves west on the station's chart at the same speed: the

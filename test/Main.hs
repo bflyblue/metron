@@ -2015,63 +2015,65 @@ movingChartTests =
   testGroup
     "movingCharts"
     [ testCase
-        "a moving chart declares, prints with its parameter and spin, and applies" $ do
-        runLinesP
-          ( spinning
-              ++ [ ":view spinner"
-                 , ":type spinner"
-                 , "[7000000, 0, 0] eci to spinner t1"
-                 , "[7000000, 0, 0] eci to (spinner t1)"
-                 , "spinner t1"
-                 ]
-          )
-          @?= Right
-            [ "chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w"
-            , "Point [s] -> Chart (Vec 3 [m])"
-            , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
-            , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
-            , "chart (spinner (1000 unix))"
-            ]
-        -- what an instant prints reads back
-        runLinesP
-          ( spinning
-              ++ [ encloses
-                     "1e-15"
-                     (fromEci "[1, 2, 3] (spinner (1000 unix))")
-                     (fromEci "[1, 2, 3] (spinner t1)")
-                 ]
-          )
-          @?= Right ["true"]
-        -- a spin with no `by`: the generators are an empty list, and no `by` prints
-        runLinesP
-          ( spinning
-              ++ [ "chart carousel t = m at [10, 0, 0] m (spinner t) spinning [0, 0, 2] * w"
-                 , ":view carousel"
-                 ]
-          )
-          @?= Right
-            ["chart carousel t = m at [10, 0, 0] m (spinner t) spinning [0, 0, 2] * w"]
+        "a moving chart declares, prints with its parameter and spin, and applies"
+        $ do
+          runLinesP
+            ( spinning
+                ++ [ ":view spinner"
+                   , ":type spinner"
+                   , "[7000000, 0, 0] eci to spinner t1"
+                   , "[7000000, 0, 0] eci to (spinner t1)"
+                   , "spinner t1"
+                   ]
+            )
+            @?= Right
+              [ "chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w"
+              , "Point [s] -> Chart (Vec 3 [m])"
+              , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
+              , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
+              , "chart (spinner (1000 unix))"
+              ]
+          -- what an instant prints reads back
+          runLinesP
+            ( spinning
+                ++ [ encloses
+                       "1e-15"
+                       (fromEci "[1, 2, 3] (spinner (1000 unix))")
+                       (fromEci "[1, 2, 3] (spinner t1)")
+                   ]
+            )
+            @?= Right ["true"]
+          -- a spin with no `by`: the generators are an empty list, and no `by` prints
+          runLinesP
+            ( spinning
+                ++ [ "chart carousel t = m at [10, 0, 0] m (spinner t) spinning [0, 0, 2] * w"
+                   , ":view carousel"
+                   ]
+            )
+            @?= Right
+              ["chart carousel t = m at [10, 0, 0] m (spinner t) spinning [0, 0, 2] * w"]
     , testCase ":edit reads a moving chart back to the same hash" $ do
         let hashAfter def = runLinesP (take 4 spinning ++ [def, ":hash spinner"])
         expecting (runLinesP (spinning ++ [":edit spinner"])) $ \outs ->
           hashAfter (T.strip (last outs)) @?= hashAfter (spinning !! 4)
     , testCase
-        "a moving chart without a time is refused, as a point's chart or a parent" $ do
-        let refused = "`spinner` moves: apply it at a time, as in p to spinner t0"
-        expectError (runLinesP (spinning ++ ["[1, 2, 3] eci to spinner"])) refused
-        expectError (runLinesP (spinning ++ ["[1, 2, 3] spinner"])) refused
-        expectError
-          (runLinesP (spinning ++ ["chart arm t = m at [1, 0, 0] m spinner"]))
-          refused
-        expectError
-          (runLinesP (spinning ++ ["chart free = m at [1, 0, 0] m spinning [0, 0, 1] * w"]))
-          "a spinning chart names the chart it spins relative to"
-        -- the spin is an angular velocity: rad s^-1, not s^-1
-        expectError
-          ( runLinesP
-              (spinning ++ ["chart bad = m at [0, 0, 0] m eci spinning [0, 0, 1] / s"])
-          )
-          "rad"
+        "a moving chart without a time is refused, as a point's chart or a parent"
+        $ do
+          let refused = "`spinner` moves: apply it at a time, as in p to spinner t0"
+          expectError (runLinesP (spinning ++ ["[1, 2, 3] eci to spinner"])) refused
+          expectError (runLinesP (spinning ++ ["[1, 2, 3] spinner"])) refused
+          expectError
+            (runLinesP (spinning ++ ["chart arm t = m at [1, 0, 0] m spinner"]))
+            refused
+          expectError
+            (runLinesP (spinning ++ ["chart free = m at [1, 0, 0] m spinning [0, 0, 1] * w"]))
+            "a spinning chart names the chart it spins relative to"
+          -- the spin is an angular velocity: rad s^-1, not s^-1
+          expectError
+            ( runLinesP
+                (spinning ++ ["chart bad = m at [0, 0, 0] m eci spinning [0, 0, 1] / s"])
+            )
+            "rad"
     , testCase "a body fixed on a spinning chart: at rest on it, ω × r in the parent" $ do
         runLinesP
           ( spinning
@@ -2097,96 +2099,99 @@ movingChartTests =
           )
           @?= Right ["stored use astro", "true", "true", "true"]
     , testCase
-        "stateFrom then velocityIn and the position back on the chart are the round trip" $ do
-        runLinesP
-          ( spinning
-              ++ [ ":use astro"
-                 , "chart tilted t = m at [100, -20, 30] km (spinner t) by rotx (30 deg) spinning [0.1, 0, 0] * w"
-                 , "let c = tilted t1"
-                 , "let pc = [7000, 100, -50] km"
-                 , "let vc = [1, 7.5, 0.2] km/s"
-                 , "let st = stateFrom c t1 pc vc"
-                 , encloses "1e-15" "velocityIn c st / (m / s)" "vc / (m / s)"
-                 , encloses
-                     "1e-15"
-                     "transformBy (transpose (rotationOf c)) (st.pos .- [0, 0, 0] (tilted t1)) / m"
-                     "pc / m"
-                 , encloses
-                     "1e-12"
-                     "((st.pos to tilted t1) .- [0, 0, 0] (tilted t1)) / m"
-                     "(st.pos .- [0, 0, 0] (tilted t1)) / m"
-                 ]
-          )
-          @?= Right ["stored use astro", "true", "true", "true"]
-    , testCase
-        "a declared spin agrees with the rotation it goes with: a finite difference" $ do
-        -- A body fixed on the chart at t1 and t1 + 1 ms, compared with the
-        -- velocity stateFrom gives it: the forward difference is off by
-        -- about ω δt / 2 ≈ 3.6e-8 of the speed (the centripetal term).
-        runLinesP
-          ( spinning
-              ++ [ ":use astro"
-                 , "let pc = [7000000, 2000, 300]"
-                 , "let fd = (pointOn (spinner (t1 .+ 1 ms)) pc .- pointOn (spinner t1) pc) / (1 ms)"
-                 , "let v = (stateFrom (spinner t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
-                 , "let rel = norm (fd - v) / norm v"
-                 , "mid rel < 1e-6 && mid rel > 1e-8"
-                 , "rel"
-                 ]
-          )
-          @?= Right ["stored use astro", "true", "3.6460579499989e-8 ± 5.3e-20"]
-    , testCase
-        "two levels: a station under a spinning Earth, a dish spinning on the station" $ do
-        let station =
-              spinning
+        "stateFrom then velocityIn and the position back on the chart are the round trip"
+        $ do
+          runLinesP
+            ( spinning
                 ++ [ ":use astro"
-                   , "chart station t = m at [6378, 0, 0] km (spinner t) by roty (30 deg)"
-                   , "let wv = [0, 0, 1] * (w / rad)"
-                   , "let c = station t1"
+                   , "chart tilted t = m at [100, -20, 30] km (spinner t) by rotx (30 deg) spinning [0.1, 0, 0] * w"
+                   , "let c = tilted t1"
+                   , "let pc = [7000, 100, -50] km"
+                   , "let vc = [1, 7.5, 0.2] km/s"
+                   , "let st = stateFrom c t1 pc vc"
+                   , encloses "1e-15" "velocityIn c st / (m / s)" "vc / (m / s)"
+                   , encloses
+                       "1e-15"
+                       "transformBy (transpose (rotationOf c)) (st.pos .- [0, 0, 0] (tilted t1)) / m"
+                       "pc / m"
+                   , encloses
+                       "1e-12"
+                       "((st.pos to tilted t1) .- [0, 0, 0] (tilted t1)) / m"
+                       "(st.pos .- [0, 0, 0] (tilted t1)) / m"
                    ]
-        runLinesP
-          ( station
-              ++ [ -- the station's own spin is none; it turns with the Earth
-                   encloses "1e-25" "spinOf c * s" "wv * s"
-                 , -- its origin moves with the Earth's frame: ω × (R_p a), by hand
-                   encloses
-                     "1e-12"
-                     "originVelocityOf c / (m / s)"
-                     "6378000 * (w * 1 s / rad) * [-sin (w * 1000 s), cos (w * 1000 s), 0]"
-                 , -- a body fixed at the station is at rest relative to it
-                   "let p = [1, 2, 3] (station t1)"
-                 , "let body = State {epoch = t1, pos = p, vel = wv × (p .- [0, 0, 0] eci)}"
-                 , encloses "1e-12" "velocityIn c body / (m / s)" "[0, 0, 0]"
-                 ]
-          )
-          @?= Right ["stored use astro", "true", "true", "true"]
-        -- A dish turning on the station, two spinning levels: the composed
-        -- ω_abs = ω_p + R ω and the origin's transport agree with a
-        -- central difference of positions. The dish's own turning adds
-        -- 0.037 m/s to the Earth's 464 m/s; the difference is off by about
-        -- (|ω| δt)² / 6 of each, under 1e-12 m/s, where a spin left out,
-        -- turned the wrong way or not turned by R would be off by 0.01 m/s.
-        -- (Checked by component: `norm` of so small an enclosure is slow.)
-        runLinesP
-          ( station
-              ++ [ "chart dish t = m at [0, 0, 10] m (station t) by rotz (0.01 rad/s * (t .- t0)) spinning [0, 0, 0.01] rad/s"
-                 , "let pc = [3, 1, 2]"
-                 , "let fd = (pointOn (dish (t1 .+ 1 ms)) pc .- pointOn (dish (t1 .+ -1 ms)) pc) / (2 ms)"
-                 , "let v = (stateFrom (dish t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
-                 , "vmap (\\x -> if abs (mid x) < 1e-11 then 0 else 1) ((fd - v) / (m / s)) == [0, 0, 0]"
-                 , "(fd - v) / (m / s)"
-                 , encloses
-                     "1e-25"
-                     "spinOf (dish t1) * s"
-                     "(wv + inChart (dish t1) ([0, 0, 0.01] / s)) * s"
-                 ]
-          )
-          @?= Right
-            [ "stored use astro"
-            , "true"
-            , "[-3.591598081e-13 ± 4.8e-21, -1.0345e-13 ± 1.7e-16, 2.0592790487e-13 ± 2.8e-22]"
-            , "true"
-            ]
+            )
+            @?= Right ["stored use astro", "true", "true", "true"]
+    , testCase
+        "a declared spin agrees with the rotation it goes with: a finite difference"
+        $ do
+          -- A body fixed on the chart at t1 and t1 + 1 ms, compared with the
+          -- velocity stateFrom gives it: the forward difference is off by
+          -- about ω δt / 2 ≈ 3.6e-8 of the speed (the centripetal term).
+          runLinesP
+            ( spinning
+                ++ [ ":use astro"
+                   , "let pc = [7000000, 2000, 300]"
+                   , "let fd = (pointOn (spinner (t1 .+ 1 ms)) pc .- pointOn (spinner t1) pc) / (1 ms)"
+                   , "let v = (stateFrom (spinner t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
+                   , "let rel = norm (fd - v) / norm v"
+                   , "mid rel < 1e-6 && mid rel > 1e-8"
+                   , "rel"
+                   ]
+            )
+            @?= Right ["stored use astro", "true", "3.6460579499989e-8 ± 5.3e-20"]
+    , testCase
+        "two levels: a station under a spinning Earth, a dish spinning on the station"
+        $ do
+          let station =
+                spinning
+                  ++ [ ":use astro"
+                     , "chart station t = m at [6378, 0, 0] km (spinner t) by roty (30 deg)"
+                     , "let wv = [0, 0, 1] * (w / rad)"
+                     , "let c = station t1"
+                     ]
+          runLinesP
+            ( station
+                ++ [ -- the station's own spin is none; it turns with the Earth
+                     encloses "1e-25" "spinOf c * s" "wv * s"
+                   , -- its origin moves with the Earth's frame: ω × (R_p a), by hand
+                     encloses
+                       "1e-12"
+                       "originVelocityOf c / (m / s)"
+                       "6378000 * (w * 1 s / rad) * [-sin (w * 1000 s), cos (w * 1000 s), 0]"
+                   , -- a body fixed at the station is at rest relative to it
+                     "let p = [1, 2, 3] (station t1)"
+                   , "let body = State {epoch = t1, pos = p, vel = wv × (p .- [0, 0, 0] eci)}"
+                   , encloses "1e-12" "velocityIn c body / (m / s)" "[0, 0, 0]"
+                   ]
+            )
+            @?= Right ["stored use astro", "true", "true", "true"]
+          -- A dish turning on the station, two spinning levels: the composed
+          -- ω_abs = ω_p + R ω and the origin's transport agree with a
+          -- central difference of positions. The dish's own turning adds
+          -- 0.037 m/s to the Earth's 464 m/s; the difference is off by about
+          -- (|ω| δt)² / 6 of each, under 1e-12 m/s, where a spin left out,
+          -- turned the wrong way or not turned by R would be off by 0.01 m/s.
+          -- (Checked by component: `norm` of so small an enclosure is slow.)
+          runLinesP
+            ( station
+                ++ [ "chart dish t = m at [0, 0, 10] m (station t) by rotz (0.01 rad/s * (t .- t0)) spinning [0, 0, 0.01] rad/s"
+                   , "let pc = [3, 1, 2]"
+                   , "let fd = (pointOn (dish (t1 .+ 1 ms)) pc .- pointOn (dish (t1 .+ -1 ms)) pc) / (2 ms)"
+                   , "let v = (stateFrom (dish t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
+                   , "vmap (\\x -> if abs (mid x) < 1e-11 then 0 else 1) ((fd - v) / (m / s)) == [0, 0, 0]"
+                   , "(fd - v) / (m / s)"
+                   , encloses
+                       "1e-25"
+                       "spinOf (dish t1) * s"
+                       "(wv + inChart (dish t1) ([0, 0, 0.01] / s)) * s"
+                   ]
+            )
+            @?= Right
+              [ "stored use astro"
+              , "true"
+              , "[-3.591598081e-13 ± 4.8e-21, -1.0345e-13 ± 1.7e-16, 2.0592790487e-13 ± 2.8e-22]"
+              , "true"
+              ]
     , testCase "an uncertain spin rate gives a velocity whose bound grows with |r|" $ do
         runLinesP
           [ ":use astro"
@@ -2218,12 +2223,12 @@ movingChartTests =
           "`spinner` moves: apply it at a time, as in p to spinner t0"
     , testCase "design §12: a spinning Earth, for illustration" $ do
         -- The GMST model is linear, θ = 280.46061837° + 360.98564736629°/day ×
-        -- (t − J2000.0) (Meeus, Astronomical Algorithms, eq. 12.4, without
-        -- its T² and T³ terms). Checked against the IAU 1982 GMST (Aoki et
-        -- al. 1982; Explanatory Supplement 1992, eq. 2.24-1) at 2026 Jan 1
-        -- 0h UT1, JD 2461041.5: 24110.54841 s + 8640184.812866 s T +
-        -- 0.093104 s T² − 6.2e-6 s T³ with T = 0.26 Julian centuries is
-        -- 100.6608585° modulo 360°; the linear model is 0.094″ less.
+        -- (t − J2000.0) (Meeus, Astronomical Algorithms, without the T² and
+        -- T³ terms). Checked against the IAU 1982 GMST (Aoki et al. 1982,
+        -- A&A 105, 359) at 2026 Jan 1 0h UT1, JD 2461041.5: 24110.54841 s +
+        -- 8640184.812866 s T + 0.093104 s T² − 6.2e-6 s T³ with T = 0.26
+        -- Julian centuries is 100.6608585° modulo 360°; the linear model is
+        -- 0.094″ less.
         runLinesP
           ( take 3 spinningEarthSession
               ++ [ "let g = gmst (9496.5 J2000) / deg"
