@@ -8,11 +8,15 @@ term no longer typechecks is left on the old version and reported.
 -}
 module Eval.Update (
   RefMap,
+  ConMap,
   Propagation (..),
   propagate,
+  propagateWith,
   staleReferences,
   Restamped (..),
   restamp,
+  restampTerm,
+  conTypes,
 ) where
 
 import Data.Bifunctor (first)
@@ -40,14 +44,37 @@ data Propagation = Propagation
   -- ^ name, its current ref, why it stayed
   }
 
+-- | Constructors of replaced declared types: the old type and position to the new.
+type ConMap = Map (Hash, Int) (Hash, Int)
+
 propagate :: RefMap -> Codebase -> Propagation
-propagate initial cb0 = go cb0 initial (Propagation cb0 [] []) affectedInOrder
+propagate = propagateWith Map.empty
+
+{- | 'propagate', also moving every current definition that builds or
+matches a constructor of a replaced type to the new type's constructor
+(design §7.3, @:edit@ of a type). One that no longer checks, as when the
+constructor gained a field, is left on its version and reported.
+-}
+propagateWith :: ConMap -> RefMap -> Codebase -> Propagation
+propagateWith cons initial cb0 = go cb0 initial (Propagation cb0 [] []) affectedInOrder
  where
   initialHashes = Set.fromList (map (.hash) (Map.keys initial))
+  oldTypes = Set.fromList (map fst (Map.keys cons))
+  conUsers =
+    Set.fromList
+      [ h
+      | not (Set.null oldTypes)
+      , Reference h _ <- Map.elems cb0.names
+      , Just t <- [lookupTerm h cb0]
+      , not (Set.disjoint oldTypes (conTypes t))
+      ]
+  newCon = \case
+    UserCon h i | Just (h', i') <- Map.lookup (h, i) cons -> UserCon h' i'
+    c -> c
 
-  -- Hashes of current definitions that mention an old reference, directly
-  -- or through another affected definition.
-  affected = Set.difference (closure initialHashes) initialHashes
+  -- Hashes of current definitions that mention an old reference or an old
+  -- constructor, directly or through another affected definition.
+  affected = Set.difference (closure (Set.union initialHashes conUsers)) initialHashes
   closure olds =
     let hs =
           Set.fromList
@@ -87,7 +114,7 @@ propagate initial cb0 = go cb0 initial (Propagation cb0 [] []) affectedInOrder
             rewriteRefs
               ( \rh ri -> (\(Reference nh ni) -> (nh, ni)) <$> Map.lookup (Reference rh ri) refmap
               )
-              t
+              (restampTerm id newCon t)
           holders = [(n, i) | (n, Reference rh i) <- Map.toList cb.names, rh == h]
        in case elaborateClosed (typeLookupFor cb) t' of
             Left err ->
@@ -267,3 +294,26 @@ restampTerm lab con = go
     Pack ts -> Pack (map go ts)
     Proj t i -> Proj (go t) i
     Cycle hs bs -> Cycle hs (vecMap go bs)
+
+-- | The declared types whose constructors a term builds or matches.
+conTypes :: Term n -> Set.Set Hash
+conTypes = \case
+  Con c as -> conType c <> foldMap conTypes as
+  Case s alts -> conTypes s <> foldMap (\(Alt c _ b) -> conType c <> conTypes b) alts
+  PrimApp _ as -> foldMap conTypes as
+  Lam _ b -> conTypes b
+  App a b -> conTypes a <> conTypes b
+  Let _ e b -> conTypes e <> conTypes b
+  Pow t _ -> conTypes t
+  Uncertain _ _ x e -> conTypes x <> conTypes e
+  Pack ts -> foldMap conTypes ts
+  Proj t _ -> conTypes t
+  Cycle _ bs -> foldMap conTypes (vecToList bs)
+  Var _ -> Set.empty
+  Ref{} -> Set.empty
+  Lit _ -> Set.empty
+  Noise{} -> Set.empty
+ where
+  conType = \case
+    UserCon h _ -> Set.singleton h
+    Builtin _ -> Set.empty

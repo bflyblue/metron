@@ -72,6 +72,7 @@ executable eval
     , eval
     , filepath
     , haskeline
+    , process
     , text
 
 test-suite eval-test

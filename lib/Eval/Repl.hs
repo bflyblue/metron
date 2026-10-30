@@ -134,11 +134,12 @@ keywords =
   , "use"
   ]
 
-{- | Whether the cursor is at a file name: the argument of @:load@. The
-REPL completes it with haskeline's file name completion.
+{- | Whether the cursor is at a file name: the argument of @:load@ or of
+@:edit --file@. The REPL completes it with haskeline's file name
+completion.
 -}
 loadsFile :: String -> Bool
-loadsFile line = ":load " `isPrefixOf` dropWhile isSpace line
+loadsFile line = any (`isPrefixOf` dropWhile isSpace line) [":load ", ":edit --file "]
 
 {- | A completion function in haskeline's shape: the text left of the
 cursor, reversed, and the text right of it. The result is the reversed

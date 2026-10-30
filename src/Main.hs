@@ -1,9 +1,12 @@
 module Main (main) where
 
-import Control.Monad (unless)
+import Control.Exception (SomeException, displayException, try)
+import Control.Monad (unless, when)
 import Control.Monad.IO.Class (liftIO)
+import Data.Char (isSpace)
 import Data.IORef
-import Data.Maybe (isNothing)
+import Data.List (find)
+import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -12,10 +15,12 @@ import Eval.Driver
 import Eval.Repl qualified as R
 import Eval.Store
 import System.Console.Haskeline
+import System.Directory (getTemporaryDirectory, removeFile)
 import System.Environment (getArgs, lookupEnv)
-import System.Exit (exitFailure)
+import System.Exit (ExitCode (..), exitFailure)
 import System.FilePath ((</>))
 import System.IO
+import System.Process (createProcess, delegate_ctlc, proc, waitForProcess)
 
 {- | @eval@ alone starts a REPL when stdin is a terminal, otherwise reads a
 program from stdin. @eval 'expr'@ evaluates one input. @eval -f file@
@@ -151,7 +156,12 @@ runOnce opts src = do
   result <- step live src
   case result of
     Left err -> TIO.hPutStrLn stderr err >> exitFailure
-    Right (_, outs) -> mapM_ TIO.putStrLn outs
+    Right (_, outs) -> do
+      mapM_ TIO.putStrLn outs
+      -- One input opens no editor (design §7.3); the note goes to stderr so
+      -- the source stays pasteable.
+      when (listToMaybe (T.words src) == Just ":edit")
+        $ TIO.hPutStrLn stderr (editorNote "one input opens no editor")
 
 {- | The REPL. With a terminal, haskeline gives line editing, completion
 (design §7.3) and a history file kept beside the codebase; scripted, lines
@@ -253,8 +263,77 @@ repl opts interactive = do
               )
             again
           _ -> run feed input
+      -- The editor round trip (design §7.3): the scope to a file, the
+      -- editor, and the file reconciled with the codebase. Scripted, or
+      -- with no editor, the source it would open is printed instead.
+      ":edit" : args -> do
+        live <- liftIO (readIORef ref)
+        editor <- liftIO editorCommand
+        case editRequest live.session args of
+          Left err -> emit ref colour (Left err)
+          Right (EditResume target path) -> do
+            text <- liftIO (try (readUtf8 path))
+            case text of
+              Left (e :: SomeException) ->
+                emit
+                  ref
+                  colour
+                  (Left ("cannot read " <> T.pack path <> ": " <> T.pack (displayException e)))
+              Right src -> reconcile colour target path False src
+          Right (EditOpen target file paste) -> case (editor, file) of
+            _ | not interactive -> fallback colour paste "scripted input opens no editor"
+            (Nothing, _) -> fallback colour paste "no editor: set VISUAL or EDITOR to edit in place"
+            (_, Left err) -> emit ref colour (Left err)
+            (Just ed, Right text) -> do
+              path <- liftIO (writeTemp text)
+              status <- liftIO (runEditor ed path)
+              after <- liftIO (try (readUtf8 path))
+              case (status, after) of
+                (Left why, _) -> done path ("nothing to do: the editor did not run (" <> why <> ")")
+                (Right (ExitFailure k), _) ->
+                  done
+                    path
+                    ("nothing to do: the editor exited with status " <> T.pack (show k))
+                (_, Left (e :: SomeException)) ->
+                  emit
+                    ref
+                    colour
+                    (Left ("cannot read " <> T.pack path <> ": " <> T.pack (displayException e)))
+                (Right ExitSuccess, Right src)
+                  | src == text -> done path "nothing to do: the file was not changed"
+                  | otherwise -> reconcile colour target path True src
+        again
       _ -> run feed input
     again = loop ref colourRef
+    fallback colour paste why = emit ref colour (Right (paste ++ [editorNote why]))
+    -- Nothing to do: the temporary file goes.
+    done path msg = do
+      liftIO (removeQuietly path)
+      colour <- liftIO (readIORef colourRef)
+      emit ref colour (Right [msg])
+    -- Reconcile the file and persist the result; on an error the file is
+    -- kept, with the command that resumes from it.
+    reconcile colour target path temporary src = do
+      live <- liftIO (readIORef ref)
+      result <- liftIO (stepWith (\s _ -> applyEdit target src s) live "")
+      case result of
+        Left err -> do
+          emit ref colour (Left err)
+          emit
+            ref
+            colour
+            ( Right
+                [ "note: the file is kept at "
+                    <> T.pack path
+                    <> "; fix it, then :edit --file "
+                    <> T.pack path
+                    <> editScopeArgs live.session target
+                ]
+            )
+        Right (live', outs) -> do
+          liftIO (writeIORef ref live')
+          when temporary (liftIO (removeQuietly path))
+          emit ref colour (Right outs)
     run feeder src = do
       live <- liftIO (readIORef ref)
       result <- liftIO (stepWith feeder live src)
@@ -265,6 +344,48 @@ repl opts interactive = do
           liftIO (writeIORef ref live')
           emit ref colour (Right outs)
       again
+
+-- | The editor @:edit@ opens: @VISUAL@, else @EDITOR@, when set and not empty.
+editorCommand :: IO (Maybe String)
+editorCommand = do
+  visual <- lookupEnv "VISUAL"
+  editor <- lookupEnv "EDITOR"
+  pure (find (not . all isSpace) (catMaybes [visual, editor]))
+
+-- | Write the file @:edit@ opens to a new temporary file, @eval-edit-….ev@.
+writeTemp :: Text -> IO FilePath
+writeTemp text = do
+  dir <- getTemporaryDirectory
+  (path, h) <- openTempFile dir "eval-edit-.ev"
+  hSetEncoding h utf8
+  TIO.hPutStr h text
+  hClose h
+  pure path
+
+readUtf8 :: FilePath -> IO Text
+readUtf8 path = withFile path ReadMode $ \h -> hSetEncoding h utf8 >> TIO.hGetContents h
+
+removeQuietly :: FilePath -> IO ()
+removeQuietly path = either (\(_ :: SomeException) -> ()) id <$> try (removeFile path)
+
+{- | Run the editor on a file and wait for it, with the terminal handed over:
+the editor's own handles are the REPL's, and Ctrl-C goes to it. The
+command goes through the shell, so @EDITOR="emacs -nw"@ works. haskeline
+holds the terminal only while it reads a line, so it needs no suspending.
+-}
+runEditor :: String -> FilePath -> IO (Either Text ExitCode)
+runEditor ed path = do
+  result <- try $ do
+    (_, _, _, ph) <-
+      createProcess
+        (proc "sh" ["-c", ed <> " \"$1\"", "sh", path]){delegate_ctlc = True}
+    waitForProcess ph
+  pure
+    ( either
+        (\(e :: SomeException) -> Left (T.pack (displayException e)))
+        Right
+        result
+    )
 
 {- | Print what 'step' returned: as is without colour, painted line by line
 with it (design §7.3), by the names of the session as it now is.

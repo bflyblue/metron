@@ -2232,8 +2232,14 @@ Scratch and codebase (7.5)
 :todo                   pending definitions and stale references
 :scratch                list pending definitions
 :forget name            drop a pending definition
-:edit name              print a definition, or a data declaration, as source, ready to paste back;
-                        one outside the current namespace comes in a namespace block (7.6)
+:edit [name|ns]         open the codebase but std, a namespace (std included), or one definition or
+                        type in $VISUAL or $EDITOR as source, and reconcile the saved file with the
+                        codebase: add, update (with propagation), remove; all or nothing (below).
+                        Without an editor, print the source instead: for one name, the definition
+                        or data declaration ready to paste back, in a namespace block when it is
+                        outside the current namespace (7.6)
+:edit --file path [name|ns]
+                        reconcile a file without opening an editor (one kept after an error)
 
 Inspection
 :ls [glob|namespace] [--all|--units|--scales|--types] [: type]
@@ -2286,6 +2292,87 @@ Session
 :colour [on|off]   colour the REPL's output; alone, say whether it is on (a REPL-level setting, below)
 :quit
 ```
+
+**Editing in place.** `:edit` is a round trip through a text editor. It
+has three forms, and they work alike: `:edit` alone takes the stored
+codebase except the library under `std` (what `:export` writes),
+`:edit orbital` takes a namespace (`:edit std` the library), and `:edit
+period` takes one definition or `data` type, with the other members of
+its cycle when it has one (a member alone would enter again as another
+term).
+
+1. **Export.** The scope is written to a new temporary file,
+   `eval-edit-….ev` in `$TMPDIR` (else `/tmp`), in the `:export` format
+   (§7.4): the stored `use`s as `use` lines, then `namespace` blocks by
+   full path from the root. A header comment says what saving does. The
+   file is read from the root with no `use` of the session, as it was
+   written, so the current `:namespace` and the session's `use`s do not
+   change what it means.
+2. **Edit.** The REPL runs `$VISUAL`, else `$EDITOR`, through `sh -c` (so
+   `EDITOR="emacs -nw"` works), gives it the terminal, and waits.
+   haskeline holds the terminal only while it reads a line, so the prompt
+   is sane afterwards. A non-zero exit, or a file saved unchanged, changes
+   nothing, says so (`nothing to do: the file was not changed`), and
+   deletes the file.
+3. **Reconcile.** The saved file is entered as one binding group on top of
+   the codebase, as the scratch is (§7.5), and compared with the codebase
+   by full path, over every kind of label: definitions with their `unit`
+   and `scale` flags, types, constructors and fields.
+   - *Added*: the file defines the label and the codebase did not have it.
+   - *Updated*: the file binds the label to another reference. When the
+     old term, with the group's new references and a replaced type's
+     constructors put in, is the new term, only what it uses moved, and
+     it is reported as *upgraded* instead.
+   - *Removed*: a label of the scope that the file does not define, removed
+     as `:unname` removes it; history keeps the term. Nothing is removed
+     for one name. A definition moved to another `namespace` block is a
+     removal and an addition, because a label is its full path.
+   - *Unchanged*: everything else. The same text under the same path gives
+     the same hash, a `±` definition and a nominal type included, since
+     their owner stamp is the full path (§3.2.4).
+
+   A definition outside the scope that the file defines is added or
+   updated in the same way. Then propagation moves the dependents outside
+   the file to the new versions, as `:update` does, and also the
+   definitions that build or match a replaced type's constructors (matched
+   by name). One that no longer checks is left on its version with the
+   reason. A dependent of a removed definition keeps its reference and is
+   reported stale. A type outside the file whose fields use a replaced
+   type keeps the old one, and is reported.
+4. **All or nothing.** These refuse the edit and change nothing: a parse,
+   type or namespace error (with its excerpt, at the line in the file), an
+   expression in the file, a file that no longer defines the one name
+   (``the file no longer defines `area`; use :unname to remove it``), a
+   file that would remove every label of the scope, such as an emptied
+   buffer (``the file defines nothing in `orbital`; if you mean to remove
+   it all, use :unname orbital``), a definition named `it`, and a
+   pending scratch that would no longer check on top of the result. After
+   an error the file is kept, and the REPL prints its path and the command
+   that resumes from it: `:edit --file /tmp/eval-edit-1234-0.ev orbital`.
+
+The report reads as `:update`'s: `added data T` or `updated data T`,
+`added x`, `updated x #old -> #new`, `removed x` (and `removed data T`,
+`removed constructor C`, `removed field f` for what an edited type left
+behind), `upgraded y #old -> #new`, `left y on #r: why`, `left data P on
+the old version of T`, `left y stale: it uses x#r, which was removed`; or
+`nothing changed`.
+
+```
+> :edit orbital                          -- x = 3 becomes x = 4; spare is deleted
+updated orbital.x #k1 -> #k5
+removed orbital.spare
+upgraded orbital.y #k2 -> #k6            -- in the file, its text unchanged
+upgraded mechanics.useY #k3 -> #k7       -- outside it, by propagation
+```
+
+`:edit --file path [name|namespace]` reconciles a file without opening an
+editor: one kept after an error, or one a script wrote. Without an editor
+(`eval -i`, one-shot mode, or neither `VISUAL` nor `EDITOR` set), `:edit`
+prints the source it would have opened and a note that says why: for one
+name, the statement it always printed, spelled for the current namespace
+and ready to paste back (a pending definition too); for a namespace or the
+codebase, the export. In one-shot mode the note goes to stderr, so the
+source stays pasteable.
 
 With `:set unicode on`, printed values, `:type`, `:view`, `:edit`, `:exact`,
 `:budget`, `:covariance` and the `:prefer` message use these spellings from
@@ -2342,7 +2429,7 @@ changes what an input means or the text it prints.
 
 - at the start of a line, a `:` command;
 - after `:set`, the setting; after `:set unicode` and `:colour`, `on` or `off`;
-- after `:load`, a file name;
+- after `:load` and `:edit --file`, a file name;
 - after a `.` glued to a value, a record field name (`b.ma` gives `b.mass`);
 - elsewhere, a name the session sees (definitions, units, types and
   constructors, pending ones included) or a keyword.
@@ -2682,7 +2769,10 @@ acts.
 - **`:upgrade name`** is propagation on demand: every dependent still referring to
   a historical version of `name` is moved to its current version, where it checks.
 - **`:todo`** lists pending definitions and stale references, so nothing is
-  forgotten. `:edit name` prints a stored definition as source for the scratch.
+  forgotten. `:edit` opens a definition, a namespace or the codebase in an
+  editor and reconciles the saved file with the codebase (§7.3), adding,
+  updating with propagation, and removing; without an editor it prints the
+  source, for the scratch.
 - **`it`**, the last expression (§7.3), is never stored. It is not in the
   scratch, so `:add` and `:update` do not see it, and nothing reaches the
   codebase or the store through it. A definition that mentions it is refused
@@ -2691,7 +2781,8 @@ acts.
   terms it was checked against, so replacing or forgetting a pending
   definition it used does not break it.
 
-`:add` and `:update` together are the only way a label changes. History records
+`:add` and `:update`, and `:edit`, which does both from a file, are the only ways
+a label moves to new content. History records
 every binding, `:view` shows exactly which version a definition uses, and the
 semi-automated upgrade is the propagation report: what moved, and what did not
 and why.
@@ -3115,7 +3206,9 @@ tuned, and compilation is a later milestone.
     open `$EDITOR`, and on return enter the file as one group and reconcile
     it against the scope, adding, updating (with propagation) and unnaming
     as a text diff can tell, all or nothing, with the temp file kept on
-    error. Upgrading a codebase from a newer library or another codebase
+    error (done: `:edit`, `:edit namespace`, `:edit name` and `:edit --file`,
+    with the no-editor fallback; §11 has what is left). Upgrading a
+    codebase from a newer library or another codebase
     stays open (§7.7).
 
 
@@ -3156,6 +3249,25 @@ tuned, and compilation is a later milestone.
 - A root constructor named like a library unit (`data Temp = T …`) shadows
   the tesla `std.T` silently, as any root name shadows the library's (§7.7).
   Warn, or keep the shadowing rule?
+- `:edit` (§7.3), what is left:
+  - `:update` of a `data` type does not move the definitions that build or
+    match its constructors; `:edit` does (`Eval.Update.propagateWith`).
+    Should `:update` do the same?
+  - A type outside the edited file whose fields use an edited type keeps
+    the old one, and the report says so; `:rename` re-declares such a type
+    (§7.2). Follow it here too, or ask for a wider scope?
+  - A definition deleted from the file that another definition in the
+    file still uses resolves to the codebase's version while the file is
+    entered, so the user is left stale (and reported). Refuse that edit
+    instead?
+  - What does not round-trip through `:export` (§7.4) does not through
+    `:edit`: two labels on one stamped or recursive reference, and a
+    stamp that no longer matches its path, report as updated from an
+    unchanged file.
+  - A changed keyword on an unchanged body (`unit km` to `let km`) is
+    applied and reported, but the store's log has no line that clears a
+    `unit` or `scale` flag, so after a restart the name is a unit again.
+    `:update` has the same gap.
 
 ---
 

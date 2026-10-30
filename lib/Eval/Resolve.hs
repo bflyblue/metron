@@ -91,7 +91,7 @@ renderResolveError = \case
 constructors share one, as they share expressions.
 -}
 data LabelKind = TermLabel | TypeLabel | FieldLabel
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Ord, Show)
 
 -- | Whether a full path is a label of a kind.
 isLabel :: LabelKind -> Codebase -> Text -> Bool

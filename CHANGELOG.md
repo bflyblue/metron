@@ -468,3 +468,24 @@
   definition or type re-stamp and re-hash it and propagate to everything
   that uses it, reporting `re-hashed` and `upgraded` lines (new in
   `Eval.Update`: `restamp`).
+- `:edit` is an editor round trip (design §7.3, §10 item 10). `:edit` (the
+  codebase but `std`), `:edit namespace` (`:edit std` the library) and
+  `:edit name` (one definition or type, with its cycle) write the scope to
+  a temporary `eval-edit-….ev` in the `:export` format under a header that
+  says what saving does, open `$VISUAL` or else `$EDITOR`, and reconcile the
+  saved file with the codebase, all or nothing: what is new is `added`, a
+  label on another reference `updated` (or `upgraded` when only what it uses
+  moved), a label of the scope the file no longer defines `removed` as
+  `:unname` does (not for one name), and dependents outside the file are
+  propagated as `:update` does, constructor users of a replaced type
+  included; `nothing changed` when nothing did. A parse or type error, an
+  expression, a file that no longer defines the one name, or one that would
+  remove every label of the scope is refused, and the file is kept for
+  `:edit --file path [scope]`, which reconciles a file without an editor.
+  Scripted (`-i`), one-shot, or with no editor set, `:edit` prints what it
+  would have opened, the pasteable statement for one name as before, with a
+  note saying why. TAB completes a file name after `:edit --file`. New:
+  `Eval.Driver.EditScope`, `EditRequest`, `editRequest`, `applyEdit`,
+  `editScopeArgs`, `editorNote`; `Eval.Update.propagateWith` (a constructor
+  map besides the reference map), `ConMap`, `conTypes`, and `restampTerm`
+  exported. The executable depends on `process`.

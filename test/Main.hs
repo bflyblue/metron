@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Control.Monad (foldM)
+import Control.Monad (foldM, forM_)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -10,11 +10,18 @@ import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Eval.Affine hiding (Builtin, DivideByZero)
 import Eval.Affine qualified as A
-import Eval.Codebase (Codebase (..), emptyCodebase, lookupName, lookupTypeName)
+import Eval.Codebase (
+  Codebase (..),
+  emptyCodebase,
+  lookupName,
+  lookupTypeName,
+  showReference,
+ )
 import Eval.Core
 import Eval.Desugar
 import Eval.Dimension (DimAtom (..), Spelling (..), dimAtoms, dimOne, isDimOne)
@@ -79,6 +86,7 @@ main =
         , respellTests
         , replTests
         , namespaceTests
+        , editTests
         , stdlibTests
         ]
     )
@@ -4174,7 +4182,10 @@ replTests =
     , testCase ":load completes file names" $ do
         completeAt seeded ":load fo" @?= Nothing
         R.loadsFile " :load " @? ":load"
+        R.loadsFile ":edit --file /tm" @? ":edit --file"
+        completeAt seeded ":edit --file fo" @?= Nothing
         not (R.loadsFile ":ls") @? ":ls"
+        not (R.loadsFile ":edit fo") @? ":edit"
     , testCase "a backslash name completes from the unicode table only" $ do
         completeAt seeded "2 \\mu"
           @?= Just (reverse "2 ", [R.Completion "\x03BC" "\x03BC" False])
@@ -5075,6 +5086,371 @@ namespaceTests =
     , testCase "a dotted name is plain in the highlighter" $ do
         s <- either (assertFailure . T.unpack) pure (sessionP orbitalSetup)
         R.highlight (R.namesOf s) "orbital.period 2" @?= "orbital.period 2"
+    ]
+
+-- The :edit round trip (design §7.3) -------------------------------------------------
+
+{- | A codebase to edit: two namespaces, root definitions, a unit, a record
+with a field a function uses, a cycle, a @±@ definition, a leaf to move,
+and dependents across namespaces.
+-}
+editScript :: [Text]
+editScript =
+  [ multiline
+      [ "let size = 10"
+      , "let trip = 2 km"
+      , "let area w h = w * h"
+      , "unit furlong = 201.168 * m"
+      , "namespace orbital"
+      , "  data Body = Body {mass :: Num [kg], dist :: Num [m]}"
+      , "  let weight b = b.mass * 9.81 m/s^2"
+      , "  let earth = Body {mass = 6 kg, dist = 1 km}"
+      , "  let x = 3"
+      , "  let y = x + 1"
+      , "  let spare = 42"
+      , "  let jitter = 2 +- 0.5"
+      , "  let even n = if n == 0 then true else odd (n - 1)"
+      , "  let odd n = if n == 0 then false else even (n - 1)"
+      , "namespace mechanics"
+      , "  let g0 = 9.80665 m/s^2"
+      , "  let fall t = g0 * t^2 / 2"
+      , "  let useY = orbital.y * size"
+      ]
+  , ":add"
+  ]
+
+editSession :: IO Session
+editSession = either (assertFailure . T.unpack) pure (sessionP editScript)
+
+-- | The file @:edit args@ would open.
+editFileOf :: Session -> [Text] -> IO Text
+editFileOf s args = case editRequest s args of
+  Right (EditOpen _ (Right file) _) -> pure file
+  other -> assertFailure ("no file to edit: " <> show other)
+
+-- | The text with the first occurrence of a part replaced, which must be there.
+replaceOnce :: Text -> Text -> Text -> IO Text
+replaceOnce old new text = case T.breakOn old text of
+  (_, rest) | T.null rest -> assertFailure (T.unpack ("no " <> old <> " in:\n" <> text))
+  (before, rest) -> pure (before <> new <> T.drop (T.length old) rest)
+
+-- | An edit that must succeed.
+edited :: EditScope -> Text -> Session -> IO (Session, [Text])
+edited target text s =
+  either
+    (\err -> assertFailure (T.unpack (err <> "\nin the file:\n" <> text)))
+    pure
+    (applyEdit target text s)
+
+-- | The labels and history of two codebases are the same.
+sameLabels :: Codebase -> Codebase -> Assertion
+sameLabels a b = do
+  a.names @?= b.names
+  a.history @?= b.history
+  a.typeNames @?= b.typeNames
+  a.conNames @?= b.conNames
+  a.fieldNames @?= b.fieldNames
+  a.units @?= b.units
+  a.scales @?= b.scales
+
+-- | @updated n #old -> #new@ and its kin, from the two sessions.
+movedLine :: Text -> Session -> Session -> Text -> Text
+movedLine verb s s' n =
+  verb
+    <> " "
+    <> n
+    <> " "
+    <> maybe "?" showReference (lookupName n s.codebase)
+    <> " -> "
+    <> maybe "?" showReference (lookupName n s'.codebase)
+
+editTests :: TestTree
+editTests =
+  testGroup
+    ":edit, the editor round trip"
+    [ testCase "the file: a header that says what saving does, then the export" $ do
+        s <- editSession
+        file <- editFileOf s []
+        export <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
+        (export `T.isSuffixOf` T.strip file) @? T.unpack file
+        ("-- :edit: the codebase" `T.isPrefixOf` file) @? T.unpack file
+        ("removed" `T.isInfixOf` file) @? "the header names removal"
+        ("Deleting everything is refused" `T.isInfixOf` file)
+          @? "the header names the refusal"
+        ("does not change" `T.isInfixOf` file) @? "the header names the namespace rule"
+        -- A namespace exports its own labels; one name, its cycle with it.
+        ns <- editFileOf s ["orbital"]
+        nsExport <-
+          either (assertFailure . T.unpack) pure (exportSource s (Just "orbital"))
+        (nsExport `T.isSuffixOf` T.strip ns) @? T.unpack ns
+        one <- editFileOf s ["orbital.even"]
+        ("let odd" `T.isInfixOf` one) @? T.unpack one
+        ("nothing is removed" `T.isInfixOf` one) @? T.unpack one
+        ("let x" `T.isInfixOf` one) @?= False
+    , testCase "(a) an unchanged file changes nothing" $ do
+        s <- editSession
+        forM_
+          [ ([], EditCodebase)
+          , (["orbital"], EditNamespace "orbital")
+          , (["std"], EditNamespace "std")
+          , (["orbital.Body"], EditName "orbital.Body")
+          ]
+          $ \(args, target) -> do
+            file <- editFileOf s args
+            (s', outs) <- edited target file s
+            outs @?= ["nothing changed"]
+            sameLabels s.codebase s'.codebase
+    , testCase "(b) a changed body is updated and its dependents upgraded" $ do
+        s <- editSession
+        file <- editFileOf s [] >>= replaceOnce "  let x = 3\n" "  let x = 4\n"
+        (s', outs) <- edited EditCodebase file s
+        outs
+          @?= [ movedLine "updated" s s' "orbital.x"
+              , movedLine "upgraded" s s' "orbital.y"
+              , movedLine "upgraded" s s' "mechanics.useY"
+              ]
+        snd <$> feed s' "mechanics.useY" @?= Right ["50"]
+        -- History keeps the old version.
+        length (Map.findWithDefault [] "orbital.x" s'.codebase.history) @?= 2
+        -- From a namespace, a dependent outside it is upgraded by propagation.
+        nsFile <-
+          editFileOf s ["orbital"] >>= replaceOnce "  let x = 3\n" "  let x = 5\n"
+        (s'', nsOuts) <- edited (EditNamespace "orbital") nsFile s
+        nsOuts
+          @?= [ movedLine "updated" s s'' "orbital.x"
+              , movedLine "upgraded" s s'' "orbital.y"
+              , movedLine "upgraded" s s'' "mechanics.useY"
+              ]
+        snd <$> feed s'' "mechanics.useY" @?= Right ["60"]
+    , testCase "(c) a definition deleted from the file is removed; history keeps it" $ do
+        s <- editSession
+        file <- editFileOf s [] >>= replaceOnce "  let fall = \\t -> g0 * t^2 / 2\n" ""
+        (s', outs) <- edited EditCodebase file s
+        outs @?= ["removed mechanics.fall"]
+        lookupName "mechanics.fall" s'.codebase @?= Nothing
+        Map.member "mechanics.fall" s'.codebase.history @? "history keeps it"
+        -- A dependent of what was removed is left stale, and says so.
+        file2 <- editFileOf s [] >>= replaceOnce "  let y = x + 1\n" ""
+        (s2, outs2) <- edited EditCodebase file2 s
+        case outs2 of
+          [removed, left] -> do
+            removed @?= "removed orbital.y"
+            ("left mechanics.useY stale: it uses orbital.y#" `T.isPrefixOf` left)
+              @? T.unpack left
+            ("which was removed" `T.isSuffixOf` left) @? T.unpack left
+          other -> assertFailure (show other)
+        snd <$> feed s2 "mechanics.useY" @?= Right ["40"]
+    , testCase "(d) a definition added inside a block is added there" $ do
+        s <- editSession
+        file <-
+          editFileOf s [] >>= replaceOnce "  let x = 3\n" "  let x = 3\n  let z = x * 7\n"
+        (s', outs) <- edited EditCodebase file s
+        outs @?= ["added orbital.z"]
+        snd <$> feed s' "orbital.z" @?= Right ["21"]
+        -- The same body under another keyword is an update of the label.
+        plain <- editFileOf s [] >>= replaceOnce "unit furlong" "let furlong"
+        (s2, outs2) <- edited EditCodebase plain s
+        outs2 @?= ["updated furlong: unit -> let"]
+        expectError (snd <$> feed s2 "2 furlong") "`furlong` is not a unit"
+    , testCase "(e) a definition moved between blocks is removed and added" $ do
+        s <- editSession
+        file <-
+          editFileOf s []
+            >>= replaceOnce "  let spare = 42\n" ""
+            >>= replaceOnce "namespace mechanics\n" "namespace mechanics\n  let spare = 42\n"
+        (s', outs) <- edited EditCodebase file s
+        outs @?= ["added mechanics.spare", "removed orbital.spare"]
+        lookupName "mechanics.spare" s'.codebase
+          @?= lookupName "orbital.spare" s.codebase
+    , testCase
+        "(f) an edited type re-hashes; constructors and fields follow, dependents upgrade or are left"
+        $ do
+          s <- editSession
+          let body = lookupTypeName "orbital.Body" s.codebase
+          -- One name: the type alone. A field whose dimension changes keeps
+          -- the users that only match it, and leaves the one that builds it.
+          file <-
+            editFileOf s ["orbital.Body"]
+              >>= replaceOnce "dist :: Num [m]}" "dist :: Num [s]}"
+          (s', outs) <- edited (EditName "orbital.Body") file s
+          let body' = lookupTypeName "orbital.Body" s'.codebase
+          (body' /= body && isJust body') @? "the type re-hashed"
+          (fst <$> Map.lookup "orbital.Body" s'.codebase.conNames) @?= body'
+          ((\(h', _, _) -> h') <$> Map.lookup "orbital.dist" s'.codebase.fieldNames)
+            @?= body'
+          ((\(h', _, _) -> h') <$> Map.lookup "orbital.mass" s'.codebase.fieldNames)
+            @?= body'
+          case outs of
+            [updated, upgradedWeight, leftEarth] -> do
+              updated @?= "updated data orbital.Body"
+              upgradedWeight @?= movedLine "upgraded" s s' "orbital.weight"
+              ("left orbital.earth on #" `T.isPrefixOf` leftEarth) @? T.unpack leftEarth
+              ("dimensions differ" `T.isInfixOf` leftEarth) @? T.unpack leftEarth
+            other -> assertFailure (show other)
+          -- The whole codebase: a field added, with its users in the file
+          -- written for it.
+          whole <-
+            editFileOf s []
+              >>= replaceOnce "dist :: Num [m]}" "dist :: Num [m], spin :: Num}"
+              >>= replaceOnce "Body (6 * kg) (1 * km)" "Body (6 * kg) (1 * km) 3"
+              >>= replaceOnce "Body mass _ ->" "Body mass _ _ ->"
+          (s2, outs2) <- edited EditCodebase whole s
+          outs2
+            @?= [ "updated data orbital.Body"
+                , movedLine "updated" s s2 "orbital.earth"
+                , movedLine "updated" s s2 "orbital.weight"
+                ]
+          Map.member "orbital.spin" s2.codebase.fieldNames @? "the new field is a label"
+          -- A field resolves through the scope (design §7.6).
+          (snd <$> (feed s2 "use orbital" >>= \(s3, _) -> feed s3 "orbital.earth.spin"))
+            @?= Right ["3"]
+          -- A field added to the type alone: its users are left, with reasons.
+          added <-
+            editFileOf s ["orbital.Body"]
+              >>= replaceOnce "dist :: Num [m]}" "dist :: Num [m], spin :: Num}"
+          (_, outs3) <- edited (EditName "orbital.Body") added s
+          map (T.takeWhile (/= '#')) outs3
+            @?= [ "updated data orbital.Body"
+                , "left orbital.earth on "
+                , "left orbital.weight on "
+                ]
+    , testCase "(g) a type error refuses the edit and changes nothing" $ do
+        s <- editSession
+        file <- editFileOf s [] >>= replaceOnce "  let x = 3\n" "  let x = 3 m + 1\n"
+        case applyEdit EditCodebase file s of
+          Left err -> do
+            ("error at " `T.isPrefixOf` err) @? T.unpack err
+            ("let x = 3 m + 1" `T.isInfixOf` err) @? T.unpack err
+            ("dimensions differ" `T.isInfixOf` err) @? T.unpack err
+          Right (_, outs) -> assertFailure ("expected an error, got " <> show outs)
+        -- An expression in the file, and a parse error, are refused too.
+        exprFile <-
+          editFileOf s [] >>= replaceOnce "  let x = 3\n" "  let x = 3\n  x + 1\n"
+        expectError (snd <$> applyEdit EditCodebase exprFile s) "holds definitions"
+        broken <- editFileOf s [] >>= replaceOnce "  let x = 3\n" "  let x = \n"
+        case applyEdit EditCodebase broken s of
+          Left _ -> pure ()
+          Right (_, outs) -> assertFailure (show outs)
+        -- What the REPL keeps after an error: the session as it was.
+        let kept = either (const s) fst (applyEdit EditCodebase file s)
+        sameLabels s.codebase kept.codebase
+    , testCase "(h) an emptied file is refused" $ do
+        s <- editSession
+        expectError
+          (snd <$> applyEdit EditCodebase "" s)
+          "the file defines nothing in the codebase; if you mean to remove it all, use :unname"
+        file <- editFileOf s []
+        let headerOnly = T.unlines (takeWhile ("--" `T.isPrefixOf`) (T.lines file))
+        expectError (snd <$> applyEdit EditCodebase headerOnly s) "defines nothing"
+        expectError
+          (snd <$> applyEdit (EditNamespace "orbital") "use std\nlet size = 10\n" s)
+          "the file defines nothing in `orbital`; if you mean to remove it all, use :unname orbital"
+    , testCase "(i) one name: its body updated, deleting it refused, others added" $ do
+        s <- editSession
+        file <- editFileOf s ["area"]
+        file' <- replaceOnce "w * h" "w * h * 2" file
+        (s', outs) <- edited (EditName "area") file' s
+        outs @?= [movedLine "updated" s s' "area"]
+        snd <$> feed s' "area 2 3" @?= Right ["12"]
+        gone <- replaceOnce "let area = \\w -> \\h -> w * h\n" "" file
+        expectError
+          (snd <$> applyEdit (EditName "area") gone s)
+          "the file no longer defines `area`; use :unname to remove it"
+        more <- replaceOnce "let area" "let perimeter w h = 2 * (w + h)\nlet area" file
+        (s3, outs3) <- edited (EditName "area") more s
+        outs3 @?= ["added perimeter"]
+        snd <$> feed s3 "perimeter 2 3" @?= Right ["10"]
+        -- Nothing else is removed, and a cycle round-trips with its members.
+        evenFile <- editFileOf s ["orbital.even"]
+        (_, evenOuts) <- edited (EditName "orbital.even") evenFile s
+        evenOuts @?= ["nothing changed"]
+        -- A pending definition prints, but cannot be edited in place.
+        case editRequest s{scratch = []} ["nosuch"] of
+          Left err -> ("unknown name" `T.isInfixOf` err) @? T.unpack err
+          Right other -> assertFailure (show other)
+    , testCase "(j) :edit std includes the library; :edit alone never touches it" $ do
+        s <- editSession
+        file <- editFileOf s ["std"]
+        ("unit km = 10^3 * m" `T.isInfixOf` file) @? "std.km is in the file"
+        file' <- replaceOnce "unit km = 10^3 * m\n" "unit km = 1001 * m\n" file
+        (s', outs) <- edited (EditNamespace "std") file' s
+        -- The library's own users are in the file; the user's are propagated.
+        outs
+          @?= [ T.replace "std.km" "km" (movedLine "updated" s s' "std.km")
+              , movedLine "upgraded" s s' "trip"
+              , movedLine "upgraded" s s' "orbital.earth"
+              ]
+        snd <$> feed s' "trip to m" @?= Right ["2002 m"]
+        -- The codebase without std: nothing under std is removed.
+        plain <- editFileOf s []
+        ("unit km" `T.isInfixOf` plain) @?= False
+        changed <- replaceOnce "let size = 10\n" "let size = 11\n" plain
+        (s2, _) <- edited EditCodebase changed s
+        let underStd c = Map.filterWithKey (\k _ -> "std." `T.isPrefixOf` k) c.names
+        underStd s2.codebase @?= underStd s.codebase
+    , testCase "(k) :edit --file resumes from a file" $ do
+        s <- editSession
+        dir <- getTemporaryDirectory
+        let path = dir </> "eval-edit-test.ev"
+        file <- editFileOf s [] >>= replaceOnce "  let x = 3\n" "  let x = 6\n"
+        BS.writeFile path (encodeUtf8 file)
+        -- The pure feed refuses to read files; the REPL reads it and reconciles.
+        expectError
+          (runLinesP (editScript ++ [":edit --file " <> T.pack path]))
+          "only the REPL reads files"
+        let resume args = case editRequest s args of
+              Right (EditResume target p) -> do
+                text <- decodeUtf8 <$> BS.readFile p
+                edited target text s
+              other -> assertFailure (show other)
+        (s', outs) <- resume ["--file", T.pack path]
+        take 1 outs @?= [movedLine "updated" s s' "orbital.x"]
+        snd <$> feed s' "orbital.y" @?= Right ["7"]
+        nsFile <-
+          editFileOf s ["orbital"] >>= replaceOnce "  let x = 3\n" "  let x = 6\n"
+        BS.writeFile path (encodeUtf8 nsFile)
+        (_, nsOuts) <- resume ["--file", T.pack path, "orbital"]
+        take 1 nsOuts @?= [movedLine "updated" s s' "orbital.x"]
+        removePathForcibly path
+        editRequest s ["--file"]
+          @?= Left "usage: :edit [name|namespace], or :edit --file path [name|namespace]"
+    , testCase "(l) a +- definition entered again under its path keeps its hash" $ do
+        s <- editSession
+        file <- editFileOf s ["orbital.jitter"]
+        ("let jitter = 2 ± 0.5" `T.isInfixOf` file) @? T.unpack file
+        (s', outs) <- edited (EditName "orbital.jitter") file s
+        outs @?= ["nothing changed"]
+        lookupName "orbital.jitter" s'.codebase
+          @?= lookupName "orbital.jitter" s.codebase
+    , testCase "without an editor, :edit prints the pasteable source and says so" $ do
+        s <- editSession
+        snd <$> feed s ":edit area" @?= Right ["let area = \\w -> \\h -> w * h"]
+        editorNote "scripted input opens no editor"
+          @?= "note: scripted input opens no editor; this is the source :edit would open"
+        export <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
+        snd <$> feed s ":edit" @?= Right [export]
+        case editRequest s ["area"] of
+          Right (EditOpen (EditName "area") (Right _) paste) ->
+            paste @?= ["let area = \\w -> \\h -> w * h"]
+          other -> assertFailure (show other)
+        -- A pending definition prints as before, and is not opened.
+        pending <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            (sessionP (editScript ++ ["let fresh = 1"]))
+        case editRequest pending ["fresh"] of
+          Right (EditOpen _ (Left err) paste) -> do
+            paste @?= ["let fresh = 1"]
+            ("is not stored" `T.isInfixOf` err) @? T.unpack err
+          other -> assertFailure (show other)
+        editScopeArgs s (EditNamespace "orbital") @?= " orbital"
+        s2 <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            (sessionP (editScript ++ [":namespace orbital"]))
+        editScopeArgs s2 (EditName "orbital.x") @?= " .orbital.x"
     ]
 
 -- The standard library (design §7.7) -------------------------------------------------
