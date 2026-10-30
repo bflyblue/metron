@@ -3011,6 +3011,33 @@ seeding it before its own log, §7.4); the loader no longer enters a
 prelude, so an empty store really is empty; the test suite's "session with
 the prelude" became "a seeded session", the same thing by another route.
 
+#### Layout (design; not yet built)
+
+The library is to be split by domain into sibling namespaces, each a
+`namespace` block in the seed source, with the basic functions alone in
+`std`:
+
+| namespace | contents | stored `use` by default |
+|---|---|---|
+| `std` | `fst snd map filter foldl foldr length reverse zip range …`: the structural functions | yes |
+| `linalg` | `ε cross trace vimap covariance jointCovariance …`: what `algebra` holds today | yes |
+| `si` | spelled-out names for the primitive base units (`metre second kilogram ampere kelvin mole candela radian`); the prefixes as plain numbers (`kilo = 1000`, `milli`, `micro`, …); the coherent derived units with both symbol and name as labels on one term (`newton`/`N`, `joule`/`J`, …); the prefixed units, each written as `unit km = kilo * metre` | yes |
+| `time` | `min h day week year …` and the scales `unix JD MJD J2000` | yes |
+| `angle` | `deg arcmin arcsec turn`, `sr` | yes |
+| `temperature` | the scales `degC degF degR`, the steps `deltaC deltaF` | yes |
+| `astro` | `AU pc ly G M_sun M_earth GM_earth R_earth …` | no: `:use astro` |
+| `physics` | `c h hbar kB NA e eV u …`; `h` here is Planck's constant, the hour is `time.h` | no |
+| `imperial` | `in ft yd mile lb oz psi mph …` | no |
+
+Rules the seed is checked against: no name is ambiguous among the
+default-used namespaces, and every name that is bare today stays bare
+unless it moved to a non-default namespace on purpose (`G`, `AU`, `c`, `e`
+and the other constants). Base units stay primitives, available everywhere.
+Writing `km` as `kilo * metre` instead of `1000 * m` re-hashes every derived
+and prefixed unit; this is accepted while the language is in design, and the
+migration re-seeds a format-4 store, keeping the user's labels and reporting
+what went stale.
+
 
 ## 8. Evaluation
 
