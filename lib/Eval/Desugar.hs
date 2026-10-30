@@ -88,7 +88,13 @@ index). Names bound locally shadow these; these shadow primitives.
 {- | What a free name resolves to, and whether it was declared a display unit
 (design §3.2.12), which is what the quantity rule accepts (§2.6).
 -}
-data Resolution = Resolution {ref :: (Hash, Maybe Int), isUnit :: Bool, isScale :: Bool}
+data Resolution = Resolution
+  { ref :: (Hash, Maybe Int)
+  , isUnit :: Bool
+  , isScale :: Bool
+  , isMoving :: Bool
+  -- ^ a chart declared with parameters: a moving chart, a function to a chart (design §3.8)
+  }
 
 {- | A declared constructor (design §2.3): the reference, its arity, the
 whole constructor table of its type, for case analysis, and the labels of
@@ -387,7 +393,9 @@ desugar path ctx e = do
           <*> desugar (0 : path) ctx a
           <*> desugar (1 : path) ctx b
       -- A point moves to another scale; everything else to a display unit.
+      -- A moving chart must be applied at a time first (design §3.8).
       S.To -> do
+        refuseMoving ctx b
         scaleName <- isScaleName ctx b
         prim (if scaleName then "toScale" else "to") [a, b]
       S.PAdd -> prim "pointAdd" [a, b]
@@ -421,6 +429,7 @@ desugar path ctx e = do
           )
       -- Juxtaposition is for units (§2.6): 5 km, 3 (m/s), [1, 0, 0] km.
       S.Scale -> do
+        refuseMoving ctx b
         scaleName <- isScaleName ctx b
         ok <- unitExpr ctx b
         if scaleName
@@ -508,18 +517,29 @@ desugar path ctx e = do
       recordExpr path ctx e hd fields
     -- A chart (design §3.6, §3.8): a chart name juxtaposed after the origin
     -- is its parent. Without one, and without a generator, the two-part
-    -- form keeps the Core, and so the hash, every chart had before.
-    S.ChartForm step written gen -> do
+    -- form keeps the Core, and so the hash, every chart had before. A
+    -- spinning chart is turned by a list of generators, perhaps empty.
+    S.ChartForm step written gen spin -> do
       parted <- parentOf ctx written
-      case (parted, gen) of
-        (Nothing, Nothing) -> prim "mkScale" [step, written]
-        (Just (o, par), Nothing) -> prim "mkChart3" [step, o, par]
-        (Just (o, par), Just g) -> prim "mkChart4" [step, o, par, g]
-        (Nothing, Just _) ->
+      case (parted, gen, spin) of
+        (Nothing, Nothing, Nothing) -> prim "mkScale" [step, written]
+        (Just (o, par), Nothing, Nothing) -> prim "mkChart3" [step, o, par]
+        (Just (o, par), Just g, Nothing) -> prim "mkChart4" [step, o, par, g]
+        (Just (o, par), _, Just w) ->
+          prim
+            "mkChart5"
+            [step, o, par, fromMaybe (S.Expr written.span (S.List [])) gen, w]
+        (Nothing, Just _, _) ->
           failWith
             ( BadSpecialForm
                 written.span
                 "a turned chart names the chart its axes are turned from, after the origin: chart lvlh = m at r0 eci by B"
+            )
+        (Nothing, Nothing, Just _) ->
+          failWith
+            ( BadSpecialForm
+                written.span
+                "a spinning chart names the chart it spins relative to, after the origin: chart ecef t = m at [0, 0, 0] m eci by rotz (gmst t) spinning w"
             )
  where
   prim p args = PrimApp p <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
@@ -878,21 +898,55 @@ parentOf ctx written = case written.node of
   _ -> pure Nothing
  where
   split o par = do
+    refuseMoving ctx par
     chart <- isScaleName ctx par
     pure (if chart then Just (o, par) else Nothing)
 
--- | Whether an expression is a free name declared with @chart@ (design §3.6).
+{- | Whether an expression is a free name declared with @chart@ (design
+§3.6), or a moving chart applied at a time, @ecef t0@ (§3.8).
+-}
 isScaleName :: Ctx n -> S.Expr -> M Bool
 isScaleName ctx e = case e.node of
+  S.App _ _ -> isJust <$> movingChart ctx (fst (spine e))
+  _ -> maybe False ((.isScale) . snd) <$> chartResolution ctx e
+
+{- | A moving chart's name where a chart is wanted (design §3.8) is refused:
+the chart is a function of time, and a point or a parent needs the chart
+at an instant.
+-}
+refuseMoving :: Ctx n -> S.Expr -> M ()
+refuseMoving ctx e = do
+  moving <- movingChart ctx e
+  case moving of
+    Just x ->
+      failWith
+        ( BadSpecialForm
+            e.span
+            ("`" <> x <> "` moves: apply it at a time, as in p to " <> x <> " t0")
+        )
+    Nothing -> pure ()
+
+-- | The name, as written, of a moving chart, when the expression is one.
+movingChart :: Ctx n -> S.Expr -> M (Maybe Text)
+movingChart ctx e =
+  ( \case
+      Just (x, r) | r.isScale && r.isMoving -> Just x
+      _ -> Nothing
+  )
+    <$> chartResolution ctx e
+
+-- | What a free name, perhaps qualified, resolves to as a definition, with the name as written.
+chartResolution :: Ctx n -> S.Expr -> M (Maybe (Text, Resolution))
+chartResolution ctx e = case e.node of
   S.Var x
     | Nothing <- lookupCtx x ctx ->
-        maybe False (maybe False (.isScale) . asTerm . snd) <$> resolveWritten x
+        (>>= fmap (x,) . asTerm . snd) <$> resolveWritten x
   S.FieldOf _ _ -> do
     e' <- qualifiedChain ctx e
     case e'.node of
-      S.Var _ -> isScaleName ctx e'
-      _ -> pure False
-  _ -> pure False
+      S.Var _ -> chartResolution ctx e'
+      _ -> pure Nothing
+  _ -> pure Nothing
 
 {- | A @case@ (design §2.3, §5.1): one alternative per constructor of the
 scrutinee's type, in canonical order. The type is read off the constructor

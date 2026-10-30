@@ -144,12 +144,14 @@ data Node
     CaseOf Expr [(Pattern, Expr)]
   | -- | @(e :: type)@: an ascription (design §4.8); it narrows and does not reach Core
     Ascribe Expr TyExpr
-  | {- | The body of @chart name = step at origin [parent] [by g₁ then g₂ …]@
-    (design §3.8): the step, the origin as written with the parent still
-    juxtaposed after it (only the desugarer knows which names are charts),
-    and the generators, as the list literal the parser made of them.
+  | {- | The body of @chart name params = step at origin [parent] [by g₁
+    then g₂ …] [spinning ω]@ (design §3.8): the step, the origin as written
+    with the parent still juxtaposed after it (only the desugarer knows
+    which names are charts), the generators, as the list literal the parser
+    made of them, and the angular velocity of a moving chart, along its own
+    axes.
     -}
-    ChartForm Expr Expr (Maybe Expr)
+    ChartForm Expr Expr (Maybe Expr) (Maybe Expr)
   deriving stock (Eq, Show)
 
 -- | A pattern of a case alternative: one constructor deep (§2.3).

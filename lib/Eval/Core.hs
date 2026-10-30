@@ -405,6 +405,9 @@ primArity = \case
   "mkScale" -> Just 2
   "mkChart3" -> Just 3
   "mkChart4" -> Just 4
+  -- A spinning chart (design §3.8): turned by a list of generators, perhaps
+  -- empty, with its angular velocity along its own axes.
+  "mkChart5" -> Just 5
   "pointOn" -> Just 2
   "pointAdd" -> Just 2
   "pointSub" -> Just 2
@@ -421,6 +424,10 @@ primArity = \case
   "expm" -> Just 1
   "transformBy" -> Just 2
   "rotationOf" -> Just 1
+  -- A chart's kinematics (design §3.8): its absolute angular velocity and
+  -- the velocity of its origin, both along the base axes.
+  "spinOf" -> Just 1
+  "originVelocityOf" -> Just 1
   _ -> Nothing
 
 -- Renaming and weakening ------------------------------------------------------

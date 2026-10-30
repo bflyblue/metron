@@ -274,7 +274,8 @@ exprDepth e =
     S.FieldOf a _ -> exprDepth a
     S.Record hd fs -> maximum (exprDepth hd : map (exprDepth . snd) fs)
     S.Ascribe a _ -> exprDepth a
-    S.ChartForm s o g -> maximum [exprDepth s, exprDepth o, maybe 0 exprDepth g]
+    S.ChartForm s o g w ->
+      maximum [exprDepth s, exprDepth o, maybe 0 exprDepth g, maybe 0 exprDepth w]
 
 -- Literals and units ------------------------------------------------------------------
 

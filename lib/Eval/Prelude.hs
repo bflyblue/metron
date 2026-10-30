@@ -264,6 +264,51 @@ algebra =
   , ("inChart", "\\c x -> transformBy (rotationOf c) x")
   ]
 
+{- | A body's state (design §3.8): its epoch, its position as an absolute
+point, and its velocity along the base axes, which is the velocity
+relative to the base charts, the inertial frame. @velocityIn c s@ is that
+velocity relative to chart @c@, along @c@'s axes, with the transport
+terms of a moving chart:
+
+@
+v_c = R_abs⁻¹ (v − v_o − ω_abs × (p − o_abs))
+@
+
+with @R_abs@ the chart's rotation, @o_abs@ its origin, @v_o@ the velocity
+of its origin and @ω_abs@ its angular velocity, all from the base
+(@rotationOf@, @originVelocityOf@, @spinOf@). @stateFrom c t pc vc@ is the
+inverse: a position @pc@ and a velocity @vc@ along @c@'s axes, relative to
+@c@, to a state, @p = o_abs + R_abs pc@ and @v = R_abs vc + v_o + ω_abs ×
+(p − o_abs)@. A moving chart is passed at the state's instant, @velocityIn
+(ecef s.epoch) s@. @R_abs⁻¹@ is the transpose of the rotation: @R@ is
+orthogonal, so the transpose of an enclosure of it encloses its inverse.
+-}
+stateStatements :: [Statement]
+stateStatements =
+  [ Data
+      "data State = State {epoch :: Point [s], pos :: Point (Vec 3 [m]), vel :: Vec 3 [m s^-1]}"
+      ["State", "epoch", "pos", "vel"]
+  , Sig "velocityIn" "Chart (Vec 3 [m]) -> State -> Vec 3 [m s^-1]"
+  , Let
+      "velocityIn"
+      ( T.unwords
+          [ "\\c st -> transformBy (transpose (rotationOf c))"
+          , "(st.vel - originVelocityOf c - linalg.cross (spinOf c) (st.pos .- pointOn c [0, 0, 0]))"
+          ]
+      )
+  , Sig
+      "stateFrom"
+      "Chart (Vec 3 [m]) -> Point [s] -> Vec 3 [m] -> Vec 3 [m s^-1] -> State"
+  , Let
+      "stateFrom"
+      ( T.unwords
+          [ "\\c t pc vc -> let r = linalg.inChart c pc in"
+          , "State {epoch = t, pos = pointOn c [0, 0, 0] .+ r,"
+          , "vel = linalg.inChart c vc + originVelocityOf c + linalg.cross (spinOf c) r}"
+          ]
+      )
+  ]
+
 {- | Tuples and lists (design §2.3): the structural functions, recursive
 through cycles like any other definition.
 -}
@@ -513,8 +558,7 @@ stdlibLayout =
     )
   ,
     ( "astro"
-    ,
-      [ Unit "AU" "149597870700 * m"
+    , [ Unit "AU" "149597870700 * m"
       , -- IAU 2015: the parsec is exactly 648000/π au; the light-year is
         -- the distance light travels in a Julian year.
         Unit "pc" "648000 / pi * AU"
@@ -526,6 +570,7 @@ stdlibLayout =
       , Let "M_earth" "GM_earth / G"
       , Let "M_sun" "GM_sun / G"
       ]
+        ++ stateStatements
     )
   ,
     ( "physics"

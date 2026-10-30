@@ -92,6 +92,7 @@ main =
         , sliceTests
         , rotationTests
         , turnedChartTests
+        , movingChartTests
         , propertyTests
         , unitTests
         , lintRegressionTests
@@ -608,7 +609,8 @@ shape e = case e.node of
   S.FieldOf a f -> A (shape a) (V f)
   S.Record hd fs -> foldl (\acc (n, x) -> A acc (A (V n.text) (shape x))) (shape hd) fs
   S.Ascribe a _ -> shape a
-  S.ChartForm s o g -> maybe (A (shape s) (shape o)) (A (A (shape s) (shape o)) . shape) g
+  S.ChartForm s o g w ->
+    foldl (\acc x -> A acc (shape x)) (A (shape s) (shape o)) (catMaybes [g, w])
 
 parserTests :: TestTree
 parserTests =
@@ -774,7 +776,7 @@ desugarTests =
     , testCase "a resolver turns free names into references"
         $ let resolver n =
                 if n == "k"
-                  then Just (ATerm (Resolution (h "kay", Nothing) False False))
+                  then Just (ATerm (Resolution (h "kay", Nothing) False False False))
                   else Nothing
            in case parseExpr "k + 1"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
@@ -784,7 +786,7 @@ desugarTests =
     , testCase "codebase names shadow primitives"
         $ let resolver n =
                 if n == "sqrt"
-                  then Just (ATerm (Resolution (h "mine", Nothing) False False))
+                  then Just (ATerm (Resolution (h "mine", Nothing) False False False))
                   else Nothing
            in case parseExpr "sqrt 4"
                 >>= either (Left . renderDesugarError) Right . desugarClosed resolver of
@@ -974,9 +976,11 @@ codebaseTests =
           ls "--scales degC" @?= Right ["chart degC : Chart [K]"]
           ls "--types"
             @?= withBuiltinTypes
-              [ -- The library's types: the joint covariance in blocks, then Bool,
-                -- lists and pairs.
-                "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
+              [ -- The library's types: a body's state, the joint covariance in
+                -- blocks, then Bool, lists and pairs.
+                astroState
+              , astroStateCon
+              , "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
               , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
               , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
               , "Circle : Num [m] -> Shape"
@@ -1997,6 +2001,274 @@ perifocalSession =
   , "vp to km/s"
   , "let p = [[1, 0, 0], [0, 4, 0], [0, 0, 9]] km^2"
   , "inChart pf p to km^2"
+  ]
+
+{- | Design §3.8: moving charts. A chart declared with parameters is a
+function to a chart, applied at a time; a spinning chart carries its
+angular velocity, and the kinematics compose through the tree. The physics
+is checked against hand formulas (sines and cosines, not @expm@), against
+a finite difference of positions, and by the transport law that a body
+fixed on a chart is at rest relative to it.
+-}
+movingChartTests :: TestTree
+movingChartTests =
+  testGroup
+    "movingCharts"
+    [ testCase
+        "a moving chart declares, prints with its parameter and spin, and applies" $ do
+        runLinesP
+          ( spinning
+              ++ [ ":view spinner"
+                 , ":type spinner"
+                 , "[7000000, 0, 0] eci to spinner t1"
+                 , "[7000000, 0, 0] eci to (spinner t1)"
+                 , "spinner t1"
+                 ]
+          )
+          @?= Right
+            [ "chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w"
+            , "Point [s] -> Chart (Vec 3 [m])"
+            , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
+            , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
+            , "chart (spinner (1000 unix))"
+            ]
+        -- what an instant prints reads back
+        runLinesP
+          ( spinning
+              ++ [ encloses
+                     "1e-15"
+                     (fromEci "[1, 2, 3] (spinner (1000 unix))")
+                     (fromEci "[1, 2, 3] (spinner t1)")
+                 ]
+          )
+          @?= Right ["true"]
+        -- a spin with no `by`: the generators are an empty list, and no `by` prints
+        runLinesP
+          ( spinning
+              ++ [ "chart carousel t = m at [10, 0, 0] m (spinner t) spinning [0, 0, 2] * w"
+                 , ":view carousel"
+                 ]
+          )
+          @?= Right
+            ["chart carousel t = m at [10, 0, 0] m (spinner t) spinning [0, 0, 2] * w"]
+    , testCase ":edit reads a moving chart back to the same hash" $ do
+        let hashAfter def = runLinesP (take 4 spinning ++ [def, ":hash spinner"])
+        expecting (runLinesP (spinning ++ [":edit spinner"])) $ \outs ->
+          hashAfter (T.strip (last outs)) @?= hashAfter (spinning !! 4)
+    , testCase
+        "a moving chart without a time is refused, as a point's chart or a parent" $ do
+        let refused = "`spinner` moves: apply it at a time, as in p to spinner t0"
+        expectError (runLinesP (spinning ++ ["[1, 2, 3] eci to spinner"])) refused
+        expectError (runLinesP (spinning ++ ["[1, 2, 3] spinner"])) refused
+        expectError
+          (runLinesP (spinning ++ ["chart arm t = m at [1, 0, 0] m spinner"]))
+          refused
+        expectError
+          (runLinesP (spinning ++ ["chart free = m at [1, 0, 0] m spinning [0, 0, 1] * w"]))
+          "a spinning chart names the chart it spins relative to"
+        -- the spin is an angular velocity: rad s^-1, not s^-1
+        expectError
+          ( runLinesP
+              (spinning ++ ["chart bad = m at [0, 0, 0] m eci spinning [0, 0, 1] / s"])
+          )
+          "rad"
+    , testCase "a body fixed on a spinning chart: at rest on it, ω × r in the parent" $ do
+        runLinesP
+          ( spinning
+              ++ [ ":use astro"
+                 , "let c = spinner t1"
+                 , "let p = [7000000, 0, 0] (spinner t1)"
+                 , "let wv = [0, 0, 1] * (w / rad)"
+                 , -- the inertial velocity of a point turning with the chart
+                   "let body = State {epoch = t1, pos = p, vel = wv × (p .- [0, 0, 0] eci)}"
+                 , encloses "1e-15" "velocityIn c body / (m / s)" "[0, 0, 0]"
+                 , -- written back: ω × r along the parent's axes, by hand,
+                   -- r = 7000 km at θ = w (t1 − t0)
+                   encloses
+                     "1e-15"
+                     "(stateFrom c t1 ([7000000, 0, 0] m) ([0, 0, 0] m/s)).vel / (m / s)"
+                     "7000000 * (w * 1 s / rad) * [-sin (w * 1000 s), cos (w * 1000 s), 0]"
+                 , -- a body at rest in the parent turns backwards on the chart
+                   encloses
+                     "1e-15"
+                     "velocityIn c (State {epoch = t1, pos = p, vel = [0, 0, 0] m/s}) / (m / s)"
+                     "[0, -7000000 * (w * 1 s / rad), 0]"
+                 ]
+          )
+          @?= Right ["stored use astro", "true", "true", "true"]
+    , testCase
+        "stateFrom then velocityIn and the position back on the chart are the round trip" $ do
+        runLinesP
+          ( spinning
+              ++ [ ":use astro"
+                 , "chart tilted t = m at [100, -20, 30] km (spinner t) by rotx (30 deg) spinning [0.1, 0, 0] * w"
+                 , "let c = tilted t1"
+                 , "let pc = [7000, 100, -50] km"
+                 , "let vc = [1, 7.5, 0.2] km/s"
+                 , "let st = stateFrom c t1 pc vc"
+                 , encloses "1e-15" "velocityIn c st / (m / s)" "vc / (m / s)"
+                 , encloses
+                     "1e-15"
+                     "transformBy (transpose (rotationOf c)) (st.pos .- [0, 0, 0] (tilted t1)) / m"
+                     "pc / m"
+                 , encloses
+                     "1e-12"
+                     "((st.pos to tilted t1) .- [0, 0, 0] (tilted t1)) / m"
+                     "(st.pos .- [0, 0, 0] (tilted t1)) / m"
+                 ]
+          )
+          @?= Right ["stored use astro", "true", "true", "true"]
+    , testCase
+        "a declared spin agrees with the rotation it goes with: a finite difference" $ do
+        -- A body fixed on the chart at t1 and t1 + 1 ms, compared with the
+        -- velocity stateFrom gives it: the forward difference is off by
+        -- about ω δt / 2 ≈ 3.6e-8 of the speed (the centripetal term).
+        runLinesP
+          ( spinning
+              ++ [ ":use astro"
+                 , "let pc = [7000000, 2000, 300]"
+                 , "let fd = (pointOn (spinner (t1 .+ 1 ms)) pc .- pointOn (spinner t1) pc) / (1 ms)"
+                 , "let v = (stateFrom (spinner t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
+                 , "let rel = norm (fd - v) / norm v"
+                 , "mid rel < 1e-6 && mid rel > 1e-8"
+                 , "rel"
+                 ]
+          )
+          @?= Right ["stored use astro", "true", "3.6460579499989e-8 ± 5.3e-20"]
+    , testCase
+        "two levels: a station under a spinning Earth, a dish spinning on the station" $ do
+        let station =
+              spinning
+                ++ [ ":use astro"
+                   , "chart station t = m at [6378, 0, 0] km (spinner t) by roty (30 deg)"
+                   , "let wv = [0, 0, 1] * (w / rad)"
+                   , "let c = station t1"
+                   ]
+        runLinesP
+          ( station
+              ++ [ -- the station's own spin is none; it turns with the Earth
+                   encloses "1e-25" "spinOf c * s" "wv * s"
+                 , -- its origin moves with the Earth's frame: ω × (R_p a), by hand
+                   encloses
+                     "1e-12"
+                     "originVelocityOf c / (m / s)"
+                     "6378000 * (w * 1 s / rad) * [-sin (w * 1000 s), cos (w * 1000 s), 0]"
+                 , -- a body fixed at the station is at rest relative to it
+                   "let p = [1, 2, 3] (station t1)"
+                 , "let body = State {epoch = t1, pos = p, vel = wv × (p .- [0, 0, 0] eci)}"
+                 , encloses "1e-12" "velocityIn c body / (m / s)" "[0, 0, 0]"
+                 ]
+          )
+          @?= Right ["stored use astro", "true", "true", "true"]
+        -- A dish turning on the station, two spinning levels: the composed
+        -- ω_abs = ω_p + R ω and the origin's transport agree with a
+        -- central difference of positions. The dish's own turning adds
+        -- 0.037 m/s to the Earth's 464 m/s; the difference is off by about
+        -- (|ω| δt)² / 6 of each, under 1e-12 m/s, where a spin left out,
+        -- turned the wrong way or not turned by R would be off by 0.01 m/s.
+        -- (Checked by component: `norm` of so small an enclosure is slow.)
+        runLinesP
+          ( station
+              ++ [ "chart dish t = m at [0, 0, 10] m (station t) by rotz (0.01 rad/s * (t .- t0)) spinning [0, 0, 0.01] rad/s"
+                 , "let pc = [3, 1, 2]"
+                 , "let fd = (pointOn (dish (t1 .+ 1 ms)) pc .- pointOn (dish (t1 .+ -1 ms)) pc) / (2 ms)"
+                 , "let v = (stateFrom (dish t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
+                 , "vmap (\\x -> if abs (mid x) < 1e-11 then 0 else 1) ((fd - v) / (m / s)) == [0, 0, 0]"
+                 , "(fd - v) / (m / s)"
+                 , encloses
+                     "1e-25"
+                     "spinOf (dish t1) * s"
+                     "(wv + inChart (dish t1) ([0, 0, 0.01] / s)) * s"
+                 ]
+          )
+          @?= Right
+            [ "stored use astro"
+            , "true"
+            , "[-3.591598081e-13 ± 4.8e-21, -1.0345e-13 ± 1.7e-16, 2.0592790487e-13 ± 2.8e-22]"
+            , "true"
+            ]
+    , testCase "an uncertain spin rate gives a velocity whose bound grows with |r|" $ do
+        runLinesP
+          [ ":use astro"
+          , "chart eci = m at [0, 0, 0] m"
+          , "let wu = 7.2921159e-5 rad/s ± 1e-10 rad/s"
+          , "let t0 = 0 unix"
+          , "chart wobbly t = m at [0, 0, 0] m eci by rotz (wu * (t .- t0)) spinning [0, 0, 1] * wu"
+          , "let v1 = (stateFrom (wobbly t0) t0 ([7000, 0, 0] km) ([0, 0, 0] m/s)).vel / (m / s)"
+          , "let v2 = (stateFrom (wobbly t0) t0 ([14000, 0, 0] km) ([0, 0, 0] m/s)).vel / (m / s)"
+          , -- 7000 km × 1e-10 s^-1 = 7e-4 m/s
+            "bound v1.1 > 6.9e-4 && bound v1.1 < 7.1e-4"
+          , "bound v2.1 / bound v1.1 > 1.99 && bound v2.1 / bound v1.1 < 2.01"
+          ]
+          @?= Right ["stored use astro", "true", "true"]
+    , testCase "a moving chart survives a reload" $ withTempStore $ \dir -> do
+        s <- persistLines dir (spinning ++ [":add"])
+        (loaded, notes) <- reload dir
+        notes @?= []
+        loaded.codebase.scales @?= s.codebase.scales
+        let probe =
+              [ ":view spinner"
+              , ":hash spinner"
+              , "[1, 2, 3] (spinner t1) to eci"
+              , "[1, 2, 3] eci to spinner t1"
+              ]
+        linesIn loaded probe @?= linesIn s probe
+        expectError
+          (linesIn loaded ["[1, 2, 3] spinner"])
+          "`spinner` moves: apply it at a time, as in p to spinner t0"
+    , testCase "design §12: a spinning Earth, for illustration" $ do
+        -- The GMST model is linear, θ = 280.46061837° + 360.98564736629°/day ×
+        -- (t − J2000.0) (Meeus, Astronomical Algorithms, eq. 12.4, without
+        -- its T² and T³ terms). Checked against the IAU 1982 GMST (Aoki et
+        -- al. 1982; Explanatory Supplement 1992, eq. 2.24-1) at 2026 Jan 1
+        -- 0h UT1, JD 2461041.5: 24110.54841 s + 8640184.812866 s T +
+        -- 0.093104 s T² − 6.2e-6 s T³ with T = 0.26 Julian centuries is
+        -- 100.6608585° modulo 360°; the linear model is 0.094″ less.
+        runLinesP
+          ( take 3 spinningEarthSession
+              ++ [ "let g = gmst (9496.5 J2000) / deg"
+                 , "abs (g - 360 * floor (g / 360) - 100.6608585) < 1e-4"
+                 ]
+          )
+          @?= Right ["true"]
+        runLinesP spinningEarthSession
+          @?= Right
+            [ "chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] * deg / day"
+            , "[-734892.0553385001942 ± 3e-13, 3903932.6219852148939…, 4990000] eci"
+            , "stored use astro"
+            , "[-284.67928970827302009…, -53.589180086727794658 ± 2.2e-17, 0] m s^-1"
+            , "[0, 0, 0] m s^-1"
+            , "[0.0000000000000000000…, -289.67930235205722039…, 0] m s^-1"
+            ]
+    ]
+ where
+  spinning =
+    [ "chart eci = m at [0, 0, 0] m"
+    , "let w = 7.2921159e-5 rad/s"
+    , "let t0 = 0 unix"
+    , "let t1 = 1000 unix"
+    , "chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w"
+    ]
+  fromEci p = "((" <> p <> ") .- [0, 0, 0] eci) / m"
+
+{- | The session of design §12, "A spinning Earth": a chart turned by a
+linear GMST and spinning at its rate, a station fixed on it, and the
+station's velocity, which is the Earth's rotation alone.
+-}
+spinningEarthSession :: [Text]
+spinningEarthSession =
+  [ "chart eci = m at [0, 0, 0] m"
+  , "let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)"
+  , "chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg/day"
+  , ":view earth"
+  , "chart greenwich t = m at [3972.5, 0, 4990] km (earth t)"
+  , "let t26 = 9496.5 J2000"
+  , "[0, 0, 0] (greenwich t26) to eci"
+  , ":use astro"
+  , "let st = stateFrom (greenwich t26) t26 ([0, 0, 0] m) ([0, 0, 0] m/s)"
+  , "st.vel to m/s"
+  , "velocityIn (greenwich st.epoch) st"
+  , "velocityIn (greenwich t26) (State {epoch = t26, pos = st.pos, vel = [0, 0, 0] m/s})"
   ]
 
 -- | Design §3.3, §3.8: @expm@, @transformBy@ and the bivector constructors.
@@ -4194,6 +4466,8 @@ storeTests =
               , "rv [0, 0; 0, 0] m s"
               , "vv [1, 0; 0, 1] s^2"
               , "bound box ([0, 0] m, [0, 0] s)"
+              , astroState
+              , astroStateCon
               , "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
               , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
               ]
@@ -5570,8 +5844,9 @@ replTests =
                   ]
         completeAt s "b.ma" @?= Just ("b", [R.Completion ".mass" "mass" True])
         map (.display) (R.completions s "b" ".ma") @?= ["mass"]
-        -- Every field in scope completes, the library's Cov2 fields among them.
-        map (.display) (R.completions s "b" ".") @?= ["mass", "rr", "rv", "vel", "vv"]
+        -- Every field completes, the library's Cov2 and State fields among them.
+        map (.display) (R.completions s "b" ".")
+          @?= ["epoch", "mass", "pos", "rr", "rv", "vel", "vv"]
     , testCase ":load completes file names" $ do
         completeAt seeded ":load fo" @?= Nothing
         R.loadsFile " :load " @? ":load"
@@ -7084,13 +7359,13 @@ stdlibTests =
         expecting (runLinesP [":ls temperature"]) $ \outs ->
           ("chart degC : Chart [K]" `elem` outs) @? "degC"
         -- :ls lists a type and its constructor on two lines and no fields:
-        -- linalg.Cov2 and std.Pair are one label and two lines each, Cov2's
-        -- three fields none.
+        -- linalg.Cov2, astro.State and std.Pair are one label and two lines
+        -- each, the three fields of Cov2 and of State none.
         expecting (runLinesP [":ls linalg"]) $ \outs ->
           length outs @?= librarySize "linalg" + 1 - 3
         expecting (runLinesP [":ls --all"]) $ \outs -> do
           ("unit si.km : Num [m]" `elem` outs) @? "full paths with --all"
-          length outs @?= length stdlibNames + 2 - 3
+          length outs @?= length stdlibNames + 3 - 6
         runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
     , testCase "a root name shadows the library's: c and physics.c" $ do
         runLinesP
@@ -7806,6 +8081,13 @@ builtinTypeListing =
 -- | A listing of types, then the library's declarations of the built-in ones.
 withBuiltinTypes :: [Text] -> Either Text [Text]
 withBuiltinTypes = Right . (++ builtinTypeListing)
+
+-- | How @:ls --types@ lists the library's @astro.State@ (design §3.8).
+astroState, astroStateCon :: Text
+astroState =
+  "data astro.State = astro.State {epoch :: Point [s], pos :: Point (Vec 3 [m]), vel :: Vec 3 [m s^-1]}"
+astroStateCon =
+  "astro.State : Point [s] -> Point (Vec 3 [m]) -> Vec 3 [m s^-1] -> astro.State"
 
 -- | The signatures a user wrote: the library's own (`linalg.vimap`) left out.
 userSignatures :: Codebase -> [Text]
