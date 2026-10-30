@@ -3045,6 +3045,12 @@ tuned, and compilation is a later milestone.
   is whether the store may then be dropped, which would lose history.
 - Should `:view` of a stale reference print `x#a3f9k` (Unison style) or `#a3f9k`
   alone?
+- Owner stamps and namespaces: a `±` definition's owner label and a nominal
+  type's stamp take the *last segment* of the name, so moving a definition
+  between namespaces never changes a hash, and `std.G` keeps the hash `G` had.
+  The price is that `a.x = 1 ± 0.1` and `b.x = 1 ± 0.1` are one term and one
+  measurement. Stamp with the full path (a move then re-hashes, as a rename
+  already does), or keep the last segment?
 - Equality on declared types is derived structurally when every field is
   comparable (§4.2), the rule tuples and lists follow. Still open: whether a
   type may opt out, or give its own equality (a fraction kept as an
