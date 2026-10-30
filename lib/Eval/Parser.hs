@@ -217,22 +217,62 @@ unitStatement = do
   e <- expr
   pure (SLet (Binding (spanUnion s e.span) n [] e Unit))
 
-{- | @chart name = step at origin [parent] [by generator]@ (design §3.6,
-§3.8; @scale@ is the old spelling): a definition whose value is a chart,
-marked as one. The parent is a chart name juxtaposed after the origin,
-which only the desugarer can tell from a unit, so it stays in the origin
-here.
+{- | @chart name params = step at origin [parent] [by generator] [spinning
+ω]@ (design §3.6, §3.8; @scale@ is the old spelling): a definition whose
+value is a chart, marked as one. The parent is a chart name juxtaposed
+after the origin, which only the desugarer can tell from a unit, so it
+stays in the origin here. Parameters make a moving chart, a function to a
+chart, exactly as they make a function of a @let@.
 -}
 chartStatement :: Parser Statement
 chartStatement = do
   s <- kw KChart
   n <- name
+  ps <- P.many name
   _ <- tok TEquals
   step <- expr
   _ <- kw KAt
-  (origin, gen) <- originAndGenerator
-  let sp = spanUnion s (maybe origin.span (.span) gen)
-  pure (SLet (Binding sp n [] (Expr sp (ChartForm step origin gen)) ChartDecl))
+  (origin, gen, spin) <- originGeneratorSpin
+  let sp = spanUnion s (maybe origin.span (.span) (spin P.<|> gen))
+  pure
+    (SLet (Binding sp n ps (Expr sp (ChartForm step origin gen spin)) ChartDecl))
+
+{- | A chart's origin, its @by@ part and its @spinning@ part. @spinning@ is a
+keyword in this statement only, like @by@, and comes last: the
+statement's tokens are cut at the first @spinning@ outside brackets, the
+origin and the generators are read from the tokens before it, and the
+angular velocity, one expression, from the tokens after it.
+-}
+originGeneratorSpin :: Parser (Expr, Maybe Expr, Maybe Expr)
+originGeneratorSpin = do
+  input <- P.getInput
+  case cutAt "spinning" input.toks of
+    Nothing -> (\(o, g) -> (o, g, Nothing)) <$> originAndGenerator
+    Just i -> do
+      let (before, after) = splitAt i input.toks
+      P.setInput input{toks = before}
+      (origin, gen) <- originAndGenerator <* P.eof
+      P.setInput input{toks = after}
+      _ <- match "spinning" (\case TIdent "spinning" -> Just (); _ -> Nothing)
+      w <- expr
+      pure (origin, gen, Just w)
+
+{- | The position of the first identifier @word@ outside brackets in the
+current statement, if there is one: what a contextual keyword of the
+chart statement is cut at.
+-}
+cutAt :: Text -> [Located Token] -> Maybe Int
+cutAt word = go (0 :: Int) 0
+ where
+  go _ _ [] = Nothing
+  go depth i (t : ts) = case t.value of
+    TIdent w | w == word, depth == 0 -> Just i
+    TSep | depth == 0 -> Nothing
+    TBlockEnd | depth == 0 -> Nothing
+    v
+      | v `elem` [TLParen, TLBracket, TLBrace] -> go (depth + 1) (i + 1) ts
+      | v `elem` [TRParen, TRBracket, TRBrace] -> go (depth - 1) (i + 1) ts
+      | otherwise -> go depth (i + 1) ts
 
 {- | A chart's origin and its @by@ part. @by@ is a keyword in this statement
 only, so that it stays a name everywhere else: the statement's tokens are
@@ -247,7 +287,7 @@ of one. An @if@ inside a generator takes its own @then@.
 originAndGenerator :: Parser (Expr, Maybe Expr)
 originAndGenerator = do
   input <- P.getInput
-  case byIndex input.toks of
+  case cutAt "by" input.toks of
     Nothing -> (,Nothing) <$> expr
     Just i -> do
       let (before, after) = splitAt i input.toks
@@ -259,18 +299,6 @@ originAndGenerator = do
       gs <- P.many (kw KThen *> expr)
       let sp = foldr (spanUnion . (.span)) g.span gs
       pure (origin, Just (Expr sp (List (g : gs))))
- where
-  byIndex = go (0 :: Int) 0
-   where
-    go _ _ [] = Nothing
-    go depth i (t : ts) = case t.value of
-      TIdent "by" | depth == 0 -> Just i
-      TSep | depth == 0 -> Nothing
-      TBlockEnd | depth == 0 -> Nothing
-      v
-        | v `elem` [TLParen, TLBracket, TLBrace] -> go (depth + 1) (i + 1) ts
-        | v `elem` [TRParen, TRBracket, TRBrace] -> go (depth - 1) (i + 1) ts
-        | otherwise -> go depth (i + 1) ts
 
 {- | @let b@ as a definition (optionally with @where@), or @let b in e@ as an
 expression statement. Both start the same way, so they share a prefix.

@@ -572,8 +572,13 @@ command session src = \case
               -- expression, so it is viewed with its keyword (design §3.8).
               Just r ->
                 (: [])
-                  . (((if isScaleName full ecb then "chart " else "") <> short ecb full <> " = ") <>)
-                  <$> viewReference spelling scope ecb r
+                  <$> definitionLine
+                    spelling
+                    scope
+                    ecb
+                    (if isScaleName full ecb then "chart " else "")
+                    (short ecb full)
+                    r
               Nothing -> viewData spelling scope cb full
   ["dependents", n] -> keep $ withName n $ \r -> pure (map (short cb) (dependents (argIn cb n) r.hash cb))
   -- An alias of a unit or chart is one too; an alias of a namespace aliases
@@ -963,14 +968,12 @@ definitionSource spelling scope cb full = case lookupName full cb of
           | isUnitName full cb = "unit "
           | isScaleName full cb = "chart "
           | otherwise = "let "
-     in ( \body ->
+     in ( \line ->
             map
               (nameTypes scope cb)
-              ( signatureSource spelling scope cb full
-                  ++ [keyword <> S.lastSegment full <> " = " <> body]
-              )
+              (signatureSource spelling scope cb full ++ [line])
         )
-          <$> viewReference spelling scope cb r
+          <$> definitionLine spelling scope cb keyword (S.lastSegment full) r
   Nothing -> map (nameTypes scope cb) <$> viewData spelling scope cb full
 
 {- | The line @name :: type@ that goes before a signed definition's @let@
@@ -1336,6 +1339,21 @@ viewReference spelling scope cb (Reference h idx) = case lookupTerm h cb of
             Just body -> Right (renderTermUnits spelling (refNamer scope cb) (unitRef cb) ctx body)
             Nothing -> Left ("no member " <> T.pack (show i) <> " in " <> showHash h)
     (Just _, _) -> Left (showHash h <> " is not a cycle")
+
+{- | A definition as a line of source: its keyword, its name and its body.
+A chart's leading lambdas are its parameters, written before the @=@
+(@chart ecef t = …@, design §3.8), since a chart's right-hand side is not
+an expression.
+-}
+definitionLine ::
+  Spelling -> S.Scope -> Codebase -> Text -> Text -> Reference -> Either Text Text
+definitionLine spelling scope cb keyword shown r = case (keyword, r.index, lookupTerm r.hash cb) of
+  ("chart ", Nothing, Just t) ->
+    let (ps, body) = renderParamsUnits spelling (refNamer scope cb) (unitRef cb) t
+     in Right (keyword <> T.unwords (shown : ps) <> " = " <> body)
+  _ ->
+    (\body -> keyword <> shown <> " = " <> body)
+      <$> viewReference spelling scope cb r
 
 -- | Print the Typed Core behind a reference (design §5.3), for inspection.
 viewTyped :: S.Scope -> Codebase -> Reference -> Either Text Text
@@ -1812,14 +1830,14 @@ exportLabels session under = do
           | isUnitName n cb = "unit "
           | isScaleName n cb = "chart "
           | otherwise = "let "
-     in ( \b ->
+     in ( \line ->
             ( namespaceOf n
             , map
                 (nameTypes scope cb)
-                (signatureSource Ascii scope cb n ++ [keyword <> S.lastSegment n <> " = " <> b])
+                (signatureSource Ascii scope cb n ++ [line])
             )
         )
-          <$> viewReference Ascii scope cb r
+          <$> definitionLine Ascii scope cb keyword (S.lastSegment n) r
   -- Open and close blocks as the namespaces of consecutive items change.
   nest :: [Text] -> [([Text], [Text])] -> [Text]
   nest _ [] = []

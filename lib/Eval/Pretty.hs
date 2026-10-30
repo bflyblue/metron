@@ -14,6 +14,7 @@ module Eval.Pretty (
   renderTerm,
   renderTermIn,
   renderTermUnits,
+  renderParamsUnits,
   UnitRef,
   RefNamer,
   FieldNamer,
@@ -253,18 +254,16 @@ renderValueWith printer scale prefs showMagnitude = \case
     xs <- sequence (V.toList buf)
     pure $ case sc of
       Just s
-        | Just atom <- s.name
+        | Just named <- chartName s
         , Right steps <- coordinatesOn (scale + 4) s xs ->
-            renderNested showMagnitude dims steps
-              <> " "
-              <> atomNameWith printer.unitName atom
+            renderNested showMagnitude dims steps <> " " <> named
       _ ->
         renderNested showMagnitude dims xs
           <> unitSuffix d
           <> " (point)"
   VChart s ->
-    Right $ case s.name of
-      Just atom -> "chart " <> atomNameWith printer.unitName atom
+    Right $ case chartName s of
+      Just named -> "chart " <> named
       Nothing ->
         "chart: step "
           <> showMagnitude s.step
@@ -279,6 +278,19 @@ renderValueWith printer scale prefs showMagnitude = \case
       )
  where
   recur = renderValueWith printer scale prefs showMagnitude
+  -- A chart's name; an instant of a moving chart is the chart applied, as
+  -- it is written, @(ecef (100 unix))@ (design §3.8).
+  chartName s = case (s.name, s.applied) of
+    (Just atom, Applied []) -> Just (atomNameWith printer.unitName atom)
+    (Just atom, Applied args)
+      | Right texts <- mapM (>>= recur) args ->
+          Just
+            ( "("
+                <> T.unwords (atomNameWith printer.unitName atom : map argument texts)
+                <> ")"
+            )
+    _ -> Nothing
+  argument t = if T.any (== ' ') t then "(" <> t <> ")" else t
   unitSuffix d = case renderUnitsIn printer.spelling d of
     "" -> ""
     units -> " " <> units
@@ -451,6 +463,24 @@ for @\\x -> x^2@, and @≤ ≥ ≠ ∨@ for @<= >= /= ||@.
 renderTermIn :: Spelling -> RefNamer -> Vec n Text -> Term n -> Text
 renderTermIn spelling namer = renderTermUnits spelling namer (\_ _ _ -> False)
 
+{- | A definition as its parameters and its body (design §3.8): the leading
+lambdas of a moving chart are its parameters, written before the @=@ as a
+function's are, @chart ecef t = …@, since a chart's right-hand side is not
+an expression and a lambda before it would not read back.
+-}
+renderParamsUnits :: Spelling -> RefNamer -> UnitRef -> Term Z -> ([Text], Text)
+renderParamsUnits spelling namer isUnitRef = peel VNil []
+ where
+  peel :: Vec n Text -> [Text] -> Term n -> ([Text], Text)
+  peel ctx acc = \case
+    Lam (Hint h) b -> let h' = fresh h ctx in peel (VCons h' ctx) (acc ++ [h']) b
+    t -> (acc, renderTermUnits spelling namer isUnitRef ctx t)
+  fresh :: Text -> Vec n Text -> Text
+  fresh h ctx
+    | T.null h || "§" `T.isPrefixOf` h || h == "_" = fresh "x" ctx
+    | h `elem` vecToList ctx = fresh (h <> "'") ctx
+    | otherwise = h
+
 {- | Whether a reference, written under a name, is a declared unit: what the
 printer needs to write a chart's origin as a quantity, @[2, 0, 1] km site@,
 which only reads back when @km@ is a unit (design §3.8).
@@ -557,6 +587,22 @@ renderTermUnits spelling namer isUnitRef = go 0
     (_, [a, b, c])
       | p == "mkChart3" ->
           paren (prec > 0) (go 1 ctx a <> " at " <> origin ctx b <> " " <> go 11 ctx c)
+    -- A spinning chart reads back with its spin last, and with its
+    -- generators only when it has any (design §3.8).
+    (_, [a, b, c, g, w])
+      | p == "mkChart5"
+      , Just gs <- listSpine g ->
+          paren
+            (prec > 0)
+            ( go 1 ctx a
+                <> " at "
+                <> origin ctx b
+                <> " "
+                <> go 11 ctx c
+                <> (if null gs then "" else " by " <> T.intercalate " then " (map (go 1 ctx) gs))
+                <> " spinning "
+                <> go 1 ctx w
+            )
     -- The generators read back as the sequence they were written as, `by
     -- rotz a then rotx b`; a list that is not a literal has no such form
     -- and prints as the primitive applied.
@@ -674,6 +720,10 @@ binary = \case
   "div" -> Just ("/", 7, L)
   "add" -> Just ("+", 6, L)
   "sub" -> Just ("-", 6, L)
+  -- A point and an amount (design §3.6): `.+` and `.-` are the primitives
+  -- always, so they read back as they are written.
+  "pointAdd" -> Just (".+", 6, L)
+  "pointSub" -> Just (".-", 6, L)
   "eq" -> Just ("==", 4, N)
   "ne" -> Just ("/=", 4, N)
   "lt" -> Just ("<", 4, N)

@@ -440,7 +440,8 @@ program    ::= statement ( sep statement )*
 sep        ::= newline-at-column-0 | ';'
 statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | 'unit' name '=' expr                      -- a display unit (3.2.12)
-             | 'chart' name '=' expr 'at' origin [ 'by' expr ( 'then' expr )* ]   -- a chart (3.6, 3.8); 'scale' is the old spelling
+             | 'chart' name param* '=' expr 'at' origin [ 'by' expr ( 'then' expr )* ] [ 'spinning' expr ]
+                                                          -- a chart (3.6, 3.8); with parameters a moving chart; 'scale' is the old spelling
              | ['structural'] 'data' name param* '=' con ( '|' con )*   -- a data type (2.3)
              | 'namespace' path statements                -- an indented block (7.6)
              | 'use' [ '.' ] path [ 'as' name ]            -- 'as' is a name, not a keyword (7.6)
@@ -448,7 +449,8 @@ statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | expr
 origin     ::= expr                                   -- a chart name juxtaposed last is the parent (3.8);
                                                        -- 'by' is a keyword here only, cut at the first one outside brackets;
-                                                       -- 'then' after it separates generators applied in order, an 'if' keeping its own
+                                                       -- 'then' after it separates generators applied in order, an 'if' keeping its own;
+                                                       -- 'spinning' is a keyword here only, last, cut at the first one outside brackets
 path       ::= name ( '.' name )*                       -- glued dots
 statements ::= statement ( sep statement )*            -- indented block, opened as after 'where'
 qname      ::= [ '.' ] name ( '.' name )*              -- a qualified or absolute name (7.6)
@@ -1766,7 +1768,7 @@ of mixed dimensions: a measurement vector of mixed dimension (range and
 range rate together) makes `S` itself a 2×2 block matrix, whose inverse is a
 Schur-complement formula over the blocks. When either appears in real use,
 route A is the next step, and its rules are above.
-### 3.8 Charts: frames with an orientation (the tree and constant orientations built; moving charts next)
+### 3.8 Charts: frames with an orientation (the tree, constant orientations and moving charts built)
 
 A `scale` (§3.6) is a coordinate chart with two of its three parts set: a
 step unit and an origin. The third part is an orientation, and with it the
@@ -1787,7 +1789,7 @@ chart degC = K at 273.15 K                         -- step, origin
 chart site = m at [100, 200, 0] m                  -- step, origin
 chart lvlh = m at r0 eci by B                      -- step, origin, parent, orientation
 chart pf   = m at [0, 0, 0] m eci by rotz Ω then rotx i then rotz ω   -- a sequence of turns
-chart ecef t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, ω_earth]  -- moving
+chart ecef t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 1] * ω_e  -- moving
 ```
 
 Why the generator and not the matrix: `exp` of an antisymmetric matrix is
@@ -1956,24 +1958,126 @@ computed once per value, and a definition's value is shared by every
 reference to it in one evaluation, so a chart named in a hundred
 conversions computes `expm` once per generator and direction.
 
-**Moving charts and the transport term.** A chart that moves is a function of
-an epoch to a chart, and the epoch is itself a point on a time chart (`unix`,
-`J2000`). The only values that carry an epoch are states: a record
-`{epoch, r, v}`, so `state to ecef` evaluates the chart at `state.epoch`,
-while `p to ecef` for a bare position is a type error ("`ecef` moves: give a
-state, or apply it at a time, `p to ecef t0`"), which makes the classic
-wrong-epoch mistake a type error. A velocity seen from a rotating chart picks
-up the transport term, so a moving chart states its angular velocity, since
-differentiating `exp B(t)` would need automatic differentiation we do not
-have:
+**Built: moving charts.** A chart that moves is a function of an epoch to a
+chart, and the epoch is a point on a time chart (`unix`, `J2000`). The
+chart statement takes parameters exactly as `let f x = …` does, and a
+`spinning` part last:
 
 ```
-r' = R r
-v' = R v - ω × r'
+chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w
 ```
 
-For the Earth `ω` is a constant; for a lunar or spacecraft chart it comes from
-the theory that defines the chart, which is where it belongs.
+desugars to `\t -> mkChart5 m ([0, 0, 0] m) eci {rotz (w * (t .- t0))}
+([0, 0, 1] * w)`, and the *name* carries the chart flag. `spinning` is a
+keyword in this statement only, like `by`: the statement is cut at the
+first `spinning` outside brackets, the origin and the generators are read
+before it, and the angular velocity, one expression, after it. It takes a
+`Vec 3 [rad s^-1]` (a literal is dimensionless, so a spin is written `[0,
+0, 1] * w` or `[0, 0, 7.29e-5] rad/s`, not `[0, 0, w]`); the radian is
+stripped as `rotz` strips it, so the chart keeps `Vec 3 [s^-1]`, an
+angular velocity along the chart's *own* axes, relative to its parent. A
+spinning chart with no `by` has an empty list of generators and prints with
+no `by`; one with no parent is refused, "a spinning chart names the chart
+it spins relative to, after the origin: chart ecef t = m at [0, 0, 0] m eci
+by rotz (gmst t) spinning w". `mkChart5 : Num d -> Vec 3 d -> Chart (Vec 3
+d) -> {Mat 3 3} -> Vec 3 [rad s^-1] -> Chart (Vec 3 d)` is used only when
+`spinning` is written, so every chart without it keeps `mkScale`,
+`mkChart3` or `mkChart4` and its hash. `:view spinner` prints `chart
+spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0,
+1] * w`, the lambda's parameters before the `=`, and `:edit` reads back to
+the same hash.
+
+*Applying one.* A chart declared with parameters is a *moving chart*, which
+the resolver reads off its stored Core (a lambda), so a store reload keeps
+it with no flag of its own. Where a chart name goes, an application whose
+head is a moving chart's name takes the chart at that instant: `p to
+spinner t1`, `p to (spinner t1)`, `[1, 2, 3] (spinner t1)` and a parent
+`chart station t = m at [6378, 0, 0] km (spinner t) by roty (30 deg)`. A
+moving chart's bare name where a chart is wanted (`p to spinner`, `[1, 2,
+3] spinner`, `… m spinner` as a parent) is refused when desugaring,
+"`spinner` moves: apply it at a time, as in p to spinner t0", which makes
+the classic wrong-epoch mistake an error. An instant prints as it was
+applied, `[1, 2, 3] (spinner (1000 unix))`, which reads back. There is no
+`state to ecef`: `to` is chosen by syntax and there are no type classes, so
+a state is converted by named library functions (below).
+
+*Kinematics, composed through the tree.* A velocity seen from a moving chart
+picks up transport terms, and a moving chart states its angular velocity,
+since differentiating `exp B(t)` would need automatic differentiation we do
+not have. Each chart value keeps, beside its absolute frame, its absolute
+angular velocity `ω_abs` and the velocity of its origin `v_o_abs`, both
+along the base axes, computed once per value when first used. With `a` the
+amount the origin is given at along the parent's axes, `R` the chart's own
+rotation `expm B₁ · expm B₂ · …`, `ω` its own spin along its own axes, and
+`_p` the parent's absolute values:
+
+```
+o_abs   = o_p + R_p a
+R_abs   = R_p · R
+ω_abs   = ω_p + R_abs ω          -- ω = 0 without spinning; ω_p = 0 at a root
+v_o_abs = v_o_p + ω_p × (R_p a)  -- origins are fixed relative to their parent
+```
+
+The velocity of a body at base position `p` with base velocity `v`, read
+along chart `c`'s axes, and written back:
+
+```
+v_c = R_abs⁻¹ (v − v_o_abs − ω_abs × (p − o_abs))
+v   = R_abs v_c + v_o_abs + ω_abs × (p − o_abs)
+```
+
+Two primitives read the new fields: `spinOf : Chart (Vec 3 d) -> Vec 3
+[s^-1]` is `ω_abs` and `originVelocityOf : Chart (Vec 3 d) -> Vec 3 [d
+s^-1]` is `v_o_abs` (a chart in metres gives `m s^-1`), each exactly zero
+when nothing here or above spins. `R_abs⁻¹` is `transpose (rotationOf c)`:
+`R` is orthogonal, so the transpose of an entrywise enclosure of it
+encloses its inverse.
+
+*States, in `astro`.* `astro` is not used by default, so its field labels
+never meet a user's (`:use astro` first):
+
+```
+data State = State {epoch :: Point [s], pos :: Point (Vec 3 [m]), vel :: Vec 3 [m s^-1]}
+velocityIn :: Chart (Vec 3 [m]) -> State -> Vec 3 [m s^-1]
+velocityIn c st = transformBy (transpose (rotationOf c))
+                    (st.vel - originVelocityOf c - linalg.cross (spinOf c) (st.pos .- pointOn c [0, 0, 0]))
+stateFrom :: Chart (Vec 3 [m]) -> Point [s] -> Vec 3 [m] -> Vec 3 [m s^-1] -> State
+stateFrom c t pc vc = let r = linalg.inChart c pc in
+  State {epoch = t, pos = pointOn c [0, 0, 0] .+ r,
+         vel = linalg.inChart c vc + originVelocityOf c + linalg.cross (spinOf c) r}
+```
+
+`pos` is an absolute point and `vel` is along the base axes: the velocity
+relative to the base chart, the inertial frame. `velocityIn c st` is that
+velocity relative to `c`, along `c`'s axes; `stateFrom c t pc vc` is the
+inverse, a position `pc` (an amount from `c`'s origin along its axes) and
+a velocity `vc` relative to `c` to a state at epoch `t`. Both take a chart
+*value*, so a moving chart is passed at the state's instant, `velocityIn
+(ecef st.epoch) st`. The formulas are library code, so `:view
+astro.velocityIn` shows them.
+
+*What the tests check* (`movingChartTests`): physics, not the formulas
+echoed. A body fixed on `spinner t1`, with inertial velocity `ω × r`
+computed in the test, has `velocityIn` enclosing `0`, and `stateFrom` gives
+it `7000 km · w · [−sin θ, cos θ, 0]` by hand; a body at rest in the parent
+turns backwards on the chart. `stateFrom` then `velocityIn` and the
+position read back enclose what went in, on a chart turned, offset and
+spinning under a spinning parent. A body fixed on `spinner` at `t1` and at
+`t1 + 1 ms`: the forward difference of its positions differs from the
+velocity `stateFrom` gives by `3.6460579499989e-8 ± 5.3e-20` of the speed,
+which is `ω δt / 2`, the centripetal term. Two levels: a station under the
+spinning chart, turned and offset, has spin `ω` and origin velocity `ω × (R_p
+a)` by hand, and a body fixed at it, moving with `ω × (p − o_eci)`, is at
+rest relative to it; a dish spinning at 0.01 rad/s on the station agrees
+with a central difference of positions to `4e-13 m/s` (each component under
+`1e-11`), where a spin left out or not turned by `R` would be off by `0.01
+m/s`. Nothing checks that a declared spin is the derivative of the
+rotation it goes with: that is the author's to keep, and the finite
+difference is how to check it.
+
+*Uncertainty passes through.* An uncertain spin rate, `7.2921159e-5 rad/s
+± 1e-10 rad/s`, gives a body 7000 km out a velocity with a bound of `7e-4
+m/s` and one 14000 km out twice that.
 
 **Uncertainty comes for free.** `gmst t` with an uncertain `t` gives an
 enclosure for the angle, so `R` has affine entries and `R @ r` carries the
@@ -2013,9 +2117,12 @@ hands, meet:
   matrices, row-major, applied in order; none means axis-aligned with the
   parent), the absolute frame (`origin`, and `rotation` and
   `rotationInverse :: Maybe (Either EvalError (Vector Magnitude))`, lazy,
-  `Nothing` when nothing here or above is turned) and `spin :: Maybe
-  (Vector Magnitude)` (the angular velocity, phase C; always `Nothing`
-  until then). The parent is the parent chart's *value*, not a
+  `Nothing` when nothing here or above is turned), `spin :: Maybe (Vector
+  Magnitude)` (the chart's own angular velocity along its own axes, in
+  s⁻¹; `Nothing` without `spinning`), the absolute kinematics (`spinAbs`
+  and `originVelocity`, lazy like the rotation, `Nothing` when nothing here
+  or above spins) and `applied` (the arguments of the moving chart an
+  instant came from, for printing only; `Eq` ignores them). The parent is the parent chart's *value*, not a
   hash: a chart need not be named (`mkChart3 m o (if x then eci else ecef)` is a
   value), and the definition's Core already refers to the parent's
   definition by hash, so the store, `:update` and the chart tree as written
@@ -2066,13 +2173,38 @@ hands, meet:
   rotz ω`. Every bivector they return is exactly antisymmetric (§3.3).
 - **Built.** Printed type: `Chart (Vec 3 [m])`, `Chart [K]` (`Scale` is read
   as `Chart`); `:ls --charts` (`--scales` accepted); `:view` and `:edit` of a
-  chart print `chart name = step at origin [parent] [by B [then B …]]` with
-  the optional parts only when set (`spinning ω` comes with phase C).
+  chart print `chart name params = step at origin [parent] [by B [then B
+  …]] [spinning ω]` with the optional parts only when set.
+- **Built.** `mkChart5 : Num d -> Vec 3 d -> Chart (Vec 3 d) -> {Mat 3 3}
+  -> Vec 3 [rad s^-1] -> Chart (Vec 3 d)`, `spinOf : Chart (Vec 3 d) -> Vec
+  3 [s^-1]`, `originVelocityOf : Chart (Vec 3 d) -> Vec 3 [d s^-1]`; in
+  `astro`, `State`, `velocityIn` and `stateFrom`.
 
-**Open, to settle when building:** moving charts and the spin, phase C,
-with the keyword for the spin (`spinning`); and whether `eci` is a library
-definition or a primitive root (none is shipped yet: a user's `chart eci =
-m at [0, 0, 0] m` is a root like any chart without a parent).
+**Open.**
+
+- *An Earth chart.* None is shipped, and that is the owner's decision to
+  make separately: an Earth-fixed chart honest at the kilometre level
+  needs precession and nutation (the equinox of date has moved about
+  0.36° from J2000's by 2026, some 40 km at the equator), polar motion,
+  and UT1 rather than UTC for the Earth's angle, and this tool promises
+  honest bounds. The library ships the mechanism only; §12 defines a
+  simple spinning Earth for illustration, with its accuracy stated.
+- *Time scales.* `unix`, `J2000`, `JD` and `MJD` are charts on one time
+  line with no notion of UTC, UT1, TAI or TT; an epoch's scale is the
+  author's to keep, and leap seconds are not modelled.
+- *Origins that move relative to their parent.* `v_o_abs` counts only the
+  parent's spin: a chart whose origin is a function of its time parameter
+  (`chart c t = m at r t eci`) gets no velocity for that motion, which a
+  declared origin velocity, as the spin is declared, would add.
+- *A declared spin is not checked* against the rotation it goes with (it
+  would need the derivative of `expm B(t)`).
+- *A chart value bound by `let`* (`let c = ecef t0`) is a chart for the
+  library functions (`velocityIn c st`, `rotationOf c`) but not for `to`
+  or the quantity rule, which pick a chart by its declared name: write `p
+  to ecef t0`, or the primitives `toScale p c` and `pointOn c x`.
+- Whether `eci` is a library definition or a primitive root (none is
+  shipped yet: a user's `chart eci = m at [0, 0, 0] m` is a root like any
+  chart without a parent).
 
 **Axis sets.** Named positions and vectors typed by their axes are designed in
 §3.9, to be decided with charts: a chart is an axis set with an origin, and
@@ -2437,7 +2569,10 @@ atan2       : Num d -> Num d -> Num [rad]
 mkScale     : Num d -> Tensor s d -> Chart s d          -- step, origin (3.6)
 mkChart3    : Num d -> Tensor s d -> Chart s d -> Chart s d                  -- step, origin in the parent, parent (3.8)
 mkChart4    : Num d -> Vec n d -> Chart [n] d -> {Mat n n} -> Chart [n] d    -- and the generators, each antisymmetric, dimensionless, applied in order (3.8)
+mkChart5    : Num d -> Vec 3 d -> Chart [3] d -> {Mat 3 3} -> Vec 3 [rad s^-1] -> Chart [3] d   -- and the spin along its own axes, the radian stripped (3.8)
 rotationOf  : Chart [n] d -> Mat n n 1                  -- the absolute rotation, computed once per chart; exactly I when not turned (3.8)
+spinOf      : Chart [3] d -> Vec 3 [s^-1]               -- the absolute angular velocity, base axes; exactly 0 when nothing spins (3.8)
+originVelocityOf : Chart [3] d -> Vec 3 [d s^-1]        -- the velocity of the origin, base axes; exactly 0 when nothing above spins (3.8)
 pointOn     : Chart s d -> Tensor s 1 -> Point s d      -- what the quantity rule builds for `20 degC`, `[1, 2, 3] site`
 pointAdd    : Point s d -> Tensor s d -> Point s d      -- `.+`
 pointSub    : Point s d -> Point s d -> Tensor s d      -- `.-`
@@ -4041,7 +4176,7 @@ another route.
 The library is split by domain into sibling namespaces, each a `namespace`
 block in the seed source, with the basic functions alone in `std`. The
 counts are labels, as `:ls` counts them (aliases and record fields
-included), 895 in all:
+included), 901 in all:
 
 | namespace | contents | labels | stored `use` by default |
 |---|---|---|---|
@@ -4051,7 +4186,7 @@ included), 895 in all:
 | `time` | `min hr day week year`, with `h` an alias of `hr` (`unit hr = 60 * min`); the charts (time scales) `JD MJD J2000 unix`, written with `chart` | 10 | yes |
 | `angle` | `deg arcmin arcsec turn sr`, with `steradian` an alias of `sr` | 6 | yes |
 | `temperature` | the charts (temperature scales) `degC degF degR kelvin`, written with `chart`, the steps `deltaC deltaF` | 6 | yes |
-| `astro` | the units `AU pc ly` (`pc = 648000 / pi * AU`, `ly = physics.c * time.year`); `G M_earth M_sun GM_earth GM_sun R_earth` | 9 | no: `:use astro` |
+| `astro` | the units `AU pc ly` (`pc = 648000 / pi * AU`, `ly = physics.c * time.year`); `G M_earth M_sun GM_earth GM_sun R_earth`; the record `State` with its fields `epoch pos vel`, and `velocityIn stateFrom` (§3.8) | 15 | no: `:use astro` |
 | `physics` | `c planck hbar k_B N_A e_charge g0` and the unit `eV`, with `h kB NA e` aliases of `planck k_B N_A e_charge`: `physics.h` is Planck's constant, the hour is `time.h` | 12 | no |
 | `imperial` | `inch ft yd mile lb oz lbf psi mph`, exact by the 1959 yard and pound (`lbf = lb * physics.g0`, `psi = lbf / inch^2`) | 9 | no |
 
@@ -4234,7 +4369,8 @@ tuned, and compilation is a later milestone.
    `crossCovariance`, the library's `Cov2` and its filter steps, and
    `:covariance (r, v)`.
    Points and charts (§3.6): done, over any shape; charts with a parent: done,
-   translated and turned by constant generators (§3.8); moving charts next.
+   translated and turned by constant generators, and moving charts with a
+   declared spin, composed through the tree, with states in `astro` (§3.8).
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),
@@ -4272,9 +4408,11 @@ tuned, and compilation is a later milestone.
    - *Charts: frames with an orientation.* Designed in §3.8: one chart value
      (step, origin, a bivector generator), rotations as `exp` of the
      generator with an exact inverse, every other description sugar to a
-     bivector, moving charts as functions of an epoch carried by a state, the
-     transport term from a declared angular velocity. Constant
-     orientations are built (`by B then B …`); moving charts and states next.
+     bivector, moving charts as functions of an epoch, the transport terms
+     from a declared angular velocity. Built: constant orientations (`by B
+     then B …`), moving charts (`chart ecef t = … spinning ω`) and states
+     (`astro.velocityIn`, `astro.stateFrom`); an Earth chart is the owner's
+     decision (§3.8, open).
    - *Axis sets as index types.* Designed in §3.9, layer 2: a kind `Axes`,
      `card` as a type function, `card a ~ k` constraints, literals anonymous,
      labels from charts or a coercion, a `where` clause on signatures. Decided
@@ -4638,3 +4776,51 @@ error: a component of a point on a turned chart: take it on an axis-aligned char
 The trace is still 14 km², as a rotation keeps it. A coordinate of a point
 on a turned chart is refused rather than read off the base axes under the
 chart's name.
+
+### A spinning Earth
+
+A ground station turns with the Earth, and its velocity in eci is the
+Earth's rotation alone (§3.8). The library ships no Earth chart, so the
+session defines a simple one for illustration only: it ignores precession,
+nutation, polar motion and UT1 − UTC, and puts the station on a sphere, so
+its positions are off by tens of kilometres. Precession alone, about 0.36°
+since J2000 by 2026, moves a point on the equator about 40 km, and the
+sphere puts this station about 25 km from its WGS84 place (`[3980.7, 0,
+4966.8] km` for latitude 51.4769° at sea level). The angle is a linear
+GMST from J2000.0 (Meeus, *Astronomical Algorithms*, without the T² and T³
+terms of the IAU 1982 expression), and the spin is the same rate, so the
+two agree by construction. At 2026 Jan 1 0h UT1 it is 100.6608323° modulo
+360°, 0.094″ short of the IAU 1982 GMST (Aoki et al. 1982, A&A 105, 359),
+100.6608585°, which the test checks. As before, the lines are the test suite's
+(`spinningEarthSession`, test "design §12: a spinning Earth, for
+illustration") at the default precision:
+
+```
+> chart eci = m at [0, 0, 0] m
+> let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)
+> chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg/day
+> :view earth
+chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] * deg / day
+> chart greenwich t = m at [3972.5, 0, 4990] km (earth t)
+> let t26 = 9496.5 J2000
+> [0, 0, 0] (greenwich t26) to eci
+[-734892.0553385001942 ± 3e-13, 3903932.6219852148939…, 4990000] eci
+> :use astro
+stored use astro
+> let st = stateFrom (greenwich t26) t26 ([0, 0, 0] m) ([0, 0, 0] m/s)
+> st.vel to m/s
+[-284.67928970827302009…, -53.589180086727794658 ± 2.2e-17, 0] m s^-1
+> velocityIn (greenwich st.epoch) st
+[0, 0, 0] m s^-1
+> velocityIn (greenwich t26) (State {epoch = t26, pos = st.pos, vel = [0, 0, 0] m/s})
+[0.0000000000000000000…, -289.67930235205722039…, 0] m s^-1
+```
+
+`greenwich` is a moving chart under a moving chart: its time is passed to
+`earth`, its parent. At that epoch the station is at right ascension
+100.66° in eci, 3972.5 km from the axis, and `stateFrom` gives it `ω × r`, 289.68 m/s
+(`7.2921158553e-5 s⁻¹ × 3972.5 km`) eastward, with no velocity of its own.
+Read back on its own chart it is at rest. A body at rest in eci passing the
+station moves west on the station's chart at the same speed: the
+transport terms, `−v_o − ω × (p − o)` turned onto the chart's axes, are
+all of its velocity there.

@@ -687,3 +687,29 @@
   from its source to get it back. Translated and temperature charts, the
   rest of the library, Core, hashing, encodings and the store format are
   unchanged.
+- Charts, phase C: moving charts (design §3.8). A chart statement takes
+  parameters as `let` does and a contextual `spinning ω` last: `chart
+  spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0,
+  1] * w` is a function to a chart, its name flagged a chart; the spin is a
+  `Vec 3 [rad s^-1]` along the chart's own axes, relative to its parent,
+  kept in s^-1. New primitive `mkChart5 : Num d -> Vec 3 d -> Chart (Vec 3
+  d) -> {Mat 3 3} -> Vec 3 [rad s^-1] -> Chart (Vec 3 d)`, used only with
+  `spinning` (an empty generator list without `by`); a spinning chart
+  without a parent is refused. `:view` and `:edit` print `chart spinner t =
+  … spinning …` and read back to the same hash. A moving chart is known by
+  its stored Core (a lambda), so a reload keeps it. `p to spinner t1`, `p
+  to (spinner t1)`, `[1, 2, 3] (spinner t1)` and a parent `(spinner t)`
+  take the chart at that instant; a bare moving chart where a chart is
+  wanted is refused, "`spinner` moves: apply it at a time, as in p to
+  spinner t0". An instant prints as applied, `[…] (spinner (1000 unix))`.
+  Every chart keeps its absolute kinematics, `ω_abs = ω_p + R_abs ω` and
+  `v_o_abs = v_o_p + ω_p × (R_p a)`, lazily, read by the new primitives
+  `spinOf : Chart (Vec 3 d) -> Vec 3 [s^-1]` and `originVelocityOf : Chart
+  (Vec 3 d) -> Vec 3 [d s^-1]`. `astro` gains `data State = State {epoch,
+  pos, vel}` (an absolute point and a velocity along the base axes),
+  `velocityIn c st` (`R_abs⁻¹ (v − v_o_abs − ω_abs × (p − o_abs))`) and
+  `stateFrom c t pc vc`, its inverse. No Earth chart is shipped; §12
+  illustrates a simple spinning Earth with its accuracy stated. `.+` and
+  `.-` now print as operators in `:view`. Charts without `spinning`, the
+  rest of the library, Core, hashing, encodings and the store format are
+  unchanged.

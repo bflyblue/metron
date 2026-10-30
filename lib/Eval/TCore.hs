@@ -144,6 +144,27 @@ primScheme name = case name of
               )
           )
       )
+  -- And spinning: an angular velocity along its own axes, relative to the
+  -- parent, which only a three-dimensional chart has. The radian is
+  -- stripped as rotz strips it, so the chart keeps it in s^-1.
+  "mkChart5" ->
+    Just
+      ( Forall
+          [dv]
+          ( TFun
+              (numD d)
+              ( TFun
+                  (vecD three d)
+                  ( TFun
+                      (TScale v3 d)
+                      ( TFun
+                          (listT (matD three three dimOne))
+                          (TFun (vecD three angularRate) (TScale v3 d))
+                      )
+                  )
+              )
+          )
+      )
   "pointOn" ->
     Just
       (Forall [sv, dv] (TFun (TScale s d) (TFun (TTensor s dimOne) (TPoint s d))))
@@ -227,6 +248,11 @@ primScheme name = case name of
   -- A chart's absolute rotation: its axes, as columns along the base axes
   -- (design §3.8).
   "rotationOf" -> Just (Forall [nv, dv] (TFun (TScale vn d) (matD n n dimOne)))
+  -- Its absolute angular velocity and the velocity of its origin, along
+  -- the base axes (design §3.8): zero for a chart that does not move.
+  "spinOf" -> Just (Forall [dv] (TFun (TScale v3 d) (vecD three (dimInv (dimBase T)))))
+  "originVelocityOf" ->
+    Just (Forall [dv] (TFun (TScale v3 d) (vecD three (dimDiv d (dimBase T)))))
   _ -> case baseUnit name of
     Just b -> mono (numD (dimBase b))
     Nothing -> Nothing
@@ -245,6 +271,8 @@ primScheme name = case name of
   sd = TTensor s d
   sd2 = TTensor s d2
   vn = SCons n SNil
+  v3 = SCons three SNil
+  angularRate = dimDiv (dimBase Ang) (dimBase T)
   matD r c = TTensor (SCons r (SCons c SNil))
   mono = Just . Forall []
   num1 = mono (TFun numT numT)

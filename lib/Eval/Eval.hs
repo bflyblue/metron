@@ -31,6 +31,7 @@ module Eval.Eval (
   UnitHint (..),
   UnitFactor (..),
   Chart (..),
+  Applied (..),
   turned,
   coordinatesOn,
   Preferences,
@@ -159,12 +160,14 @@ data UnitHint = UnitHint
 
 {- | A chart (design §3.6, §3.8): how a point is written and printed. A step
 unit, an origin, the declared name if any, and the three parts a chart
-built by @mkChart3@ or @mkChart4@ may set: the chart its origin and axes are
-given in, the generators its axes are turned by from that chart's, and its
-angular velocity. Points are stored as amounts from the base origin along
-the base axes, and the chart keeps its absolute frame (the origin and the
-rotation from the base), so that writing a point on it and reading one
-off it never walk the tree.
+built by @mkChart3@, @mkChart4@ or @mkChart5@ may set: the chart its origin
+and axes are given in, the generators its axes are turned by from that
+chart's, and its angular velocity. Points are stored as amounts from the
+base origin along the base axes, and the chart keeps its absolute frame
+(the origin and the rotation from the base) and its absolute kinematics
+(the angular velocity and the velocity of its origin), so that writing a
+point on it, reading one off it and reading a velocity on it never walk
+the tree.
 -}
 data Chart = Chart
   { name :: Maybe UnitAtom
@@ -202,9 +205,35 @@ data Chart = Chart
   enclosure
   -}
   , spin :: Maybe (Vector Magnitude)
-  -- ^ the angular velocity of a moving chart (design §3.8, phase C): always 'Nothing' for now
+  {- ^ the angular velocity of a spinning chart relative to its parent,
+  along its own axes, in s⁻¹ (the radian stripped); 'Nothing' is none
+  -}
+  , spinAbs :: Maybe (Either EvalError (Vector Magnitude))
+  {- ^ the absolute angular velocity along the base axes, @ω_abs = ω_parent
+  + R_abs ω@; 'Nothing' when neither this chart nor any above it spins.
+  Lazy, as the rotation is
+  -}
+  , originVelocity :: Maybe (Either EvalError (Vector Magnitude))
+  {- ^ the velocity of the origin along the base axes, @v_parent + ω_parent
+  × (R_parent a)@ for the amount @a@ the origin is given at (an origin is
+  fixed relative to its parent); 'Nothing' when nothing above spins
+  -}
+  , applied :: Applied
+  -- ^ the arguments of the moving chart this chart is an instant of, if it is one
   }
   deriving stock (Eq, Show)
+
+{- | The arguments a moving chart was applied to (design §3.8), kept so that
+the chart it gave prints as it is written, @(ecef (100 unix))@. They say
+how the chart prints, not what it is, so 'Eq' ignores them.
+-}
+newtype Applied = Applied [Thunk]
+
+instance Eq Applied where
+  _ == _ = True
+
+instance Show Applied where
+  show (Applied xs) = "Applied <" ++ show (length xs) ++ " arguments>"
 
 -- | A chart with a generator on it or on any chart above it.
 turned :: Chart -> Bool
@@ -283,7 +312,14 @@ eval cfg rt = go
     TLam _ _ body -> Right (VClosure (Closure (child 0) env body))
     TApp f a -> do
       fv <- go (child 0) env f
-      apply cfg rt fv (go (child 1) env a)
+      v <- apply cfg rt fv (go (child 1) env a)
+      -- A moving chart applied is an instant of it (design §3.8), named
+      -- after it with the arguments it was applied to.
+      Right $ case (v, instantOf site [] (TApp f a)) of
+        (VChart c, Just (n, args)) ->
+          VChart
+            c{name = Just (UnitNamed n), applied = Applied [go s env x | (s, x) <- args]}
+        _ -> v
     TLet _ _ e body -> go (child 1) (VCons (go (child 0) env e) env) body
     TPow t n -> do
       (x, d, hint) <- scalarFull =<< go (child 0) env t
@@ -378,6 +414,9 @@ eval cfg rt = go
                 { origin = V.slice (i * stride) stride sc.origin
                 , dims = rest
                 , parent = sliceChart <$> sc.parent
+                , spin = Nothing
+                , spinAbs = Nothing
+                , originVelocity = Nothing
                 }
         [] -> sc
     -- Erasure.
@@ -387,6 +426,17 @@ eval cfg rt = go
     TCycle{} -> Left (BadCycleIndex (-1))
    where
     child i = site{path = i : site.path}
+
+  -- The chart name at the head of an application spine, and the arguments
+  -- with their sites.
+  instantOf ::
+    Site -> [(Site, TTerm m)] -> TTerm m -> Maybe (Text, [(Site, TTerm m)])
+  instantOf site acc = \case
+    TApp g x ->
+      instantOf (site{path = 0 : site.path}) ((site{path = 1 : site.path}, x) : acc) g
+    TTyApp g _ -> instantOf site acc g
+    TRef h mi (Hint written) | not (null acc) -> (,acc) <$> rt.scaleName h mi written
+    _ -> Nothing
 
   -- Knot-tying: every member is evaluated in an environment that already
   -- contains all the members. 'vecMap' and 'vecAppend' inspect only the
@@ -968,18 +1018,26 @@ runPrim cfg rt prim args = case (prim, args) of
     (_, _, uh) <- scalarFull =<< u
     Right (VTensor dims d ((\h -> h{pinned = True}) <$> uh) buf)
   -- Points and charts (design §3.6, §3.8).
-  ("mkScale", [st, o]) -> mkChart st o Nothing []
+  ("mkScale", [st, o]) -> mkChart st o Nothing [] Nothing
   -- A chart whose origin is given in a parent chart.
   ("mkChart3", [st, o, par]) -> do
     parentChart <- chartOf =<< par
-    mkChart st o (Just parentChart) []
+    mkChart st o (Just parentChart) [] Nothing
   -- And whose axes are turned from the parent's by a list of generators,
   -- applied in order, each antisymmetric exactly: the transpose is the
   -- negation, entry by entry.
   ("mkChart4", [st, o, par, g]) -> do
     parentChart <- chartOf =<< par
     gens <- mapM antisymmetric =<< listElems =<< g
-    mkChart st o (Just parentChart) gens
+    mkChart st o (Just parentChart) gens Nothing
+  -- And spinning relative to the parent, the angular velocity along its own
+  -- axes (design §3.8); the radian is stripped, so it is kept in s^-1.
+  ("mkChart5", [st, o, par, g, w]) -> do
+    parentChart <- chartOf =<< par
+    gens <- mapM antisymmetric =<< listElems =<< g
+    (_, _, _, wbuf) <- tensor =<< w
+    ws <- sequence wbuf
+    mkChart st o (Just parentChart) gens (Just ws)
   -- A point written on a chart: its coordinates times the step, along the
   -- chart's axes, from its origin (design §3.8), stored from the base
   -- origin along the base axes: o + R (step · c).
@@ -1040,6 +1098,19 @@ runPrim cfg rt prim args = case (prim, args) of
     let n = V.length sc.origin
     rm <- fromMaybe (Right (identityMatrix n)) sc.rotation
     Right (VTensor [n, n] dimOne Nothing (V.map Right rm))
+  -- A chart's absolute angular velocity and the velocity of its origin,
+  -- along the base axes (design §3.8): exactly zero for a chart that does
+  -- not move.
+  ("spinOf", [s]) -> do
+    sc <- chartOf =<< s
+    let n = V.length sc.origin
+    ws <- fromMaybe (Right (V.replicate n (Exact 0))) sc.spinAbs
+    Right (VTensor [n] (dimInv (dimBase T)) Nothing (V.map Right ws))
+  ("originVelocityOf", [s]) -> do
+    sc <- chartOf =<< s
+    let n = V.length sc.origin
+    vs <- fromMaybe (Right (V.replicate n (Exact 0))) sc.originVelocity
+    Right (VTensor [n] (dimDiv sc.dim (dimBase T)) Nothing (V.map Right vs))
   _
     | primArity prim == Just (length args) ->
         Left (Unsupported (prim <> ": not implemented yet"))
@@ -1057,20 +1128,22 @@ runPrim cfg rt prim args = case (prim, args) of
   -- base origin along the base axes: the parent's origin plus the amount it
   -- was given at, which is along the parent's axes and so turned by the
   -- parent's absolute rotation. The rotation and its inverse are left
-  -- lazy, to be computed once when first used ('chartFrame').
-  mkChart st o parentChart gens = do
+  -- lazy, to be computed once when first used ('chartFrame'), and so are
+  -- the kinematics ('chartMotion').
+  mkChart st o parentChart gens spinM = do
     (stepM, d, stepHint) <- scalarFull =<< st
     (odims, _, _, obuf) <- tensor =<< o
     amount <- sequence obuf
     let n = V.length amount
-    originM <- case parentChart of
+    -- R_parent a: the amount along the base axes.
+    along <- case parentChart >>= (.rotation) of
       Nothing -> Right amount
-      Just pc -> case pc.rotation of
-        Nothing -> Right (V.zipWith addM pc.origin amount)
-        Just r -> do
-          rm <- r
-          Right (V.zipWith addM pc.origin (rotateVector p n rm amount))
-    let (forward, backward) = chartFrame p n parentChart gens
+      Just r -> do
+        rm <- r
+        Right (rotateVector p n rm amount)
+    let originM = maybe along (\pc -> V.zipWith addM pc.origin along) parentChart
+        (forward, backward) = chartFrame p n parentChart gens
+        (spinAbsM, originVelocityM) = chartMotion p n parentChart forward along spinM
     Right
       ( VChart
           ( Chart
@@ -1084,7 +1157,10 @@ runPrim cfg rt prim args = case (prim, args) of
               gens
               forward
               backward
-              Nothing
+              spinM
+              spinAbsM
+              originVelocityM
+              (Applied [])
           )
       )
   -- A generator of a chart: an exactly antisymmetric matrix.
@@ -1407,6 +1483,62 @@ chartFrame p n parentChart gens =
   compose Nothing b = b
   compose a Nothing = a
   compose (Just a) (Just b) = Just (matrixProduct p n <$> a <*> b)
+
+{- | The absolute kinematics of a chart (design §3.8), from its parent's,
+its absolute rotation @R_abs@, the amount its origin is given at turned
+to the base axes (@R_parent a@), and its own spin @ω@ along its own axes:
+
+@
+ω_abs = ω_parent + R_abs ω
+v_o   = v_parent + ω_parent × (R_parent a)
+@
+
+An origin is fixed relative to its parent, so the origin moves only with
+the parent's frame. Both are lazy, and 'Nothing' is exactly zero: no
+chart here or above spins.
+-}
+chartMotion ::
+  Precision ->
+  Int ->
+  Maybe Chart ->
+  Maybe (Either EvalError (Vector Magnitude)) ->
+  Vector Magnitude ->
+  Maybe (Vector Magnitude) ->
+  ( Maybe (Either EvalError (Vector Magnitude))
+  , Maybe (Either EvalError (Vector Magnitude))
+  )
+chartMotion p n parentChart rotationAbs along spinM =
+  ( plus (parentChart >>= (.spinAbs)) (turn <$> spinM)
+  , case parentChart of
+      Nothing -> Nothing
+      Just pc -> case (pc.originVelocity, pc.spinAbs) of
+        (Nothing, Nothing) -> Nothing
+        (vp, wp) ->
+          Just $ do
+            v <- fromMaybe (Right zeros) vp
+            transport <- maybe (Right zeros) (>>= \w -> cross3 p w along) wp
+            Right (V.zipWith addM v transport)
+  )
+ where
+  zeros = V.replicate n (Exact 0)
+  turn w = case rotationAbs of
+    Nothing -> Right w
+    Just r -> (\rm -> rotateVector p n rm w) <$> r
+  plus Nothing b = b
+  plus a Nothing = a
+  plus (Just a) (Just b) = Just (V.zipWith addM <$> a <*> b)
+
+-- | The cross product of two three-vectors of magnitudes.
+cross3 ::
+  Precision ->
+  Vector Magnitude ->
+  Vector Magnitude ->
+  Either EvalError (Vector Magnitude)
+cross3 p a b
+  | V.length a == 3 && V.length b == 3 =
+      let x i j = subM (mulM p (a V.! i) (b V.! j)) (mulM p (a V.! j) (b V.! i))
+       in Right (V.fromList [x 1 2, x 2 0, x 0 1])
+  | otherwise = Left (Internal "a spin is a three-vector")
 
 {- | The coordinates on a chart of a point stored from the base origin
 along the base axes (design §3.8): @R⁻¹ (x − o) / step@, with the cached

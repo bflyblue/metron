@@ -174,7 +174,16 @@ resolveName scope cb written = case qualifyName TermLabel scope cb written of
 -- | What a full path labels among definitions and constructors.
 resolvedAt :: Codebase -> Text -> Maybe Resolved
 resolvedAt cb n = case lookupName n cb of
-  Just (Reference h i) -> Just (ATerm (Resolution (h, i) (isUnitName n cb) (isScaleName n cb)))
+  Just (Reference h i) ->
+    Just
+      ( ATerm
+          ( Resolution
+              (h, i)
+              (isUnitName n cb)
+              (isScaleName n cb)
+              (isScaleName n cb && moving cb h i)
+          )
+      )
   Nothing -> case lookupConName n cb of
     Just (h, i)
       | Just def <- lookupTypeDef h cb ->
@@ -189,6 +198,18 @@ resolvedAt cb n = case lookupName n cb of
                     )
                 )
     _ -> Nothing
+
+{- | Whether a definition is a function: what a chart declared with
+parameters is, a moving chart (design §3.8). Read off the stored Core, so
+that a store reload keeps it with no flag of its own.
+-}
+moving :: Codebase -> Hash -> Maybe Int -> Bool
+moving cb h i = case (lookupTerm h cb, i) of
+  (Just (Lam _ _), Nothing) -> True
+  (Just (Cycle _ bodies), Just j) -> case vecIndex j bodies of
+    Just (Lam _ _) -> True
+    _ -> False
+  _ -> False
 
 -- | The record field a full path labels.
 fieldAt :: Codebase -> Text -> Maybe Resolved
@@ -797,7 +818,7 @@ freeNames = go Set.empty
     S.FieldOf a _ -> go bound a
     S.Record hd fs -> go bound hd <> foldMap (go bound . snd) fs
     S.Ascribe a _ -> go bound a
-    S.ChartForm s o g -> go bound s <> go bound o <> foldMap (go bound) g
+    S.ChartForm s o g w -> go bound s <> go bound o <> foldMap (go bound) g <> foldMap (go bound) w
   opNames = \case
     S.Infix n -> Set.singleton n
     _ -> Set.empty
