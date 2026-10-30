@@ -11,6 +11,7 @@ there, not in the evaluator.
 module Eval.TCore (
   TTerm (..),
   primScheme,
+  primSchemeFor,
   baseUnit,
   closedLens,
   appendShape,
@@ -23,6 +24,7 @@ module Eval.TCore (
 import Control.Monad (forM_)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core
@@ -181,6 +183,75 @@ primScheme name = case name of
   num1 = mono (TFun numT numT)
   angleT = numD (dimBase Ang)
 
+{- | The scheme of a primitive whose type is computed from its literal
+arguments (design §4.2), given those arguments ('Nothing' where one is not
+a constant). 'Nothing' for every other primitive, and 'Left' when the
+literals are not what the desugarer admits. The literal arguments stay
+arrows of the scheme, at their own types, so inference and lint count
+them like any argument.
+
+@contract i j@, with @a = min i j@ and @b = max i j@, has
+@Num -> Num -> Tensor (l0 : … : lb : s) d -> Tensor (…) d@ where @lb@ is
+@la@ (one length variable at both positions: the paired lengths are
+equal) and the result drops positions @a@ and @b@. @permute [p0, …,
+pk-1]@ has @Vec k -> Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … :
+lpk-1 : s) d@.
+-}
+primSchemeFor :: Text -> [Maybe Lit] -> Maybe (Either Text Scheme)
+primSchemeFor name lits = case name of
+  "contract" -> Just $ case lits of
+    [Just li, Just lj, _]
+      | Just i <- position li
+      , Just j <- position lj
+      , i /= j ->
+          let (a, b) = (min i j, max i j)
+              ls = [lenAt (if q == b then a else q) | q <- [0 .. b]]
+              kept = [l | (q, l) <- zip [0 ..] ls, q /= a, q /= b]
+           in Right
+                ( Forall
+                    (sv : dv : [(lenId q, KLen) | q <- [0 .. b - 1]])
+                    ( TFun
+                        numT
+                        ( TFun
+                            numT
+                            (TFun (TTensor (appendShape ls s) d) (TTensor (appendShape kept s) d))
+                        )
+                    )
+                )
+    _ -> Left "contract needs two distinct literal natural positions"
+  "permute" -> Just $ case lits of
+    [Just (LTensor ([k], rs)), _]
+      | k >= 1
+      , Just ps <- traverse integral rs
+      , all (`elem` ps) [0 .. k - 1] ->
+          let ls = map lenAt [0 .. k - 1]
+           in Right
+                ( Forall
+                    (sv : dv : [(lenId q, KLen) | q <- [0 .. k - 1]])
+                    ( TFun
+                        (vecT (LLit k))
+                        ( TFun
+                            (TTensor (appendShape ls s) d)
+                            (TTensor (appendShape (map lenAt ps) s) d)
+                        )
+                    )
+                )
+    _ -> Left "permute needs a literal permutation of 0 .. k-1"
+  _ -> Nothing
+ where
+  sv = (0, KShape)
+  dv = (1, KDim)
+  s = SVar 0
+  d = dimVar 1
+  lenId q = 10 + q
+  lenAt q = LVar (lenId q) 0
+  position = \case
+    LTensor ([], [r]) -> integral r
+    _ -> Nothing
+  integral r
+    | denominator r == 1 && r >= 0 = Just (fromIntegral (numerator r))
+    | otherwise = Nothing
+
 -- Lint -------------------------------------------------------------------------
 
 {- | Check a closed term and return its scheme(s): one, or one per cycle
@@ -220,18 +291,22 @@ lint look ctx = \case
         Right
         (nth (fromMaybe 0 idx) schemes)
   TPrimApp name ty args -> do
-    case primScheme name of
-      Just general ->
-        require
-          (ty `isInstanceOf` general)
-          ( "primitive "
-              <> name
-              <> " used at "
-              <> renderType ty
-              <> ", not an instance of "
-              <> renderScheme general
-          )
-      Nothing -> lintConstrained look name ty
+    let literals = [case a of TLit l -> Just l; _ -> Nothing | a <- args]
+        instanceOf general =
+          require
+            (ty `isInstanceOf` general)
+            ( "primitive "
+                <> name
+                <> " used at "
+                <> renderType ty
+                <> ", not an instance of "
+                <> renderScheme general
+            )
+    case (primScheme name, primSchemeFor name literals) of
+      (Just general, _) -> instanceOf general
+      -- contract and permute: the scheme the literal positions determine.
+      (_, Just general) -> general >>= instanceOf
+      _ -> lintConstrained look name ty
     let go t = \case
           [] -> Right t
           arg : rest -> case t of

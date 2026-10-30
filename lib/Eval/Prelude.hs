@@ -159,8 +159,9 @@ scales =
   , ("gauge", "Pa at 101325 Pa")
   ]
 
-{- | Tensor algebra: the 3D Levi-Civita tensor and the cross product as the
-Hodge dual of the wedge product (design §3.3).
+{- | Tensor algebra: the 3D Levi-Civita tensor, the cross product as the
+Hodge dual of the wedge product, and the trace as a contraction (design
+§3.3).
 -}
 algebra :: [(Text, Text)]
 algebra =
@@ -170,6 +171,7 @@ algebra =
     )
   , ("levi", "ε")
   , ("cross", "\\a b -> star (a /\\ b)")
+  , ("trace", "\\a -> contract 0 1 a")
   ]
 
 {- | Tuples and lists (design §2.3): the structural functions, recursive

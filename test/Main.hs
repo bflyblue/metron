@@ -61,6 +61,7 @@ main =
         , typeTests
         , soundnessTests
         , productTests
+        , contractionTests
         , propertyTests
         , unitTests
         , lintRegressionTests
@@ -1309,6 +1310,125 @@ productTests =
         evalText "[1, 2] `dot` [3, 4]" @?= Right ["11"]
         evalText "within 5 1 == (5 ± 1)"
           @?= Left "error: cannot decide comparison at sigma 3: the difference is 0.0 ± 2.0"
+    ]
+
+{- | Contraction and index permutation with literal positions (design §3.3,
+§4.2): any rank, typed from the literals.
+-}
+contractionTests :: TestTree
+contractionTests =
+  testGroup
+    "contraction and permutation"
+    [ testCase "contract 0 1 is the trace of a matrix, in its unit" $ do
+        evalText "contract 0 1 [[1, 2], [3, 4]]" @?= Right ["5"]
+        evalText "contract 0 1 ([[1, 2], [3, 4]] m)" @?= Right ["5 m"]
+        evalText "contract 1 0 [[1, 2], [3, 4]]" @?= Right ["5"]
+    , testCase "contraction of a rank-3 tensor over each pair of positions" $ do
+        -- t[a][b][c] = 1 + 4a + 2b + c
+        let t = "[[[1, 2], [3, 4]], [[5, 6], [7, 8]]]"
+        evalText ("contract 0 1 " <> t) @?= Right ["[8, 10]"]
+        evalText ("contract 0 2 " <> t) @?= Right ["[7, 11]"]
+        evalText ("contract 1 2 " <> t) @?= Right ["[5, 13]"]
+        -- Unequal lengths elsewhere: shape [2, 3, 2], pairing positions 0 and 2.
+        evalText "contract 0 2 [[[1, 2], [3, 4], [5, 6]], [[7, 8], [9, 10], [11, 12]]]"
+          @?= Right ["[9, 13, 17]"]
+    , testCase "the contracting product is a contraction of the tensor product" $ do
+        evalText
+          "let a = [[1, 2], [3, 4]] in let b = [5, 6] in a · b == contract 1 2 (a * b)"
+          @?= Right ["true"]
+        evalText
+          "let a = [[1, 2], [3, 4]] in let c = [[0, 1], [5, 7]] in a · c == contract 1 2 (a * c)"
+          @?= Right ["true"]
+    , testCase "permute [1, 0] is transpose" $ do
+        evalText "let a = [[1, 2, 3], [4, 5, 6]] in permute [1, 0] a == transpose a"
+          @?= Right ["true"]
+        evalP "permute [1, 0] ([[1, 2], [3, 4]] km)" @?= Right ["[1, 3; 2, 4] km"]
+    , testCase "a rank-3 permutation moves lengths and components together" $ do
+        -- position q of the result is position p_q of the operand:
+        -- r[x][y][z] = t[y][z][x]
+        evalText
+          "permute [2, 0, 1] [[[1, 2, 3], [4, 5, 6]]] == [[[1, 4]], [[2, 5]], [[3, 6]]]"
+          @?= Right ["true"]
+        typeOfText "permute [2, 0, 1] [[[1, 2, 3], [4, 5, 6]]]"
+          @?= Right "Tensor [3, 1, 2]"
+    , testCase "permuting the leading positions leaves the rest alone" $ do
+        typeOfText "permute [0, 1] [[[1, 2, 3], [4, 5, 6]]]"
+          @?= Right "Tensor [1, 2, 3]"
+        typeOfText "permute [1, 0] [[[1, 2, 3], [4, 5, 6]]]"
+          @?= Right "Tensor [2, 1, 3]"
+        evalText "permute [1, 0] [[[1, 2, 3], [4, 5, 6]]] == [[[1, 2, 3]], [[4, 5, 6]]]"
+          @?= Right ["true"]
+    , testCase "types are computed from the literal positions" $ do
+        typeOfText "\\t -> contract 0 1 t"
+          @?= Right "Tensor (n : n : s) d -> Tensor s d"
+        typeOfText "\\t -> contract 0 2 t"
+          @?= Right "Tensor (n : m : n : s) d -> Tensor (m : s) d"
+        typeOfText "\\t -> permute [2, 0, 1] t"
+          @?= Right "Tensor (n : m : k : s) d -> Tensor (k : n : m : s) d"
+        typeOfText "\\t -> permute [1, 0] t"
+          @?= Right "Tensor (n : m : s) d -> Tensor (m : n : s) d"
+        typeOfTextP "trace" @?= Right "Tensor (n : n : s) d -> Tensor s d"
+    , testCase "the prelude's trace" $ do
+        evalP "trace [[1, 2, 3], [4, 5, 6], [7, 8, 10]]" @?= Right ["16"]
+        -- Above rank two it is the partial trace over the first two positions.
+        evalP "trace [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]" @?= Right ["[8, 10]"]
+    , testCase "the tensor argument may be left off" $ do
+        evalText "let tr = contract 0 1 in tr [[1, 2], [3, 4]]" @?= Right ["5"]
+        evalText "(permute [1, 0]) [[1, 2], [3, 4]]" @?= Right ["[1, 3; 2, 4]"]
+    , testCase "positions must be literal naturals, distinct, a permutation" $ do
+        let fails src needle = case runLines [src] of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+        fails
+          "contract 0 0 [[1, 2], [3, 4]]"
+          "two different positions, not position 0 with itself"
+        fails
+          "\\x y -> contract x y [[1, 2], [3, 4]]"
+          "the positions of contract must be literal natural numbers"
+        fails
+          "contract (-1) 0 [[1, 2], [3, 4]]"
+          "the positions of contract must be literal natural numbers"
+        fails
+          "contract 0.5 1 [[1, 2], [3, 4]]"
+          "the positions of contract must be literal natural numbers"
+        fails "contract" "contract takes two literal positions and then a tensor"
+        fails "contract 0" "contract takes two literal positions and then a tensor"
+        fails
+          "permute [0, 0] [[1, 2], [3, 4]]"
+          "permute [0, 0] is not a permutation of 0 .. 1"
+        fails
+          "permute [1] [[1, 2], [3, 4]]"
+          "permute [1] is not a permutation of 0 .. 0"
+        fails
+          "permute [] [[1, 2], [3, 4]]"
+          "permute takes a literal vector of natural numbers"
+        fails
+          "\\p -> permute p [[1, 2], [3, 4]]"
+          "permute takes a literal vector of natural numbers"
+        fails "permute" "permute takes a literal permutation and then a tensor"
+    , testCase "rank and length mismatches are type errors" $ do
+        let fails src needle = case runLines [src] of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+        fails
+          "contract 0 2 [[1, 2], [3, 4]]"
+          "contract 0 2 needs a tensor of rank at least 3, got Mat 2 2"
+        fails
+          "permute [2, 0, 1] [[1, 2], [3, 4]]"
+          "permute [2, 0, 1] needs a tensor of rank at least 3"
+        fails "contract 0 1 [[1, 2, 3], [4, 5, 6]]" "lengths differ: 2 and 3"
+        fails "contract 0 1 [1, 2]" "needs a tensor of rank at least 2"
+        fails "contract 0 1 (noise 2)" "needs a tensor of rank at least 2"
+    , testCase "contraction sums nudges: two independent bounds on the diagonal" $ do
+        evalText "bound (contract 0 1 ([[1, 2], [3, 4]] ± 0.1))" @?= Right ["0.2"]
+        evalText "bound (permute [1, 0] ([[1, 2], [3, 4]] ± 0.1))"
+          @?= Right ["[0.1, 0.1; 0.1, 0.1]"]
+    , testCase ":view reads both back as written" $ do
+        runLines
+          ["let f a = contract 0 1 (permute [1, 0] a)", ":view f", "f [[1, 2], [3, 4]]"]
+          @?= Right ["f = \\a -> contract 0 1 (permute [1, 0] a)", "5"]
+        runLines ["let g = permute [2, 0, 1]", ":view g"]
+          @?= Right ["g = \\x -> permute [2, 0, 1] x"]
     ]
 
 -- Properties ----------------------------------------------------------------------

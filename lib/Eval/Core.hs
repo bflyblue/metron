@@ -382,6 +382,10 @@ primArity = \case
   "star" -> Just 1
   "norm" -> Just 1
   "transpose" -> Just 1
+  -- Contraction and index permutation (design §4.2): the leading arguments
+  -- are literal index positions, and the type is computed from them.
+  "contract" -> Just 3
+  "permute" -> Just 2
   "inverse" -> Just 1
   "det" -> Just 1
   "vmap" -> Just 2

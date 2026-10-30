@@ -25,6 +25,7 @@ import Data.List (isSuffixOf, minimumBy, nubBy)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Ord (comparing)
+import Data.Ratio (numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core
@@ -551,8 +552,33 @@ infer look p ctx = \case
         pure (t, applyArgs (TRef h idx hint) args)
       Nothing -> failAt p "reference to a cycle member that does not exist"
   PrimApp name args -> do
-    t <- primType p name (length args)
+    let literals = [case a of Lit l -> Just l; _ -> Nothing | a <- args]
+    -- contract and permute (design §4.2): the scheme is computed from the
+    -- literal positions, then used like any other.
+    t <- case primSchemeFor name literals of
+      Just (Right sc) -> fst <$> instantiate sc
+      Just (Left msg) -> failAt p msg
+      Nothing -> primType p name (length args)
     typed <- zipWithM (\i a -> infer look (i : p) ctx a) [0 ..] args
+    -- A tensor of known rank too small for the positions is reported as
+    -- such, not as the shape mismatch the unifier would find.
+    case (primSchemeFor name literals, reverse (zip [0 :: Int ..] typed), lastParam t) of
+      (Just _, (i, (ta, _)) : _, Just (TTensor want _)) -> do
+        ta' <- resolve ta
+        case ta' of
+          TTensor sh _
+            | Just ls <- closedLens sh
+            , length ls < leading want ->
+                failAt
+                  (i : p)
+                  ( T.unwords (name : [literalText l | Just l <- init literals])
+                      <> " needs a tensor of rank at least "
+                      <> tshow (leading want)
+                      <> ", got "
+                      <> renderType ta'
+                  )
+          _ -> pure ()
+      _ -> pure ()
     -- Primitive types are fully known in shape, so peel one arrow per
     -- argument and report a mismatch at the argument that caused it.
     let go i ty = \case
@@ -726,6 +752,21 @@ infer look p ctx = \case
         e <- resolve expected
         a <- resolve actual
         failAt p' (msg <> ": expected " <> renderType e <> ", got " <> renderType a)
+  -- The type of a primitive's last parameter, and the number of lengths a
+  -- shape lists before its tail.
+  lastParam = \case
+    TFun _ r@(TFun _ _) -> lastParam r
+    TFun a _ -> Just a
+    _ -> Nothing
+  leading = \case
+    SCons _ rest -> 1 + leading rest
+    _ -> 0 :: Int
+  -- An index literal as it was written: a natural or a vector of them.
+  literalText (LTensor (dims, rs)) =
+    let natural r = tshow (numerator r)
+     in case dims of
+          [] -> T.concat (map natural rs)
+          _ -> "[" <> T.intercalate ", " (map natural rs) <> "]"
 
 {- | The type a primitive is used at: a fresh instance of its scheme, or for
 the relational primitives (design §4.2) fresh shapes with a pending

@@ -371,6 +371,17 @@ headApp path ctx hd x args = case lookupCtx x ctx of
                     hd.span
                     (x <> " takes one argument, a literal natural number: the count of nudges")
                 )
+      -- contract i j and permute [p…] take literal index positions (design
+      -- §4.2): like a projection's, the positions are part of the type. The
+      -- tensor argument may be left off (eta), the positions may not.
+      Nothing
+        | Just (positions, rule) <- indexedForm x -> do
+            when (length args < positions) (failWith (BadSpecialForm hd.span rule))
+            term <- applyPrim (positions + 1) (Builder (PrimApp x))
+            case indexProblem x (fromMaybe [] (primLiterals term)) of
+              Nothing -> pure term
+              Just (i, msg) ->
+                failWith (BadSpecialForm (maybe hd.span (.span) (nthArg i args)) msg)
       Nothing ->
         asks (.owner) >>= \l -> case specialForm l x of
           Nothing -> do
@@ -383,16 +394,107 @@ headApp path ctx hd x args = case lookupCtx x ctx of
                       ("`" <> x <> "` is a field; write it after a value, as in r." <> x)
                   )
               _ -> failWith (UnknownName hd.span x)
-          Just (arity, Builder build)
-            | length args == arity -> saturated path ctx build args
-            | length args < arity ->
-                eta path ctx hd.span (Builder build) args (arity - length args)
-            | otherwise ->
-                applyAll
-                  path
-                  ctx
-                  (\p -> saturated p ctx build (take arity args))
-                  (drop arity args)
+          Just (arity, builder) -> applyPrim arity builder
+ where
+  applyPrim arity (Builder build)
+    | length args == arity = saturated path ctx build args
+    | length args < arity =
+        eta path ctx hd.span (Builder build) args (arity - length args)
+    | otherwise =
+        applyAll
+          path
+          ctx
+          (\p -> saturated p ctx build (take arity args))
+          (drop arity args)
+  nthArg i as = case drop i as of
+    a : _ -> Just a
+    [] -> Nothing
+
+{- | The primitives whose leading arguments are literal index positions
+(design §4.2): how many such arguments, and the rule to quote when they are
+missing.
+-}
+indexedForm :: Text -> Maybe (Int, Text)
+indexedForm = \case
+  "contract" ->
+    Just
+      ( 2
+      , "contract takes two literal positions and then a tensor: contract i j t, with i and j distinct natural numbers"
+      )
+  "permute" ->
+    Just
+      ( 1
+      , "permute takes a literal permutation and then a tensor: permute [p0, …, pk-1] t, with the p a permutation of 0 .. k-1 and k ≥ 1"
+      )
+  _ -> Nothing
+
+{- | The literal arguments of the primitive application a desugared
+@contract@ or @permute@ built, under the binders of an eta expansion or the
+applications of an over-application: 'Nothing' for an argument that is not
+a constant.
+-}
+primLiterals :: Term n -> Maybe [Maybe Lit]
+primLiterals = \case
+  PrimApp _ as -> Just [case a of Lit l -> Just l; _ -> Nothing | a <- as]
+  Lam _ b -> primLiterals b
+  App f _ -> primLiterals f
+  _ -> Nothing
+
+{- | What is wrong with the index arguments of @contract@ or @permute@, as
+the argument position and a message; 'Nothing' when they are literal
+naturals, two distinct ones for @contract@, a permutation of @0 .. k-1@ for
+@permute@.
+-}
+indexProblem :: Text -> [Maybe Lit] -> Maybe (Int, Text)
+indexProblem name lits = case (name, lits) of
+  ("contract", li : lj : _) -> case (natural li, natural lj) of
+    (Nothing, _) -> Just (0, notNatural)
+    (_, Nothing) -> Just (1, notNatural)
+    (Just i, Just j)
+      | i == j ->
+          Just
+            ( 1
+            , "contract pairs two different positions, not position "
+                <> tshowI i
+                <> " with itself: contract i j t, with i and j distinct"
+            )
+      | otherwise -> Nothing
+  ("permute", lp : _) -> case lp of
+    Just (LTensor ([k], rs))
+      | k >= 1
+      , all isNatural rs
+      , all ((`elem` rs) . fromIntegral) [0 .. k - 1] ->
+          Nothing
+      | k >= 1 ->
+          Just
+            ( 0
+            , "permute "
+                <> renderList rs
+                <> " is not a permutation of 0 .. "
+                <> tshowI (k - 1)
+                <> ": each position from 0 to "
+                <> tshowI (k - 1)
+                <> " must appear exactly once"
+            )
+    _ ->
+      Just
+        ( 0
+        , "permute takes a literal vector of natural numbers, a permutation of 0 .. k-1 with k ≥ 1: permute [1, 0] t"
+        )
+  _ -> Nothing
+ where
+  notNatural =
+    "the positions of contract must be literal natural numbers: contract i j t, as in contract 0 1 t"
+  natural = \case
+    Just (LTensor ([], [r])) | isNatural r -> Just (numerator r)
+    _ -> Nothing
+  isNatural r = denominator r == 1 && r >= 0
+  tshowI :: (Show a) => a -> Text
+  tshowI = T.pack . show
+  renderList rs = "[" <> T.intercalate ", " (map renderR rs) <> "]"
+  renderR r
+    | denominator r == 1 = tshowI (numerator r)
+    | otherwise = tshowI (fromRational r :: Double)
 
 {- | A node constructor that works in any scope, so that eta-expansion can
 apply it under the binders it introduces.

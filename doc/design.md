@@ -483,6 +483,7 @@ in surface notation.
 | `if c then a else b` | `if c a b` (a primitive form, lazy in both branches) |
 | `[a, b, c]` | `vec [a, b, c]`; `[[…], […]]` to `mat` |
 | `x ^ n` | `pow x n`, `n` an integer literal |
+| `contract i j t`, `permute [p…] t` | the primitive applied to its literal positions as constants and then `t` (§4.2). The desugarer checks that the positions are literal naturals, distinct for `contract` and a permutation of `0 .. k-1` for `permute`; a bare `contract` or `permute` is an error, and leaving off only `t` eta-expands as for any primitive |
 | `1_000_000`, `9.81`, `1e-3` | the exact rational |
 | free name `m` | `Ref #hash` of what `m` currently points at |
 
@@ -961,8 +962,10 @@ two. A literal `[a, b, c]` stacks three tensors of shape `s` into one of shape
 `3 : s`, so `[[1, 2], [3, 4]]` is literally a vector of vectors, and projection
 `t.i` peels one length off the front of the shape, giving a number from a
 vector and a row from a matrix by the same rule. Rank-polymorphic contraction
-(`einsum`) is out of scope: every primitive has a fixed-rank signature or is
-polymorphic in the whole shape, so unification stays first-order.
+(`einsum`) is out of scope: every primitive has a fixed-rank signature, is
+polymorphic in the whole shape, or (`contract`, `permute`) has a signature
+computed from literal index positions written at the call, the way a
+projection's position is, so unification stays first-order.
 
 Tensors are **homogeneous**: all components share one dimension. A position is
 `Vec 3 [m]`, a velocity `Vec 3 [m/s]`, a rotation `Mat 3 3 1`. A six-element state
@@ -1008,6 +1011,37 @@ noise      : Vec n 1                         -- n is a literal; bound nudges
 gauss      : Vec n 1                         -- n is a literal; statistical nudges
 covariance : Vec n d -> Mat n n [d^2]
 cholesky   : Mat n n [d^2] -> Mat n n d
+contract i j : Tensor (l0 : … : lj : s) d -> Tensor (… without i and j : s) d
+                                             -- i < j literals, li = lj; a trace (§4.2)
+permute [p0, …, pk-1] : Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … : lpk-1 : s) d
+                                             -- the p a literal permutation of 0 .. k-1
+trace      : Tensor (n : n : s) d -> Tensor s d   -- prelude: trace a = contract 0 1 a
+```
+
+`contract i j t` sums `t` over the diagonal of index positions `i` and `j`
+(0-based from the front of the shape, as for `t.i`), which must have equal
+lengths; the result drops both positions and keeps the dimension. `contract 0 1`
+of a square matrix is its trace, so the prelude's `trace` is `Mat n n d -> Num d`
+at rank two and the partial trace over the first two positions above it. The
+two positions may be written in either order. The contracting product is a
+contraction of the tensor product: `a · b` is `contract (r-1) r (a * b)` for `a`
+of rank `r`. `permute [p0, …, pk-1] t` reorders the first `k` positions of `t`
+so that position `q` of the result is position `p_q` of `t`; positions from `k`
+on stay where they are, and `permute [1, 0]` is `transpose` on a matrix. Both
+are linear: they create no nudge, and `contract` sums the diagonal's affine
+forms, so nudges they share cancel as in `norm` (§3.4). For example:
+
+```
+> contract 0 1 [[1, 2], [3, 4]]
+5
+> contract 0 2 [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+[7, 11]
+> :type permute [2, 0, 1] [[[1, 2, 3], [4, 5, 6]]]
+Tensor [3, 1, 2]
+> :type \t -> contract 0 2 t
+Tensor (n : m : n : s) d -> Tensor (m : s) d
+> :type \t -> permute [2, 0, 1] t
+Tensor (n : m : k : s) d -> Tensor (k : n : m : s) d
 ```
 
 Printing factors the common unit: `[1, 2, 3] m`, `[[1, 0], [0, 1]]`. Affine
@@ -1063,7 +1097,7 @@ by which the law fails. Each builtin is therefore in one of two lists.
 | `*` with one exact side | `/` by an affine value |
 | `/` by an exact value | `sqrt sin cos tan asin acos atan atan2 sinh cosh tanh exp log` |
 | `M * v`, `M * N` with one exact side | `norm`, `det`, `inverse` |
-| `transpose`, `identity`, projection `.i`, `to` | `cholesky` |
+| `transpose`, `contract`, `permute`, `identity`, projection `.i`, `to` | `cholesky` |
 | `vmap` of a function that is itself in the left column | `vmap` otherwise |
 | integer `^` of an exact value, `abs` away from zero | integer `^` of an affine value (via `*`), `abs` across zero |
 
@@ -1266,8 +1300,9 @@ domain with its own equational theory and its own unifier: syntactic for types,
 the offset rule below for lengths, element-wise for shapes, Kennedy's algorithm
 for dimensions. No term ever appears in a type, which is what keeps this on the
 indexed-types side of the line (Dependent ML, GHC's `DataKinds`) and not in
-dependent-type territory: lengths come only from syntax, literal element counts
-and projection positions, so inference is Hindley-Milner plus constraint solving.
+dependent-type territory: lengths come only from syntax, literal element counts,
+projection positions and the literal index positions of `contract` and
+`permute` (§4.2), so inference is Hindley-Milner plus constraint solving.
 Typed Core (§5.3) has one kinded abstraction form and one kinded application
 form for all of them.
 
@@ -1353,8 +1388,45 @@ constraint on the elaborated term, so a primitive is never evaluated at a type
 its implementation cannot handle (core.md §9).
 
 Division of a tensor by a tensor is `⊘`; `/` takes a scalar divisor only, so it
-has one type too. General contraction and index permutation (`contract i j`,
-`permute [p…]`, with literal indices) are roadmap items for ranks above two.
+has one type too.
+
+**Contraction and permutation with literal positions.** `contract i j` and
+`permute [p0, …, pk-1]` work at any rank. Their positions are part of the type,
+as a projection's is (§4.1), so the desugarer insists on literals the way it
+does for `noise n`: each index of `contract` is a literal natural, the two are
+distinct, and `permute`'s argument is a literal vector that is a permutation of
+`0 .. k-1` with `k ≥ 1`. Anything else is a desugaring error that quotes the
+rule ("the positions of contract must be literal natural numbers: contract i j
+t", "contract pairs two different positions, not position 0 with itself",
+"permute [0, 0] is not a permutation of 0 .. 1", "permute takes a literal
+vector of natural numbers, a permutation of 0 .. k-1 with k ≥ 1"). A bare
+`contract` or `permute`, without its positions, is the same kind of error;
+leaving off only the tensor is an ordinary eta expansion: `contract 0 1` alone
+is `\x -> contract 0 1 x`. The positions stay arguments of the
+primitive, constants in Core, so no Core form is needed (core.md §5).
+
+The scheme is computed from the literals, each use with fresh variables, and is
+then an ordinary first-order scheme. With `a = min i j` and `b = max i j`:
+
+```
+contract i j          : Num -> Num -> Tensor (l0 : … : lb : s) d -> Tensor (l0 : … : lb without positions a and b : s) d
+                        where lb is the variable la: the paired lengths are one length
+permute [p0, …, pk-1] : Vec k -> Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … : lpk-1 : s) d
+```
+
+The leading `Num` and `Vec k` are the literal positions themselves. Because
+the paired positions of `contract` share one length variable, unequal lengths
+are an ordinary length-unification failure: `contract 0 1 [[1, 2, 3], [4, 5,
+6]]` reports "expected Tensor (n : n : s) d, got Mat 2 3: lengths differ: 2 and
+3". A tensor whose rank is known and too small for the positions is reported as
+such, rather than as the shape mismatch beneath it: `contract 0 2` on a matrix
+is "contract 0 2 needs a tensor of rank at least 3, got Mat 2 2", and likewise
+`permute [2, 0, 1]`. When the rank is not yet known the scheme simply asks for
+at least `b + 1` (or `k`) positions, and a later use that cannot supply them
+fails with the shape mismatch. Positions beyond the rank are therefore always
+type errors, never runtime ones. Lint recomputes the scheme from the `TLit`
+arguments of the elaborated `PrimApp` and checks that the recorded type is an
+instance of it, as it does for every fixed scheme.
 ### 4.3 Types of the primitives
 
 *Status.* Implemented: kinded variables for types, lengths, shapes and
@@ -1402,6 +1474,8 @@ gauss n     : Vec n 1                        -- special form, n a natural litera
 det         : Mat n n d -> Num [d^n]        -- special form, n known statically
 v.i         : Vec (n + i + 1) d -> Num d    -- special form, i a literal position
 m.i         : Mat (k + i + 1) n d -> Vec n d
+contract i j t : Tensor (l0 : … : lj : s) d -> Tensor (… without i and j : s) d   -- special form, i ≠ j literal naturals, li = lj (4.2)
+permute [p…] t : Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … : lpk-1 : s) d -- special form, a literal permutation of 0 .. k-1 (4.2)
 ```
 
 The circular functions take an angle and their inverses return one (§3.2.11):
@@ -1471,6 +1545,9 @@ Num [m s^-2]
 - Dimension polymorphism is let-polymorphism; there is no polymorphic recursion.
 - Vectors and matrices are homogeneous in dimension (§3.3).
 - Component access needs a literal position (§2.10). Computed indices do not exist.
+  The same holds for the positions of `contract` and `permute` (§4.2): a
+  function cannot take them as parameters, so `\i -> contract i 0 t` is an
+  error.
 
 ### 4.7 Error reporting
 
@@ -2196,8 +2273,9 @@ tuned, and compilation is a later milestone.
    constraints, literals and printing: done. Remaining: `norm`, `inverse`,
    `det` kernels: done (Gaussian elimination with pivots whose enclosure
    excludes zero), `covariance`, `cholesky`, `:covariance`, `±` and `±σ` on
-   tensors and `v ±σ P` (§3.4, §3.5): done. Remaining: `contract`/`permute`
-   for ranks above two, mixed-dimension matrices for a joint state covariance.
+   tensors and `v ±σ P` (§3.4, §3.5): done. `contract` and `permute` with
+   literal positions at any rank, and the prelude's `trace` (§3.3, §4.2):
+   done. Remaining: mixed-dimension matrices for a joint state covariance.
    Points and scales (§3.6): done, over any shape; frames with a rotated
    basis remain.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.

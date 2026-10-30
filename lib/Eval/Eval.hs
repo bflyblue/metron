@@ -722,6 +722,49 @@ runPrim cfg rt prim args = case (prim, args) of
               (V.generate (r * c) (\k -> let (j, i) = k `divMod` r in buf V.! (i * c + j)))
           )
       _ -> Left (Internal "transpose of a non-matrix")
+  -- Contraction (design §4.2): the sum over the diagonal of two positions
+  -- of equal length, an affine sum, so shared nudges correlate as in norm.
+  ("contract", [i, j, a]) -> do
+    pos <- concat <$> mapM positions [i, j]
+    (dims, d, hint, buf) <- tensor =<< a
+    case pos of
+      [x, y]
+        | let lo = min x y
+        , let hi = max x y
+        , lo /= hi
+        , hi < length dims
+        , dims !! lo == dims !! hi ->
+            let st = strides dims
+                dropped = [(l, s) | (q, l, s) <- zip3 [0 ..] dims st, q /= lo, q /= hi]
+                outDims = map fst dropped
+                diagonal = st !! lo + st !! hi
+                element k =
+                  let base = sum (zipWith (*) (unflatten outDims k) (map snd dropped))
+                   in sumM <$> sequence [buf V.! (base + c * diagonal) | c <- [0 .. dims !! lo - 1]]
+             in Right (VTensor outDims d hint (V.generate (product outDims) element))
+      _ -> Left (Internal "contract: positions out of range or of different lengths")
+  -- Index permutation: position q of the result is position p_q of the
+  -- operand; lengths after the permuted ones stay where they are.
+  ("permute", [ps, a]) -> do
+    perm <- positions ps
+    (dims, d, hint, buf) <- tensor =<< a
+    let (front, rest) = splitAt (length perm) dims
+    if length front /= length perm || any (>= length front) perm
+      then Left (Internal "permute: positions out of range")
+      else
+        let st = strides dims
+            outFront = map (front !!) perm
+            block = product rest
+            element k =
+              let (q, r) = k `divMod` block
+               in buf V.! (sum (zipWith (*) (unflatten outFront q) (map (st !!) perm)) + r)
+         in Right
+              ( VTensor
+                  (outFront ++ rest)
+                  d
+                  hint
+                  (V.generate (product outFront * block) element)
+              )
   ("vmap", [f, a]) -> do
     fv <- f
     (dims, d, _, buf) <- tensor =<< a
@@ -842,6 +885,29 @@ runPrim cfg rt prim args = case (prim, args) of
 
 sumM :: [Magnitude] -> Magnitude
 sumM = foldl' addM (Exact 0)
+
+-- Index arithmetic ----------------------------------------------------------------------
+
+{- | The literal index positions of @contract@ or @permute@: a number or a
+vector of exact naturals (the desugarer admits nothing else).
+-}
+positions :: Thunk -> Either EvalError [Int]
+positions t = do
+  (_, _, _, buf) <- tensor =<< t
+  xs <- sequence (V.toList buf)
+  mapM natural xs
+ where
+  natural = \case
+    Exact r | denominator r == 1, r >= 0 -> Right (fromIntegral (numerator r))
+    _ -> Left (Internal "an index position is not a literal natural number")
+
+-- | The row-major strides of a shape.
+strides :: [Int] -> [Int]
+strides = drop 1 . scanr (*) 1
+
+-- | The multi-index of a row-major offset into a shape.
+unflatten :: [Int] -> Int -> [Int]
+unflatten dims k = zipWith (\s n -> (k `div` s) `mod` n) (strides dims) dims
 
 -- Linear algebra ----------------------------------------------------------------------
 

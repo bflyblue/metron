@@ -267,3 +267,20 @@
   rendering is unchanged.
 - A constructor's braces are record syntax only when `{name ::` follows, so
   `data H = G {Num}` declares a constructor with one list-typed field.
+- `contract i j t` and `permute [p0, …, pk-1] t` at any rank, with literal
+  index positions (design §3.3, §4.2). `contract` sums the diagonal of two
+  positions of equal length and drops both (`contract 0 1` of a square
+  matrix is its trace; `a · b` is `contract (r-1) r (a * b)`); `permute`
+  puts position `p_q` of `t` at position `q` and leaves later positions
+  alone (`permute [1, 0]` is `transpose`). Both keep the dimension and the
+  display unit and are linear in the nudges. The scheme is computed from the
+  literals, like `Pow`'s dimension from its exponent: `\t -> contract 0 2 t`
+  is `Tensor (n : m : n : s) d -> Tensor (m : s) d`. The positions are `Lit`
+  arguments of the `PrimApp` (arities 3 and 2), so Core, the encoding and
+  stored hashes are unchanged; the desugarer rejects non-literal, negative,
+  fractional or repeated positions and a non-permutation, inference reports a
+  too-small known rank ("contract 0 2 needs a tensor of rank at least 3, got
+  Mat 2 2") and unequal paired lengths ("lengths differ: 2 and 3"), and lint
+  rebuilds the scheme from the `TLit` arguments. The prelude's `trace a =
+  contract 0 1 a` is `Mat n n d -> Num d` at rank two and the partial trace
+  over the first two positions above it.
