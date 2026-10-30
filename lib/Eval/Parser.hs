@@ -136,8 +136,18 @@ statement =
     P.<|> dataStatement
     P.<|> namespaceStatement
     P.<|> useStatement
+    P.<|> signatureStatement
     P.<|> SExpr
     <$> expr
+
+{- | @name :: type@ (design §4.8): a signature for the definition of that
+name. The cue is a name followed by @::@, which no expression statement
+starts with.
+-}
+signatureStatement :: Parser Statement
+signatureStatement = do
+  n <- P.try (name <* tok (TOp "::"))
+  SSig n <$> typeExpr
 
 {- | @namespace a.b@ and an indented block of statements (design §7.6). The
 block opens at the first token after the path, as after @where@; it must be

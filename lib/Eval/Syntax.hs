@@ -20,6 +20,8 @@ module Eval.Syntax (
   DataDecl (..),
   FieldDecl (..),
   Decl (..),
+  isSignature,
+  declKey,
   Path (..),
   renderPath,
   Use (..),
@@ -216,27 +218,51 @@ scope it was written in (design §7.6). Its names are full paths: the
 namespace it was declared under is already prefixed to the name, and for a
 type to its constructors and fields.
 -}
-data Decl = DBind Scope Binding | DData Scope DataDecl
+data Decl
+  = DBind Scope Binding
+  | DData Scope DataDecl
+  | -- | @name :: type@: a signature for the definition of that name (design §4.8)
+    DSig Scope Name TyExpr
   deriving stock (Eq, Show)
 
 instance HasField "name" Decl Name where
   getField = \case
     DBind _ b -> b.name
     DData _ d -> d.name
+    DSig _ n _ -> n
 
 instance HasField "span" Decl Span where
   getField = \case
     DBind _ b -> b.span
     DData _ d -> d.span
+    DSig _ n t -> spanUnion n.span t.span
 
 instance HasField "scope" Decl Scope where
   getField = \case
     DBind s _ -> s
     DData s _ -> s
+    DSig s _ _ -> s
+
+-- | Whether a declaration is a signature rather than a definition or a type.
+isSignature :: Decl -> Bool
+isSignature = \case
+  DSig{} -> True
+  _ -> False
+
+{- | What a declaration is known by in the scratch: its full path, and for
+a signature the path after @::@, so that a name's signature and its
+definition are two entries, each with the input it came from.
+-}
+declKey :: Decl -> Text
+declKey = \case
+  DSig _ n _ -> "::" <> n.text
+  d -> d.name.text
 
 data Statement
   = SLet Binding
   | SData DataDecl
+  | -- | @name :: type@, a signature (design §4.8)
+    SSig Name TyExpr
   | SExpr Expr
   | -- | @namespace a.b@ and an indented block of statements (design §7.6)
     SNamespace Path [Statement]
@@ -297,6 +323,9 @@ flatten = go
       SData d ->
         let (ds, es, s) = go scope rest
          in (DData scope (dataUnder d) : ds, es, s)
+      SSig n t ->
+        let (ds, es, s) = go scope rest
+         in (DSig scope (full n) t : ds, es, s)
       SExpr e ->
         let (ds, es, s) = go scope rest in (ds, (scope, e) : es, s)
       SUse p alias ->

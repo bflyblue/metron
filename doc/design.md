@@ -148,6 +148,18 @@ scratch definitions into the codebase (§7).
 Within one input a name may be defined only once, as in a Haskell module; across
 REPL inputs a pending definition is replaced by a newer one.
 
+`name :: type`, on a line of its own, is a **signature** (§4.8): it gives
+the definition of that name in the same input, before or after it, a type
+to be checked against, written as `:type` prints types (§2.3). It is a
+statement like the others, so it may stand in a `namespace` block, where
+it signs the block's definition of that name. A signature with no
+definition in the input, the scratch or the codebase is an error.
+
+```
+area :: Shape -> Num [m^2]
+let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h
+```
+
 `namespace a.b` followed by an indented block of statements puts what the
 block declares under the path `a.b` (§7.6); blocks nest. `use a.b` and
 `use a.b as k` make the names of a namespace resolve bare, or under the
@@ -403,6 +415,7 @@ statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | ['structural'] 'data' name param* '=' con ( '|' con )*   -- a data type (2.3)
              | 'namespace' path statements                -- an indented block (7.6)
              | 'use' [ '.' ] path [ 'as' name ]            -- 'as' is a name, not a keyword (7.6)
+             | name '::' type                             -- a signature (4.8)
              | expr
 path       ::= name ( '.' name )*                       -- glued dots
 statements ::= statement ( sep statement )*            -- indented block, opened as after 'where'
@@ -1957,7 +1970,10 @@ Num [m s^-2]
 
 ### 4.6 Known limitations
 
-- No type annotations in v1; `:type` in the REPL is the only way to see a type.
+- A signature (§4.8) is checked after inference, not used during it, so
+  there is no polymorphic recursion: inside a cycle a member's recursive
+  uses see its one monomorphic type, whatever its signature says, and a
+  definition that needs its own signature to check does not check.
 - `^` requires a literal exponent, because `x ^ y` with a runtime `y` has no static
   dimension. `sqrt` covers the `1/2` case; a `cbrt` can follow.
 - `det` is on dimensionless matrices only. Its natural type, `Mat n n d -> Num
@@ -1967,7 +1983,7 @@ Num [m s^-2]
   det a` generalises and works at every size. A matrix with a unit is a type
   error ("expected Mat n n, got Mat 2 2 [m]"); divide the unit out first, as
   in `det (a / (1 m))`, and multiply by `m^n` for the size at hand.
-- Dimension polymorphism is let-polymorphism; there is no polymorphic recursion.
+- Dimension polymorphism is let-polymorphism.
 - `rank` is the only type-level function, and a type cannot say that two
   unknown shapes have the same rank: a definition that needs that, such as
   `\f t u -> (timap f t, timap f u)`, is refused at generalisation (§4.2).
@@ -2042,6 +2058,75 @@ arguments, and the error says to write `(3 m)` (§2.6).
 The provenance table lives for one REPL interaction or one file. It is never
 stored, so hashes and the codebase are unaffected, and the evaluator's type-error
 cases are placeholders that elaboration makes unreachable.
+
+### 4.8 Type annotations
+
+A **signature** `name :: type` (§2.2) says what type a definition is to
+have. The type is written as `:type` prints types (§2.3), and converted as
+a `:ls` type query is (§7.3), in the scope of the statement: a lowercase
+name that is not a built-in type, a declared type, a base unit or a unit
+is a variable, of the kind its position gives it (`Num d`, `Vec n`,
+`Tensor sh d`), and an unknown capitalised name is an unknown type. So a
+variable cannot be named like a unit: `m` and `s` are the metre and the
+second, and a shape variable is `sh`, not `s`.
+
+**Meaning: an instance of the inferred scheme.** A signature is checked
+after the definition's component has been inferred and linted, never used
+while inferring it. It holds when its type, with its own variables held
+fixed as if they were constants, is an instance of the inferred scheme:
+there is a substitution of the *inferred* scheme's variables that gives
+the signature's type (`Eval.TCore.signatureHolds`, one-way matching of
+each kind, the same matching lint uses for type applications). So a
+signature can narrow a definition's type and never widen it:
+
+```
+f :: Num [m] -> Num [m]
+let f x = x                     -- holds: a := Num [m]
+
+f :: a -> a
+let f x = 1                     -- refused, at the signature:
+error at 1:1
+  f :: a -> a
+  ^^^^^^^^^^^
+  `f`'s definition has type `a -> Num`, not as general as its signature `a -> a`
+```
+
+**Label-level.** A signature belongs to the name, not to the hash: it is
+kept beside the names, as `unit` and `scale` are (§3.2.12, `Codebase.signatures`),
+never changes a term's hash, and two names of one hash may carry different
+signatures, one signed and one not. `:type f`, `:ls` and `:edit` show the
+signature of a signed name; an unsigned name shows its definition's own type,
+as before. A later input that redefines a signed name is checked against the
+stored signature, and refused with the same message at the redefinition,
+unless the same input gives a new signature. A propagation (§7.5) that would
+move a signed name to a version its signature does not hold of leaves it on its
+version, with the reason. `:rename` and `:move` take the signature with the
+name; `:alias` does not copy it, because an alias is the hash, unsigned;
+`:unname` removes it. A signature for a stored definition may also be given
+alone, `f :: Num [m] -> Num [m]`, and `:add` reports `signed f`. A
+signature names declared types by hash, so when `:rename` re-hashes a type
+(§7.2) or `:edit` replaces one (§7.3), a signature that names it follows to
+the new type, unless its definition was left on the old one.
+
+**Uses see the signature.** A reference written under a signed name, while
+the name still points at that hash, is typed by the signature: inference
+instantiates the hash's own scheme, which is what the type applications in
+Typed Core record and lint checks, then instantiates the signature and
+unifies the two (always possible, since the signature is an instance).
+With `f :: Num [m] -> Num [m]` and `let g x = x` (the same hash, unsigned),
+`f (3 s)` is refused with "expected Num [m], got Num [s]" while `g (3 s)` is
+`3 s`.
+
+A definition's stored types and Typed Core are always those of its Core
+alone, because the store recomputes them from the terms on load (§7.4),
+before the labels are replayed, and because two definitions that differ only
+in the names they were written with are one hash. So a definition that uses
+a signed name is checked twice: inferred and stored as before, then checked
+again with the signatures its references see, which may refuse it. Its
+own type stays its Core's: `let h y = f y` has type `a -> a`, and `h (3 s)`
+is `3 s`. To narrow `h`, sign it: a signature is checked against the type
+the second check inferred, `Num [m] -> Num [m]` here, so `h :: Num [m] ->
+Num [m]` holds and `h :: a -> a` is refused. §11 has this as open.
 
 ---
 
@@ -2410,6 +2495,13 @@ outside the move. History keeps the old path on the old hash. (A cycle
 re-stamped in place keeps its members' order, which re-entering its text
 might not give: then the text gives another hash for the same cycle.)
 
+Signatures (§4.8) are labels too, kept per name like the `unit` and
+`scale` flags. `:rename` and `:move` move a signature with its name (a
+re-hashed type it mentions is followed), `:unname` removes it, and `:alias`
+does not copy it: an alias names the hash, which has no signature, so `f`
+can be signed while its alias `g` is not. Rebinding a signed name to a new
+version keeps the signature only if it holds of the new definition (§4.8).
+
 ### 7.3 REPL commands
 
 ```
@@ -2418,8 +2510,8 @@ Scratch and codebase (7.5)
 :update [--no-upgrade]  store pending definitions, re-binding existing names, then propagate
 :upgrade name           move dependents still on old versions of name to its current version
 :todo                   pending definitions and stale references
-:scratch                list pending definitions
-:forget name            drop a pending definition
+:scratch                list pending definitions, a signature as `pending: area :: Shape -> Num [m^2]`
+:forget name            drop a pending definition, and its pending signature
 :edit [name|ns]         open the codebase but the library, a namespace (a library one included), or one definition or
                         type in $VISUAL or $EDITOR as source, and reconcile the saved file with the
                         codebase: add, update (with propagation), remove; all or nothing (below).
@@ -2437,8 +2529,9 @@ Inspection
                    lines included; --all lists everything by full path; a glob (* anywhere, else
                    a substring; on the full path or its last segment), a kind, or a type query
                    whose lowercase unknown names are variables, matched by unification both
-                   ways, searches everything
-:type e            inferred type scheme of e
+                   ways, searches everything; a signed name shows, and matches, its
+                   signature (4.8)
+:type e            inferred type scheme of e; a signed name's signature, as its uses see it (4.8)
 :hash name         current ref of name
 :names #hash       every name that points at the hash (current or historical)
 :history name      refs the name has pointed at, newest first
@@ -2542,8 +2635,10 @@ The report reads as `:update`'s: `added data T` or `updated data T`,
 `added x`, `updated x #old -> #new`, `removed x` (and `removed data T`,
 `removed constructor C`, `removed field f` for what an edited type left
 behind), `upgraded y #old -> #new`, `left y on #r: why`, `left data P on
-the old version of T`, `left y stale: it uses x#r, which was removed`; or
-`nothing changed`.
+the old version of T`, `left y stale: it uses x#r, which was removed`,
+`signed f` and `unsigned f` for a signature line (§4.8) added, changed or
+deleted on a definition the file keeps; or `nothing changed`. A signed
+definition is written with its `f :: type` line just before its `let`.
 
 ```
 > :edit orbital                          -- x = 3 becomes x = 4; spare is deleted
@@ -2797,8 +2892,21 @@ names.log          append-only, one event per line:
                      <unix time> field <name> <hex hash>.<i>.<j>  -- a record field label
                      <unix time> use <path> [as <alias>]          -- a stored use (7.7)
                      <unix time> unuse <path> [as <alias>]
+                     <unix time> sig <name> <type>                -- a signature (4.8)
+                     <unix time> unsig <name>
 history            the REPL's line history
 ```
+
+A `sig` line holds the signature as text that reads back at the root
+whatever came after it: ASCII, declared types by their absolute paths
+(`.Shape`, so the stored `use`s cannot change what it means), and variables
+named by kind but never like a unit or base symbol (`Tensor s1 d`, not
+`Tensor s d`, whose `s` is the second). On replay it is parsed and
+converted as a signature is (§4.8), and kept when its name is bound to a
+definition it holds of; otherwise it is skipped with a note. Sig lines
+come after every other line of a sync, so the labels they name exist.
+`unsig` is written when a name loses its signature, whether or not it stays
+bound.
 
 Types and Typed Core are not stored; they are recomputed on load by
 typechecking and linting each term, dependencies first (cheap: the standard
@@ -2830,10 +2938,12 @@ directory, shadows the user store, and `--codebase DIR` names one explicitly;
 stored codebase, or the namespace `ns`, as source that `:load` reads back:
 in a fresh session, `:load file` then `:add` gives the same labels on the
 same hashes (`names`, `typeNames`, `conNames`, `fieldNames`, `units`,
-`scales`). Each namespace is a `namespace` block, nested as the paths nest,
-with root definitions outside any block. Each definition is rendered as
-`:edit` renders it (`let name = body`, `unit name = …`, `scale name = … at
-…`, `data` declarations with their field names). The standard library's
+`scales`, `signatures`). Each namespace is a `namespace` block, nested as
+the paths nest, with root definitions outside any block. Each definition
+is rendered as `:edit` renders it (`let name = body`, `unit name = …`,
+`scale name = … at …`, `data` declarations with their field names, and a
+signed definition's `name :: type` line just before it, spelled for its
+block, §4.8). The standard library's
 namespaces are not exported unless one is asked for (`:export si`): a codebase that
 reads the export is seeded with it already. The codebase's stored `use`s
 (§7.7) head the export as `use` statements, the six of a seeded codebase,
@@ -2984,7 +3094,12 @@ acts.
   `:namespace orbital`, `let x = 1` is `orbital.x`; `:scratch`, `:todo`,
   `:add` and `:update` print names as the current scope spells them
   (§7.6), so it shows as `pending: x` there and `pending: orbital.x` at the
-  root.
+  root. A signature (§4.8) is a pending entry of its own beside its
+  definition's, `pending: area :: Shape -> Num [m^2]`: a later input's
+  signature replaces it (``replaced pending signature of `area` ``), a later
+  `let area` is checked against it, and `:forget area` drops both. A
+  pending signature for a stored definition alone is stored by `:add` or
+  `:update` as `signed area`.
 - **`:add`** stores pending definitions whose names are new, or whose definition is
   unchanged. A name that exists with a different definition is a conflict; the
   message points at `:update`.
@@ -3480,7 +3595,7 @@ tuned, and compilation is a later milestone.
    re-expressing `Bool`, tuples and lists as prelude declarations.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
-   (re-evaluate at higher `p`); type annotations; mixed-dimension matrices
+   (re-evaluate at higher `p`); mixed-dimension matrices
    in the type system (§3.7.1), should blocks stop being enough; ball-plus-zonotope enclosures for
    radial bounds; non-SI and affine-offset units (°C); rewrite rules that
    fuse `star (wedge a b)` back into a hand-coded 3D cross kernel and notice
@@ -3506,9 +3621,11 @@ tuned, and compilation is a later milestone.
    - *Anything hash-changing.* Re-expressing `Bool`, tuples and lists as
      prelude declarations, or mutually recursive types. Each is a numbered
      migration (core.md §6); a mistake there corrupts stores.
-   - *Type annotations.* The parser and inference interplay, and what the
-     error messages say when an annotation and the inferred type disagree
-     (§4.6).
+   - *Type annotations.* Decided and built (§4.8): a signature `name ::
+     type` is label-level, checked after inference as an instance of the
+     inferred scheme, and seen by uses of the name; the error says the
+     definition's type is not as general as the signature. Polymorphic
+     recursion stays out (§4.6); §11 has what is open.
    - *A brick front end*, `eval --tui`, beside the line REPL: the canonical
      echo live as you type, completion as a popup, multi-line editing, and
      room for panes (a `:ls` sidebar, the error excerpt beside the input).
@@ -3593,6 +3710,16 @@ tuned, and compilation is a later milestone.
     applied and reported, but the store's log has no line that clears a
     `unit` or `scale` flag, so after a restart the name is a unit again.
     `:update` has the same gap.
+- Type annotations (§4.8), what is left:
+  - A definition that uses a signed name keeps its Core's type: `let h y =
+    f y` with `f :: Num [m] -> Num [m]` is `a -> a`, so `h (3 s)` works
+    where `f (3 s)` is refused. Stored types are a function of the hash,
+    which cannot see labels. Should such a definition be given the narrower
+    type it was checked at as a signature of its own (label-level, and so
+    stored), or should a use through it be refused some other way?
+  - Propagation re-checks a moved dependent without the signatures its
+    references see, only against its own signature.
+  - Polymorphic recursion (§4.6).
 
 ---
 

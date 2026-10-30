@@ -21,6 +21,10 @@ module Eval.Resolve (
   processGroup,
   enterData,
   queryScheme,
+  typeVariable,
+  signatureText,
+  annotationsFor,
+  usesSignatures,
   storeTerm,
   withHint,
 ) where
@@ -33,7 +37,7 @@ import Data.Foldable (foldlM)
 import Data.Graph (SCC (..), stronglyConnComp)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -46,7 +50,7 @@ import Eval.Dimension
 import Eval.Hash
 import Eval.Infer
 import Eval.Syntax qualified as S
-import Eval.TCore (lintClosed)
+import Eval.TCore (lintClosed, signatureHolds)
 import Eval.Type
 
 data ResolveError
@@ -60,6 +64,10 @@ data ResolveError
     LintFailure S.Name Text
   | -- | A @ declaration that cannot be entered, at the offending span.
     DataError S.Span Text
+  | {- | A signature that cannot be entered or does not hold (design §4.8),
+    at a span in the input of the declaration with the given key ('S.declKey').
+    -}
+    SignatureError Text S.Span Text
   deriving stock (Eq, Show)
 
 -- | Render without source text; "Eval.Driver" renders with the excerpt.
@@ -84,6 +92,7 @@ renderResolveError = \case
       <> "` produced ill-typed core: "
       <> msg
   DataError sp msg -> S.renderSpanError Nothing sp msg
+  SignatureError _ sp msg -> S.renderSpanError Nothing sp msg
 
 -- Names and namespaces (design §7.6) ----------------------------------------------
 
@@ -313,14 +322,92 @@ disjointness cb new =
 typeLookupFor :: Codebase -> TypeLookup
 typeLookupFor cb = TypeLookup (`lookupTypes` cb) (`lookupTypeDef` cb)
 
+{- | The signatures of a codebase as inference sees them at a use (design
+§4.8): a reference written under a signed name that still points where
+the name does sees the signature.
+-}
+annotationsFor :: Codebase -> Annotations
+annotationsFor cb = Annotations $ \written h idx ->
+  case (signatureOf written cb, lookupName written cb) of
+    (Just sig, Just r) | r == Reference h idx -> Just sig
+    _ -> Nothing
+
+-- | Whether a term references a signed name, so that checking it must see signatures.
+usesSignatures :: Codebase -> Term n -> Bool
+usesSignatures cb t
+  | Map.null cb.signatures = False
+  | otherwise =
+      any
+        (\(h, i, w) -> isJust (annotationsFor cb `signatureAt` (w, h, i)))
+        (Set.toList (refsWritten t))
+ where
+  signatureAt a (w, h, i) = a.signatureFor w h i
+
+{- | A written name that a type reads as a variable (design §7.3, §4.8): a
+lowercase name that is not @rank@, a built-in or declared type, a base
+unit or a unit, in the scope.
+-}
+typeVariable :: S.Scope -> Codebase -> Text -> Bool
+typeVariable scope cb n =
+  maybe False (isLower . fst) (T.uncons n)
+    && n `notElem` ("rank" : builtinTypeNames)
+    && qualifyName TypeLabel scope cb n == NotFound
+    && n `notElem` [baseSymbol b | b <- [minBound .. maxBound]]
+    && not isUnit
+ where
+  isUnit = case qualifyName TermLabel scope cb n of
+    Found u -> isUnitName u cb
+    _ -> False
+
+{- | A signature as it is written back in a scope (design §4.8): it reads
+back there as the same scheme. Declared types print by hash, for the
+driver to name ('Eval.Driver.nameTypes').
+-}
+signatureText :: Spelling -> S.Scope -> Codebase -> Scheme -> Text
+signatureText spelling scope cb = renderSignature spelling (typeVariable scope cb) showHash
+
+{- | A signature after its definition was inferred (design §4.8): the
+signature must hold of the definition's scheme, which must be at least as
+general.
+-}
+checkSignature ::
+  Text -> S.Span -> Text -> Scheme -> Scheme -> Either ResolveError ()
+checkSignature key sp n sig general
+  | signatureHolds sig general = Right ()
+  | otherwise =
+      Left
+        ( SignatureError
+            key
+            sp
+            ( "`"
+                <> n
+                <> "`'s definition has type `"
+                <> renderScheme general
+                <> "`, not as general as its signature `"
+                <> renderScheme sig
+                <> "`"
+            )
+        )
+
+-- | A signature of the group: its key, its span and the scheme it was written as.
+data Signed = Signed {key :: Text, span :: S.Span, scheme :: Scheme}
+
 {- | Enter a binding group into the codebase. Statements may refer to each
 other in any order; strongly connected components are hashed as cycles.
 Components are processed dependencies-first, so a reference from one
 component to another always sees the new hash and its type.
+
+Signatures (design §4.8) are converted in the scope they were written in,
+after the group's types are entered. One for a name the group does not
+define signs the stored definition; one for a name it defines is checked
+when that name's component has been inferred, and a stored signature of a
+name the group redefines is checked the same way unless the group gives a
+new one.
 -}
 processGroup :: Codebase -> [S.Decl] -> Either ResolveError Codebase
 processGroup cb0 decls = do
-  checkDuplicates decls
+  checkDuplicates (filter (not . S.isSignature) decls)
+  checkDuplicates (filter S.isSignature decls)
   -- A name is never both a label and a namespace (design §7.6).
   case disjointness cb0 (concatMap newLabels decls) of
     Just (sp, msg) -> Left (DataError sp msg)
@@ -328,9 +415,36 @@ processGroup cb0 decls = do
   -- Data declarations first, in order: the definitions may use their constructors.
   cb1 <-
     foldlM (\cb (s, d) -> enterData s cb d) cb0 [(s, d) | S.DData s d <- decls]
+  signed <-
+    Map.fromList
+      <$> sequence
+        [ (n.text,) . Signed (S.declKey d) d.span <$> converted
+        | d@(S.DSig s n t) <- decls
+        , let converted = case queryScheme s cb1 t of
+                Left (DataError sp msg) -> Left (SignatureError (S.declKey d) sp msg)
+                other -> other
+        ]
   let bindings = [(s, b) | S.DBind s b <- decls]
       groupNames = Set.fromList [b.name.text | (_, b) <- bindings]
-      exists n = isLabel TermLabel cb1 n || Set.member n groupNames
+  -- A signature for a stored definition the group does not redefine.
+  cb2 <-
+    foldlM
+      ( \cb (n, sig) -> case lookupName n cb of
+          Just r
+            | Just general <- typeOf r cb -> do
+                checkSignature sig.key sig.span n sig.scheme general
+                pure (setSignature n sig.scheme cb)
+          _ ->
+            Left
+              ( SignatureError
+                  sig.key
+                  sig.span
+                  ("`" <> n <> "` has a signature but no definition")
+              )
+      )
+      cb1
+      [(n, sig) | (n, sig) <- Map.toList signed, Set.notMember n groupNames]
+  let exists n = isLabel TermLabel cb2 n || Set.member n groupNames
       -- Dependencies by full path: a name written in the group resolves
       -- through its scope to the group's own names first (design §7.6).
       dependsOn (s, b) =
@@ -338,12 +452,12 @@ processGroup cb0 decls = do
           ( Set.fromList
               [ full
               | w <- Set.toList (freeNames (asLambda b))
-              , Found full <- [qualifyWith cb1.uses exists s w]
+              , Found full <- [qualifyWith cb2.uses exists s w]
               , Set.member full groupNames
               ]
           )
       nodes = [(sb, (snd sb).name.text, dependsOn sb) | sb <- bindings]
-  foldlM (enterComponent groupNames) cb1 (stronglyConnComp nodes)
+  foldlM (enterComponent groupNames signed) cb2 (stronglyConnComp nodes)
  where
   newLabels = \case
     S.DBind _ b -> [(b.name.text, "definition", b.name.span)]
@@ -354,14 +468,22 @@ processGroup cb0 decls = do
            | (_, fs) <- d.constructors
            , S.FieldDecl (Just n) _ <- fs
            ]
+    S.DSig{} -> []
 
 checkDuplicates :: [S.Decl] -> Either ResolveError ()
 checkDuplicates = go Set.empty
  where
   go _ [] = Right ()
   go seen (b : bs)
-    | b.name.text `Set.member` seen = Left (DuplicateDefinition b.name)
+    | b.name.text `Set.member` seen = Left (duplicate b)
     | otherwise = go (Set.insert b.name.text seen) bs
+  duplicate = \case
+    d@(S.DSig _ n _) ->
+      SignatureError
+        (S.declKey d)
+        d.span
+        ("`" <> n.text <> "` has two signatures in the same group")
+    d -> DuplicateDefinition d.name
 
 asLambda :: S.Binding -> S.Expr
 asLambda b = case b.params of
@@ -373,8 +495,12 @@ with its full path (design §3.2.4), so that @lab.offset = 1 ± 0.1@ and
 @field.offset = 1 ± 0.1@ are two measurements, not one.
 -}
 enterComponent ::
-  Set Text -> Codebase -> SCC (S.Scope, S.Binding) -> Either ResolveError Codebase
-enterComponent group cb = \case
+  Set Text ->
+  Map.Map Text Signed ->
+  Codebase ->
+  SCC (S.Scope, S.Binding) ->
+  Either ResolveError Codebase
+enterComponent group signed cb = \case
   AcyclicSCC (scope, b) -> do
     (term, prov) <-
       either
@@ -392,12 +518,63 @@ enterComponent group cb = \case
         (elaborateClosed (typeLookupFor cb) term)
     linted <-
       either (Left . LintFailure b.name) Right (lintClosed (typeLookupFor cb) typed)
+    checked <- annotatedCheck cb term (typeErrorIn b prov)
     let h = hashTerm term
         ref = Reference h Nothing
+        stored = preferLint schemes linted
         cb' =
-          bindName b.name.text ref (addTerm h term (preferLint schemes linted) typed cb)
-    pure (markKind b.kind b.name.text cb')
-  CyclicSCC bs -> enterCycle group cb bs
+          bindName b.name.text ref (addTerm h term stored typed cb)
+    signed' <- signMembers signed cb [(b, fromMaybe stored checked)]
+    pure (signed' (markKind b.kind b.name.text cb'))
+  CyclicSCC bs -> enterCycle group signed cb bs
+
+{- | The check of a definition that the annotations of the input take part
+in (design §4.8): its uses of signed names see their signatures. Only
+when it has any; the schemes it gives are the definition's as checked,
+never stored, since a stored term's types are its Core's alone.
+-}
+annotatedCheck ::
+  Codebase ->
+  Term Z ->
+  (TypeError -> ResolveError) ->
+  Either ResolveError (Maybe [Scheme])
+annotatedCheck cb term err
+  | not (usesSignatures cb term) = Right Nothing
+  | otherwise =
+      either
+        (Left . err)
+        (Right . Just . fst)
+        (elaborateClosedWith (annotationsFor cb) (typeLookupFor cb) term)
+
+{- | The signatures of a component's members, each with its scheme as
+checked (design §4.8): the group's signature for a member, else the one the
+name carried before, must hold. Given the codebase before the members were
+bound; returns what gives the members their signatures.
+-}
+signMembers ::
+  Map.Map Text Signed ->
+  Codebase ->
+  [(S.Binding, [Scheme])] ->
+  Either ResolveError (Codebase -> Codebase)
+signMembers signed before members =
+  foldr (.) id
+    <$> sequence
+      [ case (Map.lookup n signed, signatureOf n before) of
+          (Just sig, _) -> do
+            checkSignature sig.key sig.span n sig.scheme general
+            pure (setSignature n sig.scheme)
+          (Nothing, Just old) -> do
+            checkSignature n b.name.span n old general
+            pure (setSignature n old)
+          (Nothing, Nothing) -> pure id
+      | (i, (b, schemes)) <- zip [0 :: Int ..] members
+      , let n = b.name.text
+            general = fromMaybe (Forall [] TBool) (nth i schemes)
+      ]
+ where
+  nth i xs = case drop i xs of
+    x : _ -> Just x
+    [] -> Nothing
 
 -- | Inference and lint must agree; lint is the authority if they ever differ.
 preferLint :: [Scheme] -> [Scheme] -> [Scheme]
@@ -420,8 +597,12 @@ compute ordering hashes with the cycle variables as placeholders, then
 desugared again in the resulting order to build the stored 'Cycle'.
 -}
 enterCycle ::
-  Set Text -> Codebase -> [(S.Scope, S.Binding)] -> Either ResolveError Codebase
-enterCycle group cb sbs = do
+  Set Text ->
+  Map.Map Text Signed ->
+  Codebase ->
+  [(S.Scope, S.Binding)] ->
+  Either ResolveError Codebase
+enterCycle group signed cb sbs = do
   ordering <- mapM (\sb -> (,sb) <$> placeholderHashOf sb) sbs
   let sortedScoped = map snd (sortOn fst ordering)
       sorted = map snd sortedScoped
@@ -443,12 +624,15 @@ enterCycle group cb sbs = do
           (Left . LintFailure (headName sorted))
           Right
           (lintClosed (typeLookupFor cb) typed)
-      let cb' = addTerm h cycleTerm (preferLint schemes linted) typed cb
+      checked <- annotatedCheck cb cycleTerm (cycleTypeError sorted provs)
+      let stored = preferLint schemes linted
+          cb' = addTerm h cycleTerm stored typed cb
           bindMember acc (i, b) =
             let ref = Reference h (Just i)
                 acc' = bindName b.name.text ref acc
              in markKind b.kind b.name.text acc'
-      pure (foldl bindMember cb' (zip [0 ..] sorted))
+      signed' <- signMembers signed cb [(b, fromMaybe stored checked) | b <- sorted]
+      pure (signed' (foldl bindMember cb' (zip [0 ..] sorted)))
  where
   -- The members are local binders by their full paths, found through each
   -- member's own scope (design §7.6).
@@ -862,15 +1046,7 @@ queryScheme scope cb t = do
     (Forall [(i, Map.findWithDefault KType v kinds) | (i, v) <- zip [0 ..] vars] ty)
  where
   -- Names resolve through the scope (design §7.6).
-  isVar n =
-    maybe False (isLower . fst) (T.uncons n)
-      && n `notElem` ("rank" : builtinTypeNames)
-      && qualifyName TypeLabel scope cb n == NotFound
-      && n `notElem` [baseSymbol b | b <- [minBound .. maxBound]]
-      && not (isUnit n)
-  isUnit n = case qualifyName TermLabel scope cb n of
-    Found u -> isUnitName u cb
-    _ -> False
+  isVar = typeVariable scope cb
   names :: S.TyExpr -> Set Text
   names e = case e.node of
     S.TyName n -> Set.singleton n

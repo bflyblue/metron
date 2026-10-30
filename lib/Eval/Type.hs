@@ -45,6 +45,8 @@ module Eval.Type (
   renderSchemeIn,
   renderTypeIds,
   renderSchemeIds,
+  renderSignature,
+  canonicalScheme,
   renderArg,
 ) where
 
@@ -52,6 +54,7 @@ import Data.ByteString qualified as BS
 import Data.List (nubBy)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core (ConRef (..), Hash (..), Label (..), showHash)
@@ -312,6 +315,47 @@ renderTypeIds t = renderWith Ascii (idNames (freeVars t)) 0 t
 renderSchemeIds :: Scheme -> Text
 renderSchemeIds (Forall _ t) = renderTypeIds t
 
+{- | A signature as it is written back (design §4.8): in a spelling, with
+declared types named by the given function, and with variables named by
+kind as 'renderScheme' names them but skipping every name the test
+rejects (one that would not read back as a variable, such as @m@ or @s@,
+the metre and the second) and every name already given, so that the text
+parses back to the same scheme.
+-}
+renderSignature ::
+  Spelling -> (Text -> Bool) -> (Hash -> Text) -> Scheme -> Text
+renderSignature spelling usable typeName (Forall _ t) =
+  renderWithNamed typeName spelling (namesAvoiding (freeVars t)) 0 t
+ where
+  namesAvoiding vs = snd (foldl pick (Set.empty, Map.empty) vs)
+  pick (used, acc) (v, k) =
+    case [c | c <- candidates k, usable c, Set.notMember c used] of
+      c : _ -> (Set.insert c used, Map.insert v c acc)
+      [] -> (used, acc)
+  candidates = \case
+    KType -> map T.singleton ['a' .. 'z'] ++ numbered "t"
+    KLen -> ["n", "m", "k", "l", "p", "q"] ++ numbered "n"
+    KShape -> "s" : numbered "s"
+    KDim -> "d" : numbered "d"
+  numbered p = [p <> T.pack (show i) | i <- [1 :: Int ..]]
+
+{- | A scheme with its variables renumbered from 0 in order of appearance,
+so that two schemes that differ only in their variables' ids are equal.
+-}
+canonicalScheme :: Scheme -> Scheme
+canonicalScheme (Forall _ t) =
+  let vs = freeVars t
+      fresh v k = case k of
+        KType -> AType (TVar v)
+        KLen -> ALen (LVar v 0)
+        KShape -> AShape (SVar v)
+        KDim -> ADim (dimVar v)
+      renaming = Map.fromList [(v, fresh i k) | (i, (v, k)) <- zip [0 ..] vs]
+   in Forall [(i, k) | (i, (_, k)) <- zip [0 ..] vs] (substOnce renaming t)
+
+renderWith :: Spelling -> Map VarId Text -> Int -> Type -> Text
+renderWith = renderWithNamed showHash
+
 renderArg :: Arg -> Text
 renderArg = \case
   AType t -> renderTypeIds t
@@ -328,8 +372,9 @@ renderArg = \case
     LVar v _ -> [(v, KLen)]
     LRank v _ -> [(v, KShape)]
 
-renderWith :: Spelling -> Map VarId Text -> Int -> Type -> Text
-renderWith spelling names prec = \case
+renderWithNamed ::
+  (Hash -> Text) -> Spelling -> Map VarId Text -> Int -> Type -> Text
+renderWithNamed typeName spelling names prec = \case
   TBool -> "Bool"
   -- As an argument of a declared type, a tensor with a shape or dimension is parenthesised.
   TTensor sh d
@@ -342,20 +387,23 @@ renderWith spelling names prec = \case
   TPoint sh d -> "Point (" <> tensor sh <> dim d <> ")"
   TScale SNil d -> "Scale" <> dim d
   TScale sh d -> "Scale (" <> tensor sh <> dim d <> ")"
-  TTuple ts -> "(" <> T.intercalate ", " (map (renderWith spelling names 0) ts) <> ")"
-  TList t -> "{" <> renderWith spelling names 0 t <> "}"
+  TTuple ts ->
+    "("
+      <> T.intercalate ", " (map (renderWithNamed typeName spelling names 0) ts)
+      <> ")"
+  TList t -> "{" <> renderWithNamed typeName spelling names 0 t <> "}"
   -- A declared type prints by its short hash here; the driver replaces that
   -- with the current name (design §7.2), so inference needs no name table.
   TData h as ->
     paren
       (prec > 10 && not (null as))
-      (T.unwords (showHash h : map (argWith names) as))
+      (T.unwords (typeName h : map (argWith names) as))
   TFun a b ->
     paren
       (prec > 0)
-      ( renderWith spelling names 1 a
+      ( renderWithNamed typeName spelling names 1 a
           <> arrowText spelling
-          <> renderWith spelling names 0 b
+          <> renderWithNamed typeName spelling names 0 b
       )
   TVar v -> Map.findWithDefault ("t" <> T.pack (show v)) v names
  where
@@ -373,7 +421,7 @@ renderWith spelling names prec = \case
     | otherwise = " " <> renderDimIn spelling dimName d
   dimName v = Map.findWithDefault ("d" <> T.pack (show v)) v names
   argWith ns = \case
-    AType t -> renderWith spelling ns 11 t
+    AType t -> renderWithNamed typeName spelling ns 11 t
     ALen l -> renderLen ns l
     AShape sh -> renderShapeList ns sh
     ADim d

@@ -20,6 +20,9 @@ module Eval.Infer (
   TypeError (..),
   TypeLookup,
   elaborateClosed,
+  elaborateClosedWith,
+  Annotations (..),
+  noAnnotations,
   inferClosed,
   matchesQuery,
 ) where
@@ -67,16 +70,36 @@ data St = St
   -- ^ reversed paths, as 'failAt' takes them
   , typeDefs :: Hash -> Maybe TypeDef
   -- ^ the declared types, for equality on them
+  , annotations :: Annotations
   }
 
 type Infer = StateT St (Either TypeError)
+
+{- | What the annotations of an input add to inference (design §4.8): the
+signature a name carries, for a reference written under that name that
+still points where the name does (the full path, the hash and the cycle
+index). Annotations are label-level, never in Core: a stored term's types
+are inferred without them.
+-}
+newtype Annotations = Annotations
+  { signatureFor :: Text -> Hash -> Maybe Int -> Maybe Scheme
+  }
+
+-- | No annotations: what a stored term is inferred with.
+noAnnotations :: Annotations
+noAnnotations = Annotations (\_ _ _ -> Nothing)
 
 {- | Infer and elaborate a closed term: its scheme(s), one per cycle member,
 and the Typed Core term with all metavariables resolved.
 -}
 elaborateClosed :: TypeLookup -> Term Z -> Either TypeError ([Scheme], TTerm Z)
-elaborateClosed look term = do
-  ((schemes, tt), st) <- runStateT go (St emptySubst 0 [] look.typeDefOf)
+elaborateClosed = elaborateClosedWith noAnnotations
+
+-- | 'elaborateClosed' with the annotations of the input being checked.
+elaborateClosedWith ::
+  Annotations -> TypeLookup -> Term Z -> Either TypeError ([Scheme], TTerm Z)
+elaborateClosedWith annots look term = do
+  ((schemes, tt), st) <- runStateT go (St emptySubst 0 [] look.typeDefOf annots)
   pure (map (applyScheme st.subst) schemes, zonk st.subst tt)
  where
   go = case term of
@@ -647,7 +670,17 @@ infer look p ctx = \case
     Just schemes -> case nth (fromMaybe 0 idx) schemes of
       Just sc -> do
         (t, args) <- instantiate sc
-        pure (t, applyArgs (TRef h idx hint) args)
+        let Hint written = hint
+        signature <- gets (\st -> st.annotations.signatureFor written h idx)
+        case signature of
+          Nothing -> pure (t, applyArgs (TRef h idx hint) args)
+          -- A use sees the name's signature (design §4.8). The type
+          -- applications stay those of the hash's own scheme, which lint
+          -- checks; the signature, an instance of it, narrows them.
+          Just narrower -> do
+            (t', _) <- instantiate narrower
+            unify p t t'
+            pure (t', applyArgs (TRef h idx hint) args)
       Nothing -> failAt p "reference to a cycle member that does not exist"
   PrimApp name args -> do
     let literals = [case a of Lit l -> Just l; _ -> Nothing | a <- args]
@@ -1127,7 +1160,7 @@ with fresh variables and the two are unified, so @a -> a@ matches a query
 @Num -> Num@ and @Num [m] -> Num [m]@ matches a query @a -> a@.
 -}
 matchesQuery :: Scheme -> Scheme -> Bool
-matchesQuery query sc = case runStateT go (St emptySubst 0 [] (const Nothing)) of
+matchesQuery query sc = case runStateT go (St emptySubst 0 [] (const Nothing) noAnnotations) of
   Right _ -> True
   Left _ -> False
  where
