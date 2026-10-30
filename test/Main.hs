@@ -3969,8 +3969,23 @@ asciiSpellings =
   , ("′", "arcmin")
   ]
 
-dimmed :: Text -> Text
-dimmed t = "\ESC[2m" <> t <> "\ESC[0m"
+-- | Text in an SGR colour, as "Eval.Repl" paints it.
+coloured :: Text -> Text -> Text
+coloured code t = "\ESC[" <> code <> "m" <> t <> "\ESC[0m"
+
+keyword', unit', type', grey', red' :: Text -> Text
+keyword' = coloured "35"
+unit' = coloured "36"
+type' = coloured "33"
+grey' = coloured "90"
+red' = coloured "31"
+
+-- | Remove every @ESC [ … m@ sequence.
+stripSgr :: Text -> Text
+stripSgr t = case T.breakOn "\ESC[" t of
+  (before, rest)
+    | T.null rest -> before
+    | otherwise -> before <> stripSgr (T.drop 1 (T.dropWhile (/= 'm') rest))
 
 replTests :: TestTree
 replTests =
@@ -4065,21 +4080,21 @@ replTests =
         case evalP "3 m + true" of
           Left err -> T.intercalate "\n" (map snd (R.classify (Left err))) @?= err
           Right v -> assertFailure (show v)
-    , testCase "paint: the unit suffix, the type, the error" $ do
-        R.paint R.Value "12.566… m^2" @?= "12.566… " <> dimmed "m^2"
-        R.paint R.Value "[1, 2, 3] km s⁻¹" @?= "[1, 2, 3] " <> dimmed "km s⁻¹"
-        R.paint R.Value "9.81 m/s^2" @?= "9.81 " <> dimmed "m/s^2"
-        R.paint R.Value "293.15 K (point)" @?= "293.15 " <> dimmed "K (point)"
-        R.paint R.Signature "area : Shape -> Num [m^2]"
-          @?= "area : " <> dimmed "Shape -> Num [m^2]"
-        R.paint R.Note "pending: data Shape" @?= dimmed "pending: data Shape"
-        R.paint R.Problem "error at 1:5" @?= "\ESC[31merror at 1:5\ESC[0m"
-        R.paint R.Caret "      ^^^" @?= "\ESC[1;31m      ^^^\ESC[0m"
-        R.paint R.Source "  3 m + 2 s" @?= "  3 m + 2 s"
-        R.paint R.Note "" @?= ""
+    , testCase "classify: the ≡ echo and a function type" $ do
+        map fst (R.classify (Right ["  ≡ 3 m² + 4 m² -- hi", "(a → b) → {a} → {b}"]))
+          @?= [R.Echo, R.Type]
+        -- A later line of a multi-line definition is not a type.
+        map fst (R.classify (Right ["    Rect w h -> w * h"])) @?= [R.Value]
+        map fst (R.classify (Right ["`z` now also names #e21lk", "(input abandoned)"]))
+          @?= [R.Note, R.Note]
+    , testCase "splitUnits: the trailing unit of a value that does not lex" $ do
+        R.splitUnits "12.566… m^2" @?= ("12.566… ", "m^2")
+        R.splitUnits "[1, 2, 3] km s⁻¹" @?= ("[1, 2, 3] ", "km s⁻¹")
+        R.splitUnits "9.81 m/s^2" @?= ("9.81 ", "m/s^2")
+        R.splitUnits "293.15 K (point)" @?= ("293.15 ", "K (point)")
         -- Not a unit: types, booleans, constructors, bare numbers.
         mapM_
-          (\t -> R.paint R.Value t @?= t)
+          (\t -> R.splitUnits t @?= (t, ""))
           [ "Num [m] -> Shape"
           , "true"
           , "Rect (1 m) (2 m)"
@@ -4156,8 +4171,193 @@ replTests =
         runLinesP ["let f x = y * 2 where\n  y = x + 1", "f 3"]
           @?= Right ["8"]
         runLinesP ["let xs = [1,\n  2, 3]", "xs"] @?= Right ["[1, 2, 3]"]
+    , testCase "highlight: keywords magenta, units cyan, the rest plain" $ do
+        R.highlight names "let f x = 3 km + x"
+          @?= keyword' "let" <> " f x = 3 " <> unit' "km" <> " + x"
+        R.highlight names "if true then 2 s else 3 h"
+          @?= keyword' "if"
+            <> " "
+            <> keyword' "true"
+            <> " "
+            <> keyword' "then"
+            <> " 2 "
+            <> unit' "s"
+            <> " "
+            <> keyword' "else"
+            <> " 3 "
+            <> unit' "h"
+        -- A unicode spelling is coloured as the token it lexes to.
+        R.highlight names "20 °C" @?= "20 " <> unit' "°C"
+    , testCase "highlight: a data declaration, types and constructors yellow" $ do
+        let decl = "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+            numM = type' "Num" <> " [" <> unit' "m" <> "]"
+            expected =
+              keyword' "data"
+                <> " "
+                <> type' "Shape"
+                <> " = "
+                <> type' "Circle"
+                <> " ("
+                <> numM
+                <> ") | "
+                <> type' "Rect"
+                <> " ("
+                <> numM
+                <> ") ("
+                <> numM
+                <> ")"
+        R.highlight (R.namesOf shapes) decl @?= expected
+        -- Before the session knows it, as the scripted echo sees it.
+        R.highlight names decl @?= expected
+        R.highlight names "structural data Pair a b = Pair a b"
+          @?= keyword' "structural"
+            <> " "
+            <> keyword' "data"
+            <> " "
+            <> type' "Pair"
+            <> " a b = "
+            <> type' "Pair"
+            <> " a b"
+    , testCase "paint: a signature's type, highlighted as a type" $ do
+        R.paint (R.namesOf shapes) R.Signature "area : Shape -> Num [m^2]"
+          @?= "area : "
+            <> type' "Shape"
+            <> " -> "
+            <> type' "Num"
+            <> " ["
+            <> unit' "m"
+            <> "^2]"
+        R.paint names R.Signature "unit furlong : Num [m]"
+          @?= keyword' "unit" <> " furlong : " <> type' "Num" <> " [" <> unit' "m" <> "]"
+        -- Type variables named like units stay plain outside brackets.
+        R.paint names R.Type "(g → m) → {g}" @?= "(g → m) → {g}"
+        R.highlightType names "g -> Num [g]"
+          @?= "g -> " <> type' "Num" <> " [" <> unit' "g" <> "]"
+    , testCase "paint: values, records, references, comments" $ do
+        R.paint names R.Value "12.566… m^2" @?= "12.566… " <> unit' "m" <> "^2"
+        R.paint names R.Value "[1, 2, 3] km s⁻¹"
+          @?= "[1, 2, 3] " <> unit' "km" <> " " <> unit' "s" <> "⁻¹"
+        R.paint names R.Value "293.15 K (point)"
+          @?= "293.15 " <> unit' "K" <> " (point)"
+        R.paint (R.namesOf bodies) R.Value "Body {mass = 5 kg, pos = [1, 2, 3] km}"
+          @?= type' "Body"
+            <> " {mass = 5 "
+            <> unit' "kg"
+            <> ", pos = [1, 2, 3] "
+            <> unit' "km"
+            <> "}"
+        R.paint names R.Value "#a3f9k" @?= grey' "#a3f9k"
+        R.paint names R.Value "#a3f9k.1  (current)"
+          @?= grey' "#a3f9k.1" <> "  (current)"
+        R.highlight names "x -- note" @?= "x " <> grey' "-- note"
+        R.highlight names "x {- a -} + 1" @?= "x " <> grey' "{- a -}" <> " + 1"
+        R.paint names R.Echo "  ≡ 3 m² + 4 m² -- hi"
+          @?= "  "
+            <> grey' "≡"
+            <> " 3 "
+            <> unit' "m"
+            <> "² + 4 "
+            <> unit' "m"
+            <> "² "
+            <> grey' "-- hi"
+    , testCase "highlight: a variable named like a unit is plain where it is bound" $ do
+        R.highlight
+          (R.namesOf shapes)
+          "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+          @?= keyword' "let"
+            <> " area s = "
+            <> keyword' "case"
+            <> " s "
+            <> keyword' "of"
+            <> " "
+            <> type' "Circle"
+            <> " r -> pi * r^2; "
+            <> type' "Rect"
+            <> " w h -> w * h"
+        R.highlight names "\\s -> s + 1 h" @?= "\\s -> s + 1 " <> unit' "h"
+        R.highlight names "3 m + 2 s" @?= "3 " <> unit' "m" <> " + 2 " <> unit' "s"
+    , testCase "paint: an error block keeps its carets under the excerpt" $ case evalP "3 m + 2 s" of
+        Right v -> assertFailure (show v)
+        Left err -> do
+          let painted = R.render True names (Left err)
+          painted
+            @?= [ red' "error at 1:7"
+                , "  3 " <> unit' "m" <> " + 2 " <> unit' "s"
+                , coloured "1;31" "        ^^^"
+                , red' "  expected Num [m], got Num [s]: dimensions differ by [m s^-1]"
+                ]
+          map stripSgr painted @?= T.splitOn "\n" err
+          -- The visible columns of the excerpt and the carets are unchanged.
+          map (T.length . stripSgr) painted @?= map T.length (T.splitOn "\n" err)
+    , testCase "paint: what does not lex falls back to its kind" $ do
+        R.paint names R.Value "3 m $ 4 km" @?= "3 m $ 4 " <> unit' "km"
+        R.paint names R.Signature "x : Num [m] ?" @?= "x : " <> type' "Num [m] ?"
+        R.paint names R.Source "  3 $ m" @?= "  3 $ m"
+        R.paint names R.Note "pending: data Shape" @?= grey' "pending: data Shape"
+        R.paint names R.Problem "error at 1:5" @?= red' "error at 1:5"
+        R.paint names R.Caret "      ^^^" @?= coloured "1;31" "      ^^^"
+        R.paint names R.Note "" @?= ""
+        R.highlight names "3 $ m" @?= "3 $ m"
+    , testCase "colour off changes nothing; the scripted echo" $ do
+        let err = "error at 1:7\n  3 m + 2 s\n        ^^^\n  cannot add"
+        R.render False names (Left err) @?= [err]
+        R.render False names (Right ["a\nb", "c"]) @?= ["a\nb", "c"]
+        R.echoInput False names "let x = 3 km" @?= "> let x = 3 km"
+        R.echoInput True names "let x = 3 km"
+          @?= coloured "1" "> " <> keyword' "let" <> " x = 3 " <> unit' "km"
+        R.echoInput True names ":ls --units g" @?= coloured "1" "> " <> ":ls --units g"
+        R.echoInput True names ":type 3 km"
+          @?= coloured "1" "> " <> ":type 3 " <> unit' "km"
+    , testCase "painting only adds escape codes" $ do
+        let lines' =
+              [ "let f x = 3 km + x"
+              , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+              , "area : Shape -> Num [m^2]"
+              , "12.566… m^2"
+              , "Body {mass = 5 kg, pos = [1, 2, 3] km}"
+              , "  ≡ λx → x -- hi"
+              , "x -- note"
+              , "#a3f9k.1  (current)"
+              , "3 m $ 4 km"
+              , "  3 $ m"
+              , "20 °C"
+              , "Ω and µ, folded"
+              , "e\x0301 composes"
+              , "a\tb"
+              ]
+            kinds =
+              [ R.Plain
+              , R.Note
+              , R.Echo
+              , R.Signature
+              , R.Type
+              , R.Value
+              , R.Source
+              , R.Problem
+              , R.Caret
+              ]
+        sequence_
+          [ stripSgr (R.paint names k l) @?= l
+          | l <- lines'
+          , k <- kinds
+          ]
+        mapM_ (\l -> stripSgr (R.highlight names l) @?= l) lines'
+        mapM_ (\l -> stripSgr (R.echoInput True names l) @?= "> " <> l) lines'
+        -- Everything the prelude lists, painted as the REPL would.
+        case evalP ":ls --all" of
+          Left e -> assertFailure (T.unpack e)
+          Right outs -> do
+            let painted = R.render True names (Right outs)
+            map stripSgr painted @?= concatMap (T.splitOn "\n") outs
     ]
  where
+  names = R.namesOf withPrelude
+  shapes =
+    either (error . T.unpack) id
+      $ sessionP ["data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"]
+  bodies =
+    either (error . T.unpack) id
+      $ sessionP ["data Body = Body {mass :: Num [kg], pos :: Vec 3 [km]}"]
   isPrefixOfS p x = take (length p) x == p
   agrees name u
     | Just n <- lookup u superscripts =

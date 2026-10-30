@@ -163,17 +163,20 @@ repl opts interactive = do
       Nothing -> pure ()
       Just raw -> do
         let first = T.strip (T.pack raw)
-        echo "> " first
+        echoAt "> " first
         whole <- more colour first
         case whole of
           Nothing -> do
-            let note = "(input abandoned)"
-            outputStrLn (T.unpack (if colour then R.paint R.Note note else note))
+            emit ref colour (Right ["(input abandoned)"])
             again
           Just input -> dispatch colour input
    where
-    -- Scripted, each line is echoed after the prompt it was read at.
-    echo p l = unless interactive (outputStrLn (p <> T.unpack l))
+    -- Scripted, each line is echoed after the prompt it was read at,
+    -- highlighted as the REPL would show it.
+    echoAt p l = unless interactive $ do
+      colour <- liftIO (readIORef colourRef)
+      live <- liftIO (readIORef ref)
+      outputStrLn (T.unpack (R.echoInputAt p colour (R.namesOf live.session) l))
     -- Continuation lines (design §7.3): read on at the "… " prompt while
     -- the input so far needs more. A continuation line keeps its
     -- indentation, which layout reads. Ctrl-C or end of input abandons it.
@@ -187,7 +190,7 @@ repl opts interactive = do
             Nothing -> pure Nothing
             Just raw -> do
               let l = T.stripEnd (T.pack raw)
-              echo "… " l
+              echoAt "… " l
               more colour (input <> "\n" <> l)
       | otherwise = pure (Just (T.stripEnd input))
     dispatch colour input = case T.words input of
@@ -203,7 +206,7 @@ repl opts interactive = do
           [] -> outputStrLn ("colour " <> if colour then "on" else "off")
           ["on"] -> liftIO (writeIORef colourRef True)
           ["off"] -> liftIO (writeIORef colourRef False)
-          _ -> emit colour (Left "usage: :colour [on|off]")
+          _ -> emit ref colour (Left "usage: :colour [on|off]")
         again
       -- A file is one input too, its later lines continuations by layout.
       [":load", path] -> do
@@ -216,20 +219,19 @@ repl opts interactive = do
       result <- liftIO (step live src)
       colour <- liftIO (readIORef colourRef)
       case result of
-        Left err -> emit colour (Left err)
+        Left err -> emit ref colour (Left err)
         Right (live', outs) -> do
           liftIO (writeIORef ref live')
-          emit colour (Right outs)
+          emit ref colour (Right outs)
       again
 
 {- | Print what 'step' returned: as is without colour, painted line by line
-with it (design §7.3).
+with it (design §7.3), by the names of the session as it now is.
 -}
-emit :: Bool -> Either Text [Text] -> InputT IO ()
-emit colour result
-  | colour = mapM_ (outputStrLn . T.unpack . uncurry R.paint) (R.classify result)
-  | otherwise =
-      either (outputStrLn . T.unpack) (mapM_ (outputStrLn . T.unpack)) result
+emit :: IORef Live -> Bool -> Either Text [Text] -> InputT IO ()
+emit ref colour result = do
+  live <- liftIO (readIORef ref)
+  mapM_ (outputStrLn . T.unpack) (R.render colour (R.namesOf live.session) result)
 
 {- | A prompt, bold with colour. haskeline treats @\\SOH…\\STX@ as zero
 width and strips the markers, so the cursor lands where it should.

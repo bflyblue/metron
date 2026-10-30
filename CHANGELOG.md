@@ -383,3 +383,16 @@
   echoes each line after its prompt. Each physical line is its own history
   entry. The pure part is `Eval.Repl.needsMore`; one-line inputs and what
   `feed` prints are unchanged.
+- REPL colour is now a syntax-highlighting theme on the 16 ANSI colours
+  (design §7.3). It has no dim text, because some terminal themes do not
+  show it. Keywords are magenta. Units, base units and scales are cyan.
+  Types, constructors and the built-in heads are yellow. Notes, comments,
+  `#hash` references and the `≡` mark are bright black. Errors are red,
+  carets bold red, and the prompt bold. Numbers, operators and other
+  names are plain. Each line is lexed and coloured token by token: the `≡`
+  echo, `:view`/`:edit` output, `data` declarations, values, `:type`
+  output, the type in `:ls` lines, an error's source excerpt (the carets
+  stay aligned) and the input echo of `eval -i`. A line that does not lex
+  is coloured by its kind, as before. New in `Eval.Repl`: `Names`,
+  `namesOf`, `highlight`, `highlightType`, `render` and `echoInput`.
+  `paint` now takes the `Names`. Without colour every byte is as before.
