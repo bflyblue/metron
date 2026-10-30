@@ -1,6 +1,7 @@
-{- | The REPL's pure parts (design §7.3): tab completion and output colour.
-The executable wires them into haskeline; they live here so the test suite
-can reach them. Nothing here changes what 'Eval.Driver.feed' prints.
+{- | The REPL's pure parts (design §7.3): tab completion, output colour, and
+whether an input goes on at a continuation line. The executable wires them
+into haskeline; they live here so the test suite can reach them. Nothing
+here changes what 'Eval.Driver.feed' prints.
 -}
 module Eval.Repl (
   -- * Completion
@@ -16,17 +17,25 @@ module Eval.Repl (
   classify,
   paint,
   splitUnits,
+
+  -- * Continuation lines
+  Continuation (..),
+  continuation,
+  needsMore,
 ) where
 
 import Control.Applicative ((<|>))
 import Data.Char (isAlphaNum, isDigit, isLetter, isSpace)
 import Data.List (isPrefixOf, nub, sort)
+import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Codebase (Codebase (..))
 import Eval.Driver (Session (..))
+import Eval.Lexer (Keyword (..), Located (..), Token (..), showToken, tokenize)
+import Eval.Syntax (Pos (..), Span (..))
 import Eval.Unicode qualified as U
 
 -- Completion ------------------------------------------------------------------
@@ -296,3 +305,84 @@ splitUnits t =
   integer n =
     let ds = fromMaybe n (T.stripPrefix "-" n)
      in not (T.null ds) && T.all isDigit ds
+
+-- Continuation lines -------------------------------------------------------------
+
+-- | Why an input goes on at a continuation line (design §7.3).
+data Continuation
+  = -- | a @(@, @[@ or @{@ is not closed yet
+    Unclosed
+  | {- | a line ends in @of@ or @where@: the block's entries are on the
+    lines that follow, and a blank line ends it
+    -}
+    Block
+  | -- | the last token cannot end an input: @=@, an operator, @then@, @,@ …
+    Trailing Text
+  deriving stock (Eq, Show)
+
+{- | Whether the REPL input so far, its lines joined by newlines, goes on at
+a continuation line, and why. 'Nothing' means feed it now.
+
+* A @:@ command never goes on.
+* After the first line, a blank line ends the input as it stands.
+* Text that does not lex is fed as it stands, so the lexer's error shows.
+* Otherwise, by the lexer's tokens, comments already gone: an unclosed
+  bracket, a line that ends in @of@ or @where@, or a last token that cannot
+  end an input (@=@, @->@, @\\@, @|@, @,@, @;@, @`@, @√@, an infix operator,
+  @±@, or a keyword other than @true@ and @false@).
+
+A field access glued to a value, @b.mass@, is one token and ends an input;
+a @.@ with nothing after it is composition and does not.
+-}
+continuation :: Text -> Maybe Continuation
+continuation src
+  | ":" `T.isPrefixOf` T.stripStart src = Nothing
+  | T.any (== '\n') src && T.all isSpace (T.takeWhileEnd (/= '\n') src) = Nothing
+  | otherwise = case tokenize src of
+      Left _ -> Nothing
+      Right located ->
+        let
+          -- Layout's separators and block ends are empty; written ones are not.
+          toks = [t | t <- located, t.span.from /= t.span.to]
+          depth = sum (map (bracket . (.value)) toks)
+          lineEnds = map NE.last (NE.groupWith (\t -> t.span.from.line) toks)
+         in
+          case reverse toks of
+            _ | depth > 0 -> Just Unclosed
+            _ | any (opensBlock . (.value)) lineEnds -> Just Block
+            t : _ | cannotEnd t.value -> Just (Trailing (showToken t.value))
+            _ -> Nothing
+ where
+  bracket :: Token -> Int
+  bracket = \case
+    TLParen -> 1
+    TLBracket -> 1
+    TLBrace -> 1
+    TRParen -> -1
+    TRBracket -> -1
+    TRBrace -> -1
+    _ -> 0
+  opensBlock = \case
+    TKw KOf -> True
+    TKw KWhere -> True
+    _ -> False
+  cannotEnd = \case
+    TKw KTrue -> False
+    TKw KFalse -> False
+    TKw _ -> True
+    TEquals -> True
+    TArrow -> True
+    TLambda -> True
+    TBar -> True
+    TComma -> True
+    TSep -> True
+    TSemis _ -> True
+    TBacktick -> True
+    TSqrt -> True
+    TOp _ -> True
+    TPlusMinus _ -> True
+    _ -> False
+
+-- | Whether the input so far goes on at a continuation line: 'continuation'.
+needsMore :: Text -> Bool
+needsMore = isJust . continuation

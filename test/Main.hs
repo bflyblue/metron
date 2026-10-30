@@ -3927,6 +3927,7 @@ respellTests =
         runLinesP [":set unicode on", ":type \\x -> x"] @?= Right ["a → a"]
         runLinesP ["2 +-s 0.1"] @?= Right ["2.0 ±σ 0.1"]
     ]
+
 -- REPL: completion, unicode entry, colour ---------------------------------------
 
 -- | Complete at the end of a line, as haskeline asks: reversed left text.
@@ -4087,6 +4088,74 @@ replTests =
           , "precision 15"
           , "a -> Maybe a -> a"
           ]
+    , testCase "needsMore: brackets, trailing tokens, commands, comments" $ do
+        let more = map R.needsMore
+        more
+          [ "let f x ="
+          , "[1, 2,"
+          , "case s of"
+          , "f (3 m"
+          , "x +"
+          , "\\x ->"
+          , "data Shape = Circle (Num [m]) |"
+          , "λx →"
+          , "f ∘"
+          , "f ."
+          , "3 m ±"
+          , "if c then"
+          , "let x = 1;"
+          , "a `dot`"
+          , "let f x = x\n  where"
+          , "let f x = x + -- more to come\n  1 *"
+          ]
+          @?= replicate 16 True
+        more
+          [ "let f x = x"
+          , "[1, 2; 3, 4]"
+          , "x -- comment ("
+          , "1 + 2 --"
+          , ":ls ("
+          , ":type \\x ->"
+          , "b.mass"
+          , "v.0"
+          , "x == true"
+          , "f (3 m))"
+          , ""
+          , "let f x =\n  x + 1"
+          , "{- unclosed"
+          ]
+          @?= replicate 13 False
+        R.continuation "f (3 m" @?= Just R.Unclosed
+        R.continuation "case s of" @?= Just R.Block
+        R.continuation "x +" @?= Just (R.Trailing "+")
+        R.continuation "let f x =" @?= Just (R.Trailing "=")
+        R.continuation "\\x →" @?= Just (R.Trailing "->")
+    , testCase "needsMore: a block after of runs to a blank line" $ do
+        let opening = "let area s = case s of"
+            two = opening <> "\n  Circle r -> pi * r^2"
+            three = two <> "\n  Rect w h -> w * h"
+        map R.needsMore [opening, two, three] @?= [True, True, True]
+        R.continuation three @?= Just R.Block
+        -- The blank line ends it, here and for an input that would not parse.
+        R.needsMore (three <> "\n") @?= False
+        R.needsMore (three <> "\n   ") @?= False
+        R.needsMore (opening <> "\n") @?= False
+        R.needsMore "let xs = [1,\n" @?= False
+        R.needsMore "let f x = y * 2 where\n  y = x + 1" @?= True
+        -- The joined text parses as one input under the layout rule.
+        runLinesP
+          [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+          , three
+          , ":type area"
+          , "area (Rect (2 m) (3 m))"
+          ]
+          @?= Right
+            [ "Shape -> Num [m^2]"
+            , "6 m^2"
+            ]
+        runLinesP ["let f x = y * 2 where\n  y = x + 1", "f 3"]
+          @?= Right ["8"]
+        runLinesP ["let xs = [1,\n  2, 3]", "xs"] @?= Right ["[1, 2, 3]"]
     ]
  where
   isPrefixOfS p x = take (length p) x == p

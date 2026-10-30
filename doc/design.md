@@ -128,7 +128,8 @@ desugaring (§2.9); the type checker never sees it.
 A *program* (a file, a piped stdin, or one multi-line REPL input) is a sequence of
 statements. All statements in one input form a **binding group**: they may refer
 to each other in any order, and mutual recursion is possible only within a group.
-A single REPL line is a group of one.
+A REPL input of one line is a group of one; an input that goes on at
+continuation lines (§7.3) is one group, as a file is.
 
 ```
 let x = 2 + 3                   -- bind a name
@@ -2293,14 +2294,68 @@ is not `dumb` and `NO_COLOR` is not set:
   the hidden-prelude line of `:ls` and the like.
 - In a `name : type` line of `:ls`, the type is dim.
 - In a value, the trailing unit is dim (`12.566… m^2`, `[1, 2, 3] km s⁻¹`).
-- The prompt is bold.
+- The prompts, `> ` and the continuation prompt `… `, are bold.
 
 `:colour on` and `:colour off` override the default. This is a setting of
 the REPL, not of the session: `:set` does not list it, and the one-shot and
 file modes never colour. The text is the same with colour or without.
 
+**Continuation lines.** An input can span several lines. After each line
+the REPL decides whether the input is finished. If it is not, the REPL
+reads another line at the prompt `… ` and appends it after a newline. The
+input goes on when:
+
+- a `(`, `[` or `{` is not closed;
+- its last token cannot end an input: `=`, `->`, `\`, `|`, `,`, `;`, a
+  backtick, `√`, an infix operator (`+ - * / ^ == /= < <= > >= && || : .
+  ∘` and the others of §2.5), `±` or `±σ`, or a keyword other than `true`
+  and `false` (`of`, `where`, `in`, `then`, `else` and the rest);
+- a line ends in `of` or `where`. The entries of that block follow on
+  indented lines, and the input goes on until a blank line.
+
+The decision reads the lexer's tokens, so a comment never counts: `x -- (`
+is finished, and so is `1 + 2 --`. A field access glued to a value
+(`b.mass`) is one token and ends an input. A `.` with nothing after it is
+composition, so it does not. A `:` command never goes on. Text that does
+not lex is fed as it stands, so the lexer's error shows.
+
+A blank line at the continuation prompt ends the input as it stands. The
+input is then fed, and an unfinished one gives the parser's error as usual.
+Ctrl-C or Ctrl-D at the continuation prompt abandons the input and prints
+`(input abandoned)`. At the `> ` prompt they end the session, as before.
+
+A continuation line keeps its indentation, and the layout rule (§2.2) reads
+the input as it reads a file. A line indented further than the first line
+continues its statement; a line at the first line's column starts a new
+statement in the same binding group.
+
+```
+> data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])
+> let area s = case s of
+…   Circle r -> pi * r^2
+…   Rect w h -> w * h
+…
+> let f x =
+…   x + 1
+> f 2
+3
+```
+
+An input ends at the first line that leaves it finished, unless a block is
+open. So a later line that starts with `where` or `else` is not joined to a
+finished line before it: `let f x = y * 2` is fed before `  where y = x + 1`
+is read. Put the `where` at the end of the first line, or use `:load`.
+
+`eval -i` reads continuation lines in the same way, so a piped script can
+hold multi-line definitions. Each line is echoed after the prompt it was
+read at, `> ` or `… `.
+
 **History.** The line history is the file `history` in the codebase
-directory (§7.4). With `--no-codebase` there is no history file.
+directory (§7.4). With `--no-codebase` there is no history file. Each
+physical line is one entry, so a multi-line input is recalled line by line.
+haskeline writes its history file one entry per line, and its line editor
+does not redraw an entry that contains a newline, so the lines are not
+joined into one entry.
 
 ### 7.4 CLI and persistence
 
