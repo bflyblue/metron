@@ -3706,6 +3706,11 @@ tuned, and compilation is a later milestone.
   is whether the store may then be dropped, which would lose history.
 - Should `:view` of a stale reference print `x#a3f9k` (Unison style) or `#a3f9k`
   alone?
+- Curvilinear coordinates as a declaration: a `coordinates polar = to toPolar
+  from fromPolar` bundling the pair, so `v to polar` reads like `p to eci` and
+  a position can print in polar on request (§3.8). Sugar over two functions;
+  the inverse cannot be checked and `to` on it must stay distinguishable from
+  the exact, affine `to` on a chart. Wait for a use before adding it.
 - Equality on declared types is derived structurally when every field is
   comparable (§4.2), the rule tuples and lists follow. Still open: whether a
   type may opt out, or give its own equality (a fraction kept as an
