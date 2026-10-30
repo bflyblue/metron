@@ -1949,6 +1949,16 @@ unitTests =
             T.isInfixOf "sin takes an angle" err && T.isInfixOf "got Num [m]" err
               @? T.unpack err
           Right v -> assertFailure (show v)
+    , testCase "a rank mismatch names both ranks" $ do
+        case evalText "indices [[1, 2], [3, 4]]" of
+          Left err -> T.isInfixOf "a vector against a matrix" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalText "norm 3" of
+          Left err -> T.isInfixOf "a vector against a number" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalText "[1, 2] + [[1, 2], [3, 4]]" of
+          Left err -> T.isInfixOf "a vector against a matrix" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "tensor literals need one dimension"
         $ case evalText "[1 m, 2 s]" of
           Left err -> T.isInfixOf "same shape" err @? T.unpack err

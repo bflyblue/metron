@@ -243,13 +243,29 @@ bindVar p v arg = do
 unifyShape :: Path -> Shape -> Shape -> Infer ()
 unifyShape p x y = do
   s <- gets (.subst)
-  case (applyShape s x, applyShape s y) of
+  go (applyShape s x) (applyShape s y)
+ where
+  go a b = case (a, b) of
     (SNil, SNil) -> pure ()
     (SVar v, sh) -> bindVar p v (AShape sh)
     (sh, SVar v) -> bindVar p v (AShape sh)
-    (SCons l1 r1, SCons l2 r2) -> unifyLen p l1 l2 >> unifyShape p r1 r2
-    (SNil, SCons _ _) -> failAt p "a number is not a vector"
-    (SCons _ _, SNil) -> failAt p "a vector is not a number"
+    (SCons l1 r1, SCons l2 r2) -> unifyLen p l1 l2 >> go r1 r2
+    -- The ranks differ: say so of the whole shapes, not of the tails.
+    _ -> do
+      s <- gets (.subst)
+      failAt p (describe (applyShape s x) <> " against " <> describe (applyShape s y))
+  describe sh = case rankOf sh of
+    (0, False) -> "a number"
+    (1, False) -> "a vector"
+    (2, False) -> "a matrix"
+    (r, False) -> "a rank-" <> tshow r <> " tensor"
+    (r, True) -> "a tensor of rank at least " <> tshow r
+  -- Leading lengths, and whether a shape variable follows them.
+  rankOf :: Shape -> (Int, Bool)
+  rankOf = \case
+    SNil -> (0, False)
+    SVar _ -> (0, True)
+    SCons _ rest -> let (r, open) = rankOf rest in (r + 1, open)
 
 {- | Design §4.1: literals must agree; a variable plus offset against a
 literal solves the variable when the literal is large enough; two offset
