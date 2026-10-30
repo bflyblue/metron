@@ -224,8 +224,11 @@ Circle` leaves the constructor printing as `#a3f9k.0`, `:view Shape` prints
 the declaration back, and a constructor name and a definition name share one
 namespace, the newer label winning (declaring `data Temp = T (Num [K])`
 unnames the tesla until a `let T = …` takes the name back). A declaration is
-pending in the scratch (§7.5) until `:add`, like a definition. There is no
-`==` on declared types yet, and no records; both are open (§11).
+pending in the scratch (§7.5) until `:add`, like a definition. `==` and `/=`
+work on a declared type when every field of every constructor has equality
+(§4.2), as on tuples and lists: `Circle (1 m) == Circle (1 m)` is true, values
+built by different constructors are unequal, and a type with a function field
+has no equality.
 
 **Records.** A constructor may name its fields, which makes the type a record:
 
@@ -456,7 +459,7 @@ in surface notation.
 | `45°` | `45 * deg` |
 | `√e` | `sqrt e` |
 | `a + b`, `a * b`, `a · b`, … | `add a b`, `outer a b`, `dot a b`, … (every operator is a saturated application of the primitive of the same name; the names work prefix and in backticks) |
-| `a ± e`, `a ±σ e` | also spelled `within a e`, `sigma a e` |
+| `a ± e` | also spelled `within a e`; `±σ` has no prefix name (`sigma` is the accessor of §3.2.9) |
 | `a ± e #s7` | the same, with the unknown named `s7` (§3.2.4) |
 | `v.2` | `proj v 2` (a node with a literal position, §5.1) |
 | `m.1.2` | `proj (proj m 1) 2` |
@@ -760,6 +763,20 @@ confidence, never silently, and a comparison with only bound inputs is rigorous.
 for affine `x`), false if decided non-zero, undecidable otherwise. There is no
 third truth value; error never leaks into control flow silently. Refining by
 re-evaluating at higher `p` is a roadmap item; it can tighten `r`, never `σ`.
+
+Any other policy is written with three accessors that take a value apart the
+way printing collapses it (§3.2.10), per component on a tensor, keeping the
+operand's dimension and display unit: `mid x` is the midpoint, `bound x` the
+bound radius `r = Σ_bound |cᵢ| + slack`, and `sigma x` the standard deviation
+`σ = √(Σ_stat cᵢ²)`. On an exact value they are the value, `0` and `0`.
+`mid` and `bound` are always exact; `sigma` is exact when the variance is the
+square of a rational (`sigma (1 ±σ 0.1)` is `0.1`) and otherwise an enclosure
+of the square root, as `sqrt` gives. So `bound (10 mm ± 0.1 mm)` is `0.1 mm`,
+and "consistent within the bound and three σ" is
+
+```
+let consistent a b = let d = a - b in abs (mid d) <= bound d + 3 * sigma d
+```
 
 #### 3.2.10 Printing
 
@@ -1305,10 +1322,20 @@ unresolved constraint becomes a parameter of the definition instead of a
 default, and `\k v -> k * v` becomes polymorphic in the rank of `k`.
 
 Equality is the single overloaded primitive. `==` and `/=` take two values of one
-type `τ` and emit an **instance constraint** `Eq τ` with exactly two instances,
-`Tensor s` and `Bool`. It is solved the same way: as soon as `τ` is known it is
-checked, at generalisation an unresolved `τ` defaults to `Num`, and any other
-type is a static error ("no equality on functions"). Lint re-checks every solved
+type `τ` and emit an **instance constraint** `Eq τ`. Its instances are
+`Tensor s`, `Bool` and `Point s d`, and structured data whose components have
+equality: a tuple when every component does, a list when its element does,
+and a declared type `T τ…` when every field of every constructor, at those
+arguments, does. Values of data types are equal when their constructors are
+the same and their fields are pairwise equal. For a declared type the
+instance is derived structurally: a recursive occurrence of `T` in its own
+fields is the instance being derived (coinductively), and which of `T`'s
+parameters need equality is a least fixed point over the fields, so `Eq (Tree
+τ)` reduces to `Eq τ`, `Eq Shape` holds outright, and a nested type such as
+`data N a = Z a | S (N (a, a))` is decided without unfolding. It is solved
+the same way: as soon as `τ` is known it is checked, at generalisation an
+unresolved `τ` defaults to `Num`, and any other type is a static error ("no
+equality on Num -> Num"; a declared type with a function field has none). Lint re-checks every solved
 constraint on the elaborated term, so a primitive is never evaluated at a type
 its implementation cannot handle (core.md §9).
 
@@ -1337,6 +1364,9 @@ to          : Num d -> Num d -> Num d                    (and Vec, Mat)
 (±) (±σ)    : Num d -> Num d -> Num d                    (and Vec, Mat)
 sqrt        : Num [d^2] -> Num d
 abs         : Num d -> Num d
+mid         : Tensor s d -> Tensor s d               -- per component: the midpoint, exact (3.2.9)
+bound       : Tensor s d -> Tensor s d               -- per component: Σ_bound |cᵢ| + slack, exact
+sigma       : Tensor s d -> Tensor s d               -- per component: √(Σ_stat cᵢ²), exact or enclosed
 floor ceil round : Num 1 -> Num 1
 sin cos tan : Num [rad] -> Num 1
 asin acos atan : Num 1 -> Num [rad]
@@ -2166,10 +2196,10 @@ tuned, and compilation is a later milestone.
 
 - Comparison operators beyond the certain `<` and `==` (§3.2.9): possible
   comparisons `<?` and `=?` ("consistent with", at `k` sigma for statistical
-  nudges), tolerance equality `a ≈ b within t`, enclosure containment, and the
-  accessors `mid`, `bound`, `sigma` that let a user write any policy. A
-  three-valued boolean that flows into `if` is ruled out. The accessors are the
-  cheapest and the most general, so they come first.
+  nudges), tolerance equality `a ≈ b within t`, and enclosure containment. The
+  accessors `mid`, `bound`, `sigma` that let a user write any policy exist
+  (§3.2.9), so each of these can be tried as a prelude definition before it
+  earns an operator. A three-valued boolean that flows into `if` is ruled out.
 - Keep `h` for hour, given `h` is also the hecto prefix in compound names like
   `hPa`? (The prefix only ever appears attached to a unit, so there is no lexical
   clash, but readers may stumble.)
@@ -2187,8 +2217,11 @@ tuned, and compilation is a later milestone.
   source files (text, reviewable in diffs) and treat the store as a cache?
 - Should `:view` of a stale reference print `x#a3f9k` (Unison style) or `#a3f9k`
   alone?
-- Equality on declared types: derive `==` structurally when every field is
-  comparable (the rule tuples and lists follow), or make it opt-in per type?
+- Equality on declared types is derived structurally when every field is
+  comparable (§4.2), the rule tuples and lists follow. Still open: whether a
+  type may opt out, or give its own equality (a fraction kept as an
+  unreduced pair, which structural equality calls unequal to its reduced
+  form).
 - Record values print positionally. Printing `Body {mass = 5 kg, …}` needs
   the field labels at print time, which the hash-only printer does not have;
   a namer for fields, as for references, would give it.

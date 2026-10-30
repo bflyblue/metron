@@ -235,3 +235,21 @@
   migrated in place and reported), merging again adds nothing, and the
   `history` file is left alone. `Eval.Store.mergeStores` and `mergeStore`
   expose it as a library function returning a `MergeReport`.
+- `==` and `/=` on declared types (design §2.3, §4.2), derived structurally
+  as for tuples and lists: a type has equality when every field of every
+  constructor, at the type's arguments, has it. `Circle (1 m) == Circle (1
+  m)` is true, values of different constructors are unequal, and `Just 1 ==
+  Just 1` works. A recursive occurrence counts as the instance being
+  derived, and which parameters need equality is a fixed point over the
+  fields, so nested types (`data N a = Z a | S (N (a, a))`) are decided
+  too. A type with a function field still has none.
+- `mid`, `bound` and `sigma` (design §3.2.9): three primitives, elementwise
+  on tensors (`Tensor s d -> Tensor s d`), that take an enclosure apart the
+  way the printer collapses it, keeping the operand's dimension and display
+  unit: the midpoint, the bound radius `Σ_bound |cᵢ| + slack`, and the
+  standard deviation `√(Σ_stat cᵢ²)`. `mid` and `bound` are exact; `sigma`
+  is exact when the variance is a square and otherwise an enclosure of the
+  root. `bound (10 mm ± 0.1 mm)` is `0.1 mm`, and a comparison policy of
+  one's own is a definition. **Breaking**: `sigma` was the prefix spelling of
+  `±σ` (`sigma a e`); that spelling is gone, write `a ±σ e` or `a +-s e`.
+  `within a e` stays. Stored terms are unaffected: `±σ` is its own Core node.

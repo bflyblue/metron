@@ -1978,6 +1978,41 @@ affineTests =
           evalText "(6.67430e-11 ±σ 1.5e-15) * (2 ± 0.1)"
             @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12)"]
           evalText "(1 ±σ 0.1) * (1 ±σ 0.1)" @?= Right ["1.00 ±σ 0.14 (bound 0.01)"]
+    , testCase "mid, bound and sigma take an enclosure apart" $ do
+        let parts x = map (\f -> evalP (f <> " (" <> x <> ")")) ["mid", "bound", "sigma"]
+        parts "1 ± 0.1" @?= [Right ["1"], Right ["0.1"], Right ["0"]]
+        parts "1 ±σ 0.1" @?= [Right ["1"], Right ["0"], Right ["0.1"]]
+        parts "(1 ± 0.1) + (2 ± 0.2)" @?= [Right ["3"], Right ["0.3"], Right ["0"]]
+        parts "(1 ±σ 0.1) * 2 + (1 ± 0.05)"
+          @?= [Right ["3"], Right ["0.05"], Right ["0.2"]]
+        parts "5" @?= [Right ["5"], Right ["0"], Right ["0"]]
+        parts "1/3" @?= [Right ["0.33333333333333333333…"], Right ["0"], Right ["0"]]
+        -- the bound of a nonlinear result is the printed one
+        evalP "bound ((5 ± 0.1) * (5 ± 0.1))" @?= Right ["1.01"]
+        -- the operand's dimension and display unit
+        evalP "bound (10 mm ± 0.1 mm)" @?= Right ["0.1 mm"]
+        evalP "mid (10 mm ± 0.1 mm)" @?= Right ["10 mm"]
+        evalP "sigma (2 km ±σ 3 m)" @?= Right ["0.003 km"]
+        -- elementwise on tensors
+        evalP "bound ([1, 2] m ± 0.1 m)" @?= Right ["[0.1, 0.1] m"]
+        evalP "mid ([1, 2; 3, 4] ±σ 0.5)" @?= Right ["[1, 2; 3, 4]"]
+        evalP "sigma ([1, 2] ±σ 0.5)" @?= Right ["[0.5, 0.5]"]
+        -- σ is a square root: exact when the variance is a square, an
+        -- enclosure otherwise
+        case evalP "sigma ((1 ±σ 0.1) + (1 ±σ 0.1 #other))" of
+          Right [v] -> T.isPrefixOf "0.1414213562" v @? T.unpack v
+          other -> assertFailure (show other)
+        typeOfTextP "mid" @?= Right "Tensor s d -> Tensor s d"
+        typeOfTextP "bound" @?= Right "Tensor s d -> Tensor s d"
+        typeOfTextP "sigma" @?= Right "Tensor s d -> Tensor s d"
+        typeOfTextP "bound (1 m ± 1 cm)" @?= Right "Num [m]"
+        -- a policy of one's own: consistent within the bound and three σ
+        runLinesP
+          [ "let consistent a b = let d = a - b in abs (mid d) <= bound d + 3 * sigma d"
+          , "consistent (5 ± 0.1) (5.05)"
+          , "consistent (5 ±σ 0.01) (5.1)"
+          ]
+          @?= Right ["true", "false"]
     , testCase "noise and gauss are vectors of unit nudges" $ do
         evalText "noise 2" @?= Right ["[0 ± 1, 0 ± 1]"]
         evalText "gauss 1" @?= Right ["[0 ±σ 1]"]
@@ -2901,6 +2936,89 @@ dataTests =
             , "5 kg"
             , "data E = E (Num [kg m^2 s^-2]) (Num [kg m s^-2]) (Num [m s^-2]) (Point [K]) Bool (Num, {Num [m]})"
             ]
+    , testCase "declared types: == and /= when every field compares" $ do
+        runLinesP
+          [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+          , "Circle (1 m) == Circle (1 m)"
+          , "Circle (1 m) == Circle (100 cm)"
+          , "Circle (1 m) == Circle (2 m)"
+          , "Circle (1 m) == Rect (1 m) (1 m)"
+          , "Rect (1 m) (2 m) /= Rect (1 m) (2 m)"
+          , "{Circle (1 m)} == {Circle (1 m)}"
+          , "(Circle (1 m), true) == (Circle (1 m), false)"
+          , "data Maybe a = Nothing | Just a"
+          , "Just 1 == Just 1"
+          , "Nothing == Just 1"
+          , "Just (Circle (1 m)) == Just (Circle (1 m))"
+          , "Just {1, 2} /= Just {1, 2, 3}"
+          , ":type \\x -> Just x == Nothing"
+          ]
+          @?= Right
+            [ "true"
+            , "true"
+            , "false"
+            , "false"
+            , "false"
+            , "true"
+            , "false"
+            , "true"
+            , "false"
+            , "true"
+            , "true"
+            , "Num -> Bool"
+            ]
+        -- Recursive types: the self occurrence is the instance being derived.
+        runLinesP
+          [ "data Tree a = Leaf | Node (Tree a) a (Tree a)"
+          , "let t = Node (Node Leaf (1 kg) Leaf) (2 kg) Leaf"
+          , "t == Node (Node Leaf (1 kg) Leaf) (2 kg) Leaf"
+          , "t == Node (Node Leaf (1 kg) Leaf) (2 kg) (Node Leaf (3 kg) Leaf)"
+          , "t == Node Leaf (2 kg) Leaf"
+          , "Leaf == Node Leaf 1 Leaf"
+          , "data Pair a b = Pair a b"
+          , "Pair 1 2 == Pair 1 2"
+          , "Pair 1 (2 m) == Pair 1 (3 m)"
+          , "Pair (Leaf, true) {1} == Pair (Leaf, true) {1}"
+          , -- a nested type: the recursion is at another argument
+            "data Nest a = Flat a | Deep (Nest (a, a))"
+          , "Deep (Flat (1, 2)) == Deep (Flat (1, 2))"
+          , "Deep (Flat (1, 2)) == Flat 1"
+          , -- a parameter no field compares asks nothing of its argument
+            "data Tag a = Tag | Wrap (Tag (a -> a))"
+          , "Wrap Tag == Wrap Tag"
+          ]
+          @?= Right
+            [ "true"
+            , "false"
+            , "false"
+            , "false"
+            , "true"
+            , "false"
+            , "true"
+            , "true"
+            , "false"
+            , "true"
+            ]
+        -- Uncertain fields compare as numbers do.
+        runLinesP
+          [ "data Shape = Circle (Num [m])"
+          , "let c = Circle (1 m ± 1 mm)"
+          , "c == c"
+          , "c == Circle (2 m)"
+          ]
+          @?= Right ["true", "false"]
+        let refused src needle = case runLinesP src of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+        refused
+          ["data F = F (Num -> Num)", "F (\\x -> x) == F (\\x -> x)"]
+          "no equality on F"
+        refused
+          ["data H = H Num | G (Num, Num -> Num)", "H 1 == H 1"]
+          "no equality on H"
+        refused
+          ["data Maybe a = Nothing | Just a", "Just (\\x -> x + 1) == Nothing"]
+          "no equality on Num -> Num"
     , testCase "records: named fields, construction, access, update, printing" $ do
         runLinesP
           [ "data Body = Body {mass :: Num [kg], pos :: Vec 3 [m], vel :: Vec 3 [m/s]}"
@@ -3016,9 +3134,6 @@ dataTests =
         refused
           ["data Maybe a = Nothing | Just a", "case Just 1 of Nothing -> 0; Just -> 1"]
           "has 1 fields"
-        refused
-          ["data Maybe a = Nothing | Just a", "Just 1 == Just 1"]
-          "no equality on Maybe"
         refused
           ["data Shape = Circle (Num [m])", "Circle 1"]
           "expected Num [m], got Num"

@@ -515,6 +515,16 @@ runPrim cfg rt prim args = case (prim, args) of
   ("sub", [a, b]) -> elementwise2 (pureOp subM) const (combine smallerUnit) a b
   ("neg", [a]) -> elementwise1 negM a
   ("abs", [a]) -> elementwise1 (absM p) a
+  -- The parts of an enclosure as the printer collapses it (design §3.2.9,
+  -- §3.2.10), each exact but sigma: the midpoint, the bound radius
+  -- Σ_bound |cᵢ| + slack, and the standard deviation √(Σ_stat cᵢ²), exact
+  -- when the variance is a square and otherwise an enclosure of the root.
+  ("mid", [a]) -> elementwise1 (Exact . midpoint) a
+  ("bound", [a]) -> elementwise1 (\x -> Exact (collapse x).bound) a
+  ("sigma", [a]) -> do
+    (dims, d, hint, buf) <- tensor =<< a
+    let sd x = arith (sqrtM p (Exact (collapse x).variance))
+    Right (VTensor dims d hint (V.map (>>= sd) buf))
   ("emul", [a, b]) -> elementwise2 (pureOp (mulM p)) dimMul (combine (hintMul p)) a b
   ("ediv", [a, b]) ->
     elementwise2
