@@ -797,6 +797,7 @@ freeNames = go Set.empty
     S.FieldOf a _ -> go bound a
     S.Record hd fs -> go bound hd <> foldMap (go bound . snd) fs
     S.Ascribe a _ -> go bound a
+    S.ChartForm s o g -> go bound s <> go bound o <> foldMap (go bound) g
   opNames = \case
     S.Infix n -> Set.singleton n
     _ -> Set.empty

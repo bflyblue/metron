@@ -143,7 +143,8 @@ f 3 4                           -- a bare expression: evaluate and print
 A `let` without `in` at the top level *proposes* a definition: it goes into the
 scratch (§7.5), where it is checked, hashed and usable by later expressions but
 not stored. `unit name = e` is the same with the name additionally marked as a
-display unit (§3.2.12), and `chart name = step at origin` a chart (§3.6, §3.8). A `data`
+display unit (§3.2.12), and `chart name = step at origin [parent] [by B]` a chart
+(§3.6, §3.8). A `data`
 declaration (§2.3) proposes a type the same way. `:add` and `:update` move
 scratch definitions into the codebase (§7).
 Within one input a name may be defined only once, as in a Haskell module; across
@@ -439,12 +440,14 @@ program    ::= statement ( sep statement )*
 sep        ::= newline-at-column-0 | ';'
 statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | 'unit' name '=' expr                      -- a display unit (3.2.12)
-             | 'chart' name '=' expr 'at' expr            -- a chart for points (3.6); 'scale' is the old spelling
+             | 'chart' name '=' expr 'at' origin [ 'by' expr ]   -- a chart (3.6, 3.8); 'scale' is the old spelling
              | ['structural'] 'data' name param* '=' con ( '|' con )*   -- a data type (2.3)
              | 'namespace' path statements                -- an indented block (7.6)
              | 'use' [ '.' ] path [ 'as' name ]            -- 'as' is a name, not a keyword (7.6)
              | name '::' type                             -- a signature (4.8)
              | expr
+origin     ::= expr                                   -- a chart name juxtaposed last is the parent (3.8);
+                                                       -- 'by' is a keyword here only, cut at the first one outside brackets
 path       ::= name ( '.' name )*                       -- glued dots
 statements ::= statement ( sep statement )*            -- indented block, opened as after 'where'
 qname      ::= [ '.' ] name ( '.' name )*              -- a qualified or absolute name (7.6)
@@ -1656,12 +1659,12 @@ of mixed dimensions: a measurement vector of mixed dimension (range and
 range rate together) makes `S` itself a 2×2 block matrix, whose inverse is a
 Schur-complement formula over the blocks. When either appears in real use,
 route A is the next step, and its rules are above.
-### 3.8 Charts: frames with an orientation (design; not yet built)
+### 3.8 Charts: frames with an orientation (the word, the value and the translated tree built; rotation next)
 
 A `scale` (§3.6) is a coordinate chart with two of its three parts set: a
 step unit and an origin. The third part is an orientation, and with it the
 same construct describes a temperature scale, a surveyed site, an orbital
-frame and a rotating planet. The declaration is renamed `chart`, with `scale`
+frame and a rotating planet. The declaration is renamed `chart` (built), with `scale`
 kept as a spelling; nothing about §3.6 changes except that a chart may also
 say which way its axes point.
 
@@ -1675,8 +1678,8 @@ axis-aligned chart has `B = 0`, and that is every chart written today.
 ```
 chart degC = K at 273.15 K                         -- step, origin
 chart site = m at [100, 200, 0] m                  -- step, origin
-chart lvlh = m at r0 by B                          -- step, origin, orientation
-chart ecef t = m at [0, 0, 0] m by rotz (gmst t) spinning [0, 0, ω_earth]  -- moving
+chart lvlh = m at r0 eci by B                      -- step, origin, parent, orientation
+chart ecef t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, ω_earth]  -- moving
 ```
 
 Why the generator and not the matrix: `exp` of an antisymmetric matrix is
@@ -1720,7 +1723,7 @@ the origin:
 
 ```
 chart eci       = m at [0, 0, 0] m                        -- the root for positions
-chart perifocal = m at [0, 0, 0] eci by euler313 Ω i ω    -- rotated, same origin
+chart perifocal = m at [0, 0, 0] m eci by euler313 Ω i ω  -- rotated, same origin
 chart site      = m at [6378, 0, 0] km eci                -- translated
 chart antenna   = m at [2, 0, 1] m site by rotz (30 deg)  -- relative to site
 ```
@@ -1731,6 +1734,41 @@ reference to a definition, so the chart tree and the namespace tree are
 unrelated, and renaming a chart changes nothing. None of this needs §3.7's
 route A: a rotation is dimensionless and a chart has one dimension on every
 axis, so every conversion stays homogeneous.
+
+**Built: the parent and `by`, and the translated tree.** The statement is
+`chart name = step at origin [parent] [by B]` (§2.7). The parent is a chart
+name juxtaposed after the origin, which is the quantity rule's own reading:
+the parser keeps it in the origin, since only the desugarer knows which
+names are charts, and the desugarer splits it off when the last atom of the
+origin's quantity chain (`[2, 0, 1] m site`) or application (`r0 eci`) is a
+chart name. An origin that ended in a chart name was a point, never an
+amount, so a chart written before reads the same, with one exception: an
+origin that applied a function to a chart, `scale x = m at f eci`, now reads
+`eci` as the parent (stored Core is unaffected; bind `f eci` to a name to
+keep it). A trailing unit is
+still a unit (`chart warm = K at 300 K`). An origin built with an operator
+is parenthesised before the parent, `m at (r0 + r0) site`, and a function
+applied to a chart cannot stand last in the origin (bind it to a name
+first). `by` is a keyword in this statement only: the statement's tokens are
+cut at the first `by` outside brackets, so `by B * pi / 6` keeps its whole
+expression and `let by = 5` is still a name everywhere else. A turned chart
+names the chart it is turned from: `by` without a parent is refused, "a
+turned chart names the chart its axes are turned from", which keeps three
+forms and three primitives (`mkScale`, `mkChart3`, `mkChart4`, below). The
+origin is an amount from the parent's origin along the parent's axes, so
+`chart site = m at [6378, 0, 0] km eci` and `chart antenna = m at [2, 0, 1]
+m site` put `[0, 0, 0] antenna` at `[6378002, 0, 1] eci`. Points stay
+amounts from the base origin, so for translated charts `to` and `.-`
+through the tree are the kernels §3.6 already had: `[1, 2, 3] antenna to
+eci` is `[6378003, 2, 4] eci` and converts back exactly, `[1, 2, 3] antenna
+.- [0, 0, 0] site` is `[3, 2, 4] m`, a chart with no parent composes with
+the tree unchanged, and temperature charts are untouched. `:view` and
+`:edit` print `chart antenna = m at [2, 0, 1] m site`: a literal and a unit
+before the parent read back as a quantity, anything else parenthesised,
+and re-entering it gives the same hash. A chart with a generator, or under
+one, is stored and printed with its `by`, and `to` it, or a point written on
+it, is refused, "rotated charts are not yet supported: coming with expm",
+until the rotation is built.
 
 **Moving charts and the transport term.** A chart that moves is a function of
 an epoch to a chart, and the epoch is itself a point on a time chart (`unix`,
@@ -1823,15 +1861,20 @@ hands, meet:
   `rotation a b` (the bivector taking `a` to `b`), `euler313 Ω i ω`
   (composed at the matrix level: it returns the matrix, not a bivector, and
   its name says the sequence).
-- Printed type: `Chart (Vec 3 [m])`, `Chart [K]`; `:ls --charts`; `:view`
-  of a chart prints `chart name = step at origin [parent] [by B] [spinning ω]`
-  with the optional parts only when set.
+- **Built.** Printed type: `Chart (Vec 3 [m])`, `Chart [K]` (`Scale` is read
+  as `Chart`); `:ls --charts` (`--scales` accepted); `:view` and `:edit` of a
+  chart print `chart name = step at origin [parent] [by B]` with the optional
+  parts only when set (`spinning ω` comes with phase C).
 
-**Open, to settle when building:** the exact keywords for the optional parts
-(`by`, `spinning`, the parent after the origin); whether `eci` is a library
-definition or a primitive root; whether `rotz` and friends return a bare
-bivector or a wrapper, if `by` must be kept from accepting an arbitrary
-matrix; and the exponential series on enclosures beyond a single plane.
+**Open, to settle when building:** the keyword for the spin (`spinning`,
+phase C; the parent after the origin and `by` are settled, above); whether
+`eci` is a library definition or a primitive root (none is shipped yet: a
+user's `chart eci = m at [0, 0, 0] m` is a root like any chart without a
+parent); whether `rotz` and friends return a bare bivector or a wrapper, if
+`by` must be kept from accepting an arbitrary matrix (today `by` takes any
+dimensionless `Mat n n` that is exactly antisymmetric, so `rotz θ` must
+strip the `Ang` dimension of `θ` to be accepted); and the exponential series
+on enclosures beyond a single plane.
 
 **Axis sets.** Named positions and vectors typed by their axes are designed in
 §3.9, to be decided with charts: a chart is an axis set with an origin, and
