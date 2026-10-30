@@ -1709,6 +1709,17 @@ enclosure for the angle, so `R` has affine entries and `R @ r` carries the
 chart's uncertainty, correlated across components as always (§3.4). No part
 of this design is about error; it inherits §3.2.
 
+**Charts are affine; curvilinear coordinates are functions.** Polar and
+spherical coordinates are not charts here: the map is nonlinear, its
+coordinates have mixed dimensions (`r` in metres, the angles in radians), and
+differences of polar coordinates are not displacements, so a `Point` on such
+a chart would break the law `.-` exists to guarantee. They are ordinary
+functions to a record of amounts, `toPolar v = Polar {r = norm v, theta =
+atan2 v.1 v.0, …}`, and the affine arithmetic linearises them, so
+`crossCovariance` of the result's components is the Jacobian-propagated
+covariance with no extra machinery (§3.4, §3.7). Range, azimuth and
+elevation from a station are `to` the station's chart, then such a function.
+
 **What stays as it is.** Points and amounts keep their types and operators;
 `unit` stays separate from `chart`, because a unit is a basis element of a
 vector space and a chart puts coordinates on an affine space, and that
