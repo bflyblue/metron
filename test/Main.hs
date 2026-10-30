@@ -1795,47 +1795,49 @@ turnedChartTests =
             , "[0, 0, 0] lvlh"
             ]
     , testCase
-        "two levels: the rotations compose in order, the origin turns with the parent" $ do
-        -- arm is turned from lvlh by rotx (90 deg), its origin [0, 2, 5] m
-        -- along lvlh's axes. By hand: R = Rz(90) Rx(90) = [0, 0, 1; 1, 0, 0;
-        -- 0, 1, 0], the origin [7000000, 0, 0] + Rz(90) [0, 2, 5] =
-        -- [6999998, 0, 5], so [1, 2, 3] arm is [6999998, 0, 5] + [3, 1, 2].
-        -- The product reversed would give [-2, -3, 1] for R [1, 2, 3], and
-        -- the origin not turned [7000000, 2, 5].
-        let arm = frame ++ ["chart arm = m at [0, 2, 5] m lvlh by rotx (90 deg)"]
-        runLinesP
-          ( arm
-              ++ [ encloses "1e-20" (fromEci "[1, 2, 3] arm") "[7000001, 1, 7]"
-                 , encloses "1e-20" (fromEci "[0, 0, 0] arm") "[6999998, 0, 5]"
-                 , encloses "1e-20" "rotationOf arm" "[0, 0, 1; 1, 0, 0; 0, 1, 0]"
-                 , encloses
-                     "1e-20"
-                     "transformBy (expm (-(rotx (90 deg))) @ expm (-(rotz (90 deg)))) (([7000001, 1, 7] eci .- [0, 0, 0] arm) / m)"
-                     "[1, 2, 3]"
-                 , "[7000001, 1, 7] eci to arm"
-                 ]
-          )
-          @?= Right
-            [ "true"
-            , "true"
-            , "true"
-            , "true"
-            , "[1.0000000000000000000…, 1.9999999999999999999…, 3.0000000000000000000…] arm"
-            ]
+        "two levels: the rotations compose in order, the origin turns with the parent"
+        $ do
+          -- arm is turned from lvlh by rotx (90 deg), its origin [0, 2, 5] m
+          -- along lvlh's axes. By hand: R = Rz(90) Rx(90) = [0, 0, 1; 1, 0, 0;
+          -- 0, 1, 0], the origin [7000000, 0, 0] + Rz(90) [0, 2, 5] =
+          -- [6999998, 0, 5], so [1, 2, 3] arm is [6999998, 0, 5] + [3, 1, 2].
+          -- The product reversed would give [-2, -3, 1] for R [1, 2, 3], and
+          -- the origin not turned [7000000, 2, 5].
+          let arm = frame ++ ["chart arm = m at [0, 2, 5] m lvlh by rotx (90 deg)"]
+          runLinesP
+            ( arm
+                ++ [ encloses "1e-20" (fromEci "[1, 2, 3] arm") "[7000001, 1, 7]"
+                   , encloses "1e-20" (fromEci "[0, 0, 0] arm") "[6999998, 0, 5]"
+                   , encloses "1e-20" "rotationOf arm" "[0, 0, 1; 1, 0, 0; 0, 1, 0]"
+                   , encloses
+                       "1e-20"
+                       "transformBy (expm (-(rotx (90 deg))) @ expm (-(rotz (90 deg)))) (([7000001, 1, 7] eci .- [0, 0, 0] arm) / m)"
+                       "[1, 2, 3]"
+                   , "[7000001, 1, 7] eci to arm"
+                   ]
+            )
+            @?= Right
+              [ "true"
+              , "true"
+              , "true"
+              , "true"
+              , "[1.0000000000000000000…, 1.9999999999999999999…, 3.0000000000000000000…] arm"
+              ]
     , testCase
-        "an origin is an amount along the parent's axes, not steps of the parent" $ do
-        runLinesP
-          [ eci
-          , "chart kmc = km at [0, 0, 0] km eci"
-          , "chart sub = m at [1, 0, 0] km kmc"
-          , "[0, 0, 0] sub to eci"
-          , "chart kmt = km at [0, 0, 0] km eci by rotz (90 deg)"
-          , "chart subt = m at [1, 0, 0] km kmt"
-          , encloses "1e-20" (fromEci "[0, 0, 0] subt") "[0, 1000, 0]"
-          , -- a chart under a turned one, not turned itself, has its parent's axes
-            encloses "1e-20" (fromEci "[1, 0, 0] subt") "[0, 1001, 0]"
-          ]
-          @?= Right ["[1000, 0, 0] eci", "true", "true"]
+        "an origin is an amount along the parent's axes, not steps of the parent"
+        $ do
+          runLinesP
+            [ eci
+            , "chart kmc = km at [0, 0, 0] km eci"
+            , "chart sub = m at [1, 0, 0] km kmc"
+            , "[0, 0, 0] sub to eci"
+            , "chart kmt = km at [0, 0, 0] km eci by rotz (90 deg)"
+            , "chart subt = m at [1, 0, 0] km kmt"
+            , encloses "1e-20" (fromEci "[0, 0, 0] subt") "[0, 1000, 0]"
+            , -- a chart under a turned one, not turned itself, has its parent's axes
+              encloses "1e-20" (fromEci "[1, 0, 0] subt") "[0, 1001, 0]"
+            ]
+            @?= Right ["[1000, 0, 0] eci", "true", "true"]
     , testCase "a sequence with then is the Euler product, applied in order" $ do
         let pf =
               eci
@@ -1886,6 +1888,7 @@ turnedChartTests =
             ]
     , testCase "a covariance and a Cov2 block through inChart are R P Rᵀ" $ do
         let pm = "[[4, 1, 0], [1, 9, 0], [0, 0, 1]]"
+        typeOfTextP "inChart" @?= Right "Chart (Vec n d) -> Tensor s d1 -> Tensor s d1"
         runLinesP
           ( frame
               ++ [ encloses
@@ -1944,6 +1947,18 @@ turnedChartTests =
         let hashAfter def = runLinesP [eci, def, ":hash pf"]
         expecting (runLinesP [eci, pf, ":edit pf"]) $ \outs ->
           hashAfter (T.strip (last outs)) @?= hashAfter pf
+    , testCase "design §12: a perifocal chart" $ do
+        runLinesP perifocalSession
+          @?= Right
+            [ "chart pf = km at [0, 0, 0] km eci by rotz (30 * deg) then rotx (45 * deg) then rotz (60 * deg)"
+            , "[887785.38831025442775…, 5462310.6012293745031…, 4286607.0498705616718…] eci"
+            , "[6999.9999999999999999…, -1.3e-20 ± 9.1e-20, 6e-21 ± 2.4e-20] pf"
+            , "[-6.9508252147247766082…, -0.95119863033241545830…, 2.6516504294495532165…] km s^-1"
+            , "[4.5767451288348659649…, -1.3794313182928119555…, 1.0170048711651340350…; -1.3794313182928119555…, 4.0482548711651340350…, -3.5986214154904359879…; 1.0170048711651340350…, -3.5986214154904359879…, 5.3749999999999999999…] km^2"
+            ]
+        expectError
+          (runLinesP (take 4 perifocalSession ++ ["rp.0"]))
+          "error: a component of a point on a turned chart: take it on an axis-aligned chart, (p to eci).0"
     , testCase "a sequence-turned chart survives a reload" $ withTempStore $ \dir -> do
         s <-
           persistLines
@@ -1965,6 +1980,24 @@ turnedChartTests =
   eci = "chart eci = m at [0, 0, 0] m"
   frame = [eci, "chart lvlh = m at [7000, 0, 0] km eci by rotz (90 deg)"]
   fromEci p = "((" <> p <> ") .- [0, 0, 0] eci) / m"
+
+{- | The session of design §12, "A perifocal chart": a chart turned by the
+3-1-3 sequence of an orbit's elements, a point on it, and a covariance
+given along its axes.
+-}
+perifocalSession :: [Text]
+perifocalSession =
+  [ "chart eci = m at [0, 0, 0] m"
+  , "chart pf = km at [0, 0, 0] km eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"
+  , ":view pf"
+  , "let rp = [7000, 0, 0] pf"
+  , "rp to eci"
+  , "(rp to eci) to pf"
+  , "let vp = inChart pf ([0, 7.5, 0] km/s)"
+  , "vp to km/s"
+  , "let p = [[1, 0, 0], [0, 4, 0], [0, 0, 9]] km^2"
+  , "inChart pf p to km^2"
+  ]
 
 -- | Design §3.3, §3.8: @expm@, @transformBy@ and the bivector constructors.
 rotationTests :: TestTree

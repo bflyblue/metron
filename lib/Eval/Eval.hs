@@ -355,7 +355,7 @@ eval cfg rt = go
         VPoint _ _ (Just sc) _
           | turned sc ->
               Left
-                ( Unsupported
+                ( Eval.Eval.Domain
                     "a component of a point on a turned chart: take it on an axis-aligned chart, (p to eci).0"
                 )
         VPoint dims d sc buf -> slice dims (\rest -> VPoint rest d (sliceChart <$> sc)) buf
@@ -1400,7 +1400,7 @@ chartFrame p n parentChart gens =
   local sign gs = Just (foldr1 (\a b -> matrixProduct p n <$> a <*> b) (map (expOf . sign) gs))
   expOf g = do
     rows <- arith (matrixExp p n (chunk (V.toList g)))
-    Right (V.fromList (concat rows))
+    Right (V.fromList (map (tidyM p) (concat rows)))
   chunk xs
     | null xs = []
     | otherwise = let (r, rest) = splitAt n xs in r : chunk rest
