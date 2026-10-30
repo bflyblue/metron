@@ -456,6 +456,10 @@ exponents, `->`, `\` and `<= >= /= ||` to their unicode spellings; the
 list there is the exact set for output. It also echoes each statement line in
 its unicode spelling, a re-spelling of the tokens as typed (§7.3).
 
+In the REPL a character can be typed by name, as in Julia: `\mu` then TAB
+becomes `μ`, `\pm` becomes `±`, `\^2` becomes `²`. §7.3 has the details;
+every entry lexes as its ASCII spelling here, or is an identifier letter.
+
 ### 2.9 Sugar and desugaring
 
 Everything in this table is removed before Core. The right column is Core written
@@ -2184,6 +2188,7 @@ Session
 :budget e          error budget (3.2.6)
 :covariance e      covariance (or variance) of the statistical nudges, and the bound box (3.5)
 :load file         enter a file into the scratch as one binding group
+:colour [on|off]   colour the REPL's output; alone, say whether it is on (a REPL-level setting, below)
 :quit
 ```
 
@@ -2233,6 +2238,69 @@ used, and `:exact it` labels that nudge `it`. An input that fails leaves the
 previous `it`; before the first expression, `it` is an unknown name. `it` is
 local to the session (§7.5): `:ls`, `:edit`, `:alias` and `:dependents` do
 not see it.
+#### The REPL
+
+The interactive REPL adds editing aids on top of the commands. None of them
+changes what an input means or the text it prints.
+
+**Completion.** TAB completes the word before the cursor:
+
+- at the start of a line, a `:` command;
+- after `:set`, the setting; after `:set unicode` and `:colour`, `on` or `off`;
+- after `:load`, a file name;
+- after a `.` glued to a value, a record field name (`b.ma` gives `b.mass`);
+- elsewhere, a name the session sees (definitions, units, types and
+  constructors, pending ones included) or a keyword.
+
+The prelude has many hundreds of names, so a short prefix can list many
+candidates.
+
+**Unicode by name.** A backslash, a name, then TAB enters a character, as
+in Julia: `\mu` gives `μ`. When the typed name is a whole entry, it is
+replaced, so `\pm` gives `±` although `\pms` exists. Otherwise TAB lists
+the entries that start with it. The table is in `Eval.Unicode`:
+
+| Names | Result |
+|---|---|
+| `\alpha` … `\omega` (`\lambda` is the lambda `λ`, `\pi` is `π`) | Greek letters |
+| `\Gamma` `\Delta` `\Theta` `\Lambda` `\Xi` `\Pi` `\Sigma` `\Upsilon` `\Phi` `\Psi` `\Omega` | the capitals that do not look like Latin ones |
+| `\micro` `\ohm` | `μ` `Ω`, the forms the lexer folds `µ` and `Ω` to |
+| `\to` `\otimes` `\cdot` `\times` `\odot` `\oslash` `\div` | `→` `⊗` `·` `×` `⊙` `⊘` `÷` |
+| `\le` `\ge` `\ne` `\or` `\neg` `\wedge` `\star` `\circ` `\sqrt` | `≤` `≥` `≠` `∨` `¬` `∧` `⋆` `∘` `√` |
+| `\pm` `\pms` | `±` `±σ` |
+| `\deg` `\degC` `\degF` `\prime` `\dprime` | `°` `°C` `°F` `′` `″` |
+| `\^0` … `\^9` `\^-` | `⁰` … `⁹` `⁻` |
+| `\_0` … `\_9` | `₀` … `₉`, inside identifiers |
+
+`\leq`, `\geq`, `\neq`, `\vee`, `\lnot`, `\rightarrow` and `\pprime` are
+aliases. There is no `\and`: `∧` is the wedge product, and boolean and is
+`&&` only (§2.8). Every entry lexes to the same tokens as its ASCII
+spelling in §2.8, or is a letter that is valid in an identifier. Two kinds
+of entry have tokens of their own: a superscript and `√`. For these, the
+value must equal that of the caret power or of `sqrt`. The test suite
+checks all of this against the lexer.
+
+A word that starts with `\` completes from this table only, never from
+names. Nobody presses TAB in a lambda such as `\x -> x`, so the two uses
+never meet; TAB after `\x` would offer `\xi`.
+
+**Colour.** The REPL colours its output when stdout is a terminal, `TERM`
+is not `dumb` and `NO_COLOR` is not set:
+
+- In an error, the `error at` line and the message are red and the carets
+  bold red. The source excerpt stays plain.
+- Notes are dim: `pending:`, `added`, `updated`, `left`, `nothing to …`,
+  the hidden-prelude line of `:ls` and the like.
+- In a `name : type` line of `:ls`, the type is dim.
+- In a value, the trailing unit is dim (`12.566… m^2`, `[1, 2, 3] km s⁻¹`).
+- The prompt is bold.
+
+`:colour on` and `:colour off` override the default. This is a setting of
+the REPL, not of the session: `:set` does not list it, and the one-shot and
+file modes never colour. The text is the same with colour or without.
+
+**History.** The line history is the file `history` in the codebase
+directory (§7.4). With `--no-codebase` there is no history file.
 
 ### 7.4 CLI and persistence
 

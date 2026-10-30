@@ -37,11 +37,13 @@ library
     , Eval.Parser
     , Eval.Prelude
     , Eval.Pretty
+    , Eval.Repl
     , Eval.Resolve
     , Eval.Store
     , Eval.Syntax
     , Eval.TCore
     , Eval.Type
+    , Eval.Unicode
     , Eval.Update
   build-depends:
     , base ^>=4.21.0.0

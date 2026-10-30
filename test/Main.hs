@@ -25,10 +25,12 @@ import Eval.Lexer qualified as L
 import Eval.Parser
 import Eval.Prelude (preludeNames)
 import Eval.Pretty
+import Eval.Repl qualified as R
 import Eval.Store
 import Eval.Syntax qualified as S
 import Eval.TCore
 import Eval.Type
+import Eval.Unicode qualified as U
 import Gen (exprDepth, genProgram, instanceOf)
 import System.Directory (
   createDirectoryIfMissing,
@@ -73,6 +75,7 @@ main =
         , dataTests
         , itTests
         , respellTests
+        , replTests
         ]
     )
 
@@ -3924,3 +3927,182 @@ respellTests =
         runLinesP [":set unicode on", ":type \\x -> x"] @?= Right ["a → a"]
         runLinesP ["2 +-s 0.1"] @?= Right ["2.0 ±σ 0.1"]
     ]
+-- REPL: completion, unicode entry, colour ---------------------------------------
+
+-- | Complete at the end of a line, as haskeline asks: reversed left text.
+completeAt :: Session -> String -> Maybe (String, [R.Completion])
+completeAt s line = R.complete s (reverse line, "")
+
+replacements :: Session -> String -> [String]
+replacements s line = maybe [] (map (.replacement) . snd) (completeAt s line)
+
+{- | The ASCII spellings of design §2.8, keyed by their unicode form, for the
+agreement test: a unicode entry must lex as its ASCII spelling does.
+-}
+asciiSpellings :: [(Text, Text)]
+asciiSpellings =
+  [ ("λ", "\\")
+  , ("→", "->")
+  , ("⊗", "*")
+  , ("·", "@")
+  , ("⋅", "@")
+  , ("×", "><")
+  , ("⊙", ".*")
+  , ("⊘", "./")
+  , ("÷", "/")
+  , ("≤", "<=")
+  , ("≥", ">=")
+  , ("≠", "/=")
+  , ("∨", "||")
+  , ("¬", "not")
+  , ("∧", "/\\")
+  , ("⋆", "star")
+  , ("±", "+-")
+  , ("±σ", "+-s")
+  , ("°C", "degC")
+  , ("°F", "degF")
+  , ("∘", ".")
+  , ("π", "pi")
+  , ("°", "deg")
+  , ("″", "arcsec")
+  , ("′", "arcmin")
+  ]
+
+dimmed :: Text -> Text
+dimmed t = "\ESC[2m" <> t <> "\ESC[0m"
+
+replTests :: TestTree
+replTests =
+  testGroup
+    "repl"
+    [ testCase "commands complete at the start of a line" $ do
+        let cs = replacements withPrelude ":l"
+        all (`elem` cs) [":ls", ":load"] @? show cs
+        all (":l" `isPrefixOfS`) cs @? show cs
+        replacements withPrelude "  :up" @?= [":update", ":upgrade"]
+        filter (":" `isPrefixOfS`) (replacements withPrelude "x :l") @?= []
+    , testCase ":set and :colour complete their arguments" $ do
+        replacements withPrelude ":set un" @?= ["unicode"]
+        replacements withPrelude ":set " @?= ["precision", "sigma", "unicode"]
+        replacements withPrelude ":set unicode o" @?= ["on", "off"]
+        replacements withPrelude ":colour of" @?= ["off"]
+        R.completions withPrelude (reverse ":set ") "un"
+          @?= [R.Completion "unicode" "unicode" True]
+    , testCase "names complete from the session: units, constructors, keywords" $ do
+        -- The prelude's prefixed units are spelled with the SI symbol: km, kN.
+        let ks = replacements withPrelude "3 k"
+        all (`elem` ks) ["km", "kN", "kJ", "kPa", "kat"] @? show ks
+        all ("k" `isPrefixOfS`) ks @? show ks
+        replacements withPrelude "x + 3k" @?= ks
+        "where" `elem` replacements withPrelude "f x whe" @? "where"
+        replacements withPrelude "f x " @?= []
+        let s =
+              either (error . T.unpack) id
+                $ sessionP ["data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"]
+        replacements s "area (Ci" @?= ["Circle"]
+        "Shape" `elem` replacements s ":view Sh" @? "Shape"
+    , testCase "fields complete after a dot" $ do
+        let s =
+              either (error . T.unpack) id
+                $ sessionP
+                  [ "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m/s]}"
+                  , "let b = Body (5 kg) ([0, 0, 1] m/s)"
+                  ]
+        completeAt s "b.ma" @?= Just ("b", [R.Completion ".mass" "mass" True])
+        map (.display) (R.completions s "b" ".ma") @?= ["mass"]
+        map (.display) (R.completions s "b" ".") @?= ["mass", "vel"]
+    , testCase ":load completes file names" $ do
+        completeAt withPrelude ":load fo" @?= Nothing
+        R.loadsFile " :load " @? ":load"
+        not (R.loadsFile ":ls") @? ":ls"
+    , testCase "a backslash name completes from the unicode table only" $ do
+        completeAt withPrelude "2 \\mu"
+          @?= Just (reverse "2 ", [R.Completion "\x03BC" "\x03BC" False])
+        replacements withPrelude "3 m \\pm" @?= ["±"]
+        replacements withPrelude "3 m \\pms" @?= ["±σ"]
+        replacements withPrelude "(\\Omega" @?= ["\x03A9"]
+        completeAt withPrelude "m\\^2" @?= Just ("m", [R.Completion "²" "²" False])
+        replacements withPrelude "s\\^-" @?= ["⁻"]
+        replacements withPrelude "\\lam" @?= ["λ"]
+        let os = replacements withPrelude "\\o"
+        length os > 1 && all ("\\o" `isPrefixOfS`) os @? show os
+        -- Nothing from the codebase: `kat` is a name, `\kat` is not an entry.
+        replacements withPrelude "\\kat" @?= []
+    , testCase
+        "every unicode entry lexes as a documented ASCII spelling or is an identifier"
+        $ sequence_
+          [ agrees name u @? T.unpack ("\\" <> name <> " -> " <> u)
+          | (name, u) <- U.completions
+          ]
+    , testCase "unicode lookup prefers an exact name" $ do
+        U.lookupName "pm" @?= Just "±"
+        map fst (U.matching "pm") @?= ["pm"]
+        map fst (U.matching "pr") @?= ["prime"]
+    , testCase "classify: errors, notes, signatures, values" $ do
+        let block = "error at 1:5\n  3 m + 2 s\n      ^^^\n  cannot add a length to a time"
+        map fst (R.classify (Left block)) @?= [R.Problem, R.Source, R.Caret, R.Problem]
+        R.classify (Left "unknown name `x`") @?= [(R.Problem, "unknown name `x`")]
+        R.classify (Right ["pending: data Shape", "added area"])
+          @?= [(R.Note, "pending: data Shape"), (R.Note, "added area")]
+        map
+          fst
+          ( R.classify
+              (Right ["(812 prelude names hidden; :ls --all or a filter shows them)"])
+          )
+          @?= [R.Note]
+        map
+          fst
+          (R.classify (Right ["area : Shape -> Num [m^2]", "unit furlong : Num [m]"]))
+          @?= [R.Signature, R.Signature]
+        map
+          fst
+          ( R.classify
+              (Right ["12.566… m^2", "(1 m, 2 s)", "f = \\xs -> case xs of x : rest -> x"])
+          )
+          @?= [R.Value, R.Value, R.Value]
+        -- A real error block keeps its text, line for line.
+        case evalP "3 m + true" of
+          Left err -> T.intercalate "\n" (map snd (R.classify (Left err))) @?= err
+          Right v -> assertFailure (show v)
+    , testCase "paint: the unit suffix, the type, the error" $ do
+        R.paint R.Value "12.566… m^2" @?= "12.566… " <> dimmed "m^2"
+        R.paint R.Value "[1, 2, 3] km s⁻¹" @?= "[1, 2, 3] " <> dimmed "km s⁻¹"
+        R.paint R.Value "9.81 m/s^2" @?= "9.81 " <> dimmed "m/s^2"
+        R.paint R.Value "293.15 K (point)" @?= "293.15 " <> dimmed "K (point)"
+        R.paint R.Signature "area : Shape -> Num [m^2]"
+          @?= "area : " <> dimmed "Shape -> Num [m^2]"
+        R.paint R.Note "pending: data Shape" @?= dimmed "pending: data Shape"
+        R.paint R.Problem "error at 1:5" @?= "\ESC[31merror at 1:5\ESC[0m"
+        R.paint R.Caret "      ^^^" @?= "\ESC[1;31m      ^^^\ESC[0m"
+        R.paint R.Source "  3 m + 2 s" @?= "  3 m + 2 s"
+        R.paint R.Note "" @?= ""
+        -- Not a unit: types, booleans, constructors, bare numbers.
+        mapM_
+          (\t -> R.paint R.Value t @?= t)
+          [ "Num [m] -> Shape"
+          , "true"
+          , "Rect (1 m) (2 m)"
+          , "42"
+          , "Just 1"
+          , "precision 15"
+          , "a -> Maybe a -> a"
+          ]
+    ]
+ where
+  isPrefixOfS p x = take (length p) x == p
+  agrees name u
+    | Just n <- lookup u superscripts =
+        toks ("m" <> glued u) == Right [TIdent "m", TSup n]
+          && isRight (evalP ("2" <> glued u))
+          && evalP ("2" <> glued u) == evalP ("2^" <> T.pack (show n))
+    | name == "sqrt" =
+        -- A prefix operator where sqrt is an application (§7.3): same value.
+        toks u == Right [TSqrt] && evalP "√9" == evalP "sqrt 9" && isRight (evalP "√9")
+    | Just a <- lookup u asciiSpellings =
+        let lexed = toks ("a " <> u <> " b")
+         in isRight lexed && lexed == toks ("a " <> a <> " b")
+    | otherwise =
+        toks u == Right [TIdent u] || toks ("x" <> u) == Right [TIdent ("x" <> u)]
+  superscripts = [(T.singleton c, n) | (c, n) <- zip "⁰¹²³⁴⁵⁶⁷⁸⁹" [0 ..]] ++ [("⁻", -1)]
+  glued u = if u == "⁻" then "⁻¹" else u
+  isRight = either (const False) (const True)

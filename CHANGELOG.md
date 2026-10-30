@@ -358,3 +358,17 @@
   plain primitive `Mat n n 1 -> Num 1`, polymorphic in the size and on
   dimensionless matrices only, and a matrix with a unit is a dimension
   error. Behaviour unchanged.
+- REPL editing aids (design §7.3, §2.8). TAB completes `:` commands at the
+  start of a line, the arguments of `:set` and `:colour`, file names
+  after `:load`, record fields after a glued `.` (`b.ma` gives `b.mass`),
+  and otherwise the session's names, types, constructors and keywords.
+  `\name` then TAB
+  enters a character, as in Julia: `\mu` gives `μ`, `\pm` gives `±`,
+  `\pms` gives `±σ`, `\^2` gives `²`. The table is in the new module
+  `Eval.Unicode`, and a test checks each entry against the lexer. Output
+  is coloured when stdout is a terminal, `TERM` is not `dumb` and
+  `NO_COLOR` is not set. Errors are red with bold red carets. Notes, the
+  types in `:ls` lines and the trailing units of values are dim. The prompt
+  is bold. The REPL-level command `:colour on|off` overrides the default.
+  The logic is pure, in the new module `Eval.Repl`. The text that `feed`
+  prints is unchanged.
