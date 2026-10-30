@@ -3964,6 +3964,11 @@ tuned, and compilation is a later milestone.
      `card` as a type function, `card a ~ k` constraints, literals anonymous,
      labels from charts or a coercion, a `where` clause on signatures. Decided
      with charts. Layer 1, the `axes x y z` sugar, can be built any time.
+   - *`vimap` over `timap`.* Redefine `linalg.vimap` as `timap (\i x -> f i.0 x)`
+     with the signature `(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1`, so
+     it stays vector-only (without it `i.0` would admit any rank and hand `f`
+     the row index). After the chart phase-A rotation work, which edits the
+     same `linalg` block, has merged.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's
      architecture (§3.2.9).
