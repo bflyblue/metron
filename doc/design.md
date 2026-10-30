@@ -2257,6 +2257,8 @@ tuned, and compilation is a later milestone.
   type may opt out, or give its own equality (a fraction kept as an
   unreduced pair, which structural equality calls unequal to its reduced
   form).
+- `==` on data evaluates every field even after one is unequal, so `Pair 1 (2 ± 0.1) == Pair 2 2` says "cannot decide" where false was knowable; tensors, tuples and lists do the same. Short-circuit, or keep the uniform rule?
+- A constructor whose first field is a list type, `data H = G {Num}`, parses as record syntax. Parenthesise, or make `{name ::` the record cue?
 - A constructor that takes a prelude unit's name (`data Temp = T …`) unnames
   the tesla silently. Warn, refuse, or keep the newer-label rule?
 
