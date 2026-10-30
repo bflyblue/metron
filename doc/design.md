@@ -1769,6 +1769,27 @@ distinction is what refuses `20 degC + 30 degC`. Per-axis units in one chart
 (x in km, z in m) are a basis with mixed dimensions and wait on §3.7's route
 A.
 
+
+**Axis sets as index types (open, to decide with charts).** Named positions
+`.x .y .z` can be a scoped sugar over numeric projection (an `axes x y z`
+declaration binding labels to positions, hash-neutral), or axis sets can be
+types. The typed version, written down so it is decided once: a kind `Axes`;
+a shape is a list of axis sets, a plain length being the anonymous set of
+that size (`Vec 3` is `Vec (Anon 3)`), `axes Euclid = [x, y, z]` a declared
+one, `Vec a` an axis variable; `card : Axes -> Len` is a type function
+normalising like `rank` (`card Euclid = 3`, `card (Anon k) = k`, a residual on
+a variable), and `card a ~ 3` or `card a ~ card b` are pending constraints
+like `Rank` and `Append`, solved when the set is known and otherwise kept in
+the scheme, so `cross : Vec a d -> Vec a d1 -> Vec a [d d1] where card a ~ 3`
+serves `Vec Euclid`, `Vec RTN` and `Vec 3` and returns a vector on the same
+axes. Two named sets never unify with each other, nor with an anonymous one,
+which is the point: mixing components of two frames is a type error. Labelled
+vectors therefore come only from something that knows the axes: a chart
+conversion (`p to lvlh : Vec lvlh`), a coercing ascription, or `withAxes`;
+literals are anonymous. `.x` is a projection with the constraint `x ∈ a`;
+`.0` keeps today's `card a ≥ 1`. Needs a constraint clause in signatures,
+which `rank` never required. A chart is an axis set with an origin, so this
+is decided when charts are built, by what `p to lvlh` returns.
 **Open, to settle when building:** the exact syntax of the three optional
 parts (`by`, `spinning`, `relative to` or `in`); whether `eci` is a library
 definition or a primitive root; whether `rotz` and friends return the
