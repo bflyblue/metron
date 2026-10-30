@@ -56,7 +56,7 @@ tensor ls = TTensor (shapeOfDims ls)
 lensOf :: Shape -> Maybe [Int]
 lensOf = \case
   SNil -> Just []
-  SCons (LLit k) rest -> (k :) <$> lensOf rest
+  SCons (LLit k) _ rest -> (k :) <$> lensOf rest
   _ -> Nothing
 
 -- | A ground tensor type as lengths and dimension.
@@ -885,12 +885,16 @@ instanceOf (Forall vs pat) target = case matchType pat target (Map.empty, []) of
     _ -> Nothing
   matchShape p sh st = case (p, sh) of
     (SVar v, _) | quantified v -> bindArg v (AShape sh) st
-    (SCons l r, SCons l' r') -> matchLen l l' st >>= matchShape r r'
+    (SCons l a r, SCons l' a' r') -> matchLen l l' st >>= matchAxis a a' >>= matchShape r r'
     (SNil, SNil) -> Just st
     _ -> Nothing
   matchLen p l st = case (p, l) of
     (LVar v k, LLit j) | quantified v, j >= k -> bindArg v (ALen (LLit (j - k))) st
     (LLit a, LLit b) | a == b -> Just st
+    _ -> Nothing
+  matchAxis p a st = case p of
+    AVar v | quantified v -> bindArg v (AAxis a) st
+    _ | p == a -> Just st
     _ -> Nothing
   bindArg v a (m, eqs) = case Map.lookup v m of
     Nothing -> Just (Map.insert v a m, eqs)

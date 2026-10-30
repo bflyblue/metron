@@ -93,6 +93,7 @@ main =
         , rotationTests
         , turnedChartTests
         , movingChartTests
+        , axisSlotTests
         , propertyTests
         , unitTests
         , lintRegressionTests
@@ -1341,7 +1342,7 @@ typeTests =
         let def =
               TypeDef
                 [(0, KShape)]
-                [[TTensor (SCons (LRank 0 1) (SVar 0)) dimOne]]
+                [[TTensor (SCons (LRank 0 1) AAnon (SVar 0)) dimOne]]
                 structuralLabel
         decodeTypeDef (encodeTypeDef def) @?= Right def
     , testCase "recursive definitions get types"
@@ -2789,6 +2790,113 @@ pipelineProperties src =
     Unsupported _ -> "not implemented"
     _ -> "other error"
 
+-- Axis slots ------------------------------------------------------------------
+
+{- | The name slot of a shape position (design §3.9, stage 1). Nothing
+written in source makes a named axis set yet, so these read definitions
+whose stored types carry one, and check the unifier, lint and the
+encoding on the slot directly.
+-}
+axisSlotTests :: TestTree
+axisSlotTests =
+  testGroup
+    "axis slots"
+    [ testCase "a named axis set does not unify with anonymous axes"
+        $ typed (prim2 "add" (ref lvlhV) (Lit (LTensor ([3], [1, 2, 3]))))
+          @?= Left
+            ( "expected Vec 3, got Vec 3: the axes of "
+                <> showHash lvlh
+                <> " against anonymous axes"
+            )
+    , testCase "two named axis sets do not unify"
+        $ typed (prim2 "add" (ref lvlhV) (ref eciV))
+          @?= Left
+            ( "expected Vec 3, got Vec 3: the axes of "
+                <> showHash lvlh
+                <> " against the axes of "
+                <> showHash eci
+            )
+    , testCase "an axis variable binds to a named set"
+        $ typed (Lam "v" (prim2 "add" (Var FZ) (ref lvlhV)))
+          @?= Right [Forall [] (TFun (vecAlong lvlh) (vecAlong lvlh))]
+    , testCase "dot's contracted positions share one axis variable" $ do
+        -- Rows along eci, columns along lvlh, applied to a vector along
+        -- lvlh: a vector along eci.
+        typed (prim2 "dot" (ref rot) (ref lvlhV)) @?= Right [Forall [] (vecAlong eci)]
+        case typed (prim2 "dot" (ref rot) (ref eciV)) of
+          Left err -> "the axes of" `T.isInfixOf` err @? T.unpack err
+          Right sc -> assertFailure (show sc)
+        -- An unknown left operand takes the right's axes at the contracted
+        -- position.
+        case typed (Lam "v" (prim2 "dot" (Var FZ) (ref lvlhV))) of
+          Right [Forall _ (TFun (TTensor left _) _)] -> left @?= pos (LLit 3) (ANamed lvlh) SNil
+          other -> assertFailure (show other)
+    , testCase "an instance substitutes axis variables" $ do
+        let scheme p = fromMaybe (error "no scheme") (primScheme p)
+            e = (LLit 3, ANamed eci)
+            l = (LLit 3, ANamed lvlh)
+        TFun (mat e l) (mat l e) `isInstanceOf` scheme "transpose" @?= True
+        TFun (mat e l) (mat e l) `isInstanceOf` scheme "transpose" @?= False
+        TFun (mat e l) (mat l e) `isInstanceOf` scheme "inverse" @?= True
+        TFun (mat l l) (vecAlong lvlh) `isInstanceOf` scheme "star" @?= True
+        TFun (mat e l) (vecAlong lvlh) `isInstanceOf` scheme "star" @?= False
+    , testCase "lint checks the contracted axes of dot" $ do
+        let at r =
+              TPrimApp
+                "dot"
+                ( TFun
+                    (TTensor (pos (LLit 3) (ANamed eci) (pos (LLit 3) (ANamed lvlh) SNil)) dimOne)
+                    (TFun (vecAlong r) (vecAlong eci))
+                )
+                [TRef rot Nothing "", TRef (if r == lvlh then lvlhV else eciV) Nothing ""]
+        lintClosed look (at lvlh) @?= Right [Forall [] (vecAlong eci)]
+        lintClosed look (at eci)
+          @?= Left
+            "dot: the right operand's first length and axes are not the left operand's last"
+    , testCase "an anonymous position keeps the bytes of a bare length" $ do
+        let def ax = TypeDef [] [[TTensor (pos (LLit 3) ax SNil) dimOne]] structuralLabel
+        -- no parameters, one constructor of one field: a tensor whose shape
+        -- is tag 1, the length 3, the end; no dimension; the structural label
+        encodeTypeDef (def AAnon) @?= BS.pack [0, 1, 1, 0x21, 1, 0, 3, 0, 0, 1, 0]
+        -- a variable slot is tag 3, the length, the axis (2, its id), the end
+        encodeTypeDef (def (AVar 5))
+          @?= BS.pack [0, 1, 1, 0x21, 3, 0, 3, 2, 5, 0, 0, 1, 0]
+    , testCase "named and variable slots encode under their own tags and decode back" $ do
+        let def =
+              TypeDef
+                [(0, KLen), (1, KAxis)]
+                [
+                  [ TTensor (pos (LVar 0 0) (AVar 1) (pos (LLit 3) (ANamed lvlh) SNil)) dimOne
+                  , TScale (pos (LLit 3) AAnon SNil) (ANamed eci) dimOne
+                  , TScale (pos (LLit 3) AAnon SNil) (AVar 1) dimOne
+                  , TData selfType [ALen (LLit 2), AAxis AAnon]
+                  ]
+                ]
+                structuralLabel
+        decodeTypeDef (encodeTypeDef def) @?= Right def
+    ]
+ where
+  eci = Hash (BS.replicate 32 0xe1)
+  lvlh = Hash (BS.replicate 32 0x1f)
+  eciV = Hash (BS.replicate 32 0xa1)
+  lvlhV = Hash (BS.replicate 32 0xa2)
+  rot = Hash (BS.replicate 32 0xa3)
+  pos = SCons
+  vecAlong a = TTensor (pos (LLit 3) (ANamed a) SNil) dimOne
+  mat (r, x) (c, y) = TTensor (pos r x (pos c y SNil)) dimOne
+  stored =
+    [ (eciV, vecAlong eci)
+    , (lvlhV, vecAlong lvlh)
+    , (rot, mat (LLit 3, ANamed eci) (LLit 3, ANamed lvlh))
+    ]
+  look = TypeLookup (\k -> (\t -> [Forall [] t]) <$> lookup k stored) (const Nothing)
+  ref k = Ref k Nothing ""
+  -- Elaborated and linted.
+  typed t = do
+    (schemes, tt) <- first (.message) (elaborateClosed look t)
+    _ <- first ("lint: " <>) (lintClosed look tt)
+    pure schemes
+
 propertyTests :: TestTree
 propertyTests =
   testGroup
@@ -2840,7 +2948,7 @@ generatorProperty =
     TData _ _ -> "data"
     TFun _ _ -> "function"
     TPoint _ _ -> "Point"
-    TScale _ _ -> "Chart"
+    TScale{} -> "Chart"
     TupleT _ -> "tuple"
     ListT _ -> "list"
     TTensor sh d ->
@@ -2856,7 +2964,7 @@ generatorProperty =
 rankOf :: Shape -> Int
 rankOf = \case
   SNil -> 0
-  SCons _ rest -> 1 + rankOf rest
+  SCons _ _ rest -> 1 + rankOf rest
   SVar _ -> 0
 
 {- | What an elaborated program exercises: polymorphic lets, dimensioned
@@ -2877,7 +2985,7 @@ features typed =
     TFun a b -> dimensioned a || dimensioned b
     _ -> False
   dimensionedTensor = \case
-    TTensor (SCons _ _) d -> any isBase (dimAtoms d)
+    TTensor (SCons{}) d -> any isBase (dimAtoms d)
     TFun a b -> dimensionedTensor a || dimensionedTensor b
     _ -> False
   isBase = \case

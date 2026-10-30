@@ -67,6 +67,10 @@ data Constraint
 data St = St
   { subst :: Subst
   , next :: Int
+  , nextAxis :: Int
+  {- ^ axis variables are numbered apart, from 'axisBase', so that adding
+  them (design §3.9) moves no other variable's id
+  -}
   , pending :: [(Path, Constraint)]
   -- ^ reversed paths, as 'failAt' takes them
   , typeDefs :: Hash -> Maybe TypeDef
@@ -104,7 +108,8 @@ elaborateClosed = elaborateClosedWith noAnnotations
 elaborateClosedWith ::
   Annotations -> TypeLookup -> Term Z -> Either TypeError ([Scheme], TTerm Z)
 elaborateClosedWith annots look term = do
-  ((schemes, tt), st) <- runStateT go (St emptySubst 0 [] look.typeDefOf annots)
+  ((schemes, tt), st) <-
+    runStateT go (St emptySubst 0 axisBase [] look.typeDefOf annots)
   pure (map (applyScheme st.subst) schemes, zonk st.subst tt)
  where
   go = case term of
@@ -139,14 +144,32 @@ abstractOver :: [(VarId, Kind)] -> TTerm n -> TTerm n
 abstractOver vs t = foldr (uncurry TTyLam) t vs
 
 fresh :: Kind -> Infer Arg
-fresh k = do
-  st <- get
-  put st{next = st.next + 1}
-  pure $ case k of
-    KType -> AType (TVar st.next)
-    KLen -> ALen (LVar st.next 0)
-    KShape -> AShape (SVar st.next)
-    KDim -> ADim (dimVar st.next)
+fresh = \case
+  KType -> AType . TVar <$> freshId
+  KLen -> ALen . (`LVar` 0) <$> freshId
+  KShape -> AShape . SVar <$> freshId
+  KDim -> ADim . dimVar <$> freshId
+  KAxis -> do
+    st <- get
+    put st{nextAxis = st.nextAxis + 1}
+    pure (AAxis (AVar st.nextAxis))
+ where
+  freshId = do
+    st <- get
+    put st{next = st.next + 1}
+    pure st.next
+
+{- | Where axis variables are numbered from: far above any other variable
+an inference run makes, so the two never meet.
+-}
+axisBase :: Int
+axisBase = 1000000000
+
+freshAxis :: Infer Axis
+freshAxis =
+  fresh KAxis >>= \case
+    AAxis a -> pure a
+    _ -> error "fresh KAxis"
 
 freshDim :: Infer Dim
 freshDim =
@@ -208,7 +231,9 @@ unify p expected actual = do
     (TData h1 as, TData h2 bs)
       | h1 == h2 && length as == length bs -> zipWithM_ unifyArg as bs
     (TPoint s1 d1, TPoint s2 d2) -> shapeAndDims s1 d1 s2 d2
-    (TScale s1 d1, TScale s2 d2) -> shapeAndDims s1 d1 s2 d2
+    (TScale s1 r1 d1, TScale s2 r2 d2) -> do
+      shapeAndDims s1 d1 s2 d2
+      unifyAxis p r1 r2
     (TTensor s1 d1, TTensor s2 d2) -> do
       st <- get
       case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
@@ -244,6 +269,7 @@ unify p expected actual = do
     (ALen l1, ALen l2) -> unifyLen p l1 l2
     (AShape s1, AShape s2) -> unifyShape p s1 s2
     (ADim d1, ADim d2) -> unifyDim p d1 d2
+    (AAxis a1, AAxis a2) -> unifyAxis p a1 a2
     _ ->
       failAt p ("expected " <> renderType expected <> ", got " <> renderType actual)
   shapeAndDims s1 d1 s2 d2 = do
@@ -264,11 +290,14 @@ bindVar p v arg = do
         AShape s -> v `elem` map fst (freeVars (TTensor s dimOne))
         ALen _ -> False
         ADim d -> v `elem` dimVars d
+        -- A slot holds no variable but itself.
+        AAxis _ -> False
       trivial = case arg of
         AType (TVar w) -> w == v
         AShape (SVar w) -> w == v
         ALen (LVar w 0) -> w == v
         ADim d -> d == dimVar v
+        AAxis (AVar w) -> w == v
         _ -> False
   unless trivial
     $ if occurs
@@ -287,7 +316,8 @@ unifyShape p x y = go x y
       (SNil, SNil) -> pure ()
       (SVar v, sh) -> bindVar p v (AShape sh)
       (sh, SVar v) -> bindVar p v (AShape sh)
-      (SCons l1 r1, SCons l2 r2) -> unifyLen p l1 l2 >> go r1 r2
+      (SCons l1 a1 r1, SCons l2 a2 r2) ->
+        unifyLen p l1 l2 >> unifyAxis p a1 a2 >> go r1 r2
       _ -> mismatch
   -- The ranks differ: say so of the whole shapes, not of the tails.
   mismatch = do
@@ -304,7 +334,24 @@ unifyShape p x y = go x y
   rankOf = \case
     SNil -> (0, False)
     SVar _ -> (0, True)
-    SCons _ rest -> let (r, open) = rankOf rest in (r + 1, open)
+    SCons _ _ rest -> let (r, open) = rankOf rest in (r + 1, open)
+
+{- | The name slot of a position (design §3.9) unifies syntactically:
+anonymous with anonymous, a name with itself, a variable with any slot.
+-}
+unifyAxis :: Path -> Axis -> Axis -> Infer ()
+unifyAxis p x y = do
+  s <- gets (.subst)
+  case (applyAxis s x, applyAxis s y) of
+    (a, b) | a == b -> pure ()
+    (AVar v, b) -> bindVar p v (AAxis b)
+    (a, AVar v) -> bindVar p v (AAxis a)
+    (a, b) -> failAt p (describe a <> " against " <> describe b)
+ where
+  describe = \case
+    AAnon -> "anonymous axes"
+    ANamed h -> "the axes of " <> showHash h
+    AVar _ -> "an axis variable"
 
 {- | Design §4.1: literals must agree; a variable plus offset against a
 literal solves the variable when the literal is large enough; two offset
@@ -358,8 +405,8 @@ unifyLen p x y = do
   -- rank v + k = j: v is a shape of j - k lengths, each still unknown.
   rankIs v k j
     | j >= k = do
-        ls <- mapM (const (freshLen 0)) [1 .. j - k]
-        bindVar p v (AShape (foldr SCons SNil ls))
+        ls <- mapM (const freshPosition) [1 .. j - k]
+        bindVar p v (AShape (foldr (uncurry SCons) SNil ls))
     | otherwise =
         failAt
           p
@@ -375,12 +422,14 @@ unifyLen p x y = do
   grow v n
     | n == 0 = pure v
     | otherwise = do
-        ls <- mapM (const (freshLen 0)) [1 .. n]
+        ls <- mapM (const freshPosition) [1 .. n]
         tl <- freshShape
-        bindVar p v (AShape (foldr SCons tl ls))
+        bindVar p v (AShape (foldr (uncurry SCons) tl ls))
         case tl of
           SVar v' -> pure v'
           _ -> error "freshShape"
+  -- A position of a shape, length and axes still unknown.
+  freshPosition = (,) <$> freshLen 0 <*> freshAxis
 
 {- | Kennedy's algorithm (design §4.4): to unify two dimensions, solve
 @d1 · d2⁻¹ = 1@. Pick the variable with the smallest exponent; if it
@@ -560,7 +609,7 @@ constraintVars = \case
   Append a b c -> map fst (concatMap (freeVars . (`TTensor` dimOne)) [a, b, c])
   EqInstance t -> map fst (freeVars t)
   OrdInstance t -> map fst (freeVars t)
-  Rank sh l -> map fst (freeVars (TTensor (SCons l sh) dimOne))
+  Rank sh l -> map fst (freeVars (TTensor (SCons l AAnon sh) dimOne))
 
 -- Generalisation and instantiation ---------------------------------------------------
 
@@ -628,7 +677,7 @@ negativeOnly quantified ts =
   exponents v = \case
     TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TPoint _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
-    TScale _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TScale _ _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TData _ args -> concatMap argExponents args
     TFun a b -> exponents v a ++ exponents v b
     TVar _ -> []
@@ -826,11 +875,12 @@ infer look p ctx = \case
           te
           "the uncertainty must have the dimension of the value"
       -- v ±σ P: a vector with covariance P (design §3.5).
-      (TTensor (SCons _ (SCons _ SNil)) _, SCons n SNil)
+      -- The covariance pairs the value's axes with themselves.
+      (TTensor (SCons _ _ (SCons _ _ SNil)) _, SCons n a SNil)
         | k == Stat ->
             unifyMsg
               (1 : p)
-              (TTensor (SCons n (SCons n SNil)) (dimPow 2 d))
+              (TTensor (SCons n a (SCons n a SNil)) (dimPow 2 d))
               te
               "a covariance must be an n×n matrix of the value's dimension squared"
         | otherwise ->
@@ -861,24 +911,24 @@ infer look p ctx = \case
         )
         [0 ..]
         ts
-    pure (TTensor (SCons (LLit (length ts)) elemShape) elemDim, TPack ts')
+    pure (TTensor (SCons (LLit (length ts)) AAnon elemShape) elemDim, TPack ts')
   Proj t i -> do
     (tt0, t') <- infer look (0 : p) ctx t
     tt <- resolve tt0
     ty <- case tt of
-      TTensor (SCons (LLit n) rest) d
+      TTensor (SCons (LLit n) _ rest) d
         | i < n -> pure (TTensor rest d)
         | otherwise ->
             failAt
               p
               ("position " <> tshow i <> " is out of range for a vector of length " <> tshow n)
-      TTensor (SCons l rest) d -> do
+      TTensor (SCons l _ rest) d -> do
         atLeast <- freshLen (i + 1)
         unifyLen p l atLeast
         pure (TTensor rest d)
       TTensor SNil _ -> failAt p ("cannot project ." <> tshow i <> " from a number")
       -- A component of a point is a point (design §3.6).
-      TPoint (SCons (LLit n) rest) d
+      TPoint (SCons (LLit n) _ rest) d
         | i < n -> pure (TPoint rest d)
         | otherwise ->
             failAt
@@ -888,7 +938,7 @@ infer look p ctx = \case
                   <> " is out of range for a point over a vector of length "
                   <> tshow n
               )
-      TPoint (SCons l rest) d -> do
+      TPoint (SCons l _ rest) d -> do
         atLeast <- freshLen (i + 1)
         unifyLen p l atLeast
         pure (TPoint rest d)
@@ -898,7 +948,8 @@ infer look p ctx = \case
         atLeast <- freshLen (i + 1)
         rest <- freshShape
         d <- freshDim
-        unify (0 : p) tt (TTensor (SCons atLeast rest) d)
+        axes <- freshAxis
+        unify (0 : p) tt (TTensor (SCons atLeast axes rest) d)
         pure (TTensor rest d)
     pure (ty, TProj t' i)
   Cycle{} -> failAt p "a cycle cannot appear inside an expression"
@@ -918,12 +969,12 @@ infer look p ctx = \case
     TFun a _ -> Just a
     _ -> Nothing
   leading = \case
-    SCons _ rest -> 1 + leading rest
+    SCons _ _ rest -> 1 + leading rest
     _ -> 0 :: Int
   -- The length at a position of a shape, if the shape lists that many.
   axisLen :: Integer -> Shape -> Maybe Len
   axisLen k = \case
-    SCons l rest -> if k == 0 then Just l else axisLen (k - 1) rest
+    SCons l _ rest -> if k == 0 then Just l else axisLen (k - 1) rest
     _ -> Nothing
   -- An index literal as it was written: a natural or a vector of them.
   literalText (LTensor (dims, rs)) =
@@ -955,12 +1006,15 @@ primType p name argc = do
       s3 <- freshShape
       d1 <- freshDim
       d2 <- freshDim
-      defer p (Append s1 (SCons n SNil) left)
+      -- The contracted positions share one length and one axis set (design
+      -- §3.9): the left's last and the right's first.
+      a <- freshAxis
+      defer p (Append s1 (SCons n a SNil) left)
       defer p (Append s1 s2 s3)
       pure
         ( TFun
             (TTensor left d1)
-            (TFun (TTensor (SCons n s2) d2) (TTensor s3 (dimMul d1 d2)))
+            (TFun (TTensor (SCons n a s2) d2) (TTensor s3 (dimMul d1 d2)))
         )
     _ | name == "eq" || name == "ne" -> do
       a <- freshType
@@ -1086,6 +1140,7 @@ constructorType look p c k = case c of
     KLen -> ALen <$> freshLen 0
     KShape -> AShape <$> freshShape
     KDim -> ADim <$> freshDim
+    KAxis -> fresh KAxis
 
 {- | One alternative: the constructor's fields enter scope at their types and
 the body must have the case's result type.
@@ -1169,7 +1224,7 @@ with fresh variables and the two are unified, so @a -> a@ matches a query
 @Num -> Num@ and @Num [m] -> Num [m]@ matches a query @a -> a@.
 -}
 matchesQuery :: Scheme -> Scheme -> Bool
-matchesQuery query sc = case runStateT go (St emptySubst 0 [] (const Nothing) noAnnotations) of
+matchesQuery query sc = case runStateT go (St emptySubst 0 axisBase [] (const Nothing) noAnnotations) of
   Right _ -> True
   Left _ -> False
  where

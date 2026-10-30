@@ -82,6 +82,8 @@ kindByte = \case
   KLen -> word8 1
   KShape -> word8 2
   KDim -> word8 3
+  -- An axis variable (design §3.9): appended.
+  KAxis -> word8 4
 
 encType :: Type -> Builder
 -- 0x20 (Bool), 0x24 (tuple) and 0x25 (list) are retired: those types are
@@ -89,7 +91,10 @@ encType :: Type -> Builder
 encType = \case
   TTensor sh d -> word8 0x21 <> encShape sh <> encDim d
   TPoint sh d -> word8 0x22 <> encShape sh <> encDim d
-  TScale sh d -> word8 0x23 <> encShape sh <> encDim d
+  -- A chart's root slot (design §3.9): anonymous keeps the old bytes; any
+  -- other slot is the appended tag 0x29.
+  TScale sh AAnon d -> word8 0x23 <> encShape sh <> encDim d
+  TScale sh r d -> word8 0x29 <> encShape sh <> encAxis r <> encDim d
   TFun a b -> word8 0x26 <> encType a <> encType b
   TVar v -> word8 0x27 <> varint (fromIntegral v)
   TData (Hash h) as ->
@@ -104,12 +109,24 @@ encArg = \case
   ALen l -> word8 1 <> encLen l
   AShape sh -> word8 2 <> encShape sh
   ADim d -> word8 3 <> encDim d
+  AAxis a -> word8 4 <> encAxis a
 
+{- | A position with anonymous axes keeps the bytes of a bare length (design
+§3.9, §6.1); a named or variable slot is the appended tag 3.
+-}
 encShape :: Shape -> Builder
 encShape = \case
   SNil -> word8 0
-  SCons l rest -> word8 1 <> encLen l <> encShape rest
+  SCons l AAnon rest -> word8 1 <> encLen l <> encShape rest
+  SCons l a rest -> word8 3 <> encLen l <> encAxis a <> encShape rest
   SVar v -> word8 2 <> varint (fromIntegral v)
+
+-- | The name slot of a position: anonymous, a name's hash, or a variable.
+encAxis :: Axis -> Builder
+encAxis = \case
+  AAnon -> word8 0
+  ANamed (Hash h) -> word8 1 <> byteString h
+  AVar v -> word8 2 <> varint (fromIntegral v)
 
 encLen :: Len -> Builder
 encLen = \case

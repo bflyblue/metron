@@ -403,6 +403,7 @@ decodeTypeDefV version bs = do
       1 -> pure KLen
       2 -> pure KShape
       3 -> pure KDim
+      4 -> pure KAxis
       k -> failDec ("unknown kind " <> T.pack (show k))
 
 decType :: Int -> Dec Type
@@ -414,7 +415,8 @@ decType version =
     0x25 | legacy -> listT <$> ty
     0x21 -> TTensor <$> decShape <*> decDim
     0x22 -> TPoint <$> decShape <*> decDim
-    0x23 -> TScale <$> decShape <*> decDim
+    0x23 -> (`TScale` AAnon) <$> decShape <*> decDim
+    0x29 -> TScale <$> decShape <*> decAxis <*> decDim
     0x26 -> TFun <$> ty <*> ty
     0x27 -> TVar . fromIntegral <$> decVarint
     0x28 -> do
@@ -431,13 +433,21 @@ decType version =
       1 -> ALen <$> decLen
       2 -> AShape <$> decShape
       3 -> ADim <$> decDim
+      4 -> AAxis <$> decAxis
       k -> failDec ("unknown argument kind " <> T.pack (show k))
   decShape =
     byte >>= \case
       0 -> pure SNil
-      1 -> SCons <$> decLen <*> decShape
+      1 -> (`SCons` AAnon) <$> decLen <*> decShape
       2 -> SVar . fromIntegral <$> decVarint
+      3 -> SCons <$> decLen <*> decAxis <*> decShape
       k -> failDec ("unknown shape tag " <> T.pack (show k))
+  decAxis =
+    byte >>= \case
+      0 -> pure AAnon
+      1 -> ANamed . Hash <$> bytes 32
+      2 -> AVar . fromIntegral <$> decVarint
+      k -> failDec ("unknown axis tag " <> T.pack (show k))
   decLen =
     byte >>= \case
       0 -> LLit . fromIntegral <$> decVarint

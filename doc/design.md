@@ -2210,7 +2210,7 @@ hands, meet:
 §3.9, to be decided with charts: a chart is an axis set with an origin, and
 what `p to lvlh` returns is what decides whether `Vec lvlh` exists.
 
-### 3.9 Axis sets: named positions and index types (design; to build after charts)
+### 3.9 Axis sets: named positions and index types (layer 2, stage 1 built; the rest design)
 
 Two layers, the first a sugar and the second a type-system extension; the
 first can be built alone and does not prejudge the second.
@@ -2222,7 +2222,7 @@ the same hash as the numeric form, so `:view` prints whichever was written
 and projection's static bound applies (`v.z` on a `Vec 2` is refused). It
 works at any rank (`m.y.x` is row 1, column 0). `linalg` seeds `axes x y z`.
 
-**Layer 2, axis sets as types (design, to build after charts).** Amounts
+**Layer 2, axis sets as types (design; stage 1 built, below).** Amounts
 carry the axes they are measured along, so mixing components of two frames
 is a type error and a displacement taken inside a frame prints along that
 frame's axes. The decisions:
@@ -2341,6 +2341,75 @@ v.x         : Vec a d -> Num d                       -- x one of a's axis labels
    `cross`, `norm`, `dual`, the rotation constructors, `Cov2`, `timap`
    generalised over axis sets; §12's sessions rewritten to the typed form.
 
+**Stage 1, as built.** Nothing a user can see changed; what follows is the
+representation the later stages build on.
+
+- **An axis set is a length and a name slot.** A shape position is a length,
+  as before (a literal, `n + k`, `rank s + k`), and a name slot beside it:
+  anonymous, a named set (the hash of what declares it), or an axis
+  variable, of a new kind `Axis` (§4.1). `Vec (Anon 3)` is the position
+  `3` with an anonymous slot. The `card a` of decision 2 is the length
+  beside the slot, so stage 1 needs no `card` function and no `card`
+  constraint: `card a ~ 3` is the literal `3` beside an axis variable `a`.
+- **The slot unifies syntactically.** Anonymous with anonymous, a name with
+  itself, a variable with any slot (with the occurs check); any other pair
+  fails with a message naming both, "the axes of #lvlh against anonymous
+  axes", "the axes of #lvlh against the axes of #eci". Lengths are unified
+  first, so a mismatch of lengths reports as before. Lint matches a slot
+  as it matches a length: an instance substitutes axis variables too.
+- **Printed as nothing.** In stage 1 only anonymous slots and axis variables
+  are made, and the printer shows the length alone, so every `:type`,
+  `:ls`, `:view`, `:core` and error message reads as before. Axis
+  variables are numbered from a counter of their own, far above the
+  others, so no other variable's id moves; their abstractions and
+  applications in Typed Core print as nothing.
+- **A written length variable is a whole axis set.** In a signature, a
+  `data` declaration or a `:ls` query, a lowercase variable in a length
+  position elaborates to a length variable and a companion axis variable,
+  both quantified; a literal length is anonymous, and so is `rank s`, as
+  an index's positions are numbers. A `data` parameter of kind length
+  gains a companion axis parameter, numbered after the written ones and
+  never printed, and its arguments are the axes of the length they go
+  with. A declared type with a length parameter therefore re-hashes; in
+  the library that is `linalg.Cov2`.
+- **The primitive schemes say which axes must match** (decision 9, ahead of
+  the names). Elementwise operators share the whole shape, as before;
+  `outer` carries axes through `Append`; `dot` contracts the left's last
+  position against the right's first, one length and one axis variable
+  between them. `transpose : Mat (n, a) (m, b) -> Mat (m, b) (n, a)` and
+  `inverse : Mat (n, a) (n, b) -> Mat (n, b) (n, a)` swap rows and columns
+  with their axes; `cholesky` keeps both; `det`, `expm`, `wedge` and
+  `covariance` are over one axis set, `star` over one set beside the
+  literal `3`; `crossCovariance : Vec (n, a) -> Vec (m, b) -> Mat (n, a) (m,
+  b)`; `norm` and `indices` keep the argument's. `contract`, `permute` and
+  `slice` move or drop a position's axes with its length, `contract`'s
+  pair sharing both; `timap`'s index `Vec (rank s)` is anonymous.
+  `transformBy`'s matrix has free row and column axes until stage 2 types
+  it `Mat a a`. Written here as `(length, axes)`, which is not syntax.
+- **A chart carries a root slot.** `Chart σ δ` holds the name slot of its
+  root's axes, which stage 2's `rotationOf c : Mat root c` needs and a
+  declaration cannot give for a chart value. `mkScale` leaves it free, and
+  `mkChart3`, `mkChart4` and `mkChart5` give a child its parent's. No
+  primitive reads it yet: a written type cannot say the root, and
+  `Chart (Vec n d) -> Mat n n` must still hold of `rotationOf`, so
+  `rotationOf`'s rows, `spinOf` and `originVelocityOf` have axes of their
+  own in stage 1, and a written `Chart` has an anonymous root. The
+  generators of `mkChart4` and `mkChart5` and the spin of `mkChart5` have
+  axes of their own too, not yet tied to the chart's.
+- **Why old signatures still hold.** No scheme has anonymous axes beside a
+  length variable (only literals and `rank s` are anonymous), and a
+  written signature reads each length variable as one axis set, which is
+  always an instance of a scheme with separate axis variables there.
+- **Encoding** (decision 8). An anonymous position encodes as a bare length
+  did, and a chart with an anonymous root as a chart did, so declared types
+  without a length parameter keep their bytes, and so do the terms that do
+  not build or read a type with one; `sig` lines are text and read as
+  before. Any other slot is an appended tag (§6.1).
+- **Lint's type application is capture-avoiding.** The axis variables of a
+  stored scheme and of the run that instantiates it are numbered from the
+  same base, so lint now renames a variable still to be applied apart
+  from the argument's before substituting.
+
 ## 4. Type system
 
 Hindley-Milner with let-polymorphism, extended with dimensions after Kennedy
@@ -2352,8 +2421,9 @@ concatenation for the products and an equality instance (§4.2).
 
 ```
 τ ::= Tensor σ δ | Point σ δ | Chart σ δ | T a… | τ -> τ | α
-a ::= τ | σ | δ | ν                     -- an argument of a declared type T, by the kind of its parameter
-σ ::= [] | ν : σ | s                   -- a shape: a list of lengths, possibly ending in a shape variable
+a ::= τ | σ | δ | ν | χ                 -- an argument of a declared type T, by the kind of its parameter
+σ ::= [] | ν·χ : σ | s                 -- a shape: a list of positions, each a length and a name slot, possibly ending in a shape variable
+χ ::= _ | A | x                         -- a name slot (§3.9): anonymous, a named axis set, or an axis variable; printed as nothing in stage 1
 δ ::= 1 | B | d | δ·δ | δ⁻¹          -- an abelian group, normalised
 ν ::= k | n | n + k | rank s + k       -- a literal, a length variable, a variable plus a literal offset, or the rank of a shape variable plus one
 ```
@@ -2361,7 +2431,9 @@ a ::= τ | σ | δ | ν                     -- an argument of a declared type T,
 `Num δ` abbreviates `Tensor [] δ`, `Vec ν δ` abbreviates `Tensor [ν] δ`, and
 `Mat μ ν δ` abbreviates `Tensor [μ, ν] δ`. `Point σ δ` is a point of the affine space
 over `Tensor σ δ` and `Chart σ δ` a chart, or frame, for writing and printing
-them (§3.6, §3.8; `Scale σ δ` is the old spelling). `Point [K]` prints for a scalar point and `Point (Vec 3 [m])` for
+them (§3.6, §3.8; `Scale σ δ` is the old spelling). A chart also holds the
+name slot of its root's axes, for stage 2 of §3.9; it is not written and
+not printed. `Point [K]` prints for a scalar point and `Point (Vec 3 [m])` for
 a position.
 
 A declared type `T` (§2.3) is a type constructor with parameters of fixed
@@ -2381,10 +2453,14 @@ declared type, except that two tuples of different arities fail with "expected
 a tuple of 2 components, got one of 3".
 
 **Variables are kinded.** There is one namespace of variables, each with a kind:
-`Type`, `Len`, `Shape`, and `Dim` when dimensions arrive. Each kind is an index
+`Type`, `Len`, `Shape`, `Dim`, and `Axis`, the name slot of a shape position
+(§3.9). Each kind is an index
 domain with its own equational theory and its own unifier: syntactic for types,
 the offset rule below for lengths, element-wise for shapes, Kennedy's algorithm
-for dimensions. No term ever appears in a type, which is what keeps this on the
+for dimensions, syntactic for name slots. A written length variable stands
+for a whole axis set, a length variable and a companion axis variable
+introduced together, and a written literal length for anonymous axes
+(§3.9, stage 1). No term ever appears in a type, which is what keeps this on the
 indexed-types side of the line (Dependent ML, GHC's `DataKinds`) and not in
 dependent-type territory: lengths come only from syntax, literal element counts,
 projection positions, the literal index positions of `contract`,
@@ -2399,9 +2475,9 @@ exponents. `1` is the empty map. Two dimensions are equal iff their maps are
 equal.
 
 A shape is unified element-wise: two closed shapes must have the same rank and
-unify length by length; a shape variable binds to any shape (with an occurs
-check). A shape variable can only stand at the tail, so `n : s` means "rank at
-least one". Shape polymorphism is what lets `+`, `-`, `neg` and `vmap` have one
+unify position by position, the lengths and then the name slots; a shape
+variable binds to any shape (with an occurs check). A shape variable can only
+stand at the tail, so `n : s` means "rank at least one". Shape polymorphism is what lets `+`, `-`, `neg` and `vmap` have one
 type for every rank: `(+) : Tensor s d -> Tensor s d -> Tensor s d`.
 
 Lengths `ν` are a literal `k`, a variable `n`, or a variable plus a literal offset
@@ -2458,6 +2534,10 @@ operator with one type (core.md, "Operators across ranks"):
 (⊘) (./) ediv  : Tensor s δ1 -> Tensor s δ2 -> Tensor s [δ1 / δ2]
 (/) (÷)  div   : Tensor s δ1 -> Num δ2 -> Tensor s [δ1 / δ2]                   -- division by a scalar
 ```
+
+`dot`'s contracted positions, the left's last and the right's first, are one
+length and one name slot (§3.9), so contracting along different axis sets is
+a type error once named sets exist.
 
 The types of `outer` and `dot` mention shape concatenation `s1 ++ s2`, which is
 not a syntactic shape when the rank of `s1` is unknown. Inference therefore
@@ -2558,7 +2638,7 @@ then an ordinary first-order scheme. With `a = min i j` and `b = max i j`:
 
 ```
 contract i j          : Num -> Num -> Tensor (l0 : … : lb : s) d -> Tensor (l0 : … : lb without positions a and b : s) d
-                        where lb is the variable la: the paired lengths are one length
+                        where lb is the variable la: the paired lengths are one length, and their axes one slot
 permute [p0, …, pk-1] : Vec k -> Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … : lpk-1 : s) d
 slice k i             : Num -> Num -> Tensor (l0 : … : lk-1 : n + i + 1 : s) d -> Tensor (l0 : … : lk-1 : s) d
 ```
@@ -2645,6 +2725,12 @@ contract i j t : Tensor (l0 : … : lj : s) d -> Tensor (… without i and j : s
 permute [p…] t : Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … : lpk-1 : s) d -- special form, a literal permutation of 0 .. k-1 (4.2)
 slice k i t : Tensor (l0 : … : lk-1 : n + i + 1 : s) d -> Tensor (l0 : … : lk-1 : s) d -- special form, k and i literal naturals; t._.i (2.10, 4.1)
 ```
+
+Each length in these types is a position with a name slot (§3.9), printed
+as the length alone: a length variable has an axis variable beside it and a
+literal `3` of the three-dimensional primitives one too, shared where the axes
+are one set. Which slots are shared is listed in §3.9 under "Stage 1, as
+built".
 
 The circular functions take an angle and their inverses return one (§3.2.11):
 `rad` is a base unit and `deg = pi / 180 * rad`, so `sin (90 deg)` type-checks,
@@ -3120,7 +3206,7 @@ the encoder writes only hashes. A declared constructor's bytes never changed.
 
 A declared type (§2.3) is hashed separately, from its own canonical encoding:
 varint parameter count and one kind byte per parameter (0 type, 1 length, 2
-shape, 3 dimension); varint constructor count, and per constructor a varint
+shape, 3 dimension, 4 axis); varint constructor count, and per constructor a varint
 field count and each field type; then the label (0 owner and the type name,
 or 1 and an empty text for `structural`). Types use tags of their own:
 
@@ -3129,21 +3215,31 @@ or 1 and an empty text for `structural`). Types use tags of their own:
 | 0x20 | retired | was `Bool`; read from storage version 3 and before as `0x28` on the hash of `Bool`, never written |
 | 0x21 | `Tensor σ δ` | shape, dimension |
 | 0x22 | `Point σ δ` | shape, dimension |
-| 0x23 | `Chart σ δ` | shape, dimension (the tag of the type once spelled `Scale`) |
+| 0x23 | `Chart σ δ` | shape, dimension (the tag of the type once spelled `Scale`); a chart with an anonymous root |
 | 0x24 | retired | was a tuple: varint count, each type; read as `0x28` on the tuple type of that arity |
 | 0x25 | retired | was a list: the element type; read as `0x28` on the hash of `List` |
 | 0x26 | `a -> b` | `a`, `b` |
 | 0x27 | variable | varint id (a parameter: 0 .. k-1) |
-| 0x28 | `T a…` | 32-byte hash, varint count, each argument as a kind byte and a type, length, shape or dimension |
+| 0x28 | `T a…` | 32-byte hash, varint count, each argument as a kind byte and a type, length, shape, dimension or axis |
+| 0x29 | `Chart σ δ` | shape, axis, dimension: a chart whose root slot is not anonymous (§3.9; appended) |
 
-A shape is 0 for `[]`, 1 then a length and a shape, or 2 and a variable id; a
+A shape is 0 for `[]`, 1 then a length and a shape (a position with anonymous
+axes), 2 and a variable id, or 3 then a length, an axis and a shape (a position
+whose name slot is not anonymous, §3.9; appended, so a shape of anonymous
+positions keeps its bytes); an axis is 0 for anonymous, 1 and the 32-byte hash
+of a named set, or 2 and a variable id; a
 length is 0 and a varint literal, 1, a variable id and a varint offset, or 2,
 a shape variable id and a varint offset for `rank s + k` (§4.1; appended, so
 earlier encodings decode unchanged); a
 dimension is a varint atom count and per atom 0 and a base-dimension byte or 1
 and a variable id, then the sint exponent. A recursive occurrence of the type
 being declared is `0x28` with the all-zero hash, so the definition never
-contains its own hash. `Bool`, tuples and lists are `0x28` on the hashes of
+contains its own hash. A length parameter has a companion axis parameter after
+the written ones (§3.9), so a declared type with a length parameter hashed
+differently before stage 1 of §3.9 (in the library, `linalg.Cov2`, and so the
+terms that build or read one); every other declared type and term kept its
+bytes, and `sig` lines are text. `Bool`, tuples and lists are `0x28` on the
+hashes of
 their declarations (§2.3), which are therefore fixed by this encoding:
 `structural data Bool = False | True` is no parameters, two constructors of
 no fields and the structural label, and so on.
@@ -4462,7 +4558,10 @@ tuned, and compilation is a later milestone.
    - *Axis sets as index types.* Designed in §3.9, layer 2: a kind `Axes`,
      `card` as a type function, `card a ~ k` constraints, literals anonymous,
      labels from charts or a coercion, a `where` clause on signatures. Decided
-     with charts. Layer 1, the `axes x y z` sugar, can be built any time.
+     with charts. Stage 1 built: a shape position is a length and a name
+     slot, all anonymous or variable, the primitive schemes saying which
+     axes match, nothing printed. Layer 1, the `axes x y z` sugar, can be
+     built any time.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's
      architecture (§3.2.9).

@@ -713,3 +713,19 @@
   `.-` now print as operators in `:view`. Charts without `spinning`, the
   rest of the library, Core, hashing, encodings and the store format are
   unchanged.
+- Axis sets, stage 1 (design §3.9, layer 2): an internal refactor with no
+  visible change. A shape position is a length and a name slot, anonymous,
+  a named axis set or an axis variable of a new kind; only anonymous slots
+  and variables are made yet, and the printer shows the length alone, so
+  every `:type`, `:ls`, `:view`, `:core` and error message reads as before.
+  The slot unifies syntactically. A written length variable stands for a
+  length and a companion axis variable; a `data` parameter of kind length
+  gains a companion axis parameter, so a declared type with one re-hashes:
+  in the library `linalg.Cov2` (#2oenl to #bcaj2) and the terms that build
+  or read one; no test pins a moved hash. The primitive schemes say which
+  axes must match (dot's contracted pair, transpose and inverse swapping
+  rows and columns, and the rest in design §3.9), and a chart carries the
+  slot of its root's axes for stage 2. An anonymous position and an
+  anonymous root keep their bytes; any other slot is an appended shape tag
+  3 or type tag 0x29 (§6.1). Lint's type application is now
+  capture-avoiding.
