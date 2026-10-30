@@ -3411,8 +3411,9 @@ storeTests =
           before <- T.lines <$> TIO.readFile (dir </> "names.log")
           (loaded, notes) <- reload dir
           notes @?= []
-          -- Format 3 goes to 4, and 4 to 5: the format-4 library is replaced.
-          readFile (dir </> "format") >>= (@?= "eval codebase 5\n")
+          -- Format 3 goes to 4, 4 to 5 (the format-4 library is replaced) and 5
+          -- to 6.
+          readFile (dir </> "format") >>= (@?= "eval codebase 6\n")
           loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
           isJust (lookupName "std.km" loaded.codebase) @?= False
           -- The user's own lines are still there, after the seed.
@@ -3487,7 +3488,7 @@ storeTests =
           sync (Store dir) stdlib4Session.codebase user.codebase
           (loaded, notes) <- reload dir
           notes @?= []
-          readFile (dir </> "format") >>= (@?= "eval codebase 5\n")
+          readFile (dir </> "format") >>= (@?= "eval codebase 6\n")
           loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
           -- The old library's labels are gone, except the one the user rebound;
           -- the user's own label under std is kept.
@@ -3529,6 +3530,104 @@ storeTests =
           _ <- mergeInto fresh dir
           (merged, _) <- reload fresh
           lookupName "si.km" merged.codebase @?= lookupName "si.km" seeded.codebase
+    , testCase
+        "a store of format 3, 4 or 5 is re-hashed: Bool, tuples and lists become declared types"
+        $ forM_ [3, 4, 5 :: Int]
+        $ \v -> withTempStore
+          $ \dir -> do
+            -- A store as the format-3 to 5 code wrote it, byte for byte: a type with
+            -- a Bool field (tag 0x20), and terms that build `true`, a tuple and
+            -- `{}` by name, refer to each other and match a tuple by name.
+            createDirectoryIfMissing True (dir </> "terms")
+            createDirectoryIfMissing True (dir </> "types")
+            writeFile (dir </> "format") ("eval codebase " <> show v <> "\n")
+            let old b = Hash (BS.replicate 32 b)
+                hex = T.unpack . hashHex
+                str s = BS.pack [fromIntegral (T.length s)] <> encodeUtf8 s
+                Hash rHash = old 0xaa
+                Hash pHash = old 0xb2
+                Hash xHash = old 0xb1
+                typeR = BS.pack [0, 1, 1, 0x20, 0] <> str "R"
+                termX =
+                  BS.pack [0x11, 0] <> rHash <> BS.pack [0, 1, 0x11] <> str "True" <> BS.pack [0]
+                one = BS.pack [0x03, 0, 0, 1, 1, 1]
+                termP =
+                  BS.pack [0x11]
+                    <> str "Tuple"
+                    <> BS.pack [2]
+                    <> one
+                    <> BS.pack [0x11]
+                    <> str "Nil"
+                    <> BS.pack [0]
+                termZ = BS.pack [0x01] <> xHash <> BS.pack [0] <> str "x"
+                termC =
+                  BS.pack [0x12, 0x01]
+                    <> pHash
+                    <> BS.pack [0]
+                    <> str "p"
+                    <> BS.pack [1]
+                    <> str "Tuple"
+                    <> BS.pack [2]
+                    <> str "a"
+                    <> str "_"
+                    <> BS.pack [0x00, 0]
+            BS.writeFile (dir </> "types" </> hex (old 0xaa)) typeR
+            forM_ [(0xb1, termX), (0xb2, termP), (0xb3, termZ), (0xb4, termC)] $ \(b, bytes) ->
+              BS.writeFile (dir </> "terms" </> hex (old b)) bytes
+            TIO.writeFile
+              (dir </> "names.log")
+              ( T.unlines
+                  [ "1 type R " <> hashHex (old 0xaa)
+                  , "1 con R " <> hashHex (old 0xaa) <> ".0"
+                  , "1 bind x " <> hashHex (old 0xb1)
+                  , "1 bind p " <> hashHex (old 0xb2)
+                  , "1 bind z " <> hashHex (old 0xb3)
+                  , "1 bind c " <> hashHex (old 0xb4)
+                  ]
+              )
+            -- The old forms are read only by the old rules.
+            fmap
+              (alphaEq (Con pairC [Lit (LTensor ([], [1])), Con nilC []]))
+              (decodeStoredV 3 termP)
+              @?= Right True
+            isJust (either (const Nothing) Just (decodeStoredV storageVersion termP))
+              @?= False
+            (loaded, notes) <- reload dir
+            notes @?= []
+            readFile (dir </> "format") >>= (@?= "eval codebase 6\n")
+            linesIn loaded ["x", "p", "z", "c", ":view R", "std.True", "std.Cons 1 std.Nil"]
+              @?= Right ["R true", "(1, {})", "R true", "1", "data R = R Bool", "true", "{1}"]
+            -- The re-hashed type and terms are the ones the same source enters.
+            fresh <-
+              either (assertFailure . T.unpack) pure
+                $ sessionP
+                  [ "data R = R Bool"
+                  , "let x = R true"
+                  , "let p = (1, {})"
+                  , "let z = x"
+                  , "let c = case p of (a, _) -> a"
+                  , ":add"
+                  ]
+            lookupTypeName "R" loaded.codebase @?= lookupTypeName "R" fresh.codebase
+            forM_ ["x", "p", "z", "c"] $ \n ->
+              lookupName n loaded.codebase @?= lookupName n fresh.codebase
+            lookupTypeName "std.Bool" loaded.codebase @?= Just boolHash
+            -- The old files are gone; the log names the new hashes.
+            present <-
+              mapM
+                (\(sub, b) -> doesFileExist (dir </> sub </> hex (old b)))
+                [ ("types", 0xaa)
+                , ("terms", 0xb1)
+                , ("terms", 0xb2)
+                , ("terms", 0xb3)
+                , ("terms", 0xb4)
+                ]
+            present @?= replicate 5 False
+            logText <- TIO.readFile (dir </> "names.log")
+            T.isInfixOf (hashHex (old 0xb1)) logText @?= False
+            -- Opening it again changes nothing.
+            (reopened, _) <- reload dir
+            lookupName "c" reopened.codebase @?= lookupName "c" loaded.codebase
     , testCase "merging two seeded stores brings nothing across for the library"
         $ withTempStore
         $ \root -> do

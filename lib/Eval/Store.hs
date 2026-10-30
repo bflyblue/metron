@@ -3,7 +3,7 @@
 A store is a directory:
 
 @
-format          "eval codebase 5"
+format          "eval codebase 6"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
 names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias] | sig name type | unsig name
@@ -43,7 +43,7 @@ import Data.Either (lefts, rights)
 import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -51,6 +51,7 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Data.Text.Read qualified as TR
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import Eval.Builtin (boolHash, builtinDefs, listHash, pairHash)
 import Eval.Codebase
 import Eval.Core
 import Eval.Dimension (Spelling (..))
@@ -66,7 +67,8 @@ import Eval.Prelude (
 import Eval.Resolve (queryScheme, renderResolveError, storeTerm, typeVariable)
 import Eval.Syntax (Use (..), renderUse, rootScope)
 import Eval.TCore (signatureHolds)
-import Eval.Type (Scheme, TypeDef, renderSignature)
+import Eval.Type (Arg (..), Scheme, Type (..), TypeDef (..), renderSignature)
+import Eval.Update (restampTerm, retypeType)
 import System.Directory
 import System.FilePath
 
@@ -76,14 +78,15 @@ formatLine :: Int -> Text
 formatLine v = "eval codebase " <> tshow v
 
 {- | Bumped whenever the store's layout changes: the storage encoding
-('storageVersion', 3), or what a store holds. Format 4 holds the standard
+('storageVersion', 4), or what a store holds. Format 4 holds the standard
 library as seeded labels instead of assuming a prelude entered in memory
 (design §7.7); format 5 holds it split by domain into sibling namespaces
-and re-seeds a format-4 store. See core.md on hash stability and
-migrations.
+and re-seeds a format-4 store; format 6 (storage version 4) holds @Bool@,
+tuples and lists as declared types, re-hashing what uses them. See
+core.md on hash stability and migrations.
 -}
 formatVersion :: Int
-formatVersion = 5
+formatVersion = 6
 
 {- | The store to use: the directory given, else a @.eval@ directory found by
 walking up from the working directory, else the user store under
@@ -171,7 +174,16 @@ openStore seeding d = do
                   )
               )
  where
-  steps = [const migrate1to2, const migrate2to3, migrate3to4, migrate4to5]
+  -- The library steps compare the store with the library as this build
+  -- enters it, so the store's terms and types are brought to format 6's
+  -- hashes first ('retireBuiltins', which changes nothing the second time).
+  steps =
+    [ const migrate1to2
+    , const migrate2to3
+    , \seed -> retireBuiltins d >> migrate3to4 seed
+    , \seed -> retireBuiltins d >> migrate4to5 seed
+    , \seed -> retireBuiltins d >> migrate5to6 seed
+    ]
   withSeed k = case seeding of
     Left err -> pure (Left ("the standard library does not load:\n" <> err))
     Right seed -> k seed >> pure (Right (Store d))
@@ -304,7 +316,141 @@ openStore seeding d = do
       (Store d)
       library
     TIO.writeFile (d </> "format") (formatLine (5 :: Int) <> "\n")
+  -- Format 6 made Bool, tuples and lists declarations the compiler holds
+  -- (design §7.4, §7.7). 'retireBuiltins' has re-hashed the store; what is
+  -- left is the library's labels for the three types, which a format-5
+  -- library did not have: their type files are written and their type and
+  -- constructor lines go first in the log, at time 0 as the seed's do, for
+  -- every such label the store does not bind already (a store re-seeded by
+  -- the 4 to 5 step has them).
+  migrate5to6 seed = do
+    (cb, _) <- loadStore (Store d) emptyCodebase
+    let builtin h = isJust (builtinDefs h)
+        typeLines =
+          [ seedStamp <> " type " <> n <> " " <> hashHex h
+          | (n, h) <- Map.toList seed.library.typeNames
+          , builtin h
+          , Map.notMember n cb.typeNames
+          ]
+        conLines =
+          [ seedStamp <> " con " <> n <> " " <> hashHex h <> "." <> tshow i
+          | (n, (h, i)) <- Map.toList seed.library.conNames
+          , builtin h
+          , Map.notMember n cb.conNames
+          ]
+    forM_ [boolHash, pairHash, listHash] $ \h ->
+      forM_ (builtinDefs h) $ \def ->
+        BS.writeFile (d </> "types" </> T.unpack (hashHex h)) (encodeTypeDef def)
+    let logFile = d </> "names.log"
+    present <- doesFileExist logFile
+    old <- if present then TIO.readFile logFile else pure ""
+    TIO.writeFile (logFile <> ".seed") (T.unlines (typeLines ++ conLines) <> old)
+    renameFile (logFile <> ".seed") logFile
+    TIO.writeFile (d </> "format") (formatLine (6 :: Int) <> "\n")
   hasTerm r = doesFileExist (d </> "terms" </> T.unpack (hashHex r.hash))
+
+{- | Bring a store of format 3 to 5 to format 6's hashes (design §7.4):
+@Bool@, tuples and lists were built into the type language and Core
+(type tags 0x20, 0x24, 0x25, constructors by name) and are now declared
+types on the hashes of "Eval.Builtin". Every type file is read by the old
+rules, which read those forms as the declared ones, and re-hashed, types
+before the types whose fields use them; then every term, its constructors
+moved to the re-hashed types and its references to the re-hashed terms,
+dependencies first, as the 2 to 3 step did; the files are written under
+their new hashes and the old ones removed; and every hash in the log is
+replaced by its new one, which carries the labels, their history, the
+units and the constructors and fields across. Signature lines name types
+by path, so they need nothing. A store already at format 6's hashes reads
+back unchanged, so this may run more than once.
+
+A cycle keeps its members in the order their old placeholder hashes gave
+them; the same source entered again may order them otherwise, and so be
+a different term, as with any change of encoding (core.md §6).
+-}
+retireBuiltins :: FilePath -> IO ()
+retireBuiltins d = do
+  typeFiles <- listDirectory (d </> "types")
+  oldTypes <-
+    Map.fromList . catMaybes
+      <$> mapM
+        ( \file -> do
+            raw <- BS.readFile (d </> "types" </> file)
+            pure $ case (hashFromHex (T.pack file), decodeTypeDefV 3 raw) of
+              (Just h, Right def) -> Just (h, def)
+              _ -> Nothing
+        )
+        typeFiles
+  -- A type's hash covers its fields', so the types form no cycle.
+  let visitType acc h
+        | Map.member h acc = acc
+        | Just def <- Map.lookup h oldTypes =
+            let acc' =
+                  foldl visitType acc (Set.toList (foldMap (foldMap typeHashes) def.constructors))
+                def' =
+                  def{constructors = map (map (retypeType (Map.map fst acc'))) def.constructors}
+             in Map.insert h (hashTypeDef def', def') acc'
+        | otherwise = acc
+      types = foldl visitType Map.empty (Map.keys oldTypes)
+      typeMap = Map.map fst types
+      con (UserCon h i) = UserCon (Map.findWithDefault h h typeMap) i
+  termFiles <- listDirectory (d </> "terms")
+  oldTerms <-
+    Map.fromList . catMaybes
+      <$> mapM
+        ( \file -> do
+            raw <- BS.readFile (d </> "terms" </> file)
+            pure $ case (hashFromHex (T.pack file), decodeStoredV 3 raw) of
+              (Just h, Right t) -> Just (h, t)
+              _ -> Nothing
+        )
+        termFiles
+  let visitTerm acc h
+        | Map.member h acc = acc
+        | Just t <- Map.lookup h oldTerms =
+            let acc' = foldl visitTerm acc (Set.toList (refs t))
+                t' =
+                  rewriteRefs
+                    (\h' i -> (\(new, _) -> (new, i)) <$> Map.lookup h' acc')
+                    (restampTerm id con t)
+             in Map.insert h (hashTerm t', t') acc'
+        | otherwise = acc
+      terms = foldl visitTerm Map.empty (Map.keys oldTerms)
+  rewrite "types" encodeTypeDef types
+  rewrite "terms" encodeStored terms
+  let hexMap =
+        Map.fromList
+          [ (hashHex h, hashHex h')
+          | (h, h') <- Map.toList typeMap ++ Map.toList (Map.map fst terms)
+          , h /= h'
+          ]
+      fixWord w = case T.splitOn "." w of
+        (hex : rest) | Just new <- Map.lookup hex hexMap -> T.intercalate "." (new : rest)
+        _ -> w
+      logFile = d </> "names.log"
+  present <- doesFileExist logFile
+  when (present && not (Map.null hexMap)) $ do
+    ls <- T.lines <$> TIO.readFile logFile
+    TIO.writeFile
+      (logFile <> ".retire")
+      (T.unlines (map (T.unwords . map fixWord . T.words) ls))
+    renameFile (logFile <> ".retire") logFile
+ where
+  -- Write what moved under its new hash, then remove the old file unless
+  -- some other entry's new hash is that name.
+  rewrite :: FilePath -> (a -> BS.ByteString) -> Map Hash (Hash, a) -> IO ()
+  rewrite sub encode moved = do
+    let new = Set.fromList (map fst (Map.elems moved))
+    forM_ (Map.toList moved) $ \(h, (h', x)) ->
+      when (h' /= h) $ do
+        BS.writeFile (d </> sub </> T.unpack (hashHex h')) (encode x)
+        unless (Set.member h new) $ removeFile (d </> sub </> T.unpack (hashHex h))
+  typeHashes = \case
+    TData h as -> Set.insert h (foldMap argHashes as)
+    TFun a b -> typeHashes a <> typeHashes b
+    _ -> Set.empty
+  argHashes = \case
+    AType t -> typeHashes t
+    _ -> Set.empty
 
 {- | The time a seeded store's library lines carry (design §7.7): 0, before
 any line of the user's, and the same in every store, so a merge of two
