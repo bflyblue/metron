@@ -2247,12 +2247,19 @@ frame's axes. The decisions:
    applying the wrong rotation is a type error. Route A for mixed dimensions
    (§3.7) needs the same row and column machinery for dimensions; the two
    should share it, but stay separate designs.
-4. **Points stay axis-free; amounts carry axes.** A point is a place, stored
-   in base form (§3.8), so `p == p to eci` stays well typed. `.-` between
-   points returns an amount on the base axes; `coordinates p c : Vec c [m]`
-   gives a point's coordinates on a chart, and `along c v : Vec c d` an
-   amount's components along a chart's axes. These are the typed
-   constructors of labelled amounts, with `inChart` as the inverse.
+4. **Points are typed by their axes and stored in their chart's
+   coordinates** (decided by the owner). `[1.5, 2.25, 3] lvlh : Point (Vec
+   lvlh [m])`, held as the three numbers `1.5, 2.25, 3` and the chart, so
+   arithmetic inside a frame is exact, `p.0` is `1.5` along lvlh's x axis,
+   and `q .- p` for two points on one chart is a `Vec lvlh [m]`. A point on a
+   moving chart is held in that chart's coordinates too, so a point fixed on
+   a moving body (a ground station) is a constant; converting it out needs
+   the chart's arguments, its time and any other parameters, so the
+   wrong-epoch mistake is a missing argument rather than a silent error.
+   Points on different axis sets compare or subtract only after an explicit
+   `to`, which is the typed conversion between them. Scalar points (`Point
+   [K]`) have no axes, so temperature charts are unaffected. This supersedes
+   §3.8's base-form storage, which is replaced when this layer is built.
 5. **Literals are anonymous**, so a labelled vector comes only from
    something that knows its axes: a chart conversion (`coordinates`,
    `along`), or an explicit `withAxes lvlh v`. An ascription does not coerce
