@@ -291,7 +291,7 @@ The policy, now that stores exist (design §7.4):
   stored `±` definition keeps its hash, and the same text entered again, or
   under a namespace, gets the new one.
 - **Encoding and Core changes are versioned.** The store carries a format
-  number (`format`, currently 4). Any change to the canonical encoding or to
+  number (`format`, currently 5). Any change to the canonical encoding or to
   a Core constructor (the label field on `Noise` and `Uncertain` was the last,
   made before any store existed) bumps it, and the loader refuses a store of
   another version it cannot migrate. The format number is no longer the
@@ -301,7 +301,19 @@ The policy, now that stores exist (design §7.4):
   standard library as labels under `std`, seeded into it (design §7.7). The
   3 to 4 migration writes the library's terms and seed lines into the
   store and moves no stored hash: every term file stays as it is, and a user
-  term that referenced an old prelude hash still finds it on disk. Opening an old store then means a numbered migration:
+  term that referenced an old prelude hash still finds it on disk. Format 5
+  changed what a store holds again: the library split by domain into
+  sibling namespaces (`si.km`, `astro.G`, design §7.7), with six stored
+  uses. The split is a library change, not an encoding one, but it
+  re-hashed much of the library (`si.km` is `kilo * metre`, not `10^3 *
+  m`), so the 4 to 5 migration re-seeds: it removes every label still on
+  the old library's binding, with its log lines, seeds the new library
+  before the user's lines, records each removed name's old references as
+  the history of its new home (so a user term on the old `km` is reported
+  stale and `:upgrade si.km` moves it), and replaces the stored `use std`
+  by the six; the user's labels and every term file stay (design §7.4).
+  The format-4 library is kept as `Eval.Prelude.stdlib4Source` for the 3
+  to 4 and 4 to 5 steps, which chain. Opening an old store then means a numbered migration:
   decode with the old decoder, re-encode, map every old hash to its new one,
   rewrite the references in dependency order (the `propagate` machinery), and
   rewrite the log. The first, format 1 to 2 (a written name after each

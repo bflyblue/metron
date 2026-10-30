@@ -3341,16 +3341,18 @@ storeTests =
               , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
               ]
     , testCase
-        "a root binding shadows the library's on reload; :use and :unuse persist" $ withTempStore $ \dir -> do
-        _ <- persistLines dir ["let c = 3e8 m / s", ":add", ":use physics", ":unuse si"]
-        (loaded, _) <- reload dir
-        loaded.codebase.uses
-          @?= [S.Use u Nothing | u <- filter (/= "si") stdlibDefaultUses ++ ["physics"]]
-        linesIn loaded ["c", "physics.c", "1 si.km", ":use si", "1 km"]
-          @?= Right
-            ["300000000 m s^-1", "299792458 m s^-1", "1 si.km", "stored use si", "1 km"]
-        ls <- T.lines <$> TIO.readFile (dir </> "names.log")
-        any (" unuse si" `T.isSuffixOf`) ls @? "an unuse line"
+        "a root binding shadows the library's on reload; :use and :unuse persist"
+        $ withTempStore
+        $ \dir -> do
+          _ <- persistLines dir ["let c = 3e8 m / s", ":add", ":use physics", ":unuse si"]
+          (loaded, _) <- reload dir
+          loaded.codebase.uses
+            @?= [S.Use u Nothing | u <- filter (/= "si") stdlibDefaultUses ++ ["physics"]]
+          linesIn loaded ["c", "physics.c", "1 si.km", ":use si", "1 km"]
+            @?= Right
+              ["300000000 m s^-1", "299792458 m s^-1", "1 si.km", "stored use si", "1 km"]
+          ls <- T.lines <$> TIO.readFile (dir </> "names.log")
+          any (" unuse si" `T.isSuffixOf`) ls @? "an unuse line"
     , testCase
         "a format-3 store is migrated: seeded before its log, the old G kept as history"
         $ withTempStore
@@ -5920,29 +5922,30 @@ stdlibTests =
           ]
           @?= sort stdlibMovedOut
     , testCase
-        "every name bare before the split still resolves bare, as the same kind" $ do
-        -- The format-4 library's names as `use std` offered them bare.
-        let old = stdlib4Session.codebase
-            bare = Map.keys old.names ++ Map.keys old.conNames
-            moved = map ("std." <>) stdlibMovedOut
-            kind cb n = (isUnitName n cb, isScaleName n cb)
-        forM_ [n | n <- bare, n `notElem` moved] $ \n -> do
-          let short = S.lastSegment n
-          case qualifyName TermLabel S.rootScope seeded.codebase short of
-            Found full ->
-              when (Map.member n old.names)
-                $ kind seeded.codebase full
-                  @?= kind old n
-            other -> assertFailure (T.unpack short <> ": " <> show other)
-        forM_ (Map.keys old.typeNames) $ \n ->
-          qualifyName TypeLabel S.rootScope seeded.codebase (S.lastSegment n)
-            @?= Found ("linalg." <> S.lastSegment n)
-        forM_ (Map.keys old.fieldNames) $ \n ->
-          qualifyName FieldLabel S.rootScope seeded.codebase (S.lastSegment n)
-            @?= Found ("linalg." <> S.lastSegment n)
-        -- The moved ones need their namespace.
-        forM_ stdlibMovedOut $ \n ->
-          qualifyName TermLabel S.rootScope seeded.codebase n @?= NotFound
+        "every name bare before the split still resolves bare, as the same kind"
+        $ do
+          -- The format-4 library's names as `use std` offered them bare.
+          let old = stdlib4Session.codebase
+              bare = Map.keys old.names ++ Map.keys old.conNames
+              moved = map ("std." <>) stdlibMovedOut
+              kind cb n = (isUnitName n cb, isScaleName n cb)
+          forM_ [n | n <- bare, n `notElem` moved] $ \n -> do
+            let short = S.lastSegment n
+            case qualifyName TermLabel S.rootScope seeded.codebase short of
+              Found full ->
+                when (Map.member n old.names)
+                  $ kind seeded.codebase full
+                    @?= kind old n
+              other -> assertFailure (T.unpack short <> ": " <> show other)
+          forM_ (Map.keys old.typeNames) $ \n ->
+            qualifyName TypeLabel S.rootScope seeded.codebase (S.lastSegment n)
+              @?= Found ("linalg." <> S.lastSegment n)
+          forM_ (Map.keys old.fieldNames) $ \n ->
+            qualifyName FieldLabel S.rootScope seeded.codebase (S.lastSegment n)
+              @?= Found ("linalg." <> S.lastSegment n)
+          -- The moved ones need their namespace.
+          forM_ stdlibMovedOut $ \n ->
+            qualifyName TermLabel S.rootScope seeded.codebase n @?= NotFound
     , testCase "no name is ambiguous among the namespaces used by default" $ do
         let cb = seeded.codebase
             used n = any (\u -> (u <> ".") `T.isPrefixOf` n) stdlibDefaultUses

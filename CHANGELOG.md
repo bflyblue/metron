@@ -518,3 +518,36 @@
   its fields; before, it added terms only. Design §3.7 records route
   A, Hart's dimensioned matrices, rule by rule for when blocks stop being
   enough; §12 gains a filter step in blocks, its outputs those of a test.
+- The standard library is split by domain into sibling namespaces (design
+  §7.7): `std` (the structural functions alone), `linalg` (`ε`, `cross`,
+  `trace`, `vimap`, `Cov2` and the filter steps), `si` (the spelled-out base
+  units `metre` … `radian`, the prefixes as numbers `kilo = 10^3` …, the
+  derived units by symbol with their names as aliases, `newton` on `N`'s
+  term, and the prefixed units written `unit km = kilo * metre`), `time`
+  (`min`, `hr` with `h` its alias, `day`, `week`, `year`, the epochs),
+  `angle` (adds `turn`, `steradian`), `temperature`, `astro` (`AU`, new
+  `pc` and `ly`, `G`, the masses), `physics` (`c`, `planck`, new `hbar`
+  and `eV`, `k_B`, `N_A`, `e_charge`, `g0`, with the aliases `h`, `kB`,
+  `NA`, `e`) and `imperial` (new: `inch`, `ft`, `yd`, `mile`, `lb`, `oz`,
+  `lbf`, `psi`, `mph`, exact). A seeded codebase stores six uses, `std
+  linalg si time angle temperature`; the constants and `AU` need `:use
+  astro` or `:use physics` (`Eval.Prelude.stdlibMovedOut` lists them), and
+  every other name that was bare stays bare, as the same kind. `kelvin`
+  stays the absolute scale, so `K` has no spelled-out unit name. Both `3 h`
+  and `3 hr` work by default; after `:use physics`, `h` is ambiguous with
+  Planck's constant, and the quantity rule now reports that ambiguity
+  instead of "not a unit". `:ls` at the root lists one line per namespace;
+  `:stdlib upgrade`, `:export` and `:edit` treat all nine as the library.
+  **Library hashes changed**: every prefixed unit (`si.km` is `kilo *
+  metre`, not `10^3 * m`), the hour (`60 * min`), and `astro.G` with the
+  masses (stamped with their new path); definitions written as before
+  (`si.N`, `time.min`, `std.map`, `physics.planck`) keep theirs. The store
+  format is 5: opening a format-4 store re-seeds it, removing every label
+  still on the old library's binding, keeping the user's, replacing `use
+  std` by the six uses, and recording each old reference in the history of
+  its new home, so a user term on the old `km` shows as stale in `:todo`
+  and `:upgrade si.km` moves it. Format 3 stores chain through 4. The
+  format-4 library is kept as `Eval.Prelude.stdlib4Source`; `stdlibHomes`,
+  `stdlibAliases`, `stdlibNamespaces`, `stdlibDefaultUses` and
+  `isLibraryPath` are new, `stdlibNamespace` and `stdlibAdditions` are
+  gone. Design §3.3 no longer lists `identity`, which does not exist.
