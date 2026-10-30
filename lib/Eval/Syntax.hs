@@ -20,10 +20,19 @@ module Eval.Syntax (
   DataDecl (..),
   FieldDecl (..),
   Decl (..),
-  declOf,
+  Path (..),
+  renderPath,
+  Use (..),
+  Scope (..),
+  rootScope,
+  qualify,
+  lastSegment,
+  flatten,
   renderSpanError,
 ) where
 
+import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty qualified as NE
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core (NudgeKind)
@@ -201,24 +210,107 @@ data DataDecl = DataDecl
 data FieldDecl = FieldDecl {label :: Maybe Name, ty :: TyExpr}
   deriving stock (Eq, Show)
 
--- | What the scratch holds: a definition or a data declaration.
-data Decl = DBind Binding | DData DataDecl
+{- | What the scratch holds: a definition or a data declaration, with the
+scope it was written in (design §7.6). Its names are full paths: the
+namespace it was declared under is already prefixed to the name, and for a
+type to its constructors and fields.
+-}
+data Decl = DBind Scope Binding | DData Scope DataDecl
   deriving stock (Eq, Show)
 
 instance HasField "name" Decl Name where
   getField = \case
-    DBind b -> b.name
-    DData d -> d.name
+    DBind _ b -> b.name
+    DData _ d -> d.name
 
 instance HasField "span" Decl Span where
   getField = \case
-    DBind b -> b.span
-    DData d -> d.span
+    DBind _ b -> b.span
+    DData _ d -> d.span
+
+instance HasField "scope" Decl Scope where
+  getField = \case
+    DBind s _ -> s
+    DData s _ -> s
+
 data Statement
   = SLet Binding
   | SData DataDecl
   | SExpr Expr
+  | -- | @namespace a.b@ and an indented block of statements (design §7.6)
+    SNamespace Path [Statement]
+  | -- | @use a.b@, or @use a.b as k@
+    SUse Path (Maybe Name)
   deriving stock (Eq, Show)
+
+-- | A namespace path as written, @orbital.kepler@: its segments, outermost first.
+data Path = Path {span :: Span, segments :: NonEmpty Text}
+  deriving stock (Eq, Show)
+
+renderPath :: Path -> Text
+renderPath p = T.intercalate "." (NE.toList p.segments)
+
+{- | A @use@ in effect (design §7.6): the full path of a namespace whose names
+resolve bare, or, with an alias, under the alias as a prefix.
+-}
+data Use = Use {path :: Text, alias :: Maybe Text}
+  deriving stock (Eq, Show)
+
+{- | Where a name is written: the namespace it is under (empty at the root)
+and the @use@s in effect, oldest first.
+-}
+data Scope = Scope {namespace :: [Text], uses :: [Use]}
+  deriving stock (Eq, Show)
+
+rootScope :: Scope
+rootScope = Scope [] []
+
+-- | A name under a namespace: @[orbital]@ and @period@ give @orbital.period@.
+qualify :: [Text] -> Text -> Text
+qualify ns n = T.intercalate "." (ns ++ [n])
+
+-- | The last segment of a path: @period@ of @orbital.period@.
+lastSegment :: Text -> Text
+lastSegment = last . T.splitOn "."
+
+{- | The statements of an input with their namespaces flattened (design
+§7.6): every declaration under its full path with the scope it was written
+in, every expression with its scope, and the scope after the input, which
+keeps the top-level @use@s. A @use@ applies to the statements after it in
+its block and in the blocks inside that; a block's path nests under the
+enclosing namespace.
+-}
+flatten :: Scope -> [Statement] -> ([Decl], [(Scope, Expr)], Scope)
+flatten = go
+ where
+  go scope = \case
+    [] -> ([], [], scope)
+    st : rest -> case st of
+      SLet b ->
+        let (ds, es, s) = go scope rest
+         in (DBind scope (Binding b.span (full b.name) b.params b.body b.kind) : ds, es, s)
+      SData d ->
+        let (ds, es, s) = go scope rest
+         in (DData scope (dataUnder d) : ds, es, s)
+      SExpr e ->
+        let (ds, es, s) = go scope rest in (ds, (scope, e) : es, s)
+      SUse p alias ->
+        let u = Use (renderPath p) ((.text) <$> alias)
+         in go scope{uses = filter (/= u) scope.uses ++ [u]} rest
+      SNamespace p inner ->
+        let (ds1, es1, _) = go scope{namespace = scope.namespace ++ NE.toList p.segments} inner
+            (ds2, es2, s) = go scope rest
+         in (ds1 ++ ds2, es1 ++ es2, s)
+   where
+    full n = n{text = qualify scope.namespace n.text}
+    dataUnder d =
+      d
+        { name = full d.name
+        , constructors =
+            [ (full c, [f{label = full <$> f.label} | f <- fs])
+            | (c, fs) <- d.constructors
+            ]
+        }
 
 {- | An error message pointing at a span, with the source line and carets
 underneath (design §4.7). Without the source, just the position.
@@ -243,10 +335,3 @@ renderSpanError src sp msg =
   lineAt s n = case drop (n - 1) (T.lines s) of
     l : _ -> Just l
     [] -> Nothing
-
--- | The declaration a statement makes, if it is one.
-declOf :: Statement -> Maybe Decl
-declOf = \case
-  SLet b -> Just (DBind b)
-  SData d -> Just (DData d)
-  SExpr _ -> Nothing

@@ -54,7 +54,8 @@ import Eval.Lexer (
   showToken,
   tokenize,
  )
-import Eval.Syntax (Pos (..), Span (..))
+import Eval.Resolve (LabelKind (..), shortestName, shortestNameOf)
+import Eval.Syntax (Pos (..), Span (..), lastSegment)
 import Eval.Unicode qualified as U
 
 -- Completion ------------------------------------------------------------------
@@ -91,6 +92,12 @@ commands =
   , ":dependents"
   , ":alias"
   , ":unname"
+  , ":rename"
+  , ":move"
+  , ":namespace"
+  , ":uses"
+  , ":unuse"
+  , ":export"
   , ":exact"
   , ":budget"
   , ":covariance"
@@ -121,6 +128,8 @@ keywords =
   , "to"
   , "true"
   , "false"
+  , "namespace"
+  , "use"
   ]
 
 {- | Whether the cursor is at a file name: the argument of @:load@. The
@@ -149,6 +158,14 @@ complete session (leftRev, _)
           (digits, frag) = span isDigit (reverse fragRev)
           prev0 = reverse digits ++ before
           (word, prev) = case prev0 of
+            -- A dotted name, @orbital.pe@, when some name starts so (design §7.6).
+            '.' : p
+              | null digits
+              , (chainRev@(c : _), p') <- span (\x -> identChar x || x == '.') p
+              , identChar c
+              , let qualified = reverse chainRev ++ "." ++ frag
+              , any (qualified `isPrefixOf`) (nameCandidates session) ->
+                  (qualified, p')
             '.' : p | null digits -> ('.' : frag, p)
             ':' : p | null digits, all isSpace p -> (':' : frag, p)
             _ -> (frag, prev0)
@@ -175,9 +192,10 @@ completions session prev word = case word of
       | (k, t) <- many
       ]
   ':' : _ | all isSpace prev -> plain commands
+  -- A field is written by its last segment (design §7.6).
   '.' : f ->
     [ Completion ('.' : n) n True
-    | n <- sorted (map T.unpack (Map.keys cb.fieldNames))
+    | n <- sorted (map (T.unpack . lastSegment) (Map.keys cb.fieldNames))
     , f `isPrefixOf` n
     ]
   _ -> case words (reverse prev) of
@@ -186,19 +204,30 @@ completions session prev word = case word of
     [c] | c `elem` [":colour", ":color"] -> plain ["on", "off"]
     _
       | null word -> []
-      | otherwise ->
-          plain
-            ( sorted
-                ( map
-                    T.unpack
-                    (Map.keys cb.names ++ Map.keys cb.typeNames ++ Map.keys cb.conNames)
-                    ++ keywords
-                )
-            )
+      | otherwise -> plain (sorted (nameCandidates session ++ keywords))
  where
   cb = session.staging
   sorted = nub . sort
   plain xs = [Completion x x True | x <- xs, word `isPrefixOf` x]
+
+{- | The names a session sees, for completion: definitions, types and
+constructors by their full paths, and also as the scope spells them, so a
+name from a @use@d namespace or the current one completes bare (design
+§7.6).
+-}
+nameCandidates :: Session -> [String]
+nameCandidates session =
+  map
+    T.unpack
+    ( full
+        ++ map (shortestName session.scope cb) terms
+        ++ map (shortestNameOf TypeLabel session.scope cb) types
+    )
+ where
+  cb = session.staging
+  terms = Map.keys cb.names ++ Map.keys cb.conNames
+  types = Map.keys cb.typeNames
+  full = terms ++ types
 
 identChar :: Char -> Bool
 identChar x =
@@ -326,6 +355,8 @@ classify = \case
       , "removed "
       , "replaced "
       , "forgot "
+      , "renamed "
+      , "moved "
       , "stale:"
       , "nothing "
       , "note:"
@@ -623,7 +654,8 @@ a continuation line, and why. 'Nothing' means feed it now.
 * After the first line, a blank line ends the input as it stands.
 * Text that does not lex is fed as it stands, so the lexer's error shows.
 * Otherwise, by the lexer's tokens, comments already gone: an unclosed
-  bracket, a line that ends in @of@ or @where@, or a last token that cannot
+  bracket, a line that ends in @of@ or @where@, a line that is a
+  @namespace@ and its path (design §7.6), or a last token that cannot
   end an input (@=@, @->@, @\\@, @|@, @,@, @;@, @`@, @√@, an infix operator,
   @±@, or a keyword other than @true@ and @false@).
 
@@ -641,14 +673,24 @@ continuation src
           -- Layout's separators and block ends are empty; written ones are not.
           toks = [t | t <- located, t.span.from /= t.span.to]
           depth = sum (map (bracket . (.value)) toks)
-          lineEnds = map NE.last (NE.groupWith (\t -> t.span.from.line) toks)
+          lineGroups = NE.groupWith (\t -> t.span.from.line) toks
+          lineEnds = map NE.last lineGroups
+          -- A line that is only @namespace a.b@ opens a block (design §7.6).
+          namespaceHeader g = case map (.value) (NE.toList g) of
+            TKw KNamespace : path -> not (null path) && all isPathTok path
+            _ -> False
          in
           case reverse toks of
             _ | depth > 0 -> Just Unclosed
             _ | any (opensBlock . (.value)) lineEnds -> Just Block
+            _ | any namespaceHeader lineGroups -> Just Block
             t : _ | cannotEnd t.value -> Just (Trailing (showToken t.value))
             _ -> Nothing
  where
+  isPathTok = \case
+    TIdent _ -> True
+    TField _ -> True
+    _ -> False
   bracket :: Token -> Int
   bracket = \case
     TLParen -> 1

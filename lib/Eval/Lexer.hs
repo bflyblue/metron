@@ -46,6 +46,8 @@ data Keyword
   | KTrue
   | KFalse
   | KData
+  | KNamespace
+  | KUse
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 data Token
@@ -76,6 +78,10 @@ data Token
     TSup Integer
   | -- | A field access glued to the preceding atom: @b.mass@ (§2.10).
     TField Text
+  | {- | A dot and a name not glued to an atom: an absolute name, @.km@, the
+    root's @km@ whatever the scope (design §7.6).
+    -}
+    TAbs Text
   | -- | A projection glued to the preceding atom: @v.0@, @m.1.2@.
     TProj Int
   | {- | A wildcard glued to the preceding atom, skipping one axis before a
@@ -239,6 +245,8 @@ identifierOrKeyword = do
     "true" -> TKw KTrue
     "false" -> TKw KFalse
     "data" -> TKw KData
+    "namespace" -> TKw KNamespace
+    "use" -> TKw KUse
     "π" -> TIdent "pi"
     _ -> TIdent name
  where
@@ -367,6 +375,7 @@ adjacency = go Nothing
             TProj _ -> True
             TWild -> True
             TField _ -> True
+            TAbs _ -> True
             TNum _ -> True
             TSup _ -> True
             TKw KTrue -> True
@@ -395,21 +404,14 @@ adjacency = go Nothing
                   t.span
                   "a wildcard ._ must be attached to a tensor and followed by a position, as in m._.0"
               )
-      TField f
-        | not (gluedToPrev && endsAtom) ->
-            Left
-              ( at
-                  t.span
-                  ( "a field access like ."
-                      <> f
-                      <> " must be attached to a value, as in b."
-                      <> f
-                      <> "; composition is f . g or f ∘ g"
-                  )
-              )
       _ -> pure ()
-    rest <- go (Just t) ts
-    pure (t : rest)
+    -- A dot and a name not glued to an atom start one: an absolute name,
+    -- @.km@ (design §7.6). Glued, they are a field access.
+    let t' = case t.value of
+          TField f | not (gluedToPrev && endsAtom) -> t{value = TAbs f}
+          _ -> t
+    rest <- go (Just t') ts
+    pure (t' : rest)
   at sp msg = T.pack (show sp.from.line) <> ":" <> T.pack (show sp.from.col) <> ": " <> msg
 
 -- Layout ---------------------------------------------------------------------
@@ -417,33 +419,49 @@ adjacency = go Nothing
 {- | The layout pass (design §2.1, §2.2). A token that starts a new line at the
 column of the enclosing context begins a new statement or binding, so a
 'TSep' is inserted before it. The top-level context is column 1. The first
-token after @where@ opens a new context at its own column; a token on a
-new line to the left of that column closes the context with 'TBlockEnd'.
-A line indented deeper than its context is a continuation.
+token after @where@ or @of@ opens a new context at its own column, and so
+does the first token after the path of a @namespace@ (design §7.6) when it
+is indented further than the enclosing context; otherwise the namespace's
+block is empty. A token on a new line to the left of a context's column
+closes it with 'TBlockEnd'. A line indented deeper than its context is a
+continuation.
 -}
 layout :: [Located Token] -> [Located Token]
-layout = go [Block 1] Nothing False
+layout = go [Block 1] Nothing Closed
  where
-  go :: [Frame] -> Maybe Span -> Bool -> [Located Token] -> [Located Token]
-  go stack prev _ [] =
+  go :: [Frame] -> Maybe Span -> Opening -> [Located Token] -> [Located Token]
+  go stack prev opening [] =
     let here = maybe (Pos 1 1) (.to) prev
-     in [Located (Span here here) TBlockEnd | Block _ <- take (length stack - 1) stack]
-  go stack prev afterOpener (t : ts)
-    | afterOpener =
-        let opened = Block t.span.from.col : stack
-         in t
-              : go
-                (if isOpenTok t.value then Open : opened else opened)
-                (Just t.span)
-                (opensBlock t)
-                ts
+     in -- A namespace with nothing after its path has an empty block.
+        [Located (Span here here) TBlockEnd | Header <- [opening]]
+          ++ [Located (Span here here) TBlockEnd | Block _ <- take (length stack - 1) stack]
+  go stack prev Header (t : ts)
+    -- The path of a namespace: a name and its glued fields, on one line.
+    | isPathTok t.value
+    , maybe True (\p -> p.to.line == t.span.from.line) prev =
+        t : go stack (Just t.span) Header ts
+    -- A block indented no further than its context is empty.
+    | Just p <- prev
+    , t.span.from.line > p.to.line
+    , maybe False (t.span.from.col <=) (top (dropWhile isOpen stack)) =
+        Located (Span t.span.from t.span.from) TBlockEnd : go stack prev Closed (t : ts)
+    | otherwise = go stack prev Next (t : ts)
+  go stack _ Next (t : ts) =
+    let opened = Block t.span.from.col : stack
+     in t
+          : go
+            (if isOpenTok t.value then Open : opened else opened)
+            (Just t.span)
+            (opensBlock t)
+            ts
+  go stack prev Closed (t : ts)
     -- A closing bracket ends every block opened since its opening bracket
     -- (Haskell's parse-error rule, for the one case that matters).
     | isClose t.value =
         let (inside, rest) = break isOpen stack
             ends = [Located (Span t.span.from t.span.from) TBlockEnd | Block _ <- inside]
-         in ends ++ (t : go (drop 1 rest) (Just t.span) False ts)
-    | isOpenTok t.value = t : go (Open : stack) (Just t.span) False ts
+         in ends ++ (t : go (drop 1 rest) (Just t.span) Closed ts)
+    | isOpenTok t.value = t : go (Open : stack) (Just t.span) Closed ts
     | Just p <- prev
     , t.span.from.line > p.to.line =
         let c = t.span.from.col
@@ -457,7 +475,16 @@ layout = go [Block 1] Nothing False
   top = \case
     Block c : _ -> Just c
     _ -> Nothing
-  opensBlock t = t.value == TKw KWhere || t.value == TKw KOf
+  opensBlock t = case t.value of
+    TKw KWhere -> Next
+    TKw KOf -> Next
+    TKw KNamespace -> Header
+    _ -> Closed
+  isPathTok = \case
+    TIdent _ -> True
+    TAbs _ -> True
+    TField _ -> True
+    _ -> False
   isOpenTok = \case
     TLParen -> True
     TLBracket -> True
@@ -471,6 +498,11 @@ layout = go [Block 1] Nothing False
   isOpen = \case
     Open -> True
     _ -> False
+
+{- | Whether the next token opens a layout block: after @where@ and @of@ it
+does; after @namespace@, once the path has been read.
+-}
+data Opening = Closed | Next | Header
 
 -- | A layout context: a block at a column, or an open bracket.
 data Frame = Block Int | Open
@@ -501,6 +533,7 @@ showToken = \case
   TProj i -> "." <> T.pack (show i)
   TWild -> "._"
   TField f -> "." <> f
+  TAbs f -> "." <> f
   THashLabel l -> "#" <> l
   TSep -> "newline"
   TSemis n -> T.replicate n ";"

@@ -117,7 +117,9 @@ desugaring (§2.9); the type checker never sees it.
   always an exact rational; `9.81` is exactly 981/100. `1/3` is an expression, not a
   literal. Underscores are ignored.
 - **Comments**: `--` to end of line, `{- … -}` nestable blocks.
-- **Keywords**: `let`, `in`, `where`, `if`, `then`, `else`, `to`, `true`, `false`.
+- **Keywords**: `let`, `in`, `where`, `if`, `then`, `else`, `to`, `true`, `false`,
+  `unit`, `scale`, `at`, `case`, `of`, `data`, `namespace`, `use`. (`as` in
+  `use a as k` is not a keyword: it is also the attosecond.)
 - **Operators**: `+ - * / ^ ± == /= < <= > >= && ||` and their unicode spellings
   (§2.8). A name in backticks is an infix operator: `a `dot` b`.
 - **Statement separators**: a newline at indentation zero, or `;`. A line that
@@ -146,11 +148,31 @@ scratch definitions into the codebase (§7).
 Within one input a name may be defined only once, as in a Haskell module; across
 REPL inputs a pending definition is replaced by a newer one.
 
+`namespace a.b` followed by an indented block of statements puts what the
+block declares under the path `a.b` (§7.6); blocks nest. `use a.b` and
+`use a.b as k` make the names of a namespace resolve bare, or under the
+prefix `k.`, for the statements after it in its block, and a top-level
+`use` lasts for the rest of the REPL session (a file read with `:load` keeps
+its `use`s to itself). The statements of a `namespace` block and the `use`
+form are part of the input's binding group like any other.
+
+```
+namespace orbital
+  let mu = 398600.4418 km^3/s^2
+  let period a = 2 * pi * sqrt (a^3 / mu)    -- mu is orbital.mu
+use orbital
+period (7000 km)
+```
+
 Layout is deliberately simpler than Haskell's: a token that starts a line at the
 column of its enclosing context starts a new statement (or `where` binding), a
 token further right continues the previous one, and there is no parse-error rule.
 So a multi-line `let … in` expression must indent the `in`, and a bracket that
-spans lines must indent its continuation lines.
+spans lines must indent its continuation lines. A `namespace` block opens at
+the first token after its path, as a `where` block does at the first token
+after `where`, and that token must be indented further than the `namespace`
+line; a block with nothing indented under it is an error, so a forgotten
+indent cannot silently put the rest of a file into the namespace.
 
 ### 2.3 Expressions
 
@@ -376,14 +398,19 @@ statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | 'unit' name '=' expr                      -- a display unit (3.2.12)
              | 'scale' name '=' expr 'at' expr            -- a point scale (3.6)
              | ['structural'] 'data' name param* '=' con ( '|' con )*   -- a data type (2.3)
+             | 'namespace' path statements                -- an indented block (7.6)
+             | 'use' [ '.' ] path [ 'as' name ]            -- 'as' is a name, not a keyword (7.6)
              | expr
+path       ::= name ( '.' name )*                       -- glued dots
+statements ::= statement ( sep statement )*            -- indented block, opened as after 'where'
+qname      ::= [ '.' ] name ( '.' name )*              -- a qualified or absolute name (7.6)
 con        ::= name tyatom* | name '{' name '::' type ( ',' name '::' type )* '}'   -- a record (2.3)
 type       ::= tyapp [ '->' type ]
-tyapp      ::= name tyatom* | tyatom
-tyatom     ::= name | natural | '(' type ( ',' type )* ')' | '{' type '}' | '[' bracket ']'
+tyapp      ::= qname tyatom* | tyatom
+tyatom     ::= qname | natural | '(' type ( ',' type )* ')' | '{' type '}' | '[' bracket ']'
 bracket    ::= [ product ( ',' product )* ]            -- a shape [2, 3] or a dimension [kg m^2 / s^2]
 product    ::= factor+ ( '/' factor+ )*
-factor     ::= ( name | natural ) [ '^' [ '-' ] natural ]
+factor     ::= ( qname | natural ) [ '^' [ '-' ] natural ]
 bindings   ::= binding ( sep binding )*            -- indented block
 binding    ::= name param* '=' expr
 param      ::= name
@@ -404,13 +431,14 @@ postfix    ::= '.' projection | '.' name                -- glued: a component, o
              | ( '._' )+ '.' projection                -- glued: a slice along axis k = the number of '._' (2.10)
              | '{' name '=' expr ( ',' name '=' expr )* '}'    -- record construction or update (2.3)
 projection ::= natural
-primary    ::= number | name | 'true' | 'false'
+primary    ::= number | name | '.' name | 'true' | 'false'     -- '.' name not glued: absolute (7.6)
              | '(' expr ')' | section | vector | matrix
              | '(' expr ( ',' expr )+ ')'                      -- a tuple
              | '{' [ expr ( ',' expr )* ] '}'                   -- a list
              | 'case' expr 'of' alts                       -- alts: an indented block, or ; separated
 alt        ::= pattern '->' expr
 pattern    ::= '(' name ( ',' name )+ ')' | '{}' | name ':' name | 'true' | 'false' | '_' | name name*
+             | qname name*                        -- a qualified or absolute constructor (7.6)
                                                   -- a lone name is a variable unless it is a constructor
 section    ::= '(' operator expr ')' | '(' expr operator ')'
 vector     ::= '[' [ expr ( sep expr )* ] ']'     -- sep: ',' elements, ';' rows, ';;' planes …
@@ -555,6 +583,23 @@ is a dot glued to the atom (or to the projection or wildcard before it) and
 followed by `_`, where the `_` does not start an identifier; digits or another
 wildcard follow, glued: `m._.0`, `t._._.2`. `m ._.0` is an error, and `x._y`
 is still the composition of `x` and the name `_y`.
+
+**Qualified and absolute names** (§7.6). A dot and a name that are *not*
+glued to an atom start one: `.km` is an absolute name, the root's `km`
+whatever namespace is current or `use`d, and `.orbital.period` the full path
+from the root (so `f .g`, once an error, is `f` applied to the root's `g`).
+A glued chain on a name, `orbital.period` or `o.period`, lexes as field
+accesses, and the desugarer decides: when the name at its head is not a
+local binder, the longest dotted prefix of the chain that resolves (§7.6) to
+a definition or a constructor is a qualified reference, and the fields
+after it are field accesses. `orbital.earth.mass` is the field `mass` of the
+definition `orbital.earth`; `b.mass`, with `b` a lambda parameter, is a
+field access whatever labels exist. The one ambiguous case, a value
+`orbital` with a field `period` beside a definition `orbital.period`, cannot
+arise, because a name is never both a label and a namespace (§7.6). A field
+written after the dot is a bare name resolved through the scope; a record
+built with a constructor (`orbital.Body {mass = …}`) takes the field names
+as that constructor's own, wherever the type lives.
 
 ---
 
@@ -2160,13 +2205,16 @@ Scratch and codebase (7.5)
 :todo                   pending definitions and stale references
 :scratch                list pending definitions
 :forget name            drop a pending definition
-:edit name              print a definition, or a data declaration, as source, ready to paste back
+:edit name              print a definition, or a data declaration, as source, ready to paste back;
+                        one outside the current namespace comes in a namespace block (7.6)
 
 Inspection
-:ls [glob] [--all|--units|--scales|--types] [: type]
+:ls [glob|namespace] [--all|--units|--scales|--types] [: type]
                    every name with its type, sorted; the prelude hidden unless a filter or --all;
                    a glob (* anywhere, else a substring), a kind, or a type query whose lowercase
-                   unknown names are variables, matched by unification both ways
+                   unknown names are variables, matched by unification both ways; a word that
+                   names a namespace lists only its labels, relative to it, data lines included;
+                   alone inside a namespace, that namespace
 :type e            inferred type scheme of e
 :hash name         current ref of name
 :names #hash       every name that points at the hash (current or historical)
@@ -2175,8 +2223,18 @@ Inspection
 :core name         print the Typed Core (5.3) with every annotation
 :lint name         re-run lint on a stored definition and print its type(s)
 :dependents name   definitions whose terms reference the current ref of name
-:alias new old     point new at old's current ref
-:unname name       remove the label (of a definition, a type or a constructor; .f for a field); the term stays
+:alias new old     point new at old's current ref; for a namespace, give every label under old
+                   the same label under new
+:unname name       remove the label (of a definition, a type or a constructor; .f for a field); the term stays;
+                   for a namespace, every label under it, with the count
+:rename old new    relabel a definition, type, constructor or field, or every label under a namespace
+                   (7.6); history keeps both names; all or nothing
+:move name… ns     :rename each name (a label or a namespace) to ns.<its last segment>
+
+Namespaces (7.6)
+:namespace [path|.] show or set the current namespace (a full path); . is the root
+:uses              list the uses in effect; a `use` statement adds one
+:unuse path        drop a use, by its path or its alias
 
 Session
 :set precision n   significant digits printed; working precision is n + 4 (3.2.8)
@@ -2188,7 +2246,9 @@ Session
 :exact e           raw rational, or midpoint and nudge list
 :budget e          error budget (3.2.6)
 :covariance e      covariance (or variance) of the statistical nudges, and the bound box (3.5)
-:load file         enter a file into the scratch as one binding group
+:load file         enter a file into the scratch as one binding group; its `use`s last for the file
+:export [ns] [file] the stored codebase, or the namespace ns, as source :load reads back (7.4);
+                   to the file when one is given (a word that is no namespace is the file)
 :colour [on|off]   colour the REPL's output; alone, say whether it is on (a REPL-level setting, below)
 :quit
 ```
@@ -2454,6 +2514,45 @@ uses. A project-local `.eval/` directory, found by walking up from the current
 directory, shadows the user store, and `--codebase DIR` names one explicitly;
 `--no-codebase` runs in memory. iapetus commits its `.eval/` to git.
 
+**Export: the text form of a store.** `:export [ns] [file]` writes the
+stored codebase, or the namespace `ns`, as source that `:load` reads back:
+in a fresh session, `:load file` then `:add` gives the same labels on the
+same hashes (`names`, `typeNames`, `conNames`, `fieldNames`, `units`,
+`scales`). Each namespace is a `namespace` block, nested as the paths nest,
+with root definitions outside any block. Each definition is rendered as
+`:edit` renders it (`let name = body`, `unit name = …`, `scale name = … at
+…`, `data` declarations with their field names), names inside a block
+spelled for that block with no `use` (§7.6), so a name the block shadows
+gets its leading dot (`.km`). Prelude definitions are not exported, since
+every session enters them; a prelude name the user rebound is, and a
+prelude term a user definition references prints by its name, which
+resolves. Types come first, each after the types it uses, since `data`
+declarations are entered in order; then the terms, each after what it
+references, a cycle's members together, and among what is ready the ones
+in the same namespace as the last, so few blocks are reopened. `:export
+orbital` exports that subtree as `namespace orbital …`, so loading it
+elsewhere lands it in the same place; an empty codebase exports nothing;
+the pending scratch is not exported, and a closing comment (or, for a
+file, a note) says so.
+
+What does not round-trip, and why: a definition that refers to a version
+no name points at (after `:update --no-upgrade` and an `:unname`) cannot
+be written as source, so the export refuses and names it; a definition
+with a `±` and a nominal type are stamped with their name as declared
+(§3.2.4, §2.3, §7.6), so after a rename of the definition or type itself
+(not of its namespace) re-entering the export gives a new hash; two labels
+on one reference export as two definitions, which hash alike only when the
+body declares no `±` and is not recursive (the second refers to the first
+by name instead of being a member of its cycle); a type or constructor
+that a definition uses but no label names any more prints as a hash and
+does not read back; a rebound prelude name needs `:update` rather than
+`:add` after loading, and a prelude name the user unnamed comes back;
+history, preferences and the `use`s of the session are not part of the
+export. This answers the question of §11 for iapetus:
+the binary `.eval/` store stays the source of truth for history and
+hashes, and an export beside it is the reviewable text, diffable in git
+and enough to rebuild the current labels.
+
 The prelude is entered at the start of every session as an ordinary binding
 group, in memory, and the store's log is replayed on top of it. (This is the
 model §7.7 replaces: the library will be seeded into a new codebase once and
@@ -2494,7 +2593,13 @@ acts.
   change, so errors appear immediately and expressions see scratch definitions
   first, then the codebase. A file defining a name twice is an error; a later REPL
   input redefining a *pending* name replaces it with a notice, because the scratch
-  is a workspace, not a scope.
+  is a workspace, not a scope. A pending definition is known by its full path,
+  and keeps the scope it was written in (its namespace and the `use`s then in
+  effect, §7.6), so re-entering the scratch resolves it as it did. After
+  `:namespace orbital`, `let x = 1` is `orbital.x`; `:scratch`, `:todo`,
+  `:add` and `:update` print names as the current scope spells them
+  (§7.6), so it shows as `pending: x` there and `pending: orbital.x` at the
+  root.
 - **`:add`** stores pending definitions whose names are new, or whose definition is
   unchanged. A name that exists with a different definition is a conflict; the
   message points at `:update`.
@@ -2525,69 +2630,152 @@ semi-automated upgrade is the propagation report: what moved, and what did not
 and why.
 
 ---
-### 7.6 Namespaces (design; not yet built)
+### 7.6 Namespaces
 
 A name is a dotted path, `orbital.kepler.period`, and nothing else changes: a
 namespace is a prefix on a label. Terms, hashes and the store never see it,
 since a `Ref` carries only a hash and, in the storage encoding, the name as
-written. Moving `period` under `orbital` is a relabelling (§7.2), so history
-keeps the old name and nothing is re-hashed. Types, constructors and fields
-are labels too and move the same way. The prelude's units and constants stay
-at the root: `5 km` must not become `5 si.km`.
+written (now the full path it resolved to). Moving `period` under `orbital`
+is a relabelling (§7.2), so history keeps the old name and nothing is
+re-hashed. Types, constructors and fields are labels too and move the same
+way, and so do the `unit` and `scale` flags. The prelude's units and
+constants stay at the root: `5 km` is `km`.
 
-**Resolution.** A name written in an expression resolves in this order:
+**Blocks.** `namespace` opens a block of statements, laid out as a `where`
+block is (§2.2): it opens at the first token after the path, which must be
+indented further than the `namespace` line. The block holds `let`, `unit`,
+`scale`, `data`, `use`, expressions and nested `namespace` blocks, and what
+it declares gets its path as a prefix: definitions, units, scales, types,
+constructors and record fields alike.
+
+```
+namespace orbital
+  let mu = 398600.4418 km^3/s^2
+  let period a = 2 * pi * sqrt (a^3 / mu)    -- mu is orbital.mu
+  data Body = Body {mass :: Num [kg], dist :: Num [m]}
+  namespace kepler                           -- nests: orbital.kepler.*
+    let anomaly e m = m + e * sin m
+use orbital                                  -- bare names from orbital.* resolve
+use orbital.kepler as k                      -- k.anomaly
+let g0 = 9.80665 m/s^2                       -- root
+```
+
+The statements of the blocks belong to the input's one binding group, so
+dependency analysis and cycles work across them: it runs on full paths, and
+`period` inside `namespace orbital` depends on `orbital.mu` when the group
+defines it.
+
+**Resolution.** A name written in an expression, a type or a command
+resolves in this order:
 
 1. a local binder (a lambda parameter, a `let`, a pattern variable);
 2. the current namespace: `period` inside `namespace orbital` means
-   `orbital.period` when that exists;
-3. the `use`d namespaces, in no particular order, and it is an error, not a
-   silent choice, if two of them offer the same name ("`period` is both
-   `orbital.period` and `rotation.period`; write one of them");
-4. the root, which is where every name that has no dot lives today.
+   `orbital.period` when that exists (in the group or the codebase); an
+   enclosing namespace is not searched, so inside `orbital.kepler` the
+   name `mu` is not `orbital.mu` (write that, or `use orbital`);
+3. the `use`d namespaces: `u.x` for each `use u`, and `u.y` for `k.y` under
+   `use u as k`. Two of them offering the name is an error, not a choice:
+   "`x` is both `a.x` and `b.x`; write one of them";
+4. the root, which is where every name without a dot lives.
 
-A fully qualified path works from anywhere and is never ambiguous. Names
-print relative to the current namespace, so `:view` and `:ls` show short
-names while you work inside one and full paths for anything outside it.
+A full path written out, `orbital.period`, resolves as itself at the root
+step, so it works from anywhere unless a nearer namespace has the same path
+under it. A leading dot writes an absolute name: `.km` is the root's `km`
+and `.orbital.period` the full path, whatever is current or used. At the
+root, step 2 is skipped, so a `use` takes precedence over a root name of the
+same spelling. Each kind of label resolves among its own kind: definitions
+and constructors share one set, types and fields have theirs.
 
-**Statements and commands.**
-
-```
-namespace orbital            -- later definitions in this input go under orbital.;
-                             -- in the REPL, for the session
-use orbital                  -- bare names from orbital.* resolve
-use orbital as o             -- a shorthand prefix: o.period
-:move orbital kepler         -- relabel every orbital.* as kepler.*; history keeps both
-:ls orbital                  -- the namespace's names, relative
-```
-
-`namespace` and `use` are statements, so a file can carry its own at the top
-and is self-describing; in the REPL they last for the session. Neither is
-stored: `use` lines are not labels, and a definition's stored term already
-holds full references, so a reader of the codebase needs no imports to make
-sense of it. The one exception is the codebase's default `use` list, `use
+A `use` path is always a full path (a leading dot is allowed and means the
+same). A `use` applies to the statements after it in its block and in the
+blocks inside it. A top-level `use` typed at the REPL lasts for the session
+(`:uses` lists them, `:unuse` drops one); a file read with `:load` keeps its
+own to itself. Neither `namespace` nor `use` is stored: a stored term holds
+full references, so no reader of the codebase needs imports to make sense
+of it. The one exception to come is the codebase's default `use` list, `use
 std` at seeding (§7.7), kept as a log line.
 
 **The dot.** `b.mass` is a field access and `v.0` a projection, so
 `orbital.period` lexes as "field `period` of `orbital`". The desugarer
-already resolves field chains through the codebase, so the rule lives there:
-for a chain whose head is not a local binder, if the longest dotted prefix
-names a definition, a type or a constructor, it is a qualified reference;
-otherwise it is the field access it is today. The one ambiguous case, a
-value `orbital` with a field `period` beside a definition `orbital.period`,
-is refused when the second of them is declared. A separate separator
-(`orbital::period`) would avoid the rule and read worse in a calculator.
+decides (§2.10): for a chain whose head is not a local binder, the longest
+dotted prefix that resolves to a definition or a constructor is a qualified
+reference, and the rest is field access. That rule is unambiguous because
+**a name is never both a label and a namespace**: declaring `let orbital = …`
+while any `orbital.*` label exists is refused ("`orbital` is a namespace; a
+definition cannot have its name"), and so is declaring anything under
+`period.` while `period` is a label ("`period` is a definition; it cannot
+also be a namespace, as `period.x` would make it"). The rule covers labels
+of every kind, it is checked for a whole binding group and for `:alias`,
+`:rename`, `:move` and `:namespace`, and it means a namespace cannot be
+named like a prelude unit (`namespace m` is refused).
 
-**What the codebase needs.** Nothing in `Codebase`'s shape: `names` keeps full
-paths. `Session` gains the current namespace and the `use` list; the
-resolver takes them; `:ls` learns to list a prefix and print relative; the
-printer's namer prints relative to the current namespace; `:move` is a loop
-over `:alias` and `:unname`. The store format is unchanged, since a path is
-a name.
+*Fields.* A field written after a dot is a bare name and resolves through
+the scope only (`.mass` is `orbital.mass` inside `orbital`, or with `use
+orbital`). From elsewhere, a field of a type in another namespace cannot be
+written by path; `use` its namespace. A record built with a constructor,
+`orbital.Body {mass = …, dist = …}`, takes its field names as that
+constructor's own, by their last segment, from anywhere. Records print
+their fields so.
+
+**Hashes never see the namespace.** A definition's declared uncertainties
+are labelled (§3.2.4) with the last segment of its name, and a nominal type
+is stamped (§2.3) with the last segment of its name, so the same source
+gives the same hash at the root and inside any block, and a moved
+definition re-entered from source gets its old hash back. The other side
+of this: two definitions, or two nominal types, with the same last segment
+and the same body in different namespaces are one term, or one type, with
+two labels.
+
+**Printing.** A name prints as Unison prints it: the shortest spelling that
+resolves back to the same label in the current scope, trying in order the
+last segment alone, the path relative to the current namespace, the path
+relative to each `use` (under its alias, `k.anomaly`), the full path, and,
+only when the full path itself would resolve to something else here, the
+absolute `.full.path`. So inside `namespace orbital` with no `use`,
+`orbital.period` prints `period` and the root's `km` prints `km`; with `use
+orbital` at the root, `orbital.period` prints `period`; with `use a` and
+`use b` both offering `x`, `a.x` prints `a.x`; and a block that defines its
+own `km` refers to the root's as `.km`. At the root with no `use`, every
+root name prints as itself, as before namespaces. The rule
+(`Eval.Resolve.shortestName`) is used for `:view`, `:edit`, `:core`, values
+and their units, types and constructors (through the type namer), `:ls`
+outside a namespace listing, `:names`, `:dependents`, and the notes
+`pending:`, `added`, `updated`, `upgraded`, `left` and `stale:`. So after
+`:namespace orbital`, `let x = 1` shows as `pending: x`, and at the root as
+`pending: orbital.x`.
+
+**Commands.** A namespace is an object: wherever a command takes a name, a
+namespace path means everything under it, and the command says how many
+labels it touched. Names given to commands are relative to the current
+namespace, go through the `use`s, or are absolute with a leading dot (but
+`:unname .f` keeps naming the field `f`).
+
+```
+:namespace orbital           -- single REPL lines now land under orbital; :namespace . is the root
+use orbital as o             -- for the session; :uses lists, :unuse orbital drops it
+:ls orbital                  -- the namespace's labels, relative to it, data lines included
+:rename orbital.period orbital.T    -- one label: renamed `orbital.period` to `orbital.T`
+:rename orbital mechanics    -- every orbital.* label of every kind: renamed the 5 labels under …
+:move period orbital         -- period becomes orbital.period; :move orbital.kepler mechanics
+                             -- gives mechanics.kepler.*
+:alias o2 orbital            -- every orbital.* label also as o2.*
+:unname orbital              -- removed the 5 labels under `orbital`; :history name still finds them
+```
+
+`:rename`, `:move` and `:alias` of a namespace are all or nothing: a new
+path that is already a label of the same kind ("`x` is already a label;
+nothing was changed"), two names moved to one path, or a path that breaks
+the namespace rule refuses the whole change. They are written to the store
+as the existing `bind`, `unname`, `type`, `con`, `field`, `unit` and `scale`
+log lines, so the store format is unchanged. `:edit` of a definition
+outside the current namespace prints it inside a `namespace` block, with
+its names relative to that block, for pasting at the root.
 
 **Open.** Whether `:ls` shows a tree; whether a `use` may be stored per
-codebase; whether the prelude should itself live under `prelude.*` with an
-implied `use prelude`, which would let a user shadow it wholesale and costs
-nothing until wanted.
+codebase; whether the prelude should itself live under `std.*` with an
+implied `use std`, which the printing rule is ready for (`5 std.km` would
+print `5 km`); whether a field should be reachable by path from outside its
+namespace.
 
 ### 7.7 The standard library (design; not yet built)
 
@@ -2852,6 +3040,9 @@ tuned, and compilation is a later milestone.
   "same inputs, same measurement"; a "measure twice" model wants independence.
 - Does iapetus commit the binary `.eval/` store, or export definitions to `.ev`
   source files (text, reviewable in diffs) and treat the store as a cache?
+  Partly answered: `:export` (§7.4) writes the codebase as source that
+  reads back to the same labels and hashes, so both can be committed; open
+  is whether the store may then be dropped, which would lose history.
 - Should `:view` of a stale reference print `x#a3f9k` (Unison style) or `#a3f9k`
   alone?
 - Equality on declared types is derived structurally when every field is

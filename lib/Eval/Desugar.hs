@@ -77,10 +77,16 @@ index). Names bound locally shadow these; these shadow primitives.
 -}
 data Resolution = Resolution {ref :: (Hash, Maybe Int), isUnit :: Bool, isScale :: Bool}
 
-{- | A declared constructor (design §2.3): the reference, its arity, and the
-whole constructor table of its type, for case analysis.
+{- | A declared constructor (design §2.3): the reference, its arity, the
+whole constructor table of its type, for case analysis, and the labels of
+its fields by position, for a record built with it (design §7.6).
 -}
-data ConInfo = ConInfo {con :: ConRef, arity :: Int, siblings :: [(ConRef, Int)]}
+data ConInfo = ConInfo
+  { con :: ConRef
+  , arity :: Int
+  , siblings :: [(ConRef, Int)]
+  , labels :: [Maybe Text]
+  }
 
 {- | A record field (design §2.3), resolved under its dotted name: the
 constructor it belongs to, that constructor's arity, the field's position,
@@ -88,8 +94,23 @@ and the names of all the constructor's fields, for hints.
 -}
 data FieldInfo = FieldInfo {con :: ConRef, arity :: Int, index :: Int, names :: [Maybe Text]}
 
-data Resolved = ATerm Resolution | AConstructor ConInfo | AField FieldInfo
+data Resolved
+  = ATerm Resolution
+  | AConstructor ConInfo
+  | AField FieldInfo
+  | {- | What a name written otherwise resolves to, under its full path
+    (design §7.6): @period@ inside @namespace orbital@ is @orbital.period@.
+    -}
+    AQualified Text Resolved
+  | -- | A member of the cycle being desugared, by its full path: a local binder.
+    ALocal Text
+  | -- | A name two @use@d namespaces both offer, as their full paths.
+    AAmbiguous [Text]
 
+{- | A name as written, looked up: @x@ through the scope, @.f@ the field @f@
+through the scope, and @§p@ the absolute path @p@, written @.p@ (design
+§7.6).
+-}
 type Resolver = Text -> Maybe Resolved
 
 noResolver :: Resolver
@@ -145,6 +166,85 @@ lookupCtx x = \case
     | x == y -> Just FZ
     | otherwise -> FS <$> lookupCtx x ys
 
+{- | The outermost binding of a name in the context: where the members of a
+cycle sit, below every local binder.
+-}
+lookupCtxOuter :: Text -> Ctx n -> Maybe (Fin n)
+lookupCtxOuter x = \case
+  VNil -> Nothing
+  VCons y ys -> case lookupCtxOuter x ys of
+    Just i -> Just (FS i)
+    Nothing
+      | x == y -> Just FZ
+      | otherwise -> Nothing
+
+{- | A free name as written, looked up: its full path (design §7.6) and what
+it names. A leading dot writes an absolute name.
+-}
+resolveWritten :: Text -> M (Maybe (Text, Resolved))
+resolveWritten x = asks (\env -> unwrap <$> env.resolve query)
+ where
+  bare = fromMaybe x (T.stripPrefix "." x)
+  query = if bare == x then x else "§" <> bare
+  unwrap = \case
+    AQualified full r -> (full, r)
+    r -> (bare, r)
+
+-- | Two @use@d namespaces offer the name (design §7.6).
+ambiguous :: S.Span -> Text -> [Text] -> M a
+ambiguous sp x fulls =
+  failWith
+    ( BadSpecialForm
+        sp
+        ( "`"
+            <> x
+            <> "` is both "
+            <> listed (map (\f -> "`" <> f <> "`") fulls)
+            <> "; write one of them"
+        )
+    )
+ where
+  listed = \case
+    [] -> ""
+    [a] -> a
+    xs -> T.intercalate ", " (init xs) <> " and " <> last xs
+
+{- | A field chain on a free name whose longest dotted prefix names a
+definition or a constructor is a qualified reference (design §7.6):
+@orbital.period@ is the definition, not the field @period@ of @orbital@.
+What follows that prefix stays field access. Anything else comes back as
+it was.
+-}
+qualifiedChain :: Ctx n -> S.Expr -> M S.Expr
+qualifiedChain ctx e = case chain e of
+  Just (x, fields@(_ : _)) | Nothing <- lookupCtx x ctx -> go fields (length fields)
+  _ -> pure e
+ where
+  -- The name at the root and each field with the span of the access up to it.
+  chain :: S.Expr -> Maybe (Text, [(Text, S.Span)])
+  chain ex = case ex.node of
+    S.Var x -> Just (x, [])
+    S.FieldOf a f -> (\(x, fs) -> (x, fs ++ [(f, ex.span)])) <$> chain a
+    _ -> Nothing
+  go fields k
+    | k < 1 = pure e
+    | otherwise = do
+        let (taken, rest) = splitAt k fields
+            root = maybe "" fst (chain e)
+            written = T.intercalate "." (root : map fst taken)
+            sp = snd (last taken)
+        found <- resolveWritten written
+        case snd <$> found of
+          Just (AField _) -> go fields (k - 1)
+          Just _ ->
+            pure
+              ( foldl
+                  (\acc (f, fsp) -> S.Expr fsp (S.FieldOf acc f))
+                  (S.Expr sp (S.Var written))
+                  rest
+              )
+          Nothing -> go fields (k - 1)
+
 {- | A name that no user identifier can clash with, for binders the desugarer
 introduces.
 -}
@@ -168,17 +268,27 @@ desugar path ctx e = do
     S.CaseOf scrut alts -> caseOf path ctx e.span scrut alts
     S.Var x -> headApp path ctx e x []
     S.App f a -> do
-      let (hd, args) = spine e
-      quantityHints ctx hd args
-      case hd.node of
-        S.Var x | Nothing <- lookupCtx x ctx -> do
-          bound <- asks (\env -> env.resolve x >>= asTerm)
-          case bound of
-            -- A codebase name: ordinary application of a reference.
-            Just _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
-            -- A primitive, constructor (or unknown): saturation and eta rules apply.
-            Nothing -> headApp path ctx hd x args
-        _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
+      let (hd0, args) = spine e
+      -- A qualified head, @orbital.period a@, is applied as a name is.
+      hd <- qualifiedChain ctx hd0
+      if hd /= hd0
+        then
+          desugar
+            path
+            ctx
+            (foldl (\g x -> S.Expr (S.spanUnion g.span x.span) (S.App g x)) hd args)
+        else do
+          quantityHints ctx hd args
+          case hd.node of
+            S.Var x | Nothing <- lookupCtx x ctx -> do
+              bound <- resolveWritten x
+              case snd <$> bound of
+                -- A codebase name, or a member of the cycle: ordinary application.
+                Just (ATerm _) -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
+                Just (ALocal _) -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
+                -- A primitive, constructor (or unknown): saturation and eta rules apply.
+                _ -> headApp path ctx hd x args
+            _ -> App <$> desugar (0 : path) ctx f <*> desugar (1 : path) ctx a
     S.Lam names body -> lams path ctx e.span names body
     S.Let n params rhs body ->
       Let (Hint n.text)
@@ -295,18 +405,26 @@ desugar path ctx e = do
     S.Slice a k i ->
       let lit n = S.Expr e.span (S.Num (fromIntegral n))
        in prim "slice" [lit k, lit i, a]
-    -- A field is a case on the record's one constructor (design §2.3).
+    -- A field is a case on the record's one constructor (design §2.3), unless
+    -- the chain is a qualified name (design §7.6).
     S.FieldOf a f -> do
-      resolved <- asks (\env -> env.resolve ("." <> f))
-      case resolved of
-        Just (AField info) -> do
-          a' <- desugar (0 : path) ctx a
-          case vecFromList [if j == info.index then f else "_" | j <- [0 .. info.arity - 1]] of
-            SomeVec hs -> case fieldVar hs ctx info.index of
-              Just v -> pure (Case a' [Alt info.con (vecMap Hint hs) (Var v)])
-              Nothing -> failWith (BadSpecialForm e.span ("field " <> f <> " is out of range"))
-        _ -> failWith (BadSpecialForm e.span ("unknown field `" <> f <> "`"))
-    S.Record hd fields -> recordExpr path ctx e hd fields
+      e' <- qualifiedChain ctx e
+      if e' /= e
+        then desugar path ctx e'
+        else do
+          resolved <- asks (\env -> env.resolve ("." <> f))
+          case resolved of
+            Just (AField info) -> do
+              a' <- desugar (0 : path) ctx a
+              case vecFromList [if j == info.index then f else "_" | j <- [0 .. info.arity - 1]] of
+                SomeVec hs -> case fieldVar hs ctx info.index of
+                  Just v -> pure (Case a' [Alt info.con (vecMap Hint hs) (Var v)])
+                  Nothing -> failWith (BadSpecialForm e.span ("field " <> f <> " is out of range"))
+            Just (AAmbiguous fulls) -> ambiguous e.span f fulls
+            _ -> failWith (BadSpecialForm e.span ("unknown field `" <> f <> "`"))
+    S.Record hd0 fields -> do
+      hd <- qualifiedChain ctx hd0
+      recordExpr path ctx e hd fields
  where
   prim p args = PrimApp p <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
   synthLam sp x body = S.Expr sp (S.Lam [S.Name sp x] body)
@@ -339,10 +457,18 @@ headApp :: Path -> Ctx n -> S.Expr -> Text -> [S.Expr] -> M (Term n)
 headApp path ctx hd x args = case lookupCtx x ctx of
   Just i -> applyAll path ctx (\_ -> pure (Var i)) args
   Nothing -> do
-    resolved <- asks (\env -> env.resolve x)
-    case resolved of
+    found <- resolveWritten x
+    case snd <$> found of
+      -- The reference keeps the full path it was written as (design §7.6).
       Just (ATerm r) ->
-        let (h, idx) = r.ref in applyAll path ctx (\_ -> pure (Ref h idx (Hint x))) args
+        let (h, idx) = r.ref
+            full = maybe x fst found
+         in applyAll path ctx (\_ -> pure (Ref h idx (Hint full))) args
+      Just (ALocal full) -> case lookupCtxOuter full ctx of
+        Just i -> applyAll path ctx (\_ -> pure (Var i)) args
+        Nothing -> failWith (UnknownName hd.span x)
+      Just (AAmbiguous fulls) -> ambiguous hd.span x fulls
+      Just (AQualified _ _) -> failWith (UnknownName hd.span x)
       -- A declared constructor applies like a primitive: saturated, eta-expanded or over-applied.
       Just (AConstructor info)
         | length args == info.arity -> saturated path ctx (Con info.con) args
@@ -620,13 +746,16 @@ unitExpr ctx e = case e.node of
     -- other primitive or special form (pi, sin, noise) is not; an unknown
     -- name is let through so that the ordinary path reports it as unknown.
     | otherwise ->
-        asks
-          ( \env ->
-              maybe
-                (isJust (baseUnit x) || (isNothing (primArity x) && x `notElem` specialNames))
-                (maybe False (.isUnit) . asTerm)
-                (env.resolve x)
-          )
+        maybe
+          (isJust (baseUnit x) || (isNothing (primArity x) && x `notElem` specialNames))
+          (maybe False (.isUnit) . asTerm . snd)
+          <$> resolveWritten x
+  -- A qualified unit, @5 orbital.furlong@ (design §7.6).
+  S.FieldOf _ _ -> do
+    e' <- qualifiedChain ctx e
+    case e'.node of
+      S.Var _ -> unitExpr ctx e'
+      _ -> pure False
   S.Pow u _ -> unitExpr ctx u
   S.BinOp op a b
     | op `elem` [S.Outer, S.Div, S.Scale] ->
@@ -640,7 +769,12 @@ isScaleName :: Ctx n -> S.Expr -> M Bool
 isScaleName ctx e = case e.node of
   S.Var x
     | Nothing <- lookupCtx x ctx ->
-        asks (\env -> maybe False (maybe False (.isScale) . asTerm) (env.resolve x))
+        maybe False (maybe False (.isScale) . asTerm . snd) <$> resolveWritten x
+  S.FieldOf _ _ -> do
+    e' <- qualifiedChain ctx e
+    case e'.node of
+      S.Var _ -> isScaleName ctx e'
+      _ -> pure False
   _ -> pure False
 
 {- | A @case@ (design §2.3, §5.1): one alternative per constructor of the
@@ -716,8 +850,8 @@ caseOf path ctx sp scrut alts0 = do
   -- that resolves to a constructor is one.
   promote (p, body) = case p.node of
     S.PVar n -> do
-      resolved <- asks (\env -> env.resolve n.text)
-      pure $ case resolved of
+      resolved <- resolveWritten n.text
+      pure $ case snd <$> resolved of
         Just (AConstructor _) -> (S.Pattern p.span (S.PCon n.text []), body)
         _ -> (p, body)
     _ -> pure (p, body)
@@ -734,9 +868,10 @@ caseOf path ctx sp scrut alts0 = do
     "Nil" -> pure (Builtin "Nil", lists)
     "Cons" -> pure (Builtin "Cons", lists)
     _ -> do
-      resolved <- asks (\env -> env.resolve c)
-      case resolved of
+      resolved <- resolveWritten c
+      case snd <$> resolved of
         Just (AConstructor info) -> pure (info.con, info.siblings)
+        Just (AAmbiguous fulls) -> ambiguous p.span c fulls
         _ -> failWith (BadSpecialForm p.span ("unknown constructor pattern " <> c))
    where
     bools = [(Builtin "False", 0), (Builtin "True", 0)]
@@ -785,17 +920,34 @@ given once; @r {f = e, …}@ otherwise rebuilds @r@ with those fields replaced:
 a case on the one constructor whose body is the constructor applied to the
 old fields, except the new ones (design §2.3). The new values are desugared
 outside the case and weakened, so a field name never captures a variable.
+A record built with a constructor names its fields as the constructor's
+own, by their last segment, wherever the type lives (design §7.6); an
+update finds them through the scope.
 -}
 recordExpr ::
   Path -> Ctx n -> S.Expr -> S.Expr -> [(S.Name, S.Expr)] -> M (Term n)
 recordExpr path ctx e hd fields = do
+  headCon <- case hd.node of
+    S.Var c | Nothing <- lookupCtx c ctx -> do
+      resolved <- resolveWritten c
+      pure $ case snd <$> resolved of
+        Just (AConstructor info) -> Just info
+        _ -> Nothing
+    _ -> pure Nothing
+  let ownField n = do
+        ci <- headCon
+        j <- lookup (Just n) [(S.lastSegment <$> l, k) | (k, l) <- zip [0 ..] ci.labels]
+        pure (FieldInfo ci.con ci.arity j ci.labels)
   infos <-
     mapM
-      ( \(n, _) -> do
-          resolved <- asks (\env -> env.resolve ("." <> n.text))
-          case resolved of
-            Just (AField info) -> pure (n, info)
-            _ -> failWith (BadSpecialForm n.span ("unknown field `" <> n.text <> "`"))
+      ( \(n, _) -> case ownField n.text of
+          Just info -> pure (n, info)
+          Nothing -> do
+            resolved <- asks (\env -> env.resolve ("." <> n.text))
+            case resolved of
+              Just (AField info) -> pure (n, info)
+              Just (AAmbiguous fulls) -> ambiguous n.span n.text fulls
+              _ -> failWith (BadSpecialForm n.span ("unknown field `" <> n.text <> "`"))
       )
       fields
   (lead, leadInfo) <- case infos of
@@ -818,17 +970,13 @@ recordExpr path ctx e hd fields = do
     )
     (take 1 dup)
   let given = Map.fromList [(info.index, ex) | ((_, info), (_, ex)) <- zip infos fields]
-      fieldName j = fromMaybe ("_" <> T.pack (show j)) (leadInfo.names !! j)
-  construction <- case hd.node of
-    S.Var c | Nothing <- lookupCtx c ctx -> do
-      resolved <- asks (\env -> env.resolve c)
-      case resolved of
-        Just (AConstructor info)
-          | info.con == leadInfo.con -> pure True
-          | otherwise ->
-              failWith
-                (BadSpecialForm hd.span ("`" <> c <> "` has no field `" <> lead.text <> "`"))
-        _ -> pure False
+      fieldName j = maybe ("_" <> T.pack (show j)) S.lastSegment (leadInfo.names !! j)
+  construction <- case (hd.node, headCon) of
+    (S.Var c, Just info)
+      | info.con == leadInfo.con -> pure True
+      | otherwise ->
+          failWith
+            (BadSpecialForm hd.span ("`" <> c <> "` has no field `" <> lead.text <> "`"))
     _ -> pure False
   if construction
     then do

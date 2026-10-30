@@ -5,6 +5,17 @@ codebase. Nothing from a group is stored unless the whole group checks.
 module Eval.Resolve (
   ResolveError (..),
   renderResolveError,
+  LabelKind (..),
+  isLabel,
+  Qualified (..),
+  qualifyWith,
+  qualifyName,
+  resolveName,
+  shortestName,
+  shortestNameOf,
+  namespaceLabels,
+  isNamespace,
+  disjointness,
   resolverFor,
   typeLookupFor,
   processGroup,
@@ -17,11 +28,12 @@ module Eval.Resolve (
 import Control.Monad (when, zipWithM)
 import Control.Monad.State.Strict (StateT, gets, lift, modify, runStateT)
 import Data.Char (isLower)
+import Data.Containers.ListUtils (nubOrd)
 import Data.Foldable (foldlM)
 import Data.Graph (SCC (..), stronglyConnComp)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -73,30 +85,222 @@ renderResolveError = \case
       <> msg
   DataError sp msg -> S.renderSpanError Nothing sp msg
 
--- | Free names resolve to whatever the codebase currently binds.
-resolverFor :: Codebase -> Resolver
-resolverFor cb n
-  -- A field is looked up under its dot, the one way it is written (design §2.3).
-  | Just f <- T.stripPrefix "." n = case lookupFieldName f cb of
-      Just (h, i, j)
-        | Just def <- lookupTypeDef h cb
-        , let arity = length (def.constructors !! i) ->
-            Just (AField (FieldInfo (UserCon h i) arity j (fieldNamesOf h i arity cb)))
-      _ -> Nothing
-  | otherwise = case lookupName n cb of
-      Just (Reference h i) -> Just (ATerm (Resolution (h, i) (isUnitName n cb) (isScaleName n cb)))
-      Nothing -> case lookupConName n cb of
-        Just (h, i)
-          | Just def <- lookupTypeDef h cb ->
-              Just
+-- Names and namespaces (design §7.6) ----------------------------------------------
+
+{- | The kinds of label, each its own set of names: definitions and
+constructors share one, as they share expressions.
+-}
+data LabelKind = TermLabel | TypeLabel | FieldLabel
+  deriving stock (Eq, Show)
+
+-- | Whether a full path is a label of a kind.
+isLabel :: LabelKind -> Codebase -> Text -> Bool
+isLabel kind cb n = case kind of
+  TermLabel -> Map.member n cb.names || Map.member n cb.conNames
+  TypeLabel -> Map.member n cb.typeNames
+  FieldLabel -> Map.member n cb.fieldNames
+
+-- | What a written name stands for.
+data Qualified
+  = -- | this full path
+    Found Text
+  | -- | two @use@d namespaces offer it, as these full paths
+    Ambiguous [Text]
+  | NotFound
+  deriving stock (Eq, Show)
+
+{- | The full path a written name stands for, given which full paths exist
+(design §7.6). A leading dot writes an absolute path. Otherwise, in order:
+the current namespace (@x@ is @current.x@), then the @use@d namespaces
+(@u.x@ for each @use u@, and @u.y@ for @k.y@ under @use u as k@), which
+must not offer it twice, then the root (@x@ itself). A local binder comes
+before all of these, in the desugarer. A full path written out resolves as
+itself at the root step, unless something nearer takes it first.
+-}
+qualifyWith :: (Text -> Bool) -> S.Scope -> Text -> Qualified
+qualifyWith exists scope written
+  | Just p <- T.stripPrefix "." written = if exists p then Found p else NotFound
+  | here : _ <-
+      [ n
+      | not (null scope.namespace)
+      , let n = S.qualify scope.namespace written
+      , exists n
+      ] =
+      Found here
+  | otherwise = case nubOrd (filter exists used) of
+      [one] -> Found one
+      many@(_ : _ : _) -> Ambiguous many
+      [] -> if exists written then Found written else NotFound
+ where
+  used =
+    mapMaybe
+      ( \u -> case u.alias of
+          Nothing -> Just (u.path <> "." <> written)
+          Just k -> (\rest -> u.path <> "." <> rest) <$> T.stripPrefix (k <> ".") written
+      )
+      scope.uses
+
+-- | 'qualifyWith' over the labels of one kind in a codebase.
+qualifyName :: LabelKind -> S.Scope -> Codebase -> Text -> Qualified
+qualifyName kind scope cb = qualifyWith (isLabel kind cb) scope
+
+{- | A free name in an expression, resolved through the scope: its full path
+and what it names. Two @use@s that both offer it give 'AAmbiguous'.
+-}
+resolveName :: S.Scope -> Codebase -> Text -> Maybe (Text, Resolved)
+resolveName scope cb written = case qualifyName TermLabel scope cb written of
+  Found full -> (full,) <$> resolvedAt cb full
+  Ambiguous fulls -> Just (written, AAmbiguous fulls)
+  NotFound -> Nothing
+
+-- | What a full path labels among definitions and constructors.
+resolvedAt :: Codebase -> Text -> Maybe Resolved
+resolvedAt cb n = case lookupName n cb of
+  Just (Reference h i) -> Just (ATerm (Resolution (h, i) (isUnitName n cb) (isScaleName n cb)))
+  Nothing -> case lookupConName n cb of
+    Just (h, i)
+      | Just def <- lookupTypeDef h cb ->
+          let arity = length (def.constructors !! i)
+           in Just
                 ( AConstructor
                     ( ConInfo
                         (UserCon h i)
-                        (length (def.constructors !! i))
+                        arity
                         [(UserCon h j, length fs) | (j, fs) <- zip [0 ..] def.constructors]
+                        (fieldNamesOf h i arity cb)
                     )
                 )
-        _ -> Nothing
+    _ -> Nothing
+
+-- | The record field a full path labels.
+fieldAt :: Codebase -> Text -> Maybe Resolved
+fieldAt cb f = case lookupFieldName f cb of
+  Just (h, i, j)
+    | Just def <- lookupTypeDef h cb
+    , let arity = length (def.constructors !! i) ->
+        Just (AField (FieldInfo (UserCon h i) arity j (fieldNamesOf h i arity cb)))
+  _ -> Nothing
+
+{- | Free names resolve through the scope to whatever the codebase currently
+binds (design §7.6). The resolver answers the three kinds of query of
+'Resolver': a name, @.f@ for a field and @§p@ for an absolute path.
+-}
+resolverFor :: S.Scope -> Codebase -> Resolver
+resolverFor = groupResolver Set.empty Set.empty
+
+{- | A resolver inside a binding group: the group's names exist before they
+are entered, and the members of the cycle being desugared are local
+binders.
+-}
+groupResolver :: Set Text -> Set Text -> S.Scope -> Codebase -> Resolver
+groupResolver group members scope cb query
+  -- A field is looked up under its dot, the one way it is written (design §2.3).
+  | Just f <- T.stripPrefix "." query = case qualifyName FieldLabel scope cb f of
+      Found full -> fieldAt cb full
+      Ambiguous fulls -> Just (AAmbiguous fulls)
+      NotFound -> Nothing
+  | otherwise =
+      let written = maybe query ("." <>) (T.stripPrefix "§" query)
+          exists n = isLabel TermLabel cb n || Set.member n group
+       in case qualifyWith exists scope written of
+            Found full
+              | Set.member full members -> Just (ALocal full)
+              | full == query -> resolvedAt cb full
+              | otherwise -> AQualified full <$> resolvedAt cb full
+            Ambiguous fulls -> Just (AAmbiguous fulls)
+            NotFound -> Nothing
+
+{- | How a full path prints in a scope (design §7.6), as Unison prints names:
+the shortest spelling that resolves back to the same label. Tried in order:
+the last segment alone; the path relative to the current namespace; the
+path relative to each @use@ (under its alias, if it has one); the full
+path; and, only when the full path itself would resolve to something else
+here, the absolute @.full.path@. At the root with no @use@, every root
+name prints as itself.
+-}
+shortestName :: S.Scope -> Codebase -> Text -> Text
+shortestName = shortestNameOf TermLabel
+
+-- | 'shortestName' for a kind of label.
+shortestNameOf :: LabelKind -> S.Scope -> Codebase -> Text -> Text
+shortestNameOf kind scope cb n =
+  case [c | c <- candidates, qualifyName kind scope cb c == Found n] of
+    c : _ -> c
+    -- Nothing spells it here (a name that is no longer a label): in full.
+    [] -> n
+ where
+  candidates =
+    [S.lastSegment n]
+      ++ [ rel
+         | not (null scope.namespace)
+         , Just rel <- [T.stripPrefix (S.qualify scope.namespace "") n]
+         ]
+      ++ [ maybe rel (\k -> k <> "." <> rel) u.alias
+         | u <- scope.uses
+         , Just rel <- [T.stripPrefix (u.path <> ".") n]
+         ]
+      ++ [n, "." <> n]
+
+-- | Every label of every kind, with what kind of thing it names.
+allLabels :: Codebase -> [(Text, Text)]
+allLabels cb =
+  [(n, "definition") | n <- Map.keys cb.names]
+    ++ [(n, "type") | n <- Map.keys cb.typeNames]
+    ++ [(n, "constructor") | n <- Map.keys cb.conNames]
+    ++ [(n, "field") | n <- Map.keys cb.fieldNames]
+
+-- | The labels of every kind under a namespace, by full path, without duplicates.
+namespaceLabels :: Codebase -> Text -> [Text]
+namespaceLabels cb ns =
+  Set.toList
+    (Set.fromList [n | (n, _) <- allLabels cb, (ns <> ".") `T.isPrefixOf` n])
+
+-- | Whether a path is a namespace: some label lies under it.
+isNamespace :: Codebase -> Text -> Bool
+isNamespace cb ns =
+  any
+    under
+    [ Map.keys cb.names
+    , Map.keys cb.typeNames
+    , Map.keys cb.conNames
+    , Map.keys cb.fieldNames
+    ]
+ where
+  under = any ((ns <> ".") `T.isPrefixOf`)
+
+{- | The rule that keeps the dot unambiguous (design §7.6): a name is never
+both a label and a namespace. Given the labels a change adds (full path,
+what it names, where it was written), the first that breaks the rule
+against the codebase or the others, as a message at its span.
+-}
+disjointness :: Codebase -> [(Text, Text, S.Span)] -> Maybe (S.Span, Text)
+disjointness cb new =
+  case [(sp, msg) | (n, what, sp) <- new, Just msg <- [clash n what]] of
+    x : _ -> Just x
+    [] -> Nothing
+ where
+  labels =
+    Map.fromListWith
+      (\_ old -> old)
+      (allLabels cb ++ [(n, what) | (n, what, _) <- new])
+  clash n what
+    | Just (k, _) <- Map.lookupGE (n <> ".") labels
+    , (n <> ".") `T.isPrefixOf` k =
+        Just ("`" <> n <> "` is a namespace; a " <> what <> " cannot have its name")
+    | p : _ <- [p | p <- properPrefixes n, Map.member p labels] =
+        Just
+          ( "`"
+              <> p
+              <> "` is a "
+              <> Map.findWithDefault "name" p labels
+              <> "; it cannot also be a namespace, as `"
+              <> n
+              <> "` would make it"
+          )
+    | otherwise = Nothing
+  properPrefixes n =
+    let segs = T.splitOn "." n
+     in [T.intercalate "." (take k segs) | k <- [1 .. length segs - 1]]
 
 typeLookupFor :: Codebase -> TypeLookup
 typeLookupFor cb = TypeLookup (`lookupTypes` cb) (`lookupTypeDef` cb)
@@ -109,18 +313,39 @@ component to another always sees the new hash and its type.
 processGroup :: Codebase -> [S.Decl] -> Either ResolveError Codebase
 processGroup cb0 decls = do
   checkDuplicates decls
+  -- A name is never both a label and a namespace (design §7.6).
+  case disjointness cb0 (concatMap newLabels decls) of
+    Just (sp, msg) -> Left (DataError sp msg)
+    Nothing -> pure ()
   -- Data declarations first, in order: the definitions may use their constructors.
-  cb1 <- foldlM enterData cb0 [d | S.DData d <- decls]
-  let bindings = [b | S.DBind b <- decls]
-      groupNames = Set.fromList (map (.name.text) bindings)
-      nodes =
-        [ ( b
-          , b.name.text
-          , Set.toList (Set.intersection groupNames (freeNames (asLambda b)))
+  cb1 <-
+    foldlM (\cb (s, d) -> enterData s cb d) cb0 [(s, d) | S.DData s d <- decls]
+  let bindings = [(s, b) | S.DBind s b <- decls]
+      groupNames = Set.fromList [b.name.text | (_, b) <- bindings]
+      exists n = isLabel TermLabel cb1 n || Set.member n groupNames
+      -- Dependencies by full path: a name written in the group resolves
+      -- through its scope to the group's own names first (design §7.6).
+      dependsOn (s, b) =
+        Set.toList
+          ( Set.fromList
+              [ full
+              | w <- Set.toList (freeNames (asLambda b))
+              , Found full <- [qualifyWith exists s w]
+              , Set.member full groupNames
+              ]
           )
-        | b <- bindings
-        ]
-  foldlM enterComponent cb1 (stronglyConnComp nodes)
+      nodes = [(sb, (snd sb).name.text, dependsOn sb) | sb <- bindings]
+  foldlM (enterComponent groupNames) cb1 (stronglyConnComp nodes)
+ where
+  newLabels = \case
+    S.DBind _ b -> [(b.name.text, "definition", b.name.span)]
+    S.DData _ d ->
+      (d.name.text, "type", d.name.span)
+        : [(c.text, "constructor", c.span) | (c, _) <- d.constructors]
+        ++ [ (n.text, "field", n.span)
+           | (_, fs) <- d.constructors
+           , S.FieldDecl (Just n) _ <- fs
+           ]
 
 checkDuplicates :: [S.Decl] -> Either ResolveError ()
 checkDuplicates = go Set.empty
@@ -135,14 +360,23 @@ asLambda b = case b.params of
   [] -> b.body
   _ -> S.Expr b.span (S.Lam b.params b.body)
 
-enterComponent :: Codebase -> SCC S.Binding -> Either ResolveError Codebase
-enterComponent cb = \case
-  AcyclicSCC b -> do
+{- | Enter one component. A definition's declared uncertainties are labelled
+with the last segment of its name, so that the namespace never reaches the
+hash (design §7.6).
+-}
+enterComponent ::
+  Set Text -> Codebase -> SCC (S.Scope, S.Binding) -> Either ResolveError Codebase
+enterComponent group cb = \case
+  AcyclicSCC (scope, b) -> do
     (term, prov) <-
       either
         (Left . Desugar)
         Right
-        (desugarDefinition b.name.text (resolverFor cb) (asLambda b))
+        ( desugarDefinition
+            (S.lastSegment b.name.text)
+            (groupResolver group Set.empty scope cb)
+            (asLambda b)
+        )
     (schemes, typed) <-
       either
         (Left . typeErrorIn b prov)
@@ -155,7 +389,7 @@ enterComponent cb = \case
         cb' =
           bindName b.name.text ref (addTerm h term (preferLint schemes linted) typed cb)
     pure (markKind b.kind b.name.text cb')
-  CyclicSCC bs -> enterCycle cb bs
+  CyclicSCC bs -> enterCycle group cb bs
 
 -- | Inference and lint must agree; lint is the authority if they ever differ.
 preferLint :: [Scheme] -> [Scheme] -> [Scheme]
@@ -177,17 +411,19 @@ withHint hint msg = maybe msg (\h -> msg <> "\n  hint: " <> h) hint
 compute ordering hashes with the cycle variables as placeholders, then
 desugared again in the resulting order to build the stored 'Cycle'.
 -}
-enterCycle :: Codebase -> [S.Binding] -> Either ResolveError Codebase
-enterCycle cb bs = do
-  ordering <- mapM (\b -> (,b) <$> placeholderHashOf bs b) bs
-  let sorted = map snd (sortOn fst ordering)
-  case vecFromList sorted of
+enterCycle ::
+  Set Text -> Codebase -> [(S.Scope, S.Binding)] -> Either ResolveError Codebase
+enterCycle group cb sbs = do
+  ordering <- mapM (\sb -> (,sb) <$> placeholderHashOf sb) sbs
+  let sortedScoped = map snd (sortOn fst ordering)
+      sorted = map snd sortedScoped
+  case vecFromList sortedScoped of
     SomeVec members -> do
-      let ctx = vecAppend (vecMap (.name.text) members) VNil
+      let ctx = vecAppend (vecMap ((.name.text) . snd) members) VNil
       desugared <- vecTraverse (desugarOne ctx) members
       let bodies = vecMap fst desugared
           provs = vecToList (vecMap snd desugared)
-          cycleTerm = Cycle (vecMap (Hint . (.name.text)) members) bodies
+          cycleTerm = Cycle (vecMap (Hint . (.name.text) . snd) members) bodies
           h = hashTerm cycleTerm
       (schemes, typed) <-
         either
@@ -206,18 +442,26 @@ enterCycle cb bs = do
              in markKind b.kind b.name.text acc'
       pure (foldl bindMember cb' (zip [0 ..] sorted))
  where
+  -- The members are local binders by their full paths, found through each
+  -- member's own scope (design §7.6).
+  memberNames = Set.fromList [b.name.text | (_, b) <- sbs]
   desugarOne ::
-    Vec k Text -> S.Binding -> Either ResolveError (Term k, Provenance)
-  desugarOne ctx b =
+    Vec k Text -> (S.Scope, S.Binding) -> Either ResolveError (Term k, Provenance)
+  desugarOne ctx (scope, b) =
     either
       (Left . Desugar)
       Right
-      (D.desugarMember b.name.text (resolverFor cb) ctx (asLambda b))
+      ( D.desugarMember
+          (S.lastSegment b.name.text)
+          (groupResolver group memberNames scope cb)
+          ctx
+          (asLambda b)
+      )
 
-  placeholderHashOf :: [S.Binding] -> S.Binding -> Either ResolveError Hash
-  placeholderHashOf group b = case vecFromList (map (.name.text) group) of
+  placeholderHashOf :: (S.Scope, S.Binding) -> Either ResolveError Hash
+  placeholderHashOf sb = case vecFromList [b.name.text | (_, b) <- sbs] of
     SomeVec ns -> do
-      (t, _) <- desugarOne (vecAppend ns VNil) b
+      (t, _) <- desugarOne (vecAppend ns VNil) sb
       pure (placeholderHash t)
 
   -- Inside a cycle the error path starts with the member index.
@@ -234,11 +478,22 @@ enterCycle cb bs = do
     b : _ -> b.name
     [] -> S.Name (S.Span (S.Pos 1 1) (S.Pos 1 1)) "?"
 
--- | Names an expression mentions that are not bound inside it.
+{- | Names an expression mentions that are not bound inside it. A field chain
+on a free name also mentions each of its dotted prefixes, any of which may
+be a qualified name (design §7.6).
+-}
 freeNames :: S.Expr -> Set Text
 freeNames = go Set.empty
  where
+  chain ex = case ex.node of
+    S.Var x -> Just (x, [])
+    S.FieldOf a f -> (\(x, fs) -> (x, fs ++ [f])) <$> chain a
+    _ -> Nothing
   go bound e = case e.node of
+    S.FieldOf _ _
+      | Just (x, fs) <- chain e
+      , x `Set.notMember` bound ->
+          Set.fromList [T.intercalate "." (x : take k fs) | k <- [0 .. length fs]]
     S.Num _ -> Set.empty
     S.Labelled _ a -> go bound a
     S.Tuple es -> foldMap (go bound) es
@@ -306,8 +561,8 @@ kinds from the positions the fields use them in; the field types are
 checked against the types in scope; the definition is hashed and stored,
 and the type's and constructors' names bound to it.
 -}
-enterData :: Codebase -> S.DataDecl -> Either ResolveError Codebase
-enterData cb decl = do
+enterData :: S.Scope -> Codebase -> S.DataDecl -> Either ResolveError Codebase
+enterData scope cb decl = do
   distinct "parameter" decl.params
   distinct "constructor" (map fst decl.constructors)
   distinct "field" (map fst fieldLabels)
@@ -316,9 +571,12 @@ enterData cb decl = do
     (_ : _ : _, (n, _) : _) ->
       Left (DataError n.span "field names need a type with one constructor")
     _ -> pure ()
-  when (decl.name.text `elem` builtinTypeNames)
+  when (S.lastSegment decl.name.text `elem` builtinTypeNames)
     $ Left
-      (DataError decl.name.span ("`" <> decl.name.text <> "` is a built-in type"))
+      ( DataError
+          decl.name.span
+          ("`" <> S.lastSegment decl.name.text <> "` is a built-in type")
+      )
   -- Two passes: the first learns the parameters' kinds from where they
   -- appear, the second converts with the kinds known, so that the
   -- arguments of a recursive occurrence can be read by their kinds.
@@ -330,7 +588,12 @@ enterData cb decl = do
         TypeDef
           params
           fieldss
-          (if decl.structural then structuralLabel else Owner decl.name.text)
+          -- The declared name without its namespace, which never reaches
+          -- the hash (design §7.6).
+          ( if decl.structural
+              then structuralLabel
+              else Owner (S.lastSegment decl.name.text)
+          )
       h = hashTypeDef def
       cb' = bindTypeName decl.name.text h (addTypeDef h def cb)
       withCons =
@@ -344,6 +607,7 @@ enterData cb decl = do
   env =
     DataEnv
       { codebase = cb
+      , scope = scope
       , self = decl.name
       , params = Map.fromList (zip (map (.text) decl.params) [0 ..])
       , paramNames = map (.text) decl.params
@@ -367,7 +631,10 @@ builtinTypeNames = ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Scale"]
 
 data DataEnv = DataEnv
   { codebase :: Codebase
+  , scope :: S.Scope
+  -- ^ where the type is written: its names resolve through this (design §7.6)
   , self :: S.Name
+  -- ^ the type being declared, by its full path
   , params :: Map.Map Text VarId
   , paramNames :: [Text]
   }
@@ -455,16 +722,32 @@ tyType env t = case t.node of
 -- | A declared type, or the one being declared, applied to its arguments.
 applied :: DataEnv -> S.TyExpr -> Text -> [S.TyExpr] -> Kinds Type
 applied env t n args
-  | n == env.self.text = do
+  | resolved == Found env.self.text = do
       arity (length env.paramNames)
       kinds <- mapM (gets . Map.findWithDefault KType) env.paramNames
       TData selfType <$> zipWithM (argOf env) kinds args
-  | Just h <- lookupTypeName n env.codebase
+  | Found full <- resolved
+  , Just h <- lookupTypeName full env.codebase
   , Just def <- lookupTypeDef h env.codebase = do
       arity (length def.params)
       TData h <$> zipWithM (argOf env) (map snd def.params) args
+  | Ambiguous fulls <- resolved =
+      bad
+        t
+        ( "`"
+            <> n
+            <> "` is both "
+            <> T.intercalate " and " (map (\f -> "`" <> f <> "`") fulls)
+            <> "; write one of them"
+        )
   | otherwise = bad t ("unknown type `" <> n <> "`")
  where
+  -- The type's own name exists before it is entered.
+  resolved =
+    qualifyWith
+      (\x -> x == env.self.text || isLabel TypeLabel env.codebase x)
+      env.scope
+      n
   arity k =
     when (length args /= k)
       $ bad
@@ -523,8 +806,9 @@ tyDim env a = case a.node of
           dimPow (fromInteger k) . dimVar <$> useParam env f n KDim
       | Just b <- lookup n [(baseSymbol b', b') | b' <- [minBound .. maxBound]] ->
           pure (dimPow (fromInteger k) (dimBase b))
-      | isUnitName n env.codebase
-      , Just r <- lookupName n env.codebase
+      | Found u <- qualifyName TermLabel env.scope env.codebase n
+      , isUnitName u env.codebase
+      , Just r <- lookupName u env.codebase
       , Just (Forall [] (TTensor SNil d)) <- typeOf r env.codebase ->
           pure (dimPow (fromInteger k) d)
     _ ->
@@ -536,12 +820,13 @@ tyDim env a = case a.node of
 a built-in type, a declared type, a base unit or a unit is a variable, of
 the kind its position gives it.
 -}
-queryScheme :: Codebase -> S.TyExpr -> Either ResolveError Scheme
-queryScheme cb t = do
+queryScheme :: S.Scope -> Codebase -> S.TyExpr -> Either ResolveError Scheme
+queryScheme scope cb t = do
   let vars = Set.toList (Set.filter isVar (names t))
       env =
         DataEnv
           { codebase = cb
+          , scope = scope
           , self = S.Name t.span ""
           , params = Map.fromList (zip vars [0 ..])
           , paramNames = vars
@@ -551,12 +836,16 @@ queryScheme cb t = do
   pure
     (Forall [(i, Map.findWithDefault KType v kinds) | (i, v) <- zip [0 ..] vars] ty)
  where
+  -- Names resolve through the scope (design §7.6).
   isVar n =
     maybe False (isLower . fst) (T.uncons n)
       && n `notElem` builtinTypeNames
-      && isNothing (lookupTypeName n cb)
+      && qualifyName TypeLabel scope cb n == NotFound
       && n `notElem` [baseSymbol b | b <- [minBound .. maxBound]]
-      && not (isUnitName n cb)
+      && not (isUnit n)
+  isUnit n = case qualifyName TermLabel scope cb n of
+    Found u -> isUnitName u cb
+    _ -> False
   names :: S.TyExpr -> Set Text
   names e = case e.node of
     S.TyName n -> Set.singleton n

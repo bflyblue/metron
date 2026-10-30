@@ -4,7 +4,7 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -76,6 +76,7 @@ main =
         , itTests
         , respellTests
         , replTests
+        , namespaceTests
         ]
     )
 
@@ -3071,6 +3072,41 @@ storeTests =
             ["area (Rect (2 m) (3 m))", "(Wrap (Rect (1 m) (1 m)) 2).shape", ":view Wrap"]
             @?= Right
               ["6 m^2", "Rect (1 m) (1 m)", "data Wrap a = Wrap {shape :: Shape, extra :: a}"]
+    , testCase "namespaced labels survive a reload with their paths, renamed or not" $ withTempStore $ \dir -> do
+        s <-
+          persistLines
+            dir
+            [ T.unlines
+                [ "namespace orbital"
+                , "  unit au = 149597870700 * m"
+                , "  scale tip = au at 0 au"
+                , "  data Body = Body {mass :: Num [kg], dist :: Num [m]}"
+                , "  let mu = 3"
+                , "  namespace kepler"
+                , "    let anomaly e x = x + e * x"
+                ]
+            , ":add"
+            , ":rename orbital.kepler celestial.kepler"
+            , ":rename orbital mechanics"
+            ]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        loaded.codebase.names @?= s.codebase.names
+        loaded.codebase.history @?= s.codebase.history
+        loaded.codebase.units @?= s.codebase.units
+        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.typeNames @?= s.codebase.typeNames
+        loaded.codebase.conNames @?= s.codebase.conNames
+        loaded.codebase.fieldNames @?= s.codebase.fieldNames
+        Map.member "celestial.kepler.anomaly" loaded.codebase.names @? "renamed"
+        Map.member "mechanics.mass" loaded.codebase.fieldNames @? "field path"
+        Set.member "mechanics.au" loaded.codebase.units @? "unit path"
+        Set.member "mechanics.tip" loaded.codebase.scales @? "scale path"
+        Map.member "mechanics.Body" loaded.codebase.typeNames @? "type path"
+        Map.member "mechanics.Body" loaded.codebase.conNames @? "constructor path"
+        Map.member "orbital.mu" loaded.codebase.history @? "history keeps the old path"
+        null [n | n <- Map.keys loaded.codebase.names, "orbital." `T.isPrefixOf` n]
+          @? "nothing left under orbital"
     , testCase ":unname persists" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add", ":alias y x", ":unname y"]
         (loaded, _) <- reload dir
@@ -4375,3 +4411,506 @@ replTests =
   superscripts = [(T.singleton c, n) | (c, n) <- zip "⁰¹²³⁴⁵⁶⁷⁸⁹" [0 ..]] ++ [("⁻", -1)]
   glued u = if u == "⁻" then "⁻¹" else u
   isRight = either (const False) (const True)
+
+-- Namespaces (design §7.6) ------------------------------------------------------------
+
+-- | A multi-line input, as a file or continuation lines give it.
+multiline :: [Text] -> Text
+multiline = T.intercalate "\n"
+
+-- | The orbital example: a root @mu@, and a namespace with its own.
+orbitalSetup :: [Text]
+orbitalSetup =
+  [ "let mu = 100"
+  , multiline
+      [ "namespace orbital"
+      , "  let mu = 3"
+      , "  let period a = a * mu"
+      ]
+  , ":add"
+  ]
+
+{- | A codebase for the export round trip: two namespaces, a nested one, a
+root definition, a unit, a scale, a record with a field a function uses, a
+cycle, a block definition shadowing a root name, and a prelude reference.
+-}
+exportScript :: [Text]
+exportScript =
+  [ multiline
+      [ "let size = 10"
+      , "let d = 2 km"
+      , "unit furlong = 201.168 * m"
+      , "namespace orbital"
+      , "  unit au = 149597870700 * m"
+      , "  scale tip = au at 1 au"
+      , "  data Body = Body {mass :: Num [kg], dist :: Num [m]}"
+      , "  let weight b = b.mass * 9.81 m/s^2"
+      , "  let size = 3"
+      , "  let both = size + .size"
+      , "  let even n = if n == 0 then true else odd (n - 1)"
+      , "  let odd n = if n == 0 then false else even (n - 1)"
+      , "  let earth = Body {mass = 6 kg, dist = 1 au}"
+      , "  namespace kepler"
+      , "    let anomaly e x = x + e * x"
+      , "    let viaParent = orbital.size * 2"
+      , "namespace mechanics"
+      , "  let g0 = 9.80665 m/s^2"
+      , "  let fall t = g0 * t^2 / 2"
+      , "  let useOrbital = orbital.kepler.anomaly 1 2 + orbital.weight orbital.earth / g0 / kg"
+      , "  data Probe = Probe {body :: orbital.Body, place :: Num [m]}"
+      , "  let probePlace p = p.place"
+      ]
+  , ":add"
+  ]
+
+-- | An error that mentions a text.
+expectError :: Either Text [Text] -> Text -> Assertion
+expectError r needle = case r of
+  Left err ->
+    (needle `T.isInfixOf` err)
+      @? T.unpack ("expected " <> needle <> " in:\n" <> err)
+  Right outs -> assertFailure ("expected an error, got " <> show outs)
+
+namespaceTests :: TestTree
+namespaceTests =
+  testGroup
+    "namespaces"
+    [ testCase
+        "a multiline defines orbital.*, and a bare name inside resolves there first"
+        $ do
+          runLinesP (orbitalSetup ++ ["orbital.period 2", "orbital.mu", "mu"])
+            @?= Right ["added mu", "added orbital.mu", "added orbital.period", "6", "3", "100"]
+          expecting (runLinesP (orbitalSetup ++ [":view orbital.period"])) $ \outs ->
+            last outs @?= "orbital.period = \\a -> a * orbital.mu"
+    , testCase "blocks nest"
+        $ runLinesP
+          [ multiline
+              [ "namespace orbital"
+              , "  namespace kepler"
+              , "    let anomaly e x = x + e * x"
+              ]
+          , "orbital.kepler.anomaly 1 2"
+          ]
+          @?= Right ["4"]
+    , testCase "a multiline's statements must be indented under it"
+        $ expectError
+          (runLinesP [multiline ["namespace orbital", "let x = 1"]])
+          "has no statements"
+    , testCase "use: bare names from the namespace resolve, and :type names them" $ do
+        expecting (runLinesP (orbitalSetup ++ ["use orbital", "period 2"])) $ \outs ->
+          last outs @?= "6"
+        let ty src = fmap last (runLinesP (orbitalSetup ++ ["use orbital", ":type " <> src]))
+        ty "period" @?= ty "orbital.period"
+        expecting
+          ( runLinesP
+              (orbitalSetup ++ [":uses", "use orbital", ":uses", ":unuse orbital", ":uses"])
+          )
+          $ \outs -> lastN 3 outs @?= ["no uses", "use orbital", "no uses"]
+    , testCase "use … as: an alias prefix"
+        $ expecting (runLinesP (orbitalSetup ++ ["use orbital as o", "o.period 2"]))
+        $ \outs ->
+          last outs @?= "6"
+    , testCase "two uses offering a name is an error, not a choice"
+        $ expectError
+          ( runLinesP
+              [ multiline ["namespace a", "  let x = 1"]
+              , multiline ["namespace b", "  let x = 2"]
+              , "use a"
+              , "use b"
+              , "x + 1"
+              ]
+          )
+          "`x` is both `a.x` and `b.x`; write one of them"
+    , testCase "an absolute .name picks the root's"
+        $ runLinesP
+          [ "let period a = a"
+          , multiline
+              [ "namespace orbital"
+              , "  let period a = a * 3"
+              , "  let near = period 5"
+              , "  let far = .period 5"
+              ]
+          , "orbital.near"
+          , "orbital.far"
+          ]
+          @?= Right ["15", "5"]
+    , testCase "a full path works from the root without a use"
+        $ expecting (runLinesP (orbitalSetup ++ ["orbital.period (orbital.mu)"]))
+        $ \outs ->
+          last outs @?= "9"
+    , testCase
+        "a data type in a multiline: its constructor and fields, inside and out"
+        $ do
+          let setup =
+                [ multiline
+                    [ "namespace orbital"
+                    , "  data Body = Body {mass :: Num [kg], dist :: Num [m]}"
+                    , "  let earth = Body {mass = 6 kg, dist = 1 m}"
+                    , "  let massOf b = b.mass"
+                    , "  let far b = case b of"
+                    , "    Body m d -> d"
+                    ]
+                ]
+          runLinesP
+            (setup ++ ["orbital.massOf orbital.earth", "orbital.far orbital.earth"])
+            @?= Right ["6 kg", "1 m"]
+          runLinesP (setup ++ ["orbital.Body {mass = 2 kg, dist = 3 m}"])
+            @?= Right ["orbital.Body {mass = 2 kg, dist = 3 m}"]
+          runLinesP
+            ( setup
+                ++ [ "let b = orbital.Body {mass = 2 kg, dist = 3 m}"
+                   , "case b of orbital.Body m d -> m"
+                   ]
+            )
+            @?= Right ["2 kg"]
+          expecting (runLinesP (setup ++ [":add", ":view orbital.Body"])) $ \outs ->
+            last outs
+              @?= "data orbital.Body = orbital.Body {mass :: Num [kg], dist :: Num [m]}"
+    , testCase "a cycle inside a multiline"
+        $ runLinesP
+          [ multiline
+              [ "namespace p"
+              , "  let even n = if n == 0 then true else odd (n - 1)"
+              , "  let odd n = if n == 0 then false else even (n - 1)"
+              ]
+          , "p.even 4"
+          , "p.odd 4"
+          ]
+          @?= Right ["true", "false"]
+    , testCase "a name is never both a label and a namespace" $ do
+        expectError
+          (runLinesP (orbitalSetup ++ ["let orbital = 1"]))
+          "`orbital` is a namespace; a definition cannot have its name"
+        expectError
+          ( runLinesP
+              ["let period = 1", ":add", multiline ["namespace period", "  let x = 1"]]
+          )
+          "`period` is a definition; it cannot also be a namespace"
+        expectError
+          (runLinesP [multiline ["namespace km", "  let x = 1"]])
+          "`km` is a definition; it cannot also be a namespace"
+        expectError
+          (runLinesP [":namespace km"])
+          "`km` is a definition; it cannot also be a namespace"
+    , testCase "the declared name's namespace never reaches the hash" $ do
+        let hashOf ls n = fmap last (runLinesP (ls ++ [":hash " <> n]))
+        hashOf ["let r = 1 m ± 0.1 m"] "r"
+          @?= hashOf [multiline ["namespace a", "  let r = 1 m ± 0.1 m"]] "a.r"
+    , testCase ":namespace: single lines land under it, and :scratch shows the path" $ do
+        runLinesP [":namespace", ":namespace orbital", ":namespace"]
+          @?= Right ["namespace . (the root)", "namespace orbital", "namespace orbital"]
+        runLinesP
+          [ ":namespace orbital"
+          , "let x = 1"
+          , ":scratch"
+          , ":namespace ."
+          , ":scratch"
+          , "orbital.x"
+          ]
+          @?= Right
+            [ "namespace orbital"
+            , "pending: x"
+            , "namespace . (the root)"
+            , "pending: orbital.x"
+            , "1"
+            ]
+        -- A block nests under the current namespace.
+        runLinesP
+          [ ":namespace orbital"
+          , multiline ["namespace kepler", "  let anomaly e x = x + e * x"]
+          , ":namespace ."
+          , "orbital.kepler.anomaly 1 2"
+          ]
+          @?= Right ["namespace orbital", "namespace . (the root)", "4"]
+    , testCase "a use inside a block does not leak out of it"
+        $ expectError
+          ( runLinesP
+              [ multiline ["namespace a", "  let x = 1"]
+              , multiline ["namespace b", "  use a", "  let y = x", "let z = x"]
+              ]
+          )
+          "unknown name `x`"
+    , testCase "a nominal type's namespace never reaches its hash" $ do
+        root <- either (assertFailure . T.unpack) pure (sessionP ["data T = T Num"])
+        inner <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            (sessionP [multiline ["namespace a", "  data T = T Num"]])
+        lookupTypeName "a.T" inner.staging @?= lookupTypeName "T" root.staging
+        isJust (lookupTypeName "T" root.staging) @? "declared"
+    , testCase ":ls of a namespace lists its labels relative to it" $ do
+        expecting
+          ( runLinesP
+              [ multiline
+                  [ "namespace orbital"
+                  , "  unit au = 149597870700 * m"
+                  , "  data Body = Body {mass :: Num [kg]}"
+                  , "  let mu = 3"
+                  ]
+              , ":add"
+              , ":ls orbital"
+              ]
+          )
+          $ \outs ->
+            lastN 4 outs
+              @?= [ "unit au : Num [m]"
+                  , "mu : Num"
+                  , "data Body = Body {mass :: Num [kg]}"
+                  , "Body : Num [kg] -> Body"
+                  ]
+        expecting (runLinesP (orbitalSetup ++ [":namespace orbital", ":ls"])) $ \outs ->
+          lastN 2 outs @?= ["mu : Num", "period : Num d -> Num d"]
+        expecting (runLinesP (orbitalSetup ++ [":ls"])) $ \outs ->
+          ("prelude names hidden" `T.isInfixOf` last outs)
+            @? "the footer counts the prelude"
+    , testCase
+        ":rename a definition, and a namespace with its units, types and fields"
+        $ do
+          expecting
+            ( runLinesP
+                ( orbitalSetup
+                    ++ [":rename orbital.period orbital.T", "orbital.T 2", ":history orbital.period"]
+                )
+            )
+            $ \outs -> do
+              lastN 2 (init outs) @?= ["renamed `orbital.period` to `orbital.T`", "6"]
+              ("(current)" `T.isInfixOf` last outs) @? "history keeps the old name"
+          expectError
+            ( runLinesP
+                (orbitalSetup ++ [":rename orbital.period orbital.T", "orbital.period 2"])
+            )
+            "unknown"
+          let setup =
+                [ multiline
+                    [ "namespace orbital"
+                    , "  unit au = 149597870700 * m"
+                    , "  data Body = Body {mass :: Num [kg]}"
+                    , "  let earth = Body {mass = 6 kg}"
+                    ]
+                , ":add"
+                , ":rename orbital mechanics"
+                ]
+          expecting
+            ( runLinesP
+                ( setup
+                    ++ [ "2 mechanics.au"
+                       , "use mechanics"
+                       , "earth.mass"
+                       , "mechanics.Body {mass = 1 kg}"
+                       ]
+                )
+            )
+            $ \outs ->
+              lastN 4 outs
+                @?= [ "renamed the 5 labels under `orbital` to `mechanics`"
+                    , "2 mechanics.au"
+                    , "6 kg"
+                    , "Body {mass = 1 kg}"
+                    ]
+          expectError (runLinesP (setup ++ ["orbital.earth"])) "unknown"
+    , testCase ":rename refuses a clash and changes nothing" $ do
+        expectError
+          (runLinesP (orbitalSetup ++ ["let Tq = 1", ":add", ":rename orbital.period Tq"]))
+          "`Tq` is already a label; nothing was changed"
+        expectError
+          (runLinesP (orbitalSetup ++ ["let x = 1", ":add", ":rename x mu.y"]))
+          "`mu` is a definition; it cannot also be a namespace"
+    , testCase ":move puts a definition or a namespace under another" $ do
+        expecting
+          ( runLinesP
+              ( orbitalSetup
+                  ++ [ "let period a = a + 1"
+                     , ":add"
+                     , ":move period orbital.slow"
+                     , "orbital.slow.period 1"
+                     ]
+              )
+          )
+          $ \outs -> lastN 2 outs @?= ["moved 1 label to `orbital.slow`", "2"]
+        expecting
+          ( runLinesP
+              (orbitalSetup ++ [":move orbital mechanics", "mechanics.orbital.period 2"])
+          )
+          $ \outs -> lastN 2 outs @?= ["moved 2 labels to `mechanics`", "6"]
+    , testCase ":alias and :unname of a namespace" $ do
+        expecting
+          ( runLinesP
+              (orbitalSetup ++ [":alias o2 orbital", "o2.period 2", "orbital.period 2"])
+          )
+          $ \outs ->
+            lastN 3 outs @?= ["`o2` now also names the 2 labels under `orbital`", "6", "6"]
+        expecting
+          (runLinesP (orbitalSetup ++ [":unname orbital", ":history orbital.mu"]))
+          $ \outs ->
+            last (init outs)
+              @?= "removed the 2 labels under `orbital`; :history name still finds them"
+        expectError
+          (runLinesP (orbitalSetup ++ [":unname orbital", "orbital.mu"]))
+          "unknown"
+    , testCase "printing: relative inside the namespace, full outside" $ do
+        expecting
+          ( runLinesP
+              (orbitalSetup ++ [":namespace orbital", ":view period", ":edit period"])
+          )
+          $ \outs -> lastN 2 outs @?= ["period = \\a -> a * mu", "let period = \\a -> a * mu"]
+        expecting (runLinesP (orbitalSetup ++ [":edit orbital.period"])) $ \outs ->
+          lastN 2 outs @?= ["namespace orbital", "  let period = \\a -> a * mu"]
+        -- The root's km prints bare inside a namespace that has none of its own.
+        expecting
+          ( runLinesP
+              [ multiline ["namespace orbital", "  let d = 2 km"]
+              , ":add"
+              , ":namespace orbital"
+              , ":view d"
+              ]
+          )
+          $ \outs -> last outs @?= "d = 2 * km"
+    , testCase "printing: the shortest spelling that resolves back" $ do
+        -- A use makes a name print bare.
+        expecting
+          ( runLinesP
+              (orbitalSetup ++ ["let gg = orbital.period 1", ":add", "use orbital", ":view gg"])
+          )
+          $ \outs -> last outs @?= "gg = period 1"
+        -- Two uses offering x: each keeps its path.
+        expecting
+          ( runLinesP
+              [ multiline ["namespace a", "  let x = 1"]
+              , multiline ["namespace b", "  let x = 2"]
+              , "let y = a.x + b.x"
+              , ":add"
+              , "use a"
+              , "use b"
+              , ":view y"
+              ]
+          )
+          $ \outs -> last outs @?= "y = a.x + b.x"
+        -- A multiline with its own km refers to the root's with a leading dot.
+        expecting
+          ( runLinesP
+              [ multiline
+                  ["namespace orbital", "  let km = 5", "  let d = 2 .km", "  let e = km"]
+              , ":add"
+              , ":namespace orbital"
+              , ":view d"
+              , ":view e"
+              , "d"
+              ]
+          )
+          $ \outs -> lastN 3 outs @?= ["d = 2 * .km", "e = km", "2 .km"]
+    , testCase "a file's uses last for the file only" $ do
+        s <- either (assertFailure . T.unpack) pure (sessionP orbitalSetup)
+        case feedFile s (multiline ["use orbital", "period 2"]) of
+          Left err -> assertFailure (T.unpack err)
+          Right (s', outs) -> do
+            outs @?= ["6"]
+            s'.scope.uses @?= []
+    , testCase "completion: dotted names and used names" $ do
+        s <- either (assertFailure . T.unpack) pure (sessionP orbitalSetup)
+        ("orbital.period" `elem` replacements s "orb")
+          @? "orb completes to orbital.period"
+        ("orbital.period" `elem` replacements s "orbital.pe") @? "orbital.pe completes"
+        u <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            (sessionP (orbitalSetup ++ ["use orbital"]))
+        ("period" `elem` replacements u "per") @? "a used name completes bare"
+    , testCase "the REPL waits for a namespace's block" $ do
+        R.continuation "namespace orbital" @?= Just R.Block
+        R.continuation "namespace orbital.kepler" @?= Just R.Block
+        R.continuation "use orbital" @?= Nothing
+    , testCase ":export reads back to the same labels and hashes" $ do
+        original <- either (assertFailure . T.unpack) pure (sessionP exportScript)
+        source <- either (assertFailure . T.unpack) pure (exportSource original Nothing)
+        reloaded <-
+          either
+            (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
+            pure
+            (sessionP [source, ":add"])
+        let same :: (Eq a, Show a) => String -> (Codebase -> a) -> Assertion
+            same what f =
+              assertEqual
+                (what <> "\n" <> T.unpack source)
+                (f original.codebase)
+                (f reloaded.codebase)
+        same "names" (.names)
+        same "typeNames" (.typeNames)
+        same "conNames" (.conNames)
+        same "fieldNames" (.fieldNames)
+        same "units" (.units)
+        same "scales" (.scales)
+        -- The shadowed root name needs its leading dot inside the block.
+        (".size" `T.isInfixOf` source) @? T.unpack source
+        -- A prelude term is referenced by name, never exported.
+        ("let km" `T.isInfixOf` source) @?= False
+        -- Every declared type is named, none left as a hash.
+        ("#" `T.isInfixOf` source) @?= False
+    , testCase ":export of a namespace, of nothing, and with a pending scratch" $ do
+        s <- either (assertFailure . T.unpack) pure (sessionP exportScript)
+        expecting (runLinesP (exportScript ++ [":export orbital.kepler"])) $ \outs ->
+          T.lines (last outs)
+            @?= [ "namespace orbital"
+                , "  namespace kepler"
+                , "    let anomaly = \\e -> \\x -> x + e * x"
+                , "    let viaParent = orbital.size * 2"
+                ]
+        runLinesP [":export"] @?= Right []
+        case exportSource s{scratch = []} (Just "nowhere") of
+          Right t -> t @?= ""
+          Left err -> assertFailure (T.unpack err)
+        expecting (runLinesP (exportScript ++ ["let pending = 1", ":export mechanics"])) $ \outs ->
+          last (T.lines (last outs))
+            @?= "-- not exported: 1 pending definitions (:add or :update them first)"
+        expectError (runLinesP [":export a b c"]) "usage: :export"
+        -- A single word that is no namespace is a file, which only the REPL writes.
+        expectError (runLinesP [":export out.ev"]) "only the REPL writes files"
+        expectError
+          (runLinesP [":export nowhere out.ev"])
+          "`nowhere` is not a namespace"
+        fmap fst (exportRequest s ["out.ev"]) @?= Right (Just "out.ev")
+        fmap fst (exportRequest s ["orbital", "out.ev"]) @?= Right (Just "out.ev")
+        fmap snd (exportRequest s ["orbital", "out.ev"])
+          @?= exportSource s (Just "orbital")
+    , testCase ":export refuses a definition on a version no name points at"
+        $ expectError
+          ( runLinesP
+              [ "let x = 5"
+              , "let y = x + 1"
+              , ":add"
+              , "let x = 6"
+              , ":update --no-upgrade"
+              , ":unname x"
+              , ":export"
+              ]
+          )
+          "cannot export: `y` uses"
+    , testCase "lexing: a dot not glued to a value is an absolute name" $ do
+        toks ".km" @?= Right [TAbs "km"]
+        toks "2 .km" @?= Right [L.TNum 2, TAbs "km"]
+        toks "b.mass" @?= Right [TIdent "b", TField "mass"]
+        toks ".orbital.period" @?= Right [TAbs "orbital", TField "period"]
+    , testCase "units and types across namespaces" $ do
+        let setup =
+              [ multiline ["namespace orbital", "  unit au = 149597870700 * m"]
+              , ":add"
+              , multiline
+                  [ "namespace orbital"
+                  , "  data Orbit = Orbit {radius :: Num [au]}"
+                  , "  let one = 1 au"
+                  ]
+              , "data Pair = Pair orbital.Orbit orbital.Orbit"
+              ]
+        runLinesP (setup ++ ["2 orbital.au", "orbital.one to km", "3 .km"])
+          @?= Right ["added orbital.au", "2 orbital.au", "149597870.7 km", "3 km"]
+        expecting (runLinesP (setup ++ [":add", ":view Pair", ":edit orbital.Orbit"])) $ \outs ->
+          lastN 3 outs
+            @?= [ "data Pair = Pair orbital.Orbit orbital.Orbit"
+                , "namespace orbital"
+                , "  data Orbit = Orbit {radius :: Num [m]}"
+                ]
+    , testCase "a dotted name is plain in the highlighter" $ do
+        s <- either (assertFailure . T.unpack) pure (sessionP orbitalSetup)
+        R.highlight (R.namesOf s) "orbital.period 2" @?= "orbital.period 2"
+    ]
