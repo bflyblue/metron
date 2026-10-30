@@ -2225,6 +2225,25 @@ tuned, and compilation is a later milestone.
    arithmetic, not the allocation); compilation for long
    propagations.
 
+9. **Design first, then delegate.** Each of these needs a decision written
+   down before any code; once it is, the implementation is routine enough to
+   hand off.
+   - *Mixed-dimension matrices.* What a matrix with a dimension per row and
+     per column is, how such types unify, and what `*` and `inverse` mean on
+     them. This is what a joint position-velocity covariance needs (§3.5).
+   - *Frames with a rotated basis.* The semantics of a scale over a tensor
+     with a rotation as well as an origin (§3.6): what `to` does, how
+     displacements and covariances transform.
+   - *Precision refinement for undecidable comparisons.* Re-entering
+     evaluation at a higher precision cuts across the evaluator's
+     architecture (§3.2.9).
+   - *Anything hash-changing.* Re-expressing `Bool`, tuples and lists as
+     prelude declarations, or mutually recursive types. Each is a numbered
+     migration (core.md §6); a mistake there corrupts stores.
+   - *Type annotations.* The parser and inference interplay, and what the
+     error messages say when an annotation and the inferred type disagree
+     (§4.6).
+
 ---
 
 ## 11. Open questions
