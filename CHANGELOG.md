@@ -334,8 +334,11 @@
   prelude's `vimap` is unchanged. One primitive appended (arity 2); the type
   encoding gains length tag 2 for `rank s + k`, appended, so Core, stored
   terms and hashes are unchanged.
-- REPL editing aids (design §7.3). TAB completes `:` commands at the
+- REPL editing aids (design §7.3, §2.8). TAB completes `:` commands at the
   start of a line, the arguments of `:set`, file names after `:load`,
   record fields after a glued `.` (`b.ma` gives `b.mass`), and otherwise
-  the session's names, types, constructors and keywords. The logic is
-  pure, in the new module `Eval.Repl`.
+  the session's names, types, constructors and keywords. `\name` then TAB
+  enters a character, as in Julia: `\mu` gives `μ`, `\pm` gives `±`,
+  `\pms` gives `±σ`, `\^2` gives `²`. The table is in the new module
+  `Eval.Unicode`, and a test checks each entry against the lexer. The
+  logic is pure, in the new module `Eval.Repl`.

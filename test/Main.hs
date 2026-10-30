@@ -30,6 +30,7 @@ import Eval.Store
 import Eval.Syntax qualified as S
 import Eval.TCore
 import Eval.Type
+import Eval.Unicode qualified as U
 import Gen (exprDepth, genProgram, instanceOf)
 import System.Directory (
   createDirectoryIfMissing,
@@ -3769,7 +3770,7 @@ sessionP = go withPrelude
   go s [] = Right s
   go s (l : ls) = feed s l >>= \(s', _) -> go s' ls
 
--- REPL: completion ------------------------------------------------------------------
+-- REPL: completion, unicode entry ---------------------------------------------------
 
 -- | Complete at the end of a line, as haskeline asks: reversed left text.
 completeAt :: Session -> String -> Maybe (String, [R.Completion])
@@ -3777,6 +3778,38 @@ completeAt s line = R.complete s (reverse line, "")
 
 replacements :: Session -> String -> [String]
 replacements s line = maybe [] (map (.replacement) . snd) (completeAt s line)
+
+{- | The ASCII spellings of design §2.8, keyed by their unicode form, for the
+agreement test: a unicode entry must lex as its ASCII spelling does.
+-}
+asciiSpellings :: [(Text, Text)]
+asciiSpellings =
+  [ ("λ", "\\")
+  , ("→", "->")
+  , ("⊗", "*")
+  , ("·", "@")
+  , ("⋅", "@")
+  , ("×", "><")
+  , ("⊙", ".*")
+  , ("⊘", "./")
+  , ("÷", "/")
+  , ("≤", "<=")
+  , ("≥", ">=")
+  , ("≠", "/=")
+  , ("∨", "||")
+  , ("¬", "not")
+  , ("∧", "/\\")
+  , ("⋆", "star")
+  , ("±", "+-")
+  , ("±σ", "+-s")
+  , ("°C", "degC")
+  , ("°F", "degF")
+  , ("∘", ".")
+  , ("π", "pi")
+  , ("°", "deg")
+  , ("″", "arcsec")
+  , ("′", "arcmin")
+  ]
 
 replTests :: TestTree
 replTests =
@@ -3821,6 +3854,45 @@ replTests =
         completeAt withPrelude ":load fo" @?= Nothing
         R.loadsFile " :load " @? ":load"
         not (R.loadsFile ":ls") @? ":ls"
+    , testCase "a backslash name completes from the unicode table only" $ do
+        completeAt withPrelude "2 \\mu"
+          @?= Just (reverse "2 ", [R.Completion "\x03BC" "\x03BC" False])
+        replacements withPrelude "3 m \\pm" @?= ["±"]
+        replacements withPrelude "3 m \\pms" @?= ["±σ"]
+        replacements withPrelude "(\\Omega" @?= ["\x03A9"]
+        completeAt withPrelude "m\\^2" @?= Just ("m", [R.Completion "²" "²" False])
+        replacements withPrelude "s\\^-" @?= ["⁻"]
+        replacements withPrelude "\\lam" @?= ["λ"]
+        let os = replacements withPrelude "\\o"
+        length os > 1 && all ("\\o" `isPrefixOfS`) os @? show os
+        -- Nothing from the codebase: `kat` is a name, `\kat` is not an entry.
+        replacements withPrelude "\\kat" @?= []
+    , testCase
+        "every unicode entry lexes as a documented ASCII spelling or is an identifier"
+        $ sequence_
+          [ agrees name u @? T.unpack ("\\" <> name <> " -> " <> u)
+          | (name, u) <- U.completions
+          ]
+    , testCase "unicode lookup prefers an exact name" $ do
+        U.lookupName "pm" @?= Just "±"
+        map fst (U.matching "pm") @?= ["pm"]
+        map fst (U.matching "pr") @?= ["prime"]
     ]
  where
   isPrefixOfS p x = take (length p) x == p
+  agrees name u
+    | Just n <- lookup u superscripts =
+        toks ("m" <> glued u) == Right [TIdent "m", TSup n]
+          && isRight (evalP ("2" <> glued u))
+          && evalP ("2" <> glued u) == evalP ("2^" <> T.pack (show n))
+    | name == "sqrt" =
+        -- A prefix operator where sqrt is an application (§7.3): same value.
+        toks u == Right [TSqrt] && evalP "√9" == evalP "sqrt 9" && isRight (evalP "√9")
+    | Just a <- lookup u asciiSpellings =
+        let lexed = toks ("a " <> u <> " b")
+         in isRight lexed && lexed == toks ("a " <> a <> " b")
+    | otherwise =
+        toks u == Right [TIdent u] || toks ("x" <> u) == Right [TIdent ("x" <> u)]
+  superscripts = [(T.singleton c, n) | (c, n) <- zip "⁰¹²³⁴⁵⁶⁷⁸⁹" [0 ..]] ++ [("⁻", -1)]
+  glued u = if u == "⁻" then "⁻¹" else u
+  isRight = either (const False) (const True)

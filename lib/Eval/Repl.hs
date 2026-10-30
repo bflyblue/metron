@@ -12,12 +12,13 @@ module Eval.Repl (
   keywords,
 ) where
 
-import Data.Char (isAlphaNum, isDigit, isSpace)
+import Data.Char (isAlphaNum, isDigit, isLetter, isSpace)
 import Data.List (isPrefixOf, nub, sort)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Eval.Codebase (Codebase (..))
 import Eval.Driver (Session (..))
+import Eval.Unicode qualified as U
 
 -- Completion ------------------------------------------------------------------
 
@@ -95,12 +96,15 @@ cursor, reversed, and the text right of it. The result is the reversed
 text that stays and the candidates for the word that is replaced;
 'Nothing' asks for file name completion instead.
 
-The word is the identifier ending at the cursor, with a @.@ before it for a
+The word is a backslash name (@\\mu@, @\\^2@) when one ends at the cursor,
+otherwise the identifier ending at the cursor, with a @.@ before it for a
 field and a @:@ before it at the start of a line for a command.
 -}
 complete :: Session -> (String, String) -> Maybe (String, [Completion])
 complete session (leftRev, _)
   | loadsFile (reverse leftRev) = Nothing
+  | (nameRev, '\\' : prev) <- span isNameChar leftRev =
+      Just (prev, completions session prev ('\\' : reverse nameRev))
   | otherwise =
       let (fragRev, before) = span identChar leftRev
           -- A number glued to a name is not part of it: @3kilo@.
@@ -111,10 +115,14 @@ complete session (leftRev, _)
             ':' : p | null digits, all isSpace p -> (':' : frag, p)
             _ -> (frag, prev0)
        in Just (prev, completions session prev word)
+ where
+  isNameChar c = isLetter c || isDigit c || c `elem` ("^-_" :: String)
 
 {- | The candidates for one word, given the reversed text before it, as
 haskeline's @completeWordWithPrev@ passes them.
 
+* @\\name@: entries of "Eval.Unicode" and nothing else; an exact name
+  becomes its text, a partial one lists the names it starts.
 * @:cmd@ at the start of a line: commands.
 * After @:set@: its arguments.
 * @.f@: record fields.
@@ -122,6 +130,12 @@ haskeline's @completeWordWithPrev@ passes them.
 -}
 completions :: Session -> String -> String -> [Completion]
 completions session prev word = case word of
+  '\\' : name -> case U.matching (T.pack name) of
+    [(_, t)] -> [Completion (T.unpack t) (T.unpack t) False]
+    many ->
+      [ Completion ('\\' : T.unpack k) ('\\' : T.unpack k <> " " <> T.unpack t) False
+      | (k, t) <- many
+      ]
   ':' : _ | all isSpace prev -> plain commands
   '.' : f ->
     [ Completion ('.' : n) n True

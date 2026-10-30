@@ -455,6 +455,10 @@ The printer emits ASCII by default. `:set unicode on` (§7.3) switches the
 exponents, `->`, `\` and `<= >= /= ||` to their unicode spellings; the
 list there is the exact set.
 
+In the REPL a character can be typed by name, as in Julia: `\mu` then TAB
+becomes `μ`, `\pm` becomes `±`, `\^2` becomes `²`. §7.3 has the details;
+every entry lexes as its ASCII spelling here, or is an identifier letter.
+
 ### 2.9 Sugar and desugaring
 
 Everything in this table is removed before Core. The right column is Core written
@@ -2216,6 +2220,35 @@ changes what an input means or the text it prints.
 
 The prelude has many hundreds of names, so a short prefix can list many
 candidates.
+
+**Unicode by name.** A backslash, a name, then TAB enters a character, as
+in Julia: `\mu` gives `μ`. When the typed name is a whole entry, it is
+replaced, so `\pm` gives `±` although `\pms` exists. Otherwise TAB lists
+the entries that start with it. The table is in `Eval.Unicode`:
+
+| Names | Result |
+|---|---|
+| `\alpha` … `\omega` (`\lambda` is the lambda `λ`, `\pi` is `π`) | Greek letters |
+| `\Gamma` `\Delta` `\Theta` `\Lambda` `\Xi` `\Pi` `\Sigma` `\Upsilon` `\Phi` `\Psi` `\Omega` | the capitals that do not look like Latin ones |
+| `\micro` `\ohm` | `μ` `Ω`, the forms the lexer folds `µ` and `Ω` to |
+| `\to` `\otimes` `\cdot` `\times` `\odot` `\oslash` `\div` | `→` `⊗` `·` `×` `⊙` `⊘` `÷` |
+| `\le` `\ge` `\ne` `\or` `\neg` `\wedge` `\star` `\circ` `\sqrt` | `≤` `≥` `≠` `∨` `¬` `∧` `⋆` `∘` `√` |
+| `\pm` `\pms` | `±` `±σ` |
+| `\deg` `\degC` `\degF` `\prime` `\dprime` | `°` `°C` `°F` `′` `″` |
+| `\^0` … `\^9` `\^-` | `⁰` … `⁹` `⁻` |
+| `\_0` … `\_9` | `₀` … `₉`, inside identifiers |
+
+`\leq`, `\geq`, `\neq`, `\vee`, `\lnot`, `\rightarrow` and `\pprime` are
+aliases. There is no `\and`: `∧` is the wedge product, and boolean and is
+`&&` only (§2.8). Every entry lexes to the same tokens as its ASCII
+spelling in §2.8, or is a letter that is valid in an identifier. Two kinds
+of entry have tokens of their own: a superscript and `√`. For these, the
+value must equal that of the caret power or of `sqrt`. The test suite
+checks all of this against the lexer.
+
+A word that starts with `\` completes from this table only, never from
+names. Nobody presses TAB in a lambda such as `\x -> x`, so the two uses
+never meet; TAB after `\x` would offer `\xi`.
 
 **History.** The line history is the file `history` in the codebase
 directory (§7.4). With `--no-codebase` there is no history file.
