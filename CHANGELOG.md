@@ -243,16 +243,14 @@
   derived, and which parameters need equality is a fixed point over the
   fields, so nested types (`data N a = Z a | S (N (a, a))`) are decided
   too. A type with a function field still has none.
-- `mid`, `bound` and `sigma` (design §3.2.9): three primitives, elementwise
+- `mid`, `bound` and `sd` (design §3.2.9): three primitives, elementwise
   on tensors (`Tensor s d -> Tensor s d`), that take an enclosure apart the
   way the printer collapses it, keeping the operand's dimension and display
   unit: the midpoint, the bound radius `Σ_bound |cᵢ| + slack`, and the
-  standard deviation `√(Σ_stat cᵢ²)`. `mid` and `bound` are exact; `sigma`
+  standard deviation `√(Σ_stat cᵢ²)`. `mid` and `bound` are exact; `sd`
   is exact when the variance is a square and otherwise an enclosure of the
   root. `bound (10 mm ± 0.1 mm)` is `0.1 mm`, and a comparison policy of
-  one's own is a definition. **Breaking**: `sigma` was the prefix spelling of
-  `±σ` (`sigma a e`); that spelling is gone, write `a ±σ e` or `a +-s e`.
-  `within a e` stays. Stored terms are unaffected: `±σ` is its own Core node.
+  one's own is a definition.
 - Record values print with their field names (design §2.3): `Body {mass = 6
   kg, pos = [1, 2, 3] km, vel = [0, 0, 0] m s^-1}`, nesting, and reading
   back as the same value. The value printer takes a `Printer` (names for
