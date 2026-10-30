@@ -2610,6 +2610,13 @@ tuned, and compilation is a later milestone.
    - *Type annotations.* The parser and inference interplay, and what the
      error messages say when an annotation and the inferred type disagree
      (§4.6).
+   - *A brick front end*, `eval --tui`, beside the line REPL: the canonical
+     echo live as you type, completion as a popup, multi-line editing, and
+     room for panes (a `:ls` sidebar, the error excerpt beside the input).
+     Built on the same `Eval.Repl` logic so the two never drift; the line
+     REPL stays the default and the only front end for piped scripts and
+     tests. `brick` and `vty` come in through `build-depends` via
+     `callCabal2nix`.
 
 ---
 
