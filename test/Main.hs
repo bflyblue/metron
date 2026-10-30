@@ -1341,7 +1341,7 @@ typeTests =
         let def =
               TypeDef
                 [(0, KShape)]
-                [[TTensor (SCons (LRank 0 1) (SVar 0)) dimOne]]
+                [[TTensor (SCons (LRank 0 1) AAnon (SVar 0)) dimOne]]
                 structuralLabel
         decodeTypeDef (encodeTypeDef def) @?= Right def
     , testCase "recursive definitions get types"
@@ -2840,7 +2840,7 @@ generatorProperty =
     TData _ _ -> "data"
     TFun _ _ -> "function"
     TPoint _ _ -> "Point"
-    TScale _ _ -> "Chart"
+    TScale{} -> "Chart"
     TupleT _ -> "tuple"
     ListT _ -> "list"
     TTensor sh d ->
@@ -2856,7 +2856,7 @@ generatorProperty =
 rankOf :: Shape -> Int
 rankOf = \case
   SNil -> 0
-  SCons _ rest -> 1 + rankOf rest
+  SCons _ _ rest -> 1 + rankOf rest
   SVar _ -> 0
 
 {- | What an elaborated program exercises: polymorphic lets, dimensioned
@@ -2877,7 +2877,7 @@ features typed =
     TFun a b -> dimensioned a || dimensioned b
     _ -> False
   dimensionedTensor = \case
-    TTensor (SCons _ _) d -> any isBase (dimAtoms d)
+    TTensor (SCons{}) d -> any isBase (dimAtoms d)
     TFun a b -> dimensionedTensor a || dimensionedTensor b
     _ -> False
   isBase = \case

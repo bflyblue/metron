@@ -124,12 +124,15 @@ primScheme name = case name of
   "log" -> num1
   "atan2" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) angleT)))
   -- Points and scales (design §3.6).
-  "mkScale" -> Just (Forall [sv, dv] (TFun (numD d) (TFun sd (TScale s d))))
+  "mkScale" -> Just (Forall [sv, dv] (TFun (numD d) (TFun sd (TScale s AAnon d))))
   -- A chart in a parent of its own shape and dimension (design §3.8); the
   -- origin is an amount along the parent's axes.
   "mkChart3" ->
     Just
-      (Forall [sv, dv] (TFun (numD d) (TFun sd (TFun (TScale s d) (TScale s d)))))
+      ( Forall
+          [sv, dv]
+          (TFun (numD d) (TFun sd (TFun (TScale s AAnon d) (TScale s AAnon d))))
+      )
   -- Turned from the parent by a list of dimensionless generators over its
   -- axes, applied in order.
   "mkChart4" ->
@@ -140,7 +143,7 @@ primScheme name = case name of
               (numD d)
               ( TFun
                   (vecD n d)
-                  (TFun (TScale vn d) (TFun (listT (matD n n dimOne)) (TScale vn d)))
+                  (TFun (TScale vn AAnon d) (TFun (listT (matD n n dimOne)) (TScale vn AAnon d)))
               )
           )
       )
@@ -156,10 +159,10 @@ primScheme name = case name of
               ( TFun
                   (vecD three d)
                   ( TFun
-                      (TScale v3 d)
+                      (TScale v3 AAnon d)
                       ( TFun
                           (listT (matD three three dimOne))
-                          (TFun (vecD three angularRate) (TScale v3 d))
+                          (TFun (vecD three angularRate) (TScale v3 AAnon d))
                       )
                   )
               )
@@ -167,10 +170,12 @@ primScheme name = case name of
       )
   "pointOn" ->
     Just
-      (Forall [sv, dv] (TFun (TScale s d) (TFun (TTensor s dimOne) (TPoint s d))))
+      (Forall [sv, dv] (TFun (TScale s AAnon d) (TFun (TTensor s dimOne) (TPoint s d))))
   "pointAdd" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun sd (TPoint s d))))
   "pointSub" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun (TPoint s d) sd)))
-  "toScale" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun (TScale s d) (TPoint s d))))
+  "toScale" ->
+    Just
+      (Forall [sv, dv] (TFun (TPoint s d) (TFun (TScale s AAnon d) (TPoint s d))))
   -- lt, le, gt, ge have instance types; see lintConstrained.
   "and" -> mono (TFun boolT (TFun boolT boolT))
   "or" -> mono (TFun boolT (TFun boolT boolT))
@@ -247,12 +252,14 @@ primScheme name = case name of
   "transformBy" -> Just (Forall [nv, sv, dv] (TFun (matD n n dimOne) (TFun sd sd)))
   -- A chart's absolute rotation: its axes, as columns along the base axes
   -- (design §3.8).
-  "rotationOf" -> Just (Forall [nv, dv] (TFun (TScale vn d) (matD n n dimOne)))
+  "rotationOf" -> Just (Forall [nv, dv] (TFun (TScale vn AAnon d) (matD n n dimOne)))
   -- Its absolute angular velocity and the velocity of its origin, along
   -- the base axes (design §3.8): zero for a chart that does not move.
-  "spinOf" -> Just (Forall [dv] (TFun (TScale v3 d) (vecD three (dimInv (dimBase T)))))
+  "spinOf" ->
+    Just (Forall [dv] (TFun (TScale v3 AAnon d) (vecD three (dimInv (dimBase T)))))
   "originVelocityOf" ->
-    Just (Forall [dv] (TFun (TScale v3 d) (vecD three (dimDiv d (dimBase T)))))
+    Just
+      (Forall [dv] (TFun (TScale v3 AAnon d) (vecD three (dimDiv d (dimBase T)))))
   _ -> case baseUnit name of
     Just b -> mono (numD (dimBase b))
     Nothing -> Nothing
@@ -270,10 +277,10 @@ primScheme name = case name of
   three = LLit 3
   sd = TTensor s d
   sd2 = TTensor s d2
-  vn = SCons n SNil
-  v3 = SCons three SNil
+  vn = SCons n AAnon SNil
+  v3 = SCons three AAnon SNil
   angularRate = dimDiv (dimBase Ang) (dimBase T)
-  matD r c = TTensor (SCons r (SCons c SNil))
+  matD r c = TTensor (SCons r AAnon (SCons c AAnon SNil))
   mono = Just . Forall []
   num1 = mono (TFun numT numT)
   angleT = numD (dimBase Ang)
@@ -349,7 +356,7 @@ primSchemeFor name lits = case name of
                         ( TFun
                             numT
                             ( TFun
-                                (TTensor (appendShape (before ++ [LVar (lenId k) (i + 1)]) s) d)
+                                (TTensor (appendShape (before ++ [(LVar (lenId k) (i + 1), AAnon)]) s) d)
                                 (TTensor (appendShape before s) d)
                             )
                         )
@@ -363,7 +370,7 @@ primSchemeFor name lits = case name of
   s = SVar 0
   d = dimVar 1
   lenId q = 10 + q
-  lenAt q = LVar (lenId q) 0
+  lenAt q = (LVar (lenId q) 0, AAnon)
   position = \case
     LTensor ([], [r]) -> integral r
     _ -> Nothing
@@ -540,8 +547,9 @@ lint look ctx = \case
     case (tx, te) of
       (TTensor _ d, TTensor SNil d') | d == d' -> mono tx
       (TTensor _ _, _) | tx == te -> mono tx
-      (TTensor (SCons n SNil) d, TTensor (SCons n' (SCons n'' SNil)) d2)
-        | n == n', n == n'', d2 == dimPow 2 d -> mono tx
+      -- A covariance pairs the value's axes with themselves.
+      (TTensor (SCons n a SNil) d, TTensor (SCons n' a' (SCons n'' a'' SNil)) d2)
+        | (n, a) == (n', a'), (n, a) == (n'', a''), d2 == dimPow 2 d -> mono tx
       _ ->
         Left
           "± needs a tensor and an uncertainty of its dimension: scalar, of its shape, or its covariance matrix"
@@ -553,17 +561,17 @@ lint look ctx = \case
         require
           (all (== TTensor sh d) rest)
           "pack of tensors with different shapes or dimensions"
-        mono (TTensor (SCons (LLit (length ts)) sh) d)
+        mono (TTensor (SCons (LLit (length ts)) AAnon sh) d)
       t : _ -> Left ("pack of non-tensors of type " <> renderType t)
   TProj t i -> do
     tt <- monoOf t
     case tt of
-      TTensor (SCons (LLit k) rest) d | i < k -> mono (TTensor rest d)
-      TTensor (SCons (LVar _ k) rest) d | i < k -> mono (TTensor rest d)
-      TTensor (SCons (LRank _ k) rest) d | i < k -> mono (TTensor rest d)
-      TPoint (SCons (LLit k) rest) d | i < k -> mono (TPoint rest d)
-      TPoint (SCons (LVar _ k) rest) d | i < k -> mono (TPoint rest d)
-      TPoint (SCons (LRank _ k) rest) d | i < k -> mono (TPoint rest d)
+      TTensor (SCons (LLit k) _ rest) d | i < k -> mono (TTensor rest d)
+      TTensor (SCons (LVar _ k) _ rest) d | i < k -> mono (TTensor rest d)
+      TTensor (SCons (LRank _ k) _ rest) d | i < k -> mono (TTensor rest d)
+      TPoint (SCons (LLit k) _ rest) d | i < k -> mono (TPoint rest d)
+      TPoint (SCons (LVar _ k) _ rest) d | i < k -> mono (TPoint rest d)
+      TPoint (SCons (LRank _ k) _ rest) d | i < k -> mono (TPoint rest d)
       _ -> Left ("projection ." <> T.pack (show i) <> " from " <> renderType tt)
   TTyLam v k body -> do
     Forall vs t <- lint look ctx body
@@ -589,6 +597,7 @@ lint look ctx = \case
     ALen _ -> KLen
     AShape _ -> KShape
     ADim _ -> KDim
+    AAxis _ -> KAxis
 
 {- | The primitives whose types are relations rather than schemes (design
 §4.2). Inference solved or defaulted their constraints; lint re-checks the
@@ -612,8 +621,9 @@ lintConstrained look name ty = case (name, ty) of
     ls <-
       maybe (Left "dot: the left operand's rank is not known") Right (closedLens sl)
     (s1, n) <- maybe (Left "dot: the left operand is a number") Right (unsnoc ls)
+    -- The contracted positions share their length and their axes.
     s2 <- case sr of
-      SCons n' rest | n' == n -> Right rest
+      SCons n' a' rest | (n', a') == n -> Right rest
       _ -> Left "dot: the right operand's first length is not the left operand's last"
     require
       (s3 == appendShape s1 s2)
@@ -644,15 +654,15 @@ lintConstrained look name ty = case (name, ty) of
     [] -> Nothing
     xs -> Just (init xs, last xs)
 
--- | The lengths of a shape that ends in @[]@.
-closedLens :: Shape -> Maybe [Len]
+-- | The positions, lengths and axes, of a shape that ends in @[]@.
+closedLens :: Shape -> Maybe [(Len, Axis)]
 closedLens = \case
   SNil -> Just []
-  SCons l rest -> (l :) <$> closedLens rest
+  SCons l a rest -> ((l, a) :) <$> closedLens rest
   SVar _ -> Nothing
 
-appendShape :: [Len] -> Shape -> Shape
-appendShape ls tl = foldr SCons tl ls
+appendShape :: [(Len, Axis)] -> Shape -> Shape
+appendShape ls tl = foldr (uncurry SCons) tl ls
 
 asMono :: Text -> Scheme -> Either Text Type
 asMono what (Forall vs t) = require (null vs) (what <> " is unexpectedly polymorphic") >> Right t
@@ -706,6 +716,7 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     KLen -> ALen (LVar (negate (v + 1)) 0)
     KShape -> AShape (SVar (negate (v + 1)))
     KDim -> ADim (dimVar (negate (v + 1)))
+    KAxis -> AAxis (AVar (negate (v + 1)))
   vs = [(negate (v + 1), k) | (v, k) <- vs0]
   pat = applyType renamed pat0
   quantified v = v `elem` map fst vs
@@ -714,7 +725,7 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (TFun a b, TFun c d) -> matchType a c m >>= matchType b d
     (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
     (TPoint a da, TPoint b db) -> matchShape a b m >>= matchDim da db
-    (TScale a da, TScale b db) -> matchShape a b m >>= matchDim da db
+    (TScale a ra da, TScale b rb db) -> matchShape a b m >>= matchAxis ra rb >>= matchDim da db
     (TData h as, TData h' bs)
       | h == h' && length as == length bs ->
           foldM (\acc (a, b) -> matchArg a b acc) m (zip as bs)
@@ -724,11 +735,17 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (ALen x, ALen y) -> matchLen x y m
     (AShape x, AShape y) -> matchShape x y m
     (ADim x, ADim y) -> matchDim x y m
+    (AAxis x, AAxis y) -> matchAxis x y m
     _ -> Nothing
   matchShape p sh m = case (p, sh) of
     (SVar v, _) | quantified v -> bindArg v (AShape sh) m
-    (SCons l rest, SCons l' rest') -> matchLen l l' m >>= matchShape rest rest'
+    (SCons l a rest, SCons l' a' rest') ->
+      matchLen l l' m >>= matchAxis a a' >>= matchShape rest rest'
     _ -> if p == sh then Just m else Nothing
+  -- A quantified axis variable stands for any slot; anything else matches itself.
+  matchAxis p a m = case p of
+    AVar v | quantified v -> bindArg v (AAxis a) m
+    _ -> if p == a then Just m else Nothing
   matchLen p l m = case p of
     LVar v off | quantified v -> case l of
       LLit j | j >= off -> bindArg v (ALen (LLit (j - off))) m
@@ -848,6 +865,7 @@ renderTTerm namer = go 0
     KLen -> "n" <> T.pack (show v)
     KShape -> "s" <> T.pack (show v)
     KDim -> "d" <> T.pack (show v)
+    KAxis -> "x" <> T.pack (show v)
   showD r = T.pack (show (fromRational r :: Double))
   nested dims rs = case dims of
     [] -> maybe "[]" showD (nth 0 rs)

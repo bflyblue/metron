@@ -64,6 +64,7 @@ import Eval.Syntax qualified as S
 import Eval.TCore
 import Eval.Type (
   Arg (..),
+  Axis (..),
   Kind (..),
   Len (..),
   Scheme (..),
@@ -1665,6 +1666,7 @@ listNames session args = do
     KLen -> ALen (LVar v 0)
     KShape -> AShape (SVar v)
     KDim -> ADim (dimVar v)
+    KAxis -> AAxis (AVar v)
 
 {- | @*@ matches any run of characters; a pattern without @*@ matches as a
 case-insensitive substring.

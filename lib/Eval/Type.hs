@@ -22,6 +22,7 @@ module Eval.Type (
   renderTypeDef,
   Len (..),
   rankLen,
+  Axis (..),
   Shape (..),
   Arg (..),
   Scheme (..),
@@ -31,6 +32,7 @@ module Eval.Type (
   applyLen,
   applyShape,
   applyDim,
+  applyAxis,
   applyArg,
   applyScheme,
   substOnce,
@@ -114,6 +116,9 @@ renderSignature spelling usable typeName (Forall _ t) =
     KLen -> ["n", "m", "k", "l", "p", "q"] ++ numbered "n"
     KShape -> "s" : numbered "s"
     KDim -> "d" : numbered "d"
+    -- An axis variable prints as nothing (design §3.9, stage 1), so it
+    -- takes no name.
+    KAxis -> []
   numbered p = [p <> T.pack (show i) | i <- [1 :: Int ..]]
 
 {- | A scheme with its variables renumbered from 0 in order of appearance,
@@ -127,6 +132,7 @@ canonicalScheme (Forall _ t) =
         KLen -> ALen (LVar v 0)
         KShape -> AShape (SVar v)
         KDim -> ADim (dimVar v)
+        KAxis -> AAxis (AVar v)
       renaming = Map.fromList [(v, fresh i k) | (i, (v, k)) <- zip [0 ..] vs]
    in Forall [(i, k) | (i, (_, k)) <- zip [0 ..] vs] (substOnce renaming t)
 
@@ -139,10 +145,12 @@ renderArg = \case
   ALen l -> renderLen (idNames (lenVars l)) l
   AShape sh -> renderShapeList (idNames (shapeVars sh)) sh
   ADim d -> renderDimWith (\v -> "d" <> T.pack (show v)) d
+  -- The name slot prints as nothing until named axes exist (design §3.9).
+  AAxis _ -> ""
  where
   shapeVars = \case
     SNil -> []
-    SCons l rest -> lenVars l ++ shapeVars rest
+    SCons l _ rest -> lenVars l ++ shapeVars rest
     SVar v -> [(v, KShape)]
   lenVars = \case
     LLit _ -> []
@@ -168,14 +176,16 @@ renderWithNamed typeName spelling names prec = \case
   -- A scalar point is `Point [K]`; a point over a vector space, `Point (Vec 3 [m])`.
   TPoint SNil d -> "Point" <> dim d
   TPoint sh d -> "Point (" <> tensor sh <> dim d <> ")"
-  TScale SNil d -> "Chart" <> dim d
-  TScale sh d -> "Chart (" <> tensor sh <> dim d <> ")"
+  TScale SNil _ d -> "Chart" <> dim d
+  TScale sh _ d -> "Chart (" <> tensor sh <> dim d <> ")"
   -- A declared type prints by its short hash here; the driver replaces that
   -- with the current name (design §7.2), so inference needs no name table.
-  TData h as ->
-    paren
-      (prec > 10 && not (null as))
-      (T.unwords (typeName h : map (argWith names) as))
+  -- An axis argument, a length's companion, prints as nothing (design §3.9).
+  TData h as0 ->
+    let as = filter (not . isAxisArg) as0
+     in paren
+          (prec > 10 && not (null as))
+          (T.unwords (typeName h : map (argWith names) as))
   TFun a b ->
     paren
       (prec > 0)
@@ -186,10 +196,11 @@ renderWithNamed typeName spelling names prec = \case
   TVar v -> Map.findWithDefault ("t" <> T.pack (show v)) v names
  where
   paren b s = if b then "(" <> s <> ")" else s
+  -- The axes of a position print as nothing in stage 1 (design §3.9).
   tensor = \case
     SNil -> "Num"
-    SCons n SNil -> "Vec " <> renderLen names n
-    SCons m (SCons n SNil) -> "Mat " <> renderLen names m <> " " <> renderLen names n
+    SCons n _ SNil -> "Vec " <> renderLen names n
+    SCons m _ (SCons n _ SNil) -> "Mat " <> renderLen names m <> " " <> renderLen names n
     sh -> "Tensor " <> renderShapeList names sh
   -- A lone dimension variable prints bare (@Num d@); anything else in
   -- brackets (@Num [m s^-2]@, @Num [d d1]@).
@@ -205,6 +216,13 @@ renderWithNamed typeName spelling names prec = \case
     ADim d
       | [(DVar v, 1)] <- dimAtoms d -> dimName v
       | otherwise -> renderDimIn spelling dimName d
+    AAxis _ -> ""
+
+-- | An argument that fills an axis parameter, a length's companion.
+isAxisArg :: Arg -> Bool
+isAxisArg = \case
+  AAxis _ -> True
+  _ -> False
 
 {- | A length on its own: an offset form or a rank is parenthesised, @Vec (n +
 1)@, @Vec (rank s)@.
@@ -239,11 +257,11 @@ renderShapeList names sh = case (tailVar sh, lens sh) of
  where
   lens = \case
     SNil -> []
-    SCons l rest -> l : lens rest
+    SCons l _ rest -> l : lens rest
     SVar _ -> []
   tailVar = \case
     SNil -> Nothing
-    SCons _ rest -> tailVar rest
+    SCons _ _ rest -> tailVar rest
     SVar v -> Just v
   shapeName v = Map.findWithDefault ("s" <> T.pack (show v)) v names
 
@@ -260,6 +278,7 @@ prettyNames vs =
         [v | (v, KShape) <- vs]
         ("s" : ["s" <> T.pack (show i) | i <- [1 :: Int ..]])
       ++ zip [v | (v, KDim) <- vs] ("d" : ["d" <> T.pack (show i) | i <- [1 :: Int ..]])
+      ++ zip [v | (v, KAxis) <- vs] ["x" <> T.pack (show i) | i <- [1 :: Int ..]]
 
 idNames :: [(VarId, Kind)] -> Map VarId Text
 idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
@@ -269,6 +288,7 @@ idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
     KLen -> "n"
     KShape -> "s"
     KDim -> "d"
+    KAxis -> "x"
 
 -- Data ----------------------------------------------------------------------------
 
@@ -378,7 +398,9 @@ renderTypeDef ::
 renderTypeDef spelling name conNames fieldNames def =
   (if def.label == structuralLabel then "structural " else "")
     <> "data "
-    <> T.unwords (name : map (\(v, _) -> Map.findWithDefault "?" v names) def.params)
+    -- An axis parameter, a length's companion, is not written (design §3.9).
+    <> T.unwords
+      (name : [Map.findWithDefault "?" v names | (v, k) <- def.params, k /= KAxis])
     <> " = "
     <> T.intercalate
       " | "

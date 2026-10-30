@@ -960,6 +960,7 @@ kindNoun = \case
   KLen -> "a length"
   KShape -> "a shape"
   KDim -> "a dimension"
+  KAxis -> "an axis set"
 
 -- | A parameter used at a kind: record it, or report the clash.
 useParam :: DataEnv -> S.TyExpr -> Text -> Kind -> Kinds VarId
@@ -998,23 +999,23 @@ tyType env t = case t.node of
         bad t ("parameter `" <> hd.text <> "` takes no arguments")
     | otherwise -> case (hd.text, args) of
         ("Num", [d]) -> TTensor SNil <$> tyDim env d
-        ("Vec", [n]) -> (\l -> TTensor (SCons l SNil) dimOne) <$> tyLen env n
-        ("Vec", [n, d]) -> (\l -> TTensor (SCons l SNil)) <$> tyLen env n <*> tyDim env d
+        ("Vec", [n]) -> (\l -> TTensor (SCons l AAnon SNil) dimOne) <$> tyLen env n
+        ("Vec", [n, d]) -> (\l -> TTensor (SCons l AAnon SNil)) <$> tyLen env n <*> tyDim env d
         ("Mat", [m, n]) ->
-          (\a b -> TTensor (SCons a (SCons b SNil)) dimOne)
+          (\a b -> TTensor (SCons a AAnon (SCons b AAnon SNil)) dimOne)
             <$> tyLen env m
             <*> tyLen env n
         ("Mat", [m, n, d]) ->
-          (\a b -> TTensor (SCons a (SCons b SNil)))
+          (\a b -> TTensor (SCons a AAnon (SCons b AAnon SNil)))
             <$> tyLen env m
             <*> tyLen env n
             <*> tyDim env d
         ("Tensor", [sh]) -> (`TTensor` dimOne) <$> tyShape env sh
         ("Tensor", [sh, d]) -> TTensor <$> tyShape env sh <*> tyDim env d
         ("Point", [a]) -> affine TPoint a
-        ("Chart", [a]) -> affine TScale a
+        ("Chart", [a]) -> affine chart a
         -- The old spelling of @Chart@ (design §3.6).
-        ("Scale", [a]) -> affine TScale a
+        ("Scale", [a]) -> affine chart a
         (n, _)
           | n `elem` builtinTypeNames ->
               bad t ("`" <> n <> "` does not take these arguments")
@@ -1025,6 +1026,8 @@ tyType env t = case t.node of
   S.TyInt _ -> bad t "a number is a length, not a type"
   S.TyBracket _ -> bad t "a bracket is a shape or a dimension, not a type"
  where
+  -- A written chart's root slot is anonymous (design §3.9, stage 1).
+  chart sh = TScale sh AAnon
   -- `Point [K]` is a scalar point; `Point (Vec 3 [m])` a point over that space.
   affine mk a = case a.node of
     S.TyBracket _ -> mk SNil <$> tyDim env a
@@ -1083,6 +1086,7 @@ argOf env k a = case k of
   KLen -> ALen <$> tyLen env a
   KShape -> AShape <$> tyShape env a
   KDim -> ADim <$> tyDim env a
+  KAxis -> bad a "an axis set cannot be written"
 
 tyLen :: DataEnv -> S.TyExpr -> Kinds Len
 tyLen env a = case a.node of
@@ -1096,7 +1100,7 @@ tyLen env a = case a.node of
 
 tyShape :: DataEnv -> S.TyExpr -> Kinds Shape
 tyShape env a = case a.node of
-  S.TyBracket items -> foldr SCons SNil <$> mapM item items
+  S.TyBracket items -> foldr (`SCons` AAnon) SNil <$> mapM item items
   S.TyName p | Map.member p env.params -> SVar <$> useParam env a p KShape
   _ -> bad a "a shape is a list of lengths like [2, 3], or a parameter"
  where
