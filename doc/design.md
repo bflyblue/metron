@@ -118,7 +118,8 @@ desugaring (§2.9); the type checker never sees it.
   literal. Underscores are ignored.
 - **Comments**: `--` to end of line, `{- … -}` nestable blocks.
 - **Keywords**: `let`, `in`, `where`, `if`, `then`, `else`, `to`, `true`, `false`,
-  `unit`, `scale`, `at`, `case`, `of`, `data`, `namespace`, `use`. (`as` in
+  `unit`, `chart` (and `scale`, its old spelling), `at`, `case`, `of`, `data`,
+  `namespace`, `use`. (`as` in
   `use a as k` is not a keyword: it is also the attosecond.)
 - **Operators**: `+ - * / ^ ± == /= < <= > >= && ||` and their unicode spellings
   (§2.8). A name in backticks is an infix operator: `a `dot` b`.
@@ -142,7 +143,8 @@ f 3 4                           -- a bare expression: evaluate and print
 A `let` without `in` at the top level *proposes* a definition: it goes into the
 scratch (§7.5), where it is checked, hashed and usable by later expressions but
 not stored. `unit name = e` is the same with the name additionally marked as a
-display unit (§3.2.12), and `scale name = step at origin` a scale (§3.6). A `data`
+display unit (§3.2.12), and `chart name = step at origin [parent] [by B]` a chart
+(§3.6, §3.8). A `data`
 declaration (§2.3) proposes a type the same way. `:add` and `:update` move
 scratch definitions into the codebase (§7).
 Within one input a name may be defined only once, as in a Haskell module; across
@@ -438,12 +440,14 @@ program    ::= statement ( sep statement )*
 sep        ::= newline-at-column-0 | ';'
 statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | 'unit' name '=' expr                      -- a display unit (3.2.12)
-             | 'scale' name '=' expr 'at' expr            -- a point scale (3.6)
+             | 'chart' name '=' expr 'at' origin [ 'by' expr ]   -- a chart (3.6, 3.8); 'scale' is the old spelling
              | ['structural'] 'data' name param* '=' con ( '|' con )*   -- a data type (2.3)
              | 'namespace' path statements                -- an indented block (7.6)
              | 'use' [ '.' ] path [ 'as' name ]            -- 'as' is a name, not a keyword (7.6)
              | name '::' type                             -- a signature (4.8)
              | expr
+origin     ::= expr                                   -- a chart name juxtaposed last is the parent (3.8);
+                                                       -- 'by' is a keyword here only, cut at the first one outside brackets
 path       ::= name ( '.' name )*                       -- glued dots
 statements ::= statement ( sep statement )*            -- indented block, opened as after 'where'
 qname      ::= [ '.' ] name ( '.' name )*              -- a qualified or absolute name (7.6)
@@ -1433,7 +1437,7 @@ correlation matrix is a trivial third.
 
 ---
 
-### 3.6 Points and scales: affine quantities
+### 3.6 Points and charts: affine quantities
 
 Some quantities are **points**, not amounts: a temperature, an instant, an
 electric potential, a position. Two points can be subtracted, giving the
@@ -1456,33 +1460,40 @@ products of §3.3 each have one symbol and one type.
 `p .+ -v` is the point `v` before `p`. The one legitimate "sum of points",
 the weighted mean, is `q .+ (p .- q) / 2`.
 
-**Scales.** A point is written and printed on a *scale*: a step unit and an
+**Charts.** A point is written and printed on a *chart*: a step unit and an
 origin. The step is an ordinary unit of the amount space, the origin a point
 given as an amount from the base origin:
 
 ```
 unit  deltaC = K                        -- the Celsius step is the kelvin
 unit  deltaF = 5/9 * K                  -- the Fahrenheit step
-scale degC  = K  at 273.15 K             -- 0 °C is 273.15 K from absolute zero
-scale degF  = deltaF at 459.67 deltaF    -- 0 °F is 459.67 Fahrenheit steps from it
-scale J2000 = day at 2451545 day         -- an epoch: a point on the time line
-scale gauge = Pa at 101325 Pa            -- gauge pressure
+chart degC  = K  at 273.15 K             -- 0 °C is 273.15 K from absolute zero
+chart degF  = deltaF at 459.67 deltaF    -- 0 °F is 459.67 Fahrenheit steps from it
+chart J2000 = day at 2451545 day         -- an epoch: a point on the time line
+chart gauge = Pa at 101325 Pa            -- gauge pressure
 ```
 
-`scale name = step at origin` declares a definition whose value is a scale
-(`mkScale step origin : Scale δ`) and marks the name, like `unit`, so that the
+`chart name = step at origin` declares a definition whose value is a chart
+(`mkScale step origin : Chart δ`) and marks the name, like `unit`, so that the
 quantity rule accepts it: `20 degC` is `pointOn degC 20 : Point [K]`, the point
-twenty steps up the scale from its origin, stored as `293.15 K`. `°C` and `°F`
+twenty steps up the chart from its origin, stored as `293.15 K`. `°C` and `°F`
 are the unicode spellings of `degC` and `degF`. A difference carries the step
-unit of the scale its operands were written on, so `77 degF .- 68 degF` is
+unit of the chart its operands were written on, so `77 degF .- 68 degF` is
 `9 deltaF`; `20 degC .+ 5 K` and `20 degC .+ 9 deltaF` are both `25 degC`. `p to degF`
-re-expresses a point on another scale of the same dimension; the point does not
-change. A scale's step and origin may themselves be approximate, in which case a
+re-expresses a point on another chart of the same dimension; the point does not
+change. A chart's step and origin may themselves be approximate, in which case a
 point written on it carries their nudges like any other value.
 
-**Printing.** A point prints as `(p − origin) / step` followed by the scale's
-name: `25 degC`, `2451545 J2000`... that is, a point prints on the scale it
-was written on, and a point whose scale has been lost prints as an amount from
+`scale` is the old spelling of `chart`, from before a chart could name a parent
+and an orientation (§3.8). For a release the lexer reads it as the same
+keyword, the type `Scale δ` as `Chart δ` and `:ls --scales` as `:ls --charts`;
+the store's log line for the flag stays `scale name` (§7.4), so a chart is a
+scale in the store and nothing stored changes. Temperature and time charts are
+still called scales in prose; the construct is the chart.
+
+**Printing.** A point prints as `(p − origin) / step` followed by the chart's
+name: `25 degC`, `2451545 J2000`... that is, a point prints on the chart it
+was written on, and a point whose chart has been lost prints as an amount from
 the base origin in base units. Points are the one place a display offset is
 needed, and the only place one is allowed: a *unit* is always a factor
 (§3.2.12), which is why Celsius could never be a unit.
@@ -1496,16 +1507,13 @@ difference and absolute/gauge pressure. One type covers them all.
 
 **Points over tensors.** `Point` is indexed by a shape as well as a dimension:
 a position is a `Point (Vec 3 [m])`, a point of the affine space over
-`Vec 3 [m]`, and its scale is a *frame*: a step unit and an origin vector,
-`scale site = m at [100, 200, 0] m`. `[1, 2, 3] site` is the point with those
+`Vec 3 [m]`, and its chart is a *frame*: a step unit and an origin vector,
+`chart site = m at [100, 200, 0] m`. `[1, 2, 3] site` is the point with those
 coordinates in the frame; `p .- q` is a displacement `Vec 3 [m]`; `p .+ v` moves
 a position by a displacement; `p.0` is the first coordinate as a scalar point on
 the sliced frame; `p to eci` re-expresses a position in another frame of the
-same dimension. A frame here is an origin and a scale only. A frame with a
-rotated basis (ECI against ECEF) is a later extension: `to` between such frames
-would rotate as well as translate, which is exactly the distinction between
-points and displacements that the type already enforces, since a displacement
-only rotates.
+same dimension. A chart may also name the parent chart its origin is given in,
+`chart antenna = m at [2, 0, 1] m site`, and an orientation, `by B` (§3.8).
 
 ### 3.7 Mixed dimensions
 
@@ -1651,12 +1659,12 @@ of mixed dimensions: a measurement vector of mixed dimension (range and
 range rate together) makes `S` itself a 2×2 block matrix, whose inverse is a
 Schur-complement formula over the blocks. When either appears in real use,
 route A is the next step, and its rules are above.
-### 3.8 Charts: frames with an orientation (design; not yet built)
+### 3.8 Charts: frames with an orientation (the word, the value and the translated tree built; rotation next)
 
 A `scale` (§3.6) is a coordinate chart with two of its three parts set: a
 step unit and an origin. The third part is an orientation, and with it the
 same construct describes a temperature scale, a surveyed site, an orbital
-frame and a rotating planet. The declaration is renamed `chart`, with `scale`
+frame and a rotating planet. The declaration is renamed `chart` (built), with `scale`
 kept as a spelling; nothing about §3.6 changes except that a chart may also
 say which way its axes point.
 
@@ -1670,8 +1678,8 @@ axis-aligned chart has `B = 0`, and that is every chart written today.
 ```
 chart degC = K at 273.15 K                         -- step, origin
 chart site = m at [100, 200, 0] m                  -- step, origin
-chart lvlh = m at r0 by B                          -- step, origin, orientation
-chart ecef t = m at [0, 0, 0] m by rotz (gmst t) spinning [0, 0, ω_earth]  -- moving
+chart lvlh = m at r0 eci by B                      -- step, origin, parent, orientation
+chart ecef t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, ω_earth]  -- moving
 ```
 
 Why the generator and not the matrix: `exp` of an antisymmetric matrix is
@@ -1715,7 +1723,7 @@ the origin:
 
 ```
 chart eci       = m at [0, 0, 0] m                        -- the root for positions
-chart perifocal = m at [0, 0, 0] eci by euler313 Ω i ω    -- rotated, same origin
+chart perifocal = m at [0, 0, 0] m eci by euler313 Ω i ω  -- rotated, same origin
 chart site      = m at [6378, 0, 0] km eci                -- translated
 chart antenna   = m at [2, 0, 1] m site by rotz (30 deg)  -- relative to site
 ```
@@ -1726,6 +1734,41 @@ reference to a definition, so the chart tree and the namespace tree are
 unrelated, and renaming a chart changes nothing. None of this needs §3.7's
 route A: a rotation is dimensionless and a chart has one dimension on every
 axis, so every conversion stays homogeneous.
+
+**Built: the parent and `by`, and the translated tree.** The statement is
+`chart name = step at origin [parent] [by B]` (§2.7). The parent is a chart
+name juxtaposed after the origin, which is the quantity rule's own reading:
+the parser keeps it in the origin, since only the desugarer knows which
+names are charts, and the desugarer splits it off when the last atom of the
+origin's quantity chain (`[2, 0, 1] m site`) or application (`r0 eci`) is a
+chart name. An origin that ended in a chart name was a point, never an
+amount, so a chart written before reads the same, with one exception: an
+origin that applied a function to a chart, `scale x = m at f eci`, now reads
+`eci` as the parent (stored Core is unaffected; bind `f eci` to a name to
+keep it). A trailing unit is
+still a unit (`chart warm = K at 300 K`). An origin built with an operator
+is parenthesised before the parent, `m at (r0 + r0) site`, and a function
+applied to a chart cannot stand last in the origin (bind it to a name
+first). `by` is a keyword in this statement only: the statement's tokens are
+cut at the first `by` outside brackets, so `by B * pi / 6` keeps its whole
+expression and `let by = 5` is still a name everywhere else. A turned chart
+names the chart it is turned from: `by` without a parent is refused, "a
+turned chart names the chart its axes are turned from", which keeps three
+forms and three primitives (`mkScale`, `mkChart3`, `mkChart4`, below). The
+origin is an amount from the parent's origin along the parent's axes, so
+`chart site = m at [6378, 0, 0] km eci` and `chart antenna = m at [2, 0, 1]
+m site` put `[0, 0, 0] antenna` at `[6378002, 0, 1] eci`. Points stay
+amounts from the base origin, so for translated charts `to` and `.-`
+through the tree are the kernels §3.6 already had: `[1, 2, 3] antenna to
+eci` is `[6378003, 2, 4] eci` and converts back exactly, `[1, 2, 3] antenna
+.- [0, 0, 0] site` is `[3, 2, 4] m`, a chart with no parent composes with
+the tree unchanged, and temperature charts are untouched. `:view` and
+`:edit` print `chart antenna = m at [2, 0, 1] m site`: a literal and a unit
+before the parent read back as a quantity, anything else parenthesised,
+and re-entering it gives the same hash. A chart with a generator, or under
+one, is stored and printed with its `by`, and `to` it, or a point written on
+it, is refused, "rotated charts are not yet supported: coming with expm",
+until the rotation is built.
 
 **Moving charts and the transport term.** A chart that moves is a function of
 an epoch to a chart, and the epoch is itself a point on a time chart (`unix`,
@@ -1773,16 +1816,39 @@ A.
 **Interfaces fixed for the build**, so that the pieces, built by several
 hands, meet:
 
-- The chart value (`Eval.Eval.ScaleHint`, to be renamed `Chart`) gains
-  `parent :: Maybe Hash` (the chart its origin and generator are given in;
-  `Nothing` means the implicit base of the dimension), `generator :: Maybe
-  (Vector Magnitude)` (an antisymmetric `n × n` matrix, row-major; `Nothing`
-  means axis-aligned) and `spin :: Maybe (Vector Magnitude)` (the angular
-  velocity, phase C). The primitive `mkScale step origin` stays for the
-  two-part form; `mkChart step origin parent generator` (arity 4) builds the
-  full value, with the parent passed as a chart value and the generator as a
-  `Mat n n` that must satisfy `B + Bᵀ == 0` exactly, else "the generator of a
-  chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b".
+- **Built.** The chart value (`Eval.Eval.Chart`, once `ScaleHint`; the value
+  constructor `VChart`) has `parent :: Maybe Chart` (the chart its origin and
+  generator are given in; `Nothing` means the implicit base of the
+  dimension), `generator :: Maybe (Vector Magnitude)` (an antisymmetric
+  `n × n` matrix, row-major; `Nothing` means axis-aligned with the parent) and
+  `spin :: Maybe (Vector Magnitude)` (the angular velocity, phase C; always
+  `Nothing` until then). The parent is the parent chart's *value*, not a
+  hash: a chart need not be named (`mkChart3 m o (if x then eci else ecef)` is a
+  value), and the definition's Core already refers to the parent's
+  definition by hash, so the store, `:update` and the chart tree as written
+  need nothing more. `turned c` says whether `c` or any chart above it has a
+  generator. The origin is stored as an amount from the base origin (the
+  parent's origin plus the amount the chart was given at, along the parent's
+  axes), so points stay amounts from the base origin and, for translated
+  charts, `to` and `.-` through the tree are the existing kernels. Three
+  primitives cover the three forms, so that no "no parent" or "no
+  generator" value is needed: `mkScale step origin` (two parts, unchanged,
+  so every chart written before keeps its hash), `mkChart3 step origin
+  parent` and `mkChart4 step origin parent generator`, typed
+  `Num d -> Tensor s d -> Chart s d -> Chart s d` and
+  `Num d -> Vec n d -> Chart [n] d -> Mat n n -> Chart [n] d`: the parent has
+  the child's shape and dimension and the generator is a dimensionless
+  `Mat n n` over the chart's own length, all type errors otherwise.
+  `mkChart4` checks `B + Bᵀ == 0` exactly, entry by entry as `Bⱼᵢ == -Bᵢⱼ`
+  on the affine forms (an approximate angle times an exact bivector passes;
+  a sum `Bᵢⱼ + Bⱼᵢ` would not, since slack never cancels), else "the
+  generator of a chart must be antisymmetric: a bivector, such as rotz θ or
+  a ∧ b". A `by` without a parent is not a form: a turned chart names the
+  chart its axes are turned from. Until `expm` is built, `pointOn` and
+  `toScale` refuse a turned chart, "rotated charts are not yet supported:
+  coming with expm", so no point is ever printed on axes it is not in;
+  phase B replaces that refusal with the rotation, and computes the origin of
+  a chart under a turned parent, which until then holds the amount as given.
 - `expm : Mat n n -> Mat n n` (dimensionless; a rigorous enclosure; Rodrigues
   for a single plane in 3D, the exponential series otherwise). `expm (-B)` is
   the exact inverse of `expm B` for antisymmetric `B`.
@@ -1795,15 +1861,20 @@ hands, meet:
   `rotation a b` (the bivector taking `a` to `b`), `euler313 Ω i ω`
   (composed at the matrix level: it returns the matrix, not a bivector, and
   its name says the sequence).
-- Printed type: `Chart (Vec 3 [m])`, `Chart [K]`; `:ls --charts`; `:view`
-  of a chart prints `chart name = step at origin [parent] [by B] [spinning ω]`
-  with the optional parts only when set.
+- **Built.** Printed type: `Chart (Vec 3 [m])`, `Chart [K]` (`Scale` is read
+  as `Chart`); `:ls --charts` (`--scales` accepted); `:view` and `:edit` of a
+  chart print `chart name = step at origin [parent] [by B]` with the optional
+  parts only when set (`spinning ω` comes with phase C).
 
-**Open, to settle when building:** the exact keywords for the optional parts
-(`by`, `spinning`, the parent after the origin); whether `eci` is a library
-definition or a primitive root; whether `rotz` and friends return a bare
-bivector or a wrapper, if `by` must be kept from accepting an arbitrary
-matrix; and the exponential series on enclosures beyond a single plane.
+**Open, to settle when building:** the keyword for the spin (`spinning`,
+phase C; the parent after the origin and `by` are settled, above); whether
+`eci` is a library definition or a primitive root (none is shipped yet: a
+user's `chart eci = m at [0, 0, 0] m` is a root like any chart without a
+parent); whether `rotz` and friends return a bare bivector or a wrapper, if
+`by` must be kept from accepting an arbitrary matrix (today `by` takes any
+dimensionless `Mat n n` that is exactly antisymmetric, so `rotz θ` must
+strip the `Ang` dimension of `θ` to be accepted); and the exponential series
+on enclosures beyond a single plane.
 
 **Axis sets.** Named positions and vectors typed by their axes are designed in
 §3.9, to be decided with charts: a chart is an axis set with an origin, and
@@ -1874,7 +1945,7 @@ concatenation for the products and an equality instance (§4.2).
 ### 4.1 Types
 
 ```
-τ ::= Tensor σ δ | Point σ δ | Scale σ δ | T a… | τ -> τ | α
+τ ::= Tensor σ δ | Point σ δ | Chart σ δ | T a… | τ -> τ | α
 a ::= τ | σ | δ | ν                     -- an argument of a declared type T, by the kind of its parameter
 σ ::= [] | ν : σ | s                   -- a shape: a list of lengths, possibly ending in a shape variable
 δ ::= 1 | B | d | δ·δ | δ⁻¹          -- an abelian group, normalised
@@ -1883,8 +1954,8 @@ a ::= τ | σ | δ | ν                     -- an argument of a declared type T,
 
 `Num δ` abbreviates `Tensor [] δ`, `Vec ν δ` abbreviates `Tensor [ν] δ`, and
 `Mat μ ν δ` abbreviates `Tensor [μ, ν] δ`. `Point σ δ` is a point of the affine space
-over `Tensor σ δ` and `Scale σ δ` a scale, or frame, for writing and printing
-them (§3.6). `Point [K]` prints for a scalar point and `Point (Vec 3 [m])` for
+over `Tensor σ δ` and `Chart σ δ` a chart, or frame, for writing and printing
+them (§3.6, §3.8; `Scale σ δ` is the old spelling). `Point [K]` prints for a scalar point and `Point (Vec 3 [m])` for
 a position.
 
 A declared type `T` (§2.3) is a type constructor with parameters of fixed
@@ -2135,11 +2206,13 @@ sin cos tan : Num [rad] -> Num 1
 asin acos atan : Num 1 -> Num [rad]
 sinh cosh tanh exp log : Num 1 -> Num 1
 atan2       : Num d -> Num d -> Num [rad]
-mkScale     : Num d -> Tensor s d -> Scale s d          -- step, origin (3.6)
-pointOn     : Scale s d -> Tensor s 1 -> Point s d      -- what the quantity rule builds for `20 degC`, `[1, 2, 3] site`
+mkScale     : Num d -> Tensor s d -> Chart s d          -- step, origin (3.6)
+mkChart3    : Num d -> Tensor s d -> Chart s d -> Chart s d                  -- step, origin in the parent, parent (3.8)
+mkChart4    : Num d -> Vec n d -> Chart [n] d -> Mat n n -> Chart [n] d      -- and the generator, antisymmetric, dimensionless (3.8)
+pointOn     : Chart s d -> Tensor s 1 -> Point s d      -- what the quantity rule builds for `20 degC`, `[1, 2, 3] site`
 pointAdd    : Point s d -> Tensor s d -> Point s d      -- `.+`
 pointSub    : Point s d -> Point s d -> Tensor s d      -- `.-`
-toScale     : Point s d -> Scale s d -> Point s d       -- `p to s` when s is a scale
+toScale     : Point s d -> Chart s d -> Point s d       -- `p to c` when c is a chart
 p.i         : Point (n + i + 1 : s) d -> Point s d      -- a coordinate is a point
 covariance  : Vec n d -> Mat n n [d^2]                  -- Σ cᵢcᵢᵀ over the statistical nudges (3.5)
 crossCovariance : Vec n d1 -> Vec m d2 -> Mat n m [d1 d2]   -- Σ cᵢc'ⱼᵀ over the statistical nudges both share; exact; display unit as for * (3.5, 3.7)
@@ -2635,7 +2708,7 @@ or 1 and an empty text for `structural`). Types use tags of their own:
 | 0x20 | retired | was `Bool`; read from storage version 3 and before as `0x28` on the hash of `Bool`, never written |
 | 0x21 | `Tensor σ δ` | shape, dimension |
 | 0x22 | `Point σ δ` | shape, dimension |
-| 0x23 | `Scale σ δ` | shape, dimension |
+| 0x23 | `Chart σ δ` | shape, dimension (the tag of the type once spelled `Scale`) |
 | 0x24 | retired | was a tuple: varint count, each type; read as `0x28` on the tuple type of that arity |
 | 0x25 | retired | was a list: the element type; read as `0x28` on the hash of `List` |
 | 0x26 | `a -> b` | `a`, `b` |
@@ -2796,7 +2869,7 @@ re-stamped in place keeps its members' order, which re-entering its text
 might not give: then the text gives another hash for the same cycle.)
 
 Signatures (§4.8) are labels too, kept per name like the `unit` and
-`scale` flags. `:rename` and `:move` move a signature with its name (a
+`chart` flags. `:rename` and `:move` move a signature with its name (a
 re-hashed type it mentions is followed), `:unname` removes it, and `:alias`
 does not copy it: an alias names the hash, which has no signature, so `f`
 can be signed while its alias `g` is not. Rebinding a signed name to a new
@@ -2822,12 +2895,13 @@ Scratch and codebase (7.5)
                         reconcile a file without opening an editor (one kept after an error)
 
 Inspection
-:ls [glob|namespace] [--all|--units|--scales|--types] [: type]
+:ls [glob|namespace] [--all|--units|--charts|--types] [: type]
                    names with their types, sorted; alone, the current namespace's own labels,
                    then one line per namespace directly under it, `namespace si (800 names)`;
                    a word that names a namespace lists everything under it, relative to it, data
                    lines included; --all lists everything by full path; a glob (* anywhere, else
-                   a substring; on the full path or its last segment), a kind, or a type query
+                   a substring; on the full path or its last segment), a kind (--scales is the
+                   old spelling of --charts), or a type query
                    whose lowercase unknown names are variables, matched by unification both
                    ways, searches everything; a signed name shows, and matches, its
                    signature (4.8)
@@ -2835,7 +2909,8 @@ Inspection
 :hash name         current ref of name
 :names #hash       every name that points at the hash (current or historical)
 :history name      refs the name has pointed at, newest first
-:view name         pretty-print the term with refs rendered as in 7.2; for a type, its declaration
+:view name         pretty-print the term with refs rendered as in 7.2; for a type, its declaration;
+                   a chart with its keyword, `chart degC = K at 273.15 * K` (3.6)
 :core name         print the Typed Core (5.3) with every annotation
 :lint name         re-run lint on a stored definition and print its type(s)
 :dependents name   definitions whose terms reference the current ref of name
@@ -2898,7 +2973,7 @@ term).
 3. **Reconcile.** The saved file is entered as one binding group on top of
    the codebase, as the scratch is (§7.5), and compared with the codebase
    by full path, over every kind of label: definitions with their `unit`
-   and `scale` flags, types, constructors and fields.
+   and `chart` flags, types, constructors and fields.
    - *Added*: the file defines the label and the codebase did not have it.
    - *Updated*: the file binds the label to another reference. When the
      old term, with the group's new references and a replaced type's
@@ -3060,10 +3135,10 @@ terminal themes do not show dim text:
 | an error's carets | bold red |
 | notes: `pending:`, `added`, `updated`, `nothing …`, the namespace lines of a bare `:ls`, `kept`, `stored use`, `(input abandoned)`, the `≡` of the unicode echo | bright black (grey) |
 | comments, `-- …` and `{- … -}` | bright black |
-| keywords: `let unit scale data case of in where if then else to true false at`, and `structural` before `data` | magenta |
+| keywords: `let unit chart scale data case of in where if then else to true false at`, and `structural` before `data` | magenta |
 | numbers and superscript powers | plain |
-| units, the SI base units and scales | cyan |
-| type names, constructors, the built-in heads `Num Vec Mat Tensor Point Scale Bool` | yellow |
+| units, the SI base units and charts | cyan |
+| type names, constructors, the built-in heads `Num Vec Mat Tensor Point Chart Scale Bool` | yellow |
 | `#hash` references and `#label` tags | bright black |
 | operators, brackets, `->`, `\`, `=`, `:` | plain |
 | other names: definitions, variables, fields | plain |
@@ -3076,7 +3151,7 @@ between tokens that is not blank. The highlighted lines are the `≡` echo,
 error, values, `:type` output, the type in a `name : type` line of `:ls`,
 and the input echo of `eval -i`. An error's carets stay under the excerpt,
 because colour codes take no columns. The name in a `name : type` line
-stays plain. Its `unit` or `scale` is a keyword.
+stays plain. Its `unit` or `chart` is a keyword.
 
 Some details of the rules:
 
@@ -3183,8 +3258,8 @@ names.log          append-only, one event per line:
                      <unix time> bind <name> <hex hash>[.<i>]
                      <unix time> unname <name>
                      <unix time> unit <name>
-                     <unix time> scale <name>
-                     <unix time> unflag <name>              -- a let took over a unit or scale name
+                     <unix time> scale <name>              -- a chart flag; the word predates `chart` (3.6)
+                     <unix time> unflag <name>              -- a let took over a unit or chart name
                      <unix time> prefer <unit text>
                      <unix time> unprefer <unit text>
                      <unix time> type <name> <hex hash>          -- a type label
@@ -3241,7 +3316,7 @@ same hashes (`names`, `typeNames`, `conNames`, `fieldNames`, `units`,
 `scales`, `signatures`). Each namespace is a `namespace` block, nested as
 the paths nest, with root definitions outside any block. Each definition
 is rendered as `:edit` renders it (`let name = body`, `unit name = …`,
-`scale name = … at …`, `data` declarations with their field names, and a
+`chart name = … at …` with its parent and `by` when set (3.8), `data` declarations with their field names, and a
 signed definition's `name :: type` line just before it, spelled for its
 block, §4.8). The standard library's
 namespaces are not exported unless one is asked for (`:export si`): a codebase that
@@ -3471,15 +3546,15 @@ stamp of a `±` definition or a nominal type, which is its full path (below).
 Moving `period` under `orbital` is a relabelling (§7.2), so history keeps
 the old name and nothing is re-hashed, unless `period` is stamped.
 Types, constructors and fields are labels too and move the same way, and so
-do the `unit` and `scale` flags. The standard library's units and
+do the `unit` and `chart` flags. The standard library's units and
 constants live in namespaces by domain (§7.7) and the stored `use`s reach the
 common ones: `5 km` is `si.km`.
 
 **Blocks.** `namespace` opens a block of statements, laid out as a `where`
 block is (§2.2): it opens at the first token after the path, which must be
 indented further than the `namespace` line. The block holds `let`, `unit`,
-`scale`, `data`, `use`, expressions and nested `namespace` blocks, and what
-it declares gets its path as a prefix: definitions, units, scales, types,
+`chart`, `data`, `use`, expressions and nested `namespace` blocks, and what
+it declares gets its path as a prefix: definitions, units, charts, types,
 constructors and record fields alike.
 
 ```
@@ -3732,10 +3807,10 @@ included), 883 in all:
 |---|---|---|---|
 | `std` | the types `Bool` (`False True`), `Pair` and `List` (`Nil Cons`), the compiler's own declarations; the structural functions `fst snd map filter foldr foldl length reverse zip range` | 17 | yes |
 | `linalg` | `ε levi cross trace vimap`; the record `Cov2` with its fields `rr rv vv`, and `jointCovariance propagateCov2 innovationCov2 gain2 updateCov2` (§3.7) | 14 | yes |
-| `si` | the spelled-out base units `metre second kilogram ampere mole candela radian`; the 24 prefixes as plain numbers, `quetta` to `quecto` (`let kilo = 10^3`); the 22 coherent derived and accepted units by symbol (`N J W Pa Hz C V Ω F S T H Wb lm lx Bq Gy Sv kat g L t`), each with its name as an alias on the same term (`newton`, …, `ohm`, …, `gram`, `litre`, `tonne`); the scale `gauge`; the 699 prefixed units, each written from the prefix's name (`unit km = kilo * metre`, `unit kPa = kilo * Pa`), with `kohm` and the other prefixed ohms aliases of `kΩ` | 800 | yes |
-| `time` | `min hr day week year`, with `h` an alias of `hr` (`unit hr = 60 * min`); the scales `JD MJD J2000 unix` | 10 | yes |
+| `si` | the spelled-out base units `metre second kilogram ampere mole candela radian`; the 24 prefixes as plain numbers, `quetta` to `quecto` (`let kilo = 10^3`); the 22 coherent derived and accepted units by symbol (`N J W Pa Hz C V Ω F S T H Wb lm lx Bq Gy Sv kat g L t`), each with its name as an alias on the same term (`newton`, …, `ohm`, …, `gram`, `litre`, `tonne`); the chart `gauge`; the 699 prefixed units, each written from the prefix's name (`unit km = kilo * metre`, `unit kPa = kilo * Pa`), with `kohm` and the other prefixed ohms aliases of `kΩ` | 800 | yes |
+| `time` | `min hr day week year`, with `h` an alias of `hr` (`unit hr = 60 * min`); the charts (time scales) `JD MJD J2000 unix`, written with `chart` | 10 | yes |
 | `angle` | `deg arcmin arcsec turn sr`, with `steradian` an alias of `sr` | 6 | yes |
-| `temperature` | the scales `degC degF degR kelvin`, the steps `deltaC deltaF` | 6 | yes |
+| `temperature` | the charts (temperature scales) `degC degF degR kelvin`, written with `chart`, the steps `deltaC deltaF` | 6 | yes |
 | `astro` | the units `AU pc ly` (`pc = 648000 / pi * AU`, `ly = physics.c * time.year`); `G M_earth M_sun GM_earth GM_sun R_earth` | 9 | no: `:use astro` |
 | `physics` | `c planck hbar k_B N_A e_charge g0` and the unit `eV`, with `h kB NA e` aliases of `planck k_B N_A e_charge`: `physics.h` is Planck's constant, the hour is `time.h` | 12 | no |
 | `imperial` | `inch ft yd mile lb oz lbf psi mph`, exact by the 1959 yard and pound (`lbf = lb * physics.g0`, `psi = lbf / inch^2`) | 9 | no |
@@ -3918,8 +3993,8 @@ tuned, and compilation is a later milestone.
    A joint state covariance as homogeneous blocks (§3.7): done, with
    `crossCovariance`, the library's `Cov2` and its filter steps, and
    `:covariance (r, v)`.
-   Points and scales (§3.6): done, over any shape; frames with a rotated
-   basis remain.
+   Points and charts (§3.6): done, over any shape; charts with a parent: done,
+   translated (§3.8); a rotated basis waits for `expm`.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),

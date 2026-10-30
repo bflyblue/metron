@@ -224,7 +224,7 @@ unify p expected actual = do
             <> renderType e
             <> ", got "
             <> renderType a
-            <> ": a point and an amount; a point has no sum, multiple or unit; use .+ and .-, or to with a scale (design §3.6)"
+            <> ": a point and an amount; a point has no sum, multiple or unit; use .+ and .-, or to with a chart (design §3.6)"
         )
     (TTensor _ _, TPoint _ _) ->
       failAt
@@ -233,7 +233,7 @@ unify p expected actual = do
             <> renderType e
             <> ", got "
             <> renderType a
-            <> ": an amount and a point; a point has no sum, multiple or unit; use .+ and .-, or to with a scale (design §3.6)"
+            <> ": an amount and a point; a point has no sum, multiple or unit; use .+ and .-, or to with a chart (design §3.6)"
         )
     _ -> failAt p ("expected " <> renderType e <> ", got " <> renderType a)
  where

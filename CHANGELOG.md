@@ -617,3 +617,24 @@
   3 to 5 is re-hashed on first open (types, then terms, in dependency
   order, with the log's hashes remapped) and gains the library's labels for
   the three types.
+- Charts, phase A (design §3.6, §3.8): `chart` is the keyword for what was
+  `scale`, which stays an accepted spelling for a release (one keyword, so
+  hashes do not change); the type prints `Chart [K]` and `Chart (Vec 3 [m])`
+  (`Scale` is still read); `:ls --charts` (`--scales` accepted); `:view` of
+  a chart prints its keyword, and `:edit`, `:export` and the library print
+  `chart`. The store's log line for the flag stays `scale name`. The chart
+  value (`Eval.Eval.Chart`, was `ScaleHint`) gains `parent` (the parent
+  chart's value), `generator` and `spin`; the new primitives `mkChart3 step
+  origin parent` and `mkChart4 step origin parent generator` build a chart
+  given in a parent and one turned from it, the generator a dimensionless
+  `Mat n n` checked exactly antisymmetric ("the generator of a chart must be
+  antisymmetric: a bivector, such as rotz θ or a ∧ b"). The statement is
+  `chart name = step at origin [parent] [by B]`: a chart name juxtaposed
+  after the origin is the parent (`chart site = m at [6378, 0, 0] km eci`),
+  and `by` is a keyword in this statement only, which needs a parent. The
+  origin is an amount along the parent's axes from its origin; for
+  translated charts `to` and `.-` work through the tree, and `:view`/`:edit`
+  read back to the same hash. A chart with a generator, or under one, is
+  stored and printed, and `to` it or a point on it is refused, "rotated
+  charts are not yet supported: coming with expm", until the rotation maths
+  lands. No change to Core, hashing, encodings or the store format.

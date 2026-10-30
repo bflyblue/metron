@@ -506,6 +506,21 @@ desugar path ctx e = do
     S.Record hd0 fields -> do
       hd <- qualifiedChain ctx hd0
       recordExpr path ctx e hd fields
+    -- A chart (design §3.6, §3.8): a chart name juxtaposed after the origin
+    -- is its parent. Without one, and without a generator, the two-part
+    -- form keeps the Core, and so the hash, every chart had before.
+    S.ChartForm step written gen -> do
+      parted <- parentOf ctx written
+      case (parted, gen) of
+        (Nothing, Nothing) -> prim "mkScale" [step, written]
+        (Just (o, par), Nothing) -> prim "mkChart3" [step, o, par]
+        (Just (o, par), Just g) -> prim "mkChart4" [step, o, par, g]
+        (Nothing, Just _) ->
+          failWith
+            ( BadSpecialForm
+                written.span
+                "a turned chart names the chart its axes are turned from, after the origin: chart lvlh = m at r0 eci by B"
+            )
  where
   prim p args = PrimApp p <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
   synthLam sp x body = S.Expr sp (S.Lam [S.Name sp x] body)
@@ -849,7 +864,24 @@ unitExpr ctx e = case e.node of
  where
   specialNames = ["noise", "gauss", "within", "sigma"]
 
--- | Whether an expression is a free name declared with @scale@ (design §3.6).
+{- | A chart's origin as written, split into the origin and its parent when
+the last atom juxtaposed to it is a chart name (design §3.8): @[2, 0, 1] m
+site@ is a quantity rule chain ending in @site@, @r0 eci@ an application.
+An origin that ended in a chart name was a point, never an amount, so a
+chart written before reads the same, except an origin that applied a
+function to a chart (@m at f eci@), which now reads @eci@ as the parent.
+-}
+parentOf :: Ctx n -> S.Expr -> M (Maybe (S.Expr, S.Expr))
+parentOf ctx written = case written.node of
+  S.BinOp S.Scale o par -> split o par
+  S.App o par -> split o par
+  _ -> pure Nothing
+ where
+  split o par = do
+    chart <- isScaleName ctx par
+    pure (if chart then Just (o, par) else Nothing)
+
+-- | Whether an expression is a free name declared with @chart@ (design §3.6).
 isScaleName :: Ctx n -> S.Expr -> M Bool
 isScaleName ctx e = case e.node of
   S.Var x

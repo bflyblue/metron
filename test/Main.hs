@@ -605,6 +605,7 @@ shape e = case e.node of
   S.FieldOf a f -> A (shape a) (V f)
   S.Record hd fs -> foldl (\acc (n, x) -> A acc (A (V n.text) (shape x))) (shape hd) fs
   S.Ascribe a _ -> shape a
+  S.ChartForm s o g -> maybe (A (shape s) (shape o)) (A (A (shape s) (shape o)) . shape) g
 
 parserTests :: TestTree
 parserTests =
@@ -965,7 +966,9 @@ codebaseTests =
               , "unit kohm : Num [kg m^2 s^-3 A^-2]"
               ]
           ls "--units furl" @?= Right ["unit furlong : Num [m]"]
-          ls "--scales degC" @?= Right ["scale degC : Scale [K]"]
+          ls "--charts degC" @?= Right ["chart degC : Chart [K]"]
+          -- The old spelling of the flag.
+          ls "--scales degC" @?= Right ["chart degC : Chart [K]"]
           ls "--types"
             @?= withBuiltinTypes
               [ -- The library's types: the joint covariance in blocks, then Bool,
@@ -2017,7 +2020,7 @@ generatorProperty =
     TData _ _ -> "data"
     TFun _ _ -> "function"
     TPoint _ _ -> "Point"
-    TScale _ _ -> "Scale"
+    TScale _ _ -> "Chart"
     TupleT _ -> "tuple"
     ListT _ -> "list"
     TTensor sh d ->
@@ -3066,7 +3069,7 @@ affineTests =
         evalP "20 degC == 68 degF" @?= Right ["true"]
         evalP "0 J2000 < 0 MJD" @?= Right ["false"]
         typeOfTextP "20 degC" @?= Right "Point [K]"
-        typeOfTextP "degC" @?= Right "Scale [K]"
+        typeOfTextP "degC" @?= Right "Chart [K]"
         typeOfTextP "\\p q -> p .- q"
           @?= Right "Point (Tensor s d) -> Point (Tensor s d) -> Tensor s d"
         typeOfTextP "\\p v -> p .+ v"
@@ -3079,7 +3082,7 @@ affineTests =
           Left err -> T.isInfixOf "a point has no sum" err @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP "20 degC to K" of
-          Left err -> T.isInfixOf "to with a scale" err @? T.unpack err
+          Left err -> T.isInfixOf "to with a chart" err @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP "[1, 2] < [1, 3]" of
           Left err -> T.isInfixOf "no ordering on Vec 2" err @? T.unpack err
@@ -3095,8 +3098,242 @@ affineTests =
         runLinesP ["let boil = 100 degC", ":view boil"] @?= Right ["boil = 100 degC"]
         -- The library lives in namespaces, so :edit prints its definitions in their block.
         runLinesP [":edit degC"]
-          @?= Right ["namespace temperature", "  scale degC = K at 273.15 * K"]
+          @?= Right ["namespace temperature", "  chart degC = K at 273.15 * K"]
         runLinesP [":edit km"] @?= Right ["namespace si", "  unit km = kilo * metre"]
+    , testCase
+        "chart is the keyword, scale its old spelling: one declaration, one hash"
+        $ do
+          runLinesP
+            [ "unit mmHg = 133.322 * Pa"
+            , "chart bp = mmHg at 0 mmHg"
+            , "120 bp .+ 10 mmHg"
+            , ":type bp"
+            , ":view bp"
+            , ":ls --charts bp"
+            , "bp"
+            ]
+            @?= Right
+              [ "130 bp"
+              , "Chart [kg m^-1 s^-2]"
+              , "chart bp = mmHg at 0 * mmHg"
+              , "chart bp : Chart [kg m^-1 s^-2]"
+              , "chart bp"
+              ]
+          -- The keyword is a label flag, not part of the hash.
+          let hashOf kw' =
+                runLinesP
+                  ["unit mmHg = 133.322 * Pa", kw' <> " bp = mmHg at 0 mmHg", ":hash bp"]
+          hashOf "chart" @?= hashOf "scale"
+          typeOfTextP "\\c -> (c :: Chart [K])" @?= Right "Chart [K] -> Chart [K]"
+          typeOfTextP "\\c -> (c :: Scale [K])" @?= Right "Chart [K] -> Chart [K]"
+          -- `chart` is a keyword now, not a name.
+          case runLinesP ["let chart = 3"] of
+            Left _ -> pure ()
+            Right v -> assertFailure (show v)
+    , testCase
+        "mkChart3 and mkChart4: a parent, a generator, antisymmetry, the not-yet refusal"
+        $ do
+          let eci = "chart eci = m at [0, 0, 0] m"
+              turn = "[0, -1, 0; 1, 0, 0; 0, 0, 0]"
+          typeOfTextP "mkChart3"
+            @?= Right "Num d -> Tensor s d -> Chart (Tensor s d) -> Chart (Tensor s d)"
+          typeOfTextP "mkChart4"
+            @?= Right "Num d -> Vec n d -> Chart (Vec n d) -> Mat n n -> Chart (Vec n d)"
+          -- The origin is an amount in the parent; points are amounts from the
+          -- base origin, so a difference across the tree is a plain difference.
+          runLinesP
+            [ eci
+            , "let site = mkChart3 m ([6378, 0, 0] km) eci"
+            , "pointOn site [1, 2, 3] .- pointOn eci [0, 0, 0]"
+            , "toScale (pointOn eci [6378001, 2, 3]) site"
+            , "site"
+            ]
+            @?= Right
+              [ "[6378001, 2, 3] m"
+              , -- an unnamed chart prints its points from the base origin
+                "[6378001, 2, 3] m (point)"
+              , "chart: step 1 at [6378000, 0, 0] m"
+              ]
+          -- A generator: exact, or scaled by an approximate angle, is a bivector.
+          runLinesP [eci, "mkChart4 m ([0, 0, 0] m) eci " <> turn]
+            @?= Right ["chart: step 1 at [0, 0, 0] m"]
+          runLinesP [eci, "mkChart4 m ([0, 0, 0] m) eci (" <> turn <> " * pi / 6)"]
+            @?= Right ["chart: step 1 at [0, 0, 0] m"]
+          let refused lines' needle = case runLinesP lines' of
+                Left err -> T.isInfixOf needle err @? T.unpack err
+                Right v -> assertFailure (show v)
+          refused
+            [eci, "mkChart4 m ([0, 0, 0] m) eci [0, 1, 0; 1, 0, 0; 0, 0, 0]"]
+            "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
+          refused
+            [eci, "mkChart4 m ([0, 0, 0] m) eci [1, 0, 0; 0, 0, 0; 0, 0, 0]"]
+            "must be antisymmetric"
+          -- Converting to a turned chart, or to a chart under one, waits for expm.
+          let notYet = "rotated charts are not yet supported: coming with expm"
+          refused
+            [ eci
+            , "toScale (pointOn eci [1, 2, 3]) (mkChart4 m ([0, 0, 0] m) eci " <> turn <> ")"
+            ]
+            notYet
+          refused
+            [eci, "pointOn (mkChart4 m ([0, 0, 0] m) eci " <> turn <> ") [1, 2, 3]"]
+            notYet
+          refused
+            [ eci
+            , "let lvlh = mkChart4 m ([0, 0, 0] m) eci " <> turn
+            , "pointOn (mkChart3 m ([1, 0, 0] m) lvlh) [1, 2, 3]"
+            ]
+            notYet
+          -- The parent's dimension and shape, and the generator's size, are the child's.
+          refused
+            [eci, "mkChart3 K (0 K) eci"]
+            "expected Chart [K], got Chart (Vec 3 [m])"
+          refused
+            [eci, "mkChart3 m ([1, 2] m) eci"]
+            "expected Chart (Vec 2 [m]), got Chart (Vec 3 [m])"
+          refused
+            [eci, "mkChart4 m ([0, 0, 0] m) eci [0, 1; -1, 0]"]
+            "expected Mat 3 3, got Mat 2 2"
+    , testCase "charts with a parent: the translated tree, to and .- through it" $ do
+        -- design §3.8's hierarchy without the rotations
+        let tree =
+              [ "chart eci = m at [0, 0, 0] m"
+              , "chart site = m at [6378, 0, 0] km eci"
+              , "chart antenna = m at [2, 0, 1] m site"
+              ]
+        runLinesP
+          ( tree
+              ++ [ "[1, 2, 3] antenna to eci"
+                 , "([1, 2, 3] antenna to eci) to antenna"
+                 , "[0, 0, 0] antenna to site"
+                 , "[1, 2, 3] antenna .- [0, 0, 0] site"
+                 , "[1, 2, 3] antenna == [6378003, 2, 4] eci"
+                 , ":type antenna"
+                 , ":view antenna"
+                 , ":view site"
+                 , ":ls --charts antenna"
+                 , ":edit antenna"
+                 , -- a temperature scale is untouched
+                   "20 degC to degF"
+                 , "77 °F .- 68 °F"
+                 , -- a chart with no parent sits on the base, as before
+                   "chart pad = m at [6378000, 10, 0] m"
+                 , "[1, 2, 3] antenna to pad"
+                 ]
+          )
+          @?= Right
+            [ "[6378003, 2, 4] eci"
+            , "[1, 2, 3] antenna"
+            , "[2, 0, 1] site"
+            , "[3, 2, 4] m"
+            , "true"
+            , "Chart (Vec 3 [m])"
+            , "chart antenna = m at [2, 0, 1] m site"
+            , "chart site = m at [6378, 0, 0] km eci"
+            , "chart antenna : Chart (Vec 3 [m])"
+            , "chart antenna = m at [2, 0, 1] m site"
+            , "68 degF"
+            , "9 deltaF"
+            , "[3, -8, 4] pad"
+            ]
+        -- :edit reads back to the same hash.
+        let hashAfter def = runLinesP (take 2 tree ++ [def, ":hash antenna"])
+        expecting (runLinesP (tree ++ [":edit antenna"])) $ \outs ->
+          hashAfter (last outs) @?= hashAfter (tree !! 2)
+        -- An origin that is a name, or an expression, before the parent.
+        runLinesP
+          ( tree
+              ++ [ "let r0 = [1, 0, 0] km"
+                 , "chart c1 = m at r0 eci"
+                 , "chart c2 = m at (r0 + r0) site"
+                 , "[0, 0, 0] c1 to eci"
+                 , "[0, 0, 0] c2 to eci"
+                 , ":view c1"
+                 , ":view c2"
+                 ]
+          )
+          @?= Right
+            [ "[1000, 0, 0] eci"
+            , "[6380000, 0, 0] eci"
+            , "chart c1 = m at r0 eci"
+            , "chart c2 = m at (r0 + r0) site"
+            ]
+        -- The parent's dimension is the child's.
+        expectError
+          (runLinesP (tree ++ ["chart t = K at 3 K site", "t"]))
+          "expected Chart [K], got Chart (Vec 3 [m])"
+        -- A trailing unit is a unit, not a parent.
+        runLinesP ["chart warm = K at 300 K", "0 warm to degC"] @?= Right ["26.85 degC"]
+    , testCase
+        "a chart turned by a generator: by parses and is stored; to waits for expm" $ do
+        let eci = "chart eci = m at [0, 0, 0] m"
+            turn = "[0, -1, 0; 1, 0, 0; 0, 0, 0]"
+            notYet = "rotated charts are not yet supported: coming with expm"
+        runLinesP
+          [ eci
+          , "chart lvlh = m at [0, 0, 0] m eci by " <> turn
+          , ":view lvlh"
+          , ":type lvlh"
+          ]
+          @?= Right
+            [ "chart lvlh = m at [0, 0, 0] m eci by " <> turn
+            , "Chart (Vec 3 [m])"
+            ]
+        -- `by` is cut at the top level, so the generator is a whole expression.
+        runLinesP
+          [ eci
+          , "chart lvlh = m at [0, 0, 0] m eci by " <> turn <> " * pi / 6"
+          , ":view lvlh"
+          ]
+          @?= Right ["chart lvlh = m at [0, 0, 0] m eci by " <> turn <> " * pi / 6"]
+        let lvlh = "chart lvlh = m at [0, 0, 0] m eci by " <> turn
+        expectError (runLinesP [eci, lvlh, "[1, 2, 3] eci to lvlh"]) notYet
+        expectError (runLinesP [eci, lvlh, "[1, 2, 3] lvlh"]) notYet
+        -- A chart under a turned one is turned too.
+        expectError
+          ( runLinesP
+              [eci, lvlh, "chart arm = m at [1, 0, 0] m lvlh", "[1, 2, 3] eci to arm"]
+          )
+          notYet
+        expectError
+          ( runLinesP
+              [eci, "chart bad = m at [0, 0, 0] m eci by [0, 1, 0; 1, 0, 0; 0, 0, 0]", "bad"]
+          )
+          "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
+        -- A turned chart names the chart it is turned from.
+        expectError
+          (runLinesP [eci, "chart free = m at [0, 0, 0] m by " <> turn])
+          "a turned chart names the chart its axes are turned from"
+        -- `by` stays a name everywhere else, and inside brackets here.
+        runLinesP
+          [ eci
+          , "let by = 5"
+          , "by + 1"
+          , "chart c = m at [by, 0, 0] m eci"
+          , "[0, 0, 0] c to eci"
+          ]
+          @?= Right ["6", "[5, 0, 0] eci"]
+    , testCase
+        "charts in a namespace block resolve their parent; the parent survives :export" $ do
+        let block =
+              multiline
+                [ "namespace frames"
+                , "  chart eci = m at [0, 0, 0] m"
+                , "  chart site = m at [6378, 0, 0] km eci"
+                , "  chart lvlh = m at [0, 0, 0] m site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
+                ]
+        runLinesP [block, "[1, 2, 3] frames.site to frames.eci", ":view frames.lvlh"]
+          @?= Right
+            [ "[6378001, 2, 3] frames.eci"
+            , "chart frames.lvlh = m at [0, 0, 0] m frames.site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
+            ]
+        original <- either (assertFailure . T.unpack) pure (sessionP [block, ":add"])
+        source <-
+          either (assertFailure . T.unpack) pure (exportSource original (Just "frames"))
+        reloaded <-
+          either (assertFailure . T.unpack) pure (sessionP [source, ":add"])
+        reloaded.codebase.names @?= original.codebase.names
+        reloaded.codebase.scales @?= original.codebase.scales
     , testCase "display units of one dimension cancel against each other" $ do
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
         evalP "3 h / min" @?= Right ["180"]
@@ -3273,6 +3510,26 @@ storeTests =
               counterexample
                 (show t')
                 (alphaEq t t' && encodeStored t' == encodeStored t && hashTerm t' == hashTerm t)
+    , testCase "a chart's parent and generator survive a reload" $ withTempStore $ \dir -> do
+        s <-
+          persistLines
+            dir
+            [ "chart eci = m at [0, 0, 0] m"
+            , "chart site = m at [6378, 0, 0] km eci"
+            , "chart antenna = m at [2, 0, 1] m site"
+            , "chart lvlh = m at [0, 0, 0] m site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
+            , ":add"
+            ]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        loaded.codebase.names @?= s.codebase.names
+        loaded.codebase.scales @?= s.codebase.scales
+        linesIn loaded ["[1, 2, 3] antenna to eci", ":view antenna", ":view lvlh"]
+          @?= Right
+            [ "[6378003, 2, 4] eci"
+            , "chart antenna = m at [2, 0, 1] m site"
+            , "chart lvlh = m at [0, 0, 0] m site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
+            ]
     , testCase "definitions, history, units, labels and cycles survive a reload" $ withTempStore $ \dir -> do
         s <-
           persistLines
@@ -6260,7 +6517,7 @@ stdlibTests =
           ("unit newton : Num [kg m s^-2]" `elem` outs) @? "newton"
           ("kilo : Num" `elem` outs) @? "kilo"
         expecting (runLinesP [":ls temperature"]) $ \outs ->
-          ("scale degC : Scale [K]" `elem` outs) @? "degC"
+          ("chart degC : Chart [K]" `elem` outs) @? "degC"
         -- :ls lists a type and its constructor on two lines and no fields:
         -- linalg.Cov2 and std.Pair are one label and two lines each, Cov2's
         -- three fields none.

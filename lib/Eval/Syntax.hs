@@ -144,6 +144,12 @@ data Node
     CaseOf Expr [(Pattern, Expr)]
   | -- | @(e :: type)@: an ascription (design §4.8); it narrows and does not reach Core
     Ascribe Expr TyExpr
+  | {- | The body of @chart name = step at origin [parent] [by generator]@
+    (design §3.8): the step, the origin as written with the parent still
+    juxtaposed after it (only the desugarer knows which names are charts),
+    and the generator.
+    -}
+    ChartForm Expr Expr (Maybe Expr)
   deriving stock (Eq, Show)
 
 -- | A pattern of a case alternative: one constructor deep (§2.3).
@@ -166,7 +172,7 @@ in terms of it.
 -}
 
 -- | What a top-level definition declares besides a value (design §3.2.12, §3.6).
-data BindKind = Plain | Unit | ScaleDecl
+data BindKind = Plain | Unit | ChartDecl
   deriving stock (Eq, Show)
 
 data Binding = Binding

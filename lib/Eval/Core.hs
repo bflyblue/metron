@@ -403,6 +403,8 @@ primArity = \case
   "cd" -> Just 0
   "rad" -> Just 0
   "mkScale" -> Just 2
+  "mkChart3" -> Just 3
+  "mkChart4" -> Just 4
   "pointOn" -> Just 2
   "pointAdd" -> Just 2
   "pointSub" -> Just 2

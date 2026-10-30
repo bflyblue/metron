@@ -125,6 +125,24 @@ primScheme name = case name of
   "atan2" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) angleT)))
   -- Points and scales (design §3.6).
   "mkScale" -> Just (Forall [sv, dv] (TFun (numD d) (TFun sd (TScale s d))))
+  -- A chart in a parent of its own shape and dimension (design §3.8); the
+  -- origin is an amount along the parent's axes.
+  "mkChart3" ->
+    Just
+      (Forall [sv, dv] (TFun (numD d) (TFun sd (TFun (TScale s d) (TScale s d)))))
+  -- Turned from the parent by a dimensionless generator over its axes.
+  "mkChart4" ->
+    Just
+      ( Forall
+          [nv, dv]
+          ( TFun
+              (numD d)
+              ( TFun
+                  (vecD n d)
+                  (TFun (TScale vn d) (TFun (matD n n dimOne) (TScale vn d)))
+              )
+          )
+      )
   "pointOn" ->
     Just
       (Forall [sv, dv] (TFun (TScale s d) (TFun (TTensor s dimOne) (TPoint s d))))
@@ -216,6 +234,7 @@ primScheme name = case name of
   three = LLit 3
   sd = TTensor s d
   sd2 = TTensor s d2
+  vn = SCons n SNil
   matD r c = TTensor (SCons r (SCons c SNil))
   mono = Just . Forall []
   num1 = mono (TFun numT numT)

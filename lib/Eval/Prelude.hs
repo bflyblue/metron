@@ -194,7 +194,7 @@ constants =
   , ("M_sun", "GM_sun / G")
   ]
 
-{- | Scales for points (design §3.6): temperature scales, epochs on the time
+{- | Charts for points (design §3.6): temperature scales, epochs on the time
 line, gauge pressure. Each is a step unit and an origin.
 -}
 scales :: [(Text, Text)]
@@ -342,6 +342,7 @@ preludeSource =
  where
   def n e = "let " <> n <> " = " <> e
   unitDef n e = "unit " <> n <> " = " <> e
+  -- The old spelling, @scale@, as the prelude was entered then (design §3.6).
   scaleDef n e = "scale " <> n <> " = " <> e
 
 {- | Statements the format-4 library gained after it moved under @std@:
@@ -389,7 +390,7 @@ stdlib4Moved = do
 data Statement
   = Let Text Text
   | Unit Text Text
-  | Scale Text Text
+  | Chart Text Text
   | -- | a @use@ inside the block, for names of a sibling namespace
     UseNs Text
   | {- | a @data@ declaration, and its labels: the type, its constructors
@@ -433,10 +434,10 @@ stdlibLayout =
       , Unit "day" "86400 * s"
       , Unit "week" "7 * day"
       , Unit "year" "365.25 * day"
-      , Scale "JD" "day at 0 day"
-      , Scale "MJD" "day at 2400000.5 day"
-      , Scale "J2000" "day at 2451545 day"
-      , Scale "unix" "s at 2440587.5 day"
+      , Chart "JD" "day at 0 day"
+      , Chart "MJD" "day at 2400000.5 day"
+      , Chart "J2000" "day at 2451545 day"
+      , Chart "unix" "s at 2440587.5 day"
       ]
     )
   ,
@@ -454,11 +455,11 @@ stdlibLayout =
     ,
       [ Unit "deltaC" "K"
       , Unit "deltaF" "5/9 * K"
-      , Scale "degC" "K at 273.15 K"
-      , Scale "degF" "deltaF at 459.67 deltaF"
-      , Scale "degR" "deltaF at 0 deltaF"
+      , Chart "degC" "K at 273.15 K"
+      , Chart "degF" "deltaF at 459.67 deltaF"
+      , Chart "degR" "deltaF at 0 deltaF"
       , -- The absolute scale: K's spelled-out name is this scale, not a unit.
-        Scale "kelvin" "K at 0 K"
+        Chart "kelvin" "K at 0 K"
       ]
     )
   ,
@@ -603,7 +604,7 @@ siStatements =
   [Unit n b | (b, n) <- baseNames]
     ++ [Let n ("10^" <> T.pack (show k)) | (n, k) <- prefixValues]
     ++ [Unit u e | (u, _, e) <- coherent]
-    ++ [Scale "gauge" "Pa at 101325 Pa"]
+    ++ [Chart "gauge" "Pa at 101325 Pa"]
     ++ [ Unit (p <> u) (n <> " * " <> fromMaybe u (lookup u baseNames))
        | (p, n) <- prefixNames
        , u <- siPrefixable
@@ -680,7 +681,7 @@ stdlibSource =
   render = \case
     Let n e -> "let " <> n <> " = " <> e
     Unit n e -> "unit " <> n <> " = " <> e
-    Scale n e -> "scale " <> n <> " = " <> e
+    Chart n e -> "chart " <> n <> " = " <> e
     UseNs p -> "use " <> p
     Data src _ -> src
 
@@ -697,7 +698,7 @@ stdlibNames =
   , l <- case stmt of
       Let n _ -> [n]
       Unit n _ -> [n]
-      Scale n _ -> [n]
+      Chart n _ -> [n]
       UseNs _ -> []
       Data _ ls -> ls
   ]

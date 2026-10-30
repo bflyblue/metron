@@ -117,6 +117,7 @@ keywords :: [String]
 keywords =
   [ "let"
   , "unit"
+  , "chart"
   , "scale"
   , "at"
   , "data"
@@ -211,7 +212,7 @@ completions session prev word = case word of
       | typeOpenAt (reverse (takeWhile (/= ';') prev)) ->
           plain
             ( sorted
-                ( ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Scale"]
+                ( ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Chart"]
                     ++ map T.unpack (types ++ map (shortestNameOf TypeLabel session.scope cb) types)
                 )
             )
@@ -280,7 +281,7 @@ data Colour
     Grey
   | -- | keywords: SGR 35
     Magenta
-  | -- | units and scales: SGR 36
+  | -- | units and charts: SGR 36
     Cyan
   | -- | types and constructors: SGR 33
     Yellow
@@ -304,7 +305,7 @@ sgr c s
     Bold -> "1"
 
 {- | The names the painter colours by, taken from a session: units, the
-SI base units and scales (cyan), type names and the built-in heads
+SI base units and charts (cyan), type names and the built-in heads
 (yellow), constructors (yellow).
 -}
 data Names = Names
@@ -331,7 +332,7 @@ namesOf session =
   -- Each label by its full path and as the scope spells it, so that the
   -- library's `si.km` is a unit written `km` (design §7.6, §7.7).
   spelled short ns = Set.fromList ns <> Set.fromList (map (short session.scope cb) ns)
-  builtinTypes = ["Num", "Vec", "Mat", "Tensor", "Point", "Scale", "Bool"]
+  builtinTypes = ["Num", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale", "Bool"]
 
 -- | What a printed line is, for colour.
 data Kind
@@ -416,7 +417,7 @@ classify = \case
     (T.isInfixOf "->" l || T.isInfixOf "→" l)
       && not (T.isInfixOf " = " l)
       && not (" " `T.isPrefixOf` l)
-  dropFlag lhs = fromMaybe lhs (T.stripPrefix "unit " lhs <|> T.stripPrefix "scale " lhs)
+  dropFlag lhs = fromMaybe lhs (T.stripPrefix "unit " lhs <|> T.stripPrefix "chart " lhs)
   isName n = case T.uncons n of
     Just (c, rest) -> (isLetter c || c == '_') && T.all identChar rest
     Nothing -> False
@@ -448,10 +449,10 @@ paint names kind t = case kind of
   Source -> fromMaybe t (tryHighlight Expression names t)
  where
   asType ty = fromMaybe (sgr Yellow ty) (tryHighlight TypeLevel names ty)
-  -- The name of a signature stays plain; its @unit@ or @scale@ is a keyword.
+  -- The name of a signature stays plain; its @unit@ or @chart@ is a keyword.
   flagged lhs = case T.breakOn " " lhs of
     (flag, name)
-      | flag `elem` ["unit", "scale"], not (T.null name) -> sgr Magenta flag <> name
+      | flag `elem` ["unit", "chart"], not (T.null name) -> sgr Magenta flag <> name
     _ -> lhs
 
 {- | What the REPL prints for one result: as 'Eval.Driver.feed' returned it
@@ -484,7 +485,7 @@ echoInputAt p colour names input
     _ -> highlight names input
 
 {- | Source text coloured token by token: keywords magenta, units and
-scales cyan, types and constructors yellow, @#hash@ and @#label@ grey,
+charts cyan, types and constructors yellow, @#hash@ and @#label@ grey,
 comments grey, everything else (numbers, powers, operators, variables)
 plain. A @data@ declaration is coloured as a type ('highlightType'). Text
 that does not lex comes back unchanged.

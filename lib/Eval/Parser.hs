@@ -132,7 +132,7 @@ statement :: Parser Statement
 statement =
   letStatement
     P.<|> unitStatement
-    P.<|> scaleStatement
+    P.<|> chartStatement
     P.<|> dataStatement
     P.<|> namespaceStatement
     P.<|> useStatement
@@ -217,20 +217,54 @@ unitStatement = do
   e <- expr
   pure (SLet (Binding (spanUnion s e.span) n [] e Unit))
 
-{- | @scale name = step at origin@ (design §3.6): a definition whose value is
-@mkScale step origin@, marked as a scale.
+{- | @chart name = step at origin [parent] [by generator]@ (design §3.6,
+§3.8; @scale@ is the old spelling): a definition whose value is a chart,
+marked as one. The parent is a chart name juxtaposed after the origin,
+which only the desugarer can tell from a unit, so it stays in the origin
+here.
 -}
-scaleStatement :: Parser Statement
-scaleStatement = do
-  s <- kw KScale
+chartStatement :: Parser Statement
+chartStatement = do
+  s <- kw KChart
   n <- name
   _ <- tok TEquals
   step <- expr
   _ <- kw KAt
-  origin <- expr
-  let sp = spanUnion s origin.span
-      body = Expr sp (App (Expr sp (App (Expr s (Var "mkScale")) step)) origin)
-  pure (SLet (Binding sp n [] body ScaleDecl))
+  (origin, gen) <- originAndGenerator
+  let sp = spanUnion s (maybe origin.span (.span) gen)
+  pure (SLet (Binding sp n [] (Expr sp (ChartForm step origin gen)) ChartDecl))
+
+{- | A chart's origin and its @by@ part. @by@ is a keyword in this statement
+only, so that it stays a name everywhere else: the statement's tokens are
+cut at the first @by@ outside brackets, the origin is parsed from the
+tokens before it, and the generator from the tokens after it. Cutting the
+tokens rather than the parsed tree keeps @by a + b@ whole.
+-}
+originAndGenerator :: Parser (Expr, Maybe Expr)
+originAndGenerator = do
+  input <- P.getInput
+  case byIndex input.toks of
+    Nothing -> (,Nothing) <$> expr
+    Just i -> do
+      let (before, after) = splitAt i input.toks
+      P.setInput input{toks = before}
+      origin <- expr <* P.eof
+      P.setInput input{toks = after}
+      _ <- match "by" (\case TIdent "by" -> Just (); _ -> Nothing)
+      gen <- expr
+      pure (origin, Just gen)
+ where
+  byIndex = go (0 :: Int) 0
+   where
+    go _ _ [] = Nothing
+    go depth i (t : ts) = case t.value of
+      TIdent "by" | depth == 0 -> Just i
+      TSep | depth == 0 -> Nothing
+      TBlockEnd | depth == 0 -> Nothing
+      v
+        | v `elem` [TLParen, TLBracket, TLBrace] -> go (depth + 1) (i + 1) ts
+        | v `elem` [TRParen, TRBracket, TRBrace] -> go (depth - 1) (i + 1) ts
+        | otherwise -> go depth (i + 1) ts
 
 {- | @let b@ as a definition (optionally with @where@), or @let b in e@ as an
 expression statement. Both start the same way, so they share a prefix.
