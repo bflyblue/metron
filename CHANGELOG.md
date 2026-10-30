@@ -655,3 +655,6 @@
   antisymmetric as affine forms. Primitives are appended; no change to
   Core, hashing or the store, and the library's existing definitions keep
   their hashes.
+- `linalg.vimap` is now `timap (\i x -> f i.0 x)` with the signature
+  `(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1`, which keeps it
+  vector-only; the library source can carry signatures. Its hash changed.

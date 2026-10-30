@@ -421,6 +421,8 @@ stdlib4Moved = do
 -- | One statement of the library's source.
 data Statement
   = Let Text Text
+  | -- | a signature (design §4.8): the name and its type
+    Sig Text Text
   | Unit Text Text
   | Chart Text Text
   | -- | a @use@ inside the block, for names of a sibling namespace
@@ -453,7 +455,11 @@ stdlibLayout =
   [ ("std", builtinData ++ [Let n e | (n, e) <- structural])
   ,
     ( "linalg"
-    , [Let n e | (n, e) <- algebra]
+    , [Let n e | (n, e) <- algebra, n /= "vimap"]
+        -- vimap over timap, signed so it stays vector-only (design §3.3)
+        ++ [ Sig "vimap" "(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1"
+           , Let "vimap" "\\f v -> timap (\\i x -> f i.0 x) v"
+           ]
         ++ [Data covarianceData ["Cov2", "rr", "rv", "vv"]]
         ++ [Let n e | (n, e) <- covarianceBlocks]
     )
@@ -712,6 +718,7 @@ stdlibSource =
  where
   render = \case
     Let n e -> "let " <> n <> " = " <> e
+    Sig n t -> n <> " :: " <> t
     Unit n e -> "unit " <> n <> " = " <> e
     Chart n e -> "chart " <> n <> " = " <> e
     UseNs p -> "use " <> p
@@ -729,6 +736,7 @@ stdlibNames =
   , stmt <- stmts
   , l <- case stmt of
       Let n _ -> [n]
+      Sig _ _ -> []
       Unit n _ -> [n]
       Chart n _ -> [n]
       UseNs _ -> []

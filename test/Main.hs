@@ -37,6 +37,7 @@ import Eval.Lexer hiding (TNum, TProj)
 import Eval.Lexer qualified as L
 import Eval.Parser
 import Eval.Prelude (
+  isLibraryPath,
   preludeSource,
   stdlib4Codebase,
   stdlibCodebase,
@@ -2037,15 +2038,16 @@ rotationTests =
         evalP (encloses "1e-20" "euler313 (30 deg) (45 deg) (60 deg)" q)
           @?= Right ["true"]
     , testCase
-        "every constructor's bivector is exactly antisymmetric, enclosures and all" $ do
-        let antisymmetric b = evalP ("let b = " <> b <> " in b + transpose b == 0 * b")
-        antisymmetric "rotz (30 deg ± 0.01 rad)" @?= Right ["true"]
-        antisymmetric "axisAngle [1, 1, 1] (120 deg)" @?= Right ["true"]
-        antisymmetric "axisAngle ([1, 2, 2] ± 0.1) (40 deg ± 0.01 rad)"
-          @?= Right ["true"]
-        antisymmetric "rotation [1, 2, 3] [-2, 0, 1]" @?= Right ["true"]
-        antisymmetric "rotation ([1, 2, 3] ± 0.01) [-2, 0, 1]" @?= Right ["true"]
-        antisymmetric "rotation e1 (-e1)" @?= Right ["true"]
+        "every constructor's bivector is exactly antisymmetric, enclosures and all"
+        $ do
+          let antisymmetric b = evalP ("let b = " <> b <> " in b + transpose b == 0 * b")
+          antisymmetric "rotz (30 deg ± 0.01 rad)" @?= Right ["true"]
+          antisymmetric "axisAngle [1, 1, 1] (120 deg)" @?= Right ["true"]
+          antisymmetric "axisAngle ([1, 2, 2] ± 0.1) (40 deg ± 0.01 rad)"
+            @?= Right ["true"]
+          antisymmetric "rotation [1, 2, 3] [-2, 0, 1]" @?= Right ["true"]
+          antisymmetric "rotation ([1, 2, 3] ± 0.01) [-2, 0, 1]" @?= Right ["true"]
+          antisymmetric "rotation e1 (-e1)" @?= Right ["true"]
     , testCase "an uncertain angle makes a bivector with nudged entries" $ do
         evalP
           "let b = bound (rotz (90 deg ± 0.001 rad)) in b.0.1 >= 0.001 && b.1.0 >= 0.001 && b.0.0 == 0"
@@ -2695,6 +2697,12 @@ preludeTests =
         -- Contracting ε's last index first gives b × a, so the arguments swap.
         evalP "(ε @ [0, 1, 0]) @ [1, 0, 0]" @?= Right ["[0, 0, 1]"]
     , testCase "vimap maps with each component's position as a value" $ do
+        -- defined over timap and signed, so it stays vector-only (design §3.3)
+        case evalP "vimap (\\i x -> x) [1, 2; 3, 4]" of
+          Left err -> T.isInfixOf "a vector against a matrix" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        evalP ":view vimap"
+          @?= Right ["vimap = \\f -> \\v -> timap (\\i -> \\x -> f i.0 x) v"]
         evalP "vimap (\\i x -> i * x) [10, 20, 30]" @?= Right ["[0, 20, 60]"]
         runLinesP ["let v = [1, 2, 3] m", "vimap (\\i x -> x) v == v"]
           @?= Right ["true"]
@@ -3571,75 +3579,77 @@ affineTests =
         -- A trailing unit is a unit, not a parent.
         runLinesP ["chart warm = K at 300 K", "0 warm to degC"] @?= Right ["26.85 degC"]
     , testCase
-        "a chart turned by a generator: by parses and is stored; to waits for expm" $ do
-        let eci = "chart eci = m at [0, 0, 0] m"
-            turn = "[0, -1, 0; 1, 0, 0; 0, 0, 0]"
-            notYet = "rotated charts are not yet supported: coming with expm"
-        runLinesP
-          [ eci
-          , "chart lvlh = m at [0, 0, 0] m eci by " <> turn
-          , ":view lvlh"
-          , ":type lvlh"
-          ]
-          @?= Right
-            [ "chart lvlh = m at [0, 0, 0] m eci by " <> turn
-            , "Chart (Vec 3 [m])"
+        "a chart turned by a generator: by parses and is stored; to waits for expm"
+        $ do
+          let eci = "chart eci = m at [0, 0, 0] m"
+              turn = "[0, -1, 0; 1, 0, 0; 0, 0, 0]"
+              notYet = "rotated charts are not yet supported: coming with expm"
+          runLinesP
+            [ eci
+            , "chart lvlh = m at [0, 0, 0] m eci by " <> turn
+            , ":view lvlh"
+            , ":type lvlh"
             ]
-        -- `by` is cut at the top level, so the generator is a whole expression.
-        runLinesP
-          [ eci
-          , "chart lvlh = m at [0, 0, 0] m eci by " <> turn <> " * pi / 6"
-          , ":view lvlh"
-          ]
-          @?= Right ["chart lvlh = m at [0, 0, 0] m eci by " <> turn <> " * pi / 6"]
-        let lvlh = "chart lvlh = m at [0, 0, 0] m eci by " <> turn
-        expectError (runLinesP [eci, lvlh, "[1, 2, 3] eci to lvlh"]) notYet
-        expectError (runLinesP [eci, lvlh, "[1, 2, 3] lvlh"]) notYet
-        -- A chart under a turned one is turned too.
-        expectError
-          ( runLinesP
-              [eci, lvlh, "chart arm = m at [1, 0, 0] m lvlh", "[1, 2, 3] eci to arm"]
-          )
-          notYet
-        expectError
-          ( runLinesP
-              [eci, "chart bad = m at [0, 0, 0] m eci by [0, 1, 0; 1, 0, 0; 0, 0, 0]", "bad"]
-          )
-          "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
-        -- A turned chart names the chart it is turned from.
-        expectError
-          (runLinesP [eci, "chart free = m at [0, 0, 0] m by " <> turn])
-          "a turned chart names the chart its axes are turned from"
-        -- `by` stays a name everywhere else, and inside brackets here.
-        runLinesP
-          [ eci
-          , "let by = 5"
-          , "by + 1"
-          , "chart c = m at [by, 0, 0] m eci"
-          , "[0, 0, 0] c to eci"
-          ]
-          @?= Right ["6", "[5, 0, 0] eci"]
+            @?= Right
+              [ "chart lvlh = m at [0, 0, 0] m eci by " <> turn
+              , "Chart (Vec 3 [m])"
+              ]
+          -- `by` is cut at the top level, so the generator is a whole expression.
+          runLinesP
+            [ eci
+            , "chart lvlh = m at [0, 0, 0] m eci by " <> turn <> " * pi / 6"
+            , ":view lvlh"
+            ]
+            @?= Right ["chart lvlh = m at [0, 0, 0] m eci by " <> turn <> " * pi / 6"]
+          let lvlh = "chart lvlh = m at [0, 0, 0] m eci by " <> turn
+          expectError (runLinesP [eci, lvlh, "[1, 2, 3] eci to lvlh"]) notYet
+          expectError (runLinesP [eci, lvlh, "[1, 2, 3] lvlh"]) notYet
+          -- A chart under a turned one is turned too.
+          expectError
+            ( runLinesP
+                [eci, lvlh, "chart arm = m at [1, 0, 0] m lvlh", "[1, 2, 3] eci to arm"]
+            )
+            notYet
+          expectError
+            ( runLinesP
+                [eci, "chart bad = m at [0, 0, 0] m eci by [0, 1, 0; 1, 0, 0; 0, 0, 0]", "bad"]
+            )
+            "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
+          -- A turned chart names the chart it is turned from.
+          expectError
+            (runLinesP [eci, "chart free = m at [0, 0, 0] m by " <> turn])
+            "a turned chart names the chart its axes are turned from"
+          -- `by` stays a name everywhere else, and inside brackets here.
+          runLinesP
+            [ eci
+            , "let by = 5"
+            , "by + 1"
+            , "chart c = m at [by, 0, 0] m eci"
+            , "[0, 0, 0] c to eci"
+            ]
+            @?= Right ["6", "[5, 0, 0] eci"]
     , testCase
-        "charts in a namespace block resolve their parent; the parent survives :export" $ do
-        let block =
-              multiline
-                [ "namespace frames"
-                , "  chart eci = m at [0, 0, 0] m"
-                , "  chart site = m at [6378, 0, 0] km eci"
-                , "  chart lvlh = m at [0, 0, 0] m site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
-                ]
-        runLinesP [block, "[1, 2, 3] frames.site to frames.eci", ":view frames.lvlh"]
-          @?= Right
-            [ "[6378001, 2, 3] frames.eci"
-            , "chart frames.lvlh = m at [0, 0, 0] m frames.site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
-            ]
-        original <- either (assertFailure . T.unpack) pure (sessionP [block, ":add"])
-        source <-
-          either (assertFailure . T.unpack) pure (exportSource original (Just "frames"))
-        reloaded <-
-          either (assertFailure . T.unpack) pure (sessionP [source, ":add"])
-        reloaded.codebase.names @?= original.codebase.names
-        reloaded.codebase.scales @?= original.codebase.scales
+        "charts in a namespace block resolve their parent; the parent survives :export"
+        $ do
+          let block =
+                multiline
+                  [ "namespace frames"
+                  , "  chart eci = m at [0, 0, 0] m"
+                  , "  chart site = m at [6378, 0, 0] km eci"
+                  , "  chart lvlh = m at [0, 0, 0] m site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
+                  ]
+          runLinesP [block, "[1, 2, 3] frames.site to frames.eci", ":view frames.lvlh"]
+            @?= Right
+              [ "[6378001, 2, 3] frames.eci"
+              , "chart frames.lvlh = m at [0, 0, 0] m frames.site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
+              ]
+          original <- either (assertFailure . T.unpack) pure (sessionP [block, ":add"])
+          source <-
+            either (assertFailure . T.unpack) pure (exportSource original (Just "frames"))
+          reloaded <-
+            either (assertFailure . T.unpack) pure (sessionP [source, ":add"])
+          reloaded.codebase.names @?= original.codebase.names
+          reloaded.codebase.scales @?= original.codebase.scales
     , testCase "display units of one dimension cancel against each other" $ do
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
         evalP "3 h / min" @?= Right ["180"]
@@ -7221,7 +7231,7 @@ annotationTests =
           Right outs -> lastN 2 outs @?= ["plane.Shape -> Num [m^2]", "6 m^2"]
           Left err -> assertFailure (T.unpack err)
         s <- sessionOf (setup ++ [":rename geo plane"])
-        Map.keys s.codebase.signatures @?= ["plane.area"]
+        userSignatures s.codebase @?= ["plane.area"]
     , testCase "signatures over tuples, lists and declared types"
         $ runLinesP
           [ "data Box a = Box a"
@@ -7268,12 +7278,12 @@ annotationTests =
           afterSetup setup [":type geo.double", ":rename geo.double twice", ":type twice"]
             @?= Right
               ["Num [m] -> Num [m]", "renamed `geo.double` to `twice`", "Num [m] -> Num [m]"]
-          Map.keys s.codebase.signatures @?= ["twice"]
+          userSignatures s.codebase @?= ["twice"]
           aliased <- sessionOf (setup ++ [":rename geo.double twice", ":alias d2 twice"])
           linesIn aliased [":type d2", ":type twice"]
             @?= Right ["Tensor s d -> Tensor s d", "Num [m] -> Num [m]"]
           unnamed <- sessionOf (setup ++ [":unname geo.double"])
-          Map.null unnamed.codebase.signatures @? "unname drops the signature"
+          null (userSignatures unnamed.codebase) @? "unname drops the signature"
     , testCase
         "variables that are units or base symbols are renamed when written back"
         $ do
@@ -7343,7 +7353,7 @@ annotationTests =
         (" unsig double" `T.isInfixOf` logText') @? T.unpack logText'
         (reloaded2, notes') <- reload dir
         notes' @?= []
-        Map.keys reloaded2.codebase.signatures @?= ["area"]
+        userSignatures reloaded2.codebase @?= ["area"]
     , testCase ":edit --file adds and removes a signature" $ do
         s <- sessionOf ["let double x = x + x", ":add"]
         file <- editFileOf s []
@@ -7547,3 +7557,7 @@ builtinTypeListing =
 -- | A listing of types, then the library's declarations of the built-in ones.
 withBuiltinTypes :: [Text] -> Either Text [Text]
 withBuiltinTypes = Right . (++ builtinTypeListing)
+
+-- | The signatures a user wrote: the library's own (`linalg.vimap`) left out.
+userSignatures :: Codebase -> [Text]
+userSignatures cb = filter (not . isLibraryPath) (Map.keys cb.signatures)
