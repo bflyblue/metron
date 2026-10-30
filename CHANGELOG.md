@@ -222,3 +222,9 @@
 - `Rect 3 m 4 m` is four arguments again, not two quantities; a type error
   that lands on such a literal or unit now carries a hint to write `(3 m)`.
   Provenance carries hints beside spans.
+- Record values print with their field names (design §2.3): `Body {mass = 6
+  kg, pos = [1, 2, 3] km, vel = [0, 0, 0] m s^-1}`, nesting, and reading
+  back as the same value. The value printer takes a `Printer` (names for
+  references and a field namer); the driver fills it from the codebase, and
+  `plainPrinter` knows no field names. A constructor with an unnamed field
+  still prints positionally.

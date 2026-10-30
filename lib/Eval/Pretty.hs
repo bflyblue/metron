@@ -13,6 +13,9 @@ module Eval.Pretty (
   renderNested,
   renderTerm,
   RefNamer,
+  FieldNamer,
+  Printer (..),
+  plainPrinter,
 ) where
 
 import Data.Char (intToDigit)
@@ -161,39 +164,68 @@ tshow = T.pack . show
 
 -- Values --------------------------------------------------------------------------
 
+{- | The field names of a declared constructor (design §2.3): given the type's
+hash, the constructor's index and its arity, a name or 'Nothing' for each
+field in order.
+-}
+type FieldNamer = Hash -> Int -> Int -> [Maybe Text]
+
+{- | What the value printer needs from the codebase: current names for
+references (units, scales, nudge origins) and the field names of records.
+-}
+data Printer = Printer
+  { refName :: RefNamer
+  , fieldNames :: FieldNamer
+  }
+
+{- | A printer that knows no field names, for callers without a codebase:
+records print positionally.
+-}
+plainPrinter :: RefNamer -> Printer
+plainPrinter namer = Printer{refName = namer, fieldNames = \_ _ n -> replicate n Nothing}
+
 {- | Print a value. A tensor with a display unit whose dimension matches
 prints its magnitudes in that unit (design §3.2.12); otherwise in SI base
 units. Unit names go through the namer so that a renamed unit prints under
 its current name.
 -}
-renderValue :: RefNamer -> Int -> Preferences -> Value -> Either EvalError Text
-renderValue namer scale prefs = renderValueWith namer scale prefs (renderMagnitude scale)
+renderValue :: Printer -> Int -> Preferences -> Value -> Either EvalError Text
+renderValue printer scale prefs = renderValueWith printer scale prefs (renderMagnitude scale)
 
 -- | 'renderValue' with a chosen rendering for each magnitude.
 renderValueWith ::
-  RefNamer ->
+  Printer ->
   Int ->
   Preferences ->
   (Magnitude -> Text) ->
   Value ->
   Either EvalError Text
-renderValueWith namer scale prefs showMagnitude = \case
+renderValueWith printer scale prefs showMagnitude = \case
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
   -- Tuples as written; a list by walking its spine.
   VData (Builtin "Tuple") fields -> do
-    parts <- mapM (>>= renderValueWith namer scale prefs showMagnitude) fields
+    parts <- mapM (>>= recur) fields
     pure ("(" <> T.intercalate ", " parts <> ")")
   v@(VData c _) | c == Builtin "Cons" || c == Builtin "Nil" -> do
     items <- listItems v
-    parts <- mapM (renderValueWith namer scale prefs showMagnitude) items
+    parts <- mapM recur items
     pure ("{" <> T.intercalate ", " parts <> "}")
+  -- A record, when every field of its constructor is named, prints as it is
+  -- built (design §2.3); braces delimit each field, so none needs parentheses.
+  VData c@(UserCon h i) fields
+    | not (null fields)
+    , Just names <- sequence (printer.fieldNames h i (length fields)) -> do
+        parts <- mapM (>>= recur) fields
+        pure
+          ( conText c
+              <> " {"
+              <> T.intercalate ", " (zipWith (\n s -> n <> " = " <> s) names parts)
+              <> "}"
+          )
   VData c fields -> do
-    parts <-
-      mapM
-        (>>= \v -> fieldText v <$> renderValueWith namer scale prefs showMagnitude v)
-        fields
+    parts <- mapM (>>= \v -> fieldText v <$> recur v) fields
     pure (T.unwords (conText c : parts))
   -- A point prints on the scale it was written on (design §3.6): steps from
   -- the origin, then the scale's name; without a scale, as an amount from
@@ -207,14 +239,16 @@ renderValueWith namer scale prefs showMagnitude = \case
             mapM
               (\(x, o) -> divM (scale + 4) (subM x o) s.step)
               (zip xs (V.toList s.origin)) ->
-            renderNested showMagnitude dims steps <> " " <> atomNameWith namer atom
+            renderNested showMagnitude dims steps
+              <> " "
+              <> atomNameWith printer.refName atom
       _ ->
         renderNested showMagnitude dims xs
           <> (if T.null (renderUnits d) then "" else " " <> renderUnits d)
           <> " (point)"
   VScale s ->
     Right $ case s.name of
-      Just atom -> "scale " <> atomNameWith namer atom
+      Just atom -> "scale " <> atomNameWith printer.refName atom
       Nothing ->
         "scale: step "
           <> showMagnitude s.step
@@ -222,11 +256,13 @@ renderValueWith namer scale prefs showMagnitude = \case
           <> renderNested showMagnitude s.dims (V.toList s.origin)
           <> (if T.null (renderUnits s.dim) then "" else " " <> renderUnits s.dim)
   v -> do
-    (dims, scaled, units) <- displayParts namer scale prefs v
+    (dims, scaled, units) <- displayParts printer scale prefs v
     pure
       ( renderNested showMagnitude dims scaled
           <> (if T.null units then "" else " " <> units)
       )
+ where
+  recur = renderValueWith printer scale prefs showMagnitude
 
 -- | The current name of a unit or scale atom.
 atomNameWith :: RefNamer -> UnitAtom -> Text
@@ -238,12 +274,12 @@ atomNameWith _ = \case
 (or in base units), and the unit text. Forces every element.
 -}
 displayParts ::
-  RefNamer ->
+  Printer ->
   Int ->
   Preferences ->
   Value ->
   Either EvalError ([Int], [Magnitude], Text)
-displayParts namer scale prefs = \case
+displayParts printer scale prefs = \case
   VTensor dims d hint buf -> do
     rs <- sequence (V.toList buf)
     -- The display rule of design §3.2.12, in order: a unit chosen with `to`;
@@ -266,7 +302,8 @@ displayParts namer scale prefs = \case
   -- Positive exponents first, otherwise in the order the units appeared.
   renderHint h =
     T.unwords
-      [ atomNameWith namer u.atom <> (if u.power == 1 then "" else "^" <> tshow u.power)
+      [ atomNameWith printer.refName u.atom
+          <> (if u.power == 1 then "" else "^" <> tshow u.power)
       | u <- filter ((> 0) . (.power)) h.atoms ++ filter ((< 0) . (.power)) h.atoms
       ]
 

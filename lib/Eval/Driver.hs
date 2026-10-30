@@ -144,7 +144,7 @@ evalExpr cfg prefs cb src e = do
   either
     (Left . renderEvalError)
     Right
-    (renderValue (refNamer cb) cfg.precision prefs v)
+    (renderValue (printerFor cb) cfg.precision prefs v)
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design
@@ -244,7 +244,7 @@ command session src = \case
         (Left . renderEvalError)
         Right
         ( renderValueWith
-            (inputNamer h)
+            (inputPrinter h)
             cfg.precision
             session.preferred
             (renderExact (inputNamer h) cfg.precision)
@@ -254,7 +254,7 @@ command session src = \case
   -- tensor's components.
   ("budget" : rest) -> keep $ do
     (h, v) <- evalOf rest
-    case displayParts (inputNamer h) cfg.precision session.preferred v of
+    case displayParts (inputPrinter h) cfg.precision session.preferred v of
       Right (_, xs, units) ->
         pure (renderBudget (inputNamer h) cfg.precision units (foldr addM (Exact 0) xs))
       Left (Internal _) -> Left "budget: not a number"
@@ -287,7 +287,7 @@ command session src = \case
             (Left . renderEvalError)
             Right
             ( renderValue
-                (inputNamer h)
+                (inputPrinter h)
                 cfg.precision
                 session.preferred
                 (if null dims then scalarVar else covValue)
@@ -297,7 +297,7 @@ command session src = \case
             (Left . renderEvalError)
             Right
             ( renderValueWith
-                (inputNamer h)
+                (inputPrinter h)
                 cfg.precision
                 session.preferred
                 renderRough
@@ -380,6 +380,7 @@ command session src = \case
     evalValue cfg cb (T.unwords rest) e
   -- Nudges declared in the expression itself are labelled "input".
   inputNamer h h' i written = if h' == h then "input" else refNamer cb h' i written
+  inputPrinter h = (printerFor cb){refName = inputNamer h}
   preferenceOf = preferenceHint cfg cb
   commit cb' outs = Right (session{codebase = cb', staging = cb'}, outs)
   withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n cb)
@@ -624,6 +625,14 @@ refNamer cb h idx written =
         [] -> case historicalNamesOf r cb of
           n : _ -> n <> showReference r
           [] -> showReference r
+
+-- | Names for printing values against a codebase: references and record fields.
+printerFor :: Codebase -> Printer
+printerFor cb =
+  Printer
+    { refName = refNamer cb
+    , fieldNames = \h i arity -> fieldNamesOf h i arity cb
+    }
 
 renderEvalError :: EvalError -> Text
 renderEvalError = \case

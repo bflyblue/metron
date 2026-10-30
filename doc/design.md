@@ -212,7 +212,8 @@ would pass four arguments, the metre twice among them (§2.6). A
 `case` takes a value apart one constructor deep, naming the fields in order;
 `_` and variables fill in the constructors not written, as for lists. Values
 print with each compound field in parentheses, `Rect (3 m) (4 m)` and
-`Just (Circle (1 m))`, so that they read back whatever their units.
+`Just (Circle (1 m))`, so that they read back whatever their units; a
+record prints with its field names (below).
 
 A type's identity is its definition: parameter kinds, the constructors' field
 types in order, and the type's name as an owner stamp (§3.2.4), so two users
@@ -225,7 +226,7 @@ the declaration back, and a constructor name and a definition name share one
 namespace, the newer label winning (declaring `data Temp = T (Num [K])`
 unnames the tesla until a `let T = …` takes the name back). A declaration is
 pending in the scratch (§7.5) until `:add`, like a definition. There is no
-`==` on declared types yet, and no records; both are open (§11).
+`==` on declared types yet (§11).
 
 **Records.** A constructor may name its fields, which makes the type a record:
 
@@ -245,8 +246,16 @@ is an ordinary data type to Core and to the hash, and `:view` shows the
 `case`. Field names are labels like constructor names, looked up by the
 field alone, so two record types cannot share a field name (the newer
 declaration takes it), and `:unname .mass` removes one. Field names need a
-type with one constructor, so that `b.mass` is total. Values print
-positionally, with each compound field in parentheses.
+type with one constructor, so that `b.mass` is total.
+
+A record value prints as it is built, `Body {mass = 5 kg, pos = [1, 2, 3]
+km, vel = [4, 5, 6] km s^-1}`, which reads back as the same value. The
+braces delimit each field, so no field needs parentheses, and records nest:
+`Pair {first = Body {…}, second = Just (Circle (1 m))}`. The printer sees
+only the constructor's hash and index; the driver gives it the field labels
+from the codebase, as it gives names for references (§7.2). A constructor
+with no fields, or with any field unnamed (after `:unname .mass`), prints
+positionally.
 
 Further sugar, all removed by desugaring (§2.9):
 
@@ -2126,8 +2135,8 @@ tuned, and compilation is a later milestone.
    kinded parameters inferred from use, self-recursion, owner-stamped or
    structural identity, and persistence in `types/`. Records: done, as field
    labels on one-constructor types with `b.f`, `C {f = e}` and `b {f = e}`
-   desugaring to `case`. Remaining: `==` on declared types, mutually
-   recursive types, record values printing with their field names, and
+   desugaring to `case`; record values print with their field names.
+   Remaining: `==` on declared types, mutually recursive types, and
    re-expressing `Bool`, tuples and lists as prelude declarations.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
@@ -2168,9 +2177,6 @@ tuned, and compilation is a later milestone.
   alone?
 - Equality on declared types: derive `==` structurally when every field is
   comparable (the rule tuples and lists follow), or make it opt-in per type?
-- Record values print positionally. Printing `Body {mass = 5 kg, …}` needs
-  the field labels at print time, which the hash-only printer does not have;
-  a namer for fields, as for references, would give it.
 - A constructor that takes a prelude unit's name (`data Temp = T …`) unnames
   the tesla silently. Warn, refuse, or keep the newer-label rule?
 
