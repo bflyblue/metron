@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Control.Monad (foldM, forM_)
+import Control.Monad (foldM, forM_, when)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -18,6 +18,8 @@ import Eval.Affine qualified as A
 import Eval.Codebase (
   Codebase (..),
   emptyCodebase,
+  isScaleName,
+  isUnitName,
   lookupName,
   lookupTypeName,
   showReference,
@@ -32,9 +34,20 @@ import Eval.Infer (TypeError (..), elaborateClosed)
 import Eval.Lexer hiding (TNum, TProj)
 import Eval.Lexer qualified as L
 import Eval.Parser
-import Eval.Prelude (preludeSource, stdlibCodebase, stdlibMoved, stdlibNames)
+import Eval.Prelude (
+  preludeSource,
+  stdlib4Codebase,
+  stdlibCodebase,
+  stdlibDefaultUses,
+  stdlibHomes,
+  stdlibMoved,
+  stdlibMovedOut,
+  stdlibNames,
+  stdlibNamespaces,
+ )
 import Eval.Pretty
 import Eval.Repl qualified as R
+import Eval.Resolve (LabelKind (..), Qualified (..), qualifyName)
 import Eval.Store
 import Eval.Syntax qualified as S
 import Eval.TCore
@@ -931,17 +944,19 @@ codebaseTests =
                   )
           ls ""
             @?= Right
-              [ "area : Shape -> Num [m^2]"
-              , "unit furlong : Num [m]"
-              , "speed : Num [m s^-1]"
-              , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
-              , "Circle : Num [m] -> Shape"
-              , "Rect : Num [m] -> Num [m] -> Shape"
-              , "namespace std (" <> T.pack (show (length stdlibNames)) <> " names)"
-              ]
+              ( [ "area : Shape -> Num [m^2]"
+                , "unit furlong : Num [m]"
+                , "speed : Num [m s^-1]"
+                , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+                , "Circle : Num [m] -> Shape"
+                , "Rect : Num [m] -> Num [m] -> Shape"
+                ]
+                  ++ libraryListing
+              )
           ls "k*m"
             @?= Right
-              [ "unit klm : Num [cd rad^2]"
+              [ "unit kilogram : Num [kg]"
+              , "unit klm : Num [cd rad^2]"
               , "unit km : Num [m]"
               , "unit kohm : Num [kg m^2 s^-3 A^-2]"
               ]
@@ -949,12 +964,12 @@ codebaseTests =
           ls "--scales degC" @?= Right ["scale degC : Scale [K]"]
           ls "--types"
             @?= Right
-              [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
-              , "Circle : Num [m] -> Shape"
-              , "Rect : Num [m] -> Num [m] -> Shape"
-              , -- The library's one type, the joint covariance in blocks.
+              [ -- The library's one type, the joint covariance in blocks.
                 "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
               , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
+              , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+              , "Circle : Num [m] -> Shape"
+              , "Rect : Num [m] -> Num [m] -> Shape"
               ]
           ls ": Shape -> a" @?= Right ["area : Shape -> Num [m^2]"]
           ls ": {a} -> Num" @?= Right ["length : {a} -> Num"]
@@ -2228,11 +2243,32 @@ lintRegressionTests =
 
 -- Prelude ----------------------------------------------------------------------------
 
--- | A session on a seeded codebase: the library under std, with `use std` stored.
+{- | A session on a seeded codebase: the library by domain, with its six
+default uses stored.
+-}
 seeded :: Session
 seeded = either (error . T.unpack) id seededSession
 
--- | What a new store is seeded with, and a format-3 store migrated with.
+{- | An input in a seeded session after @:use@ of some of the library's
+namespaces that are not used by default (@astro@, @physics@), without the
+lines the @:use@s print.
+-}
+evalU :: [Text] -> Text -> Either Text [Text]
+evalU spaces src =
+  drop (length spaces) <$> runLinesP ([":use " <> n | n <- spaces] ++ [src])
+
+-- | The lines @:ls@ at the root of a fresh codebase gives for the library.
+libraryListing :: [Text]
+libraryListing =
+  [ "namespace " <> ns <> " (" <> T.pack (show (librarySize ns)) <> " names)"
+  | ns <- sort stdlibNamespaces
+  ]
+
+-- | How many labels the library has under a namespace.
+librarySize :: Text -> Int
+librarySize ns = length (filter ((ns <> ".") `T.isPrefixOf`) stdlibNames)
+
+-- | What a new store is seeded with, and an older store migrated with.
 theSeed :: Either Text Seed
 theSeed = stdlibSeed
 
@@ -2274,9 +2310,41 @@ preludeTests =
         evalP "3 h + 30 min" @?= Right ["210 min"]
         evalP "30 min + 3 h" @?= Right ["210 min"]
         evalP "1 L to m^3" @?= Right ["0.001 m^3"]
-        evalP "1 AU / c to s" @?= Right ["499.00478383615641191… s"]
+        evalU ["astro", "physics"] "1 AU / c to s"
+          @?= Right ["499.00478383615641191… s"]
     , testCase "constants are exact where SI defines them so"
-        $ evalP "c" @?= Right ["299792458 m s^-1"]
+        $ evalU ["physics"] "c" @?= Right ["299792458 m s^-1"]
+    , testCase "the hour is hr, with h an alias; Planck's h needs use physics" $ do
+        evalP "3 hr to min" @?= Right ["180 min"]
+        evalP "3 h" @?= Right ["3 h"]
+        evalP "3 hr" @?= Right ["3 hr"]
+        evalP "5 km/h to m/s" @?= Right ["1.3888888888888888888… m s^-1"]
+        evalP "5 km/hr to m/s" @?= Right ["1.3888888888888888888… m s^-1"]
+        evalP "1 h == 1 hr" @?= Right ["true"]
+        expectError
+          (runLinesP [":use physics", "3 h"])
+          "`h` is both `time.h` and `physics.h`"
+        evalU ["physics"] "3 hr" @?= Right ["3 hr"]
+        evalU ["physics"] "physics.h" @?= Right ["6.62607015e-34 J s"]
+        evalU ["physics"] "physics.h == planck" @?= Right ["true"]
+    , testCase "the library by domain: si names, prefixes, time, angle, imperial" $ do
+        evalP "1 newton == 1 N" @?= Right ["true"]
+        evalP "2 newton" @?= Right ["2 newton"]
+        evalP "kilo" @?= Right ["1000"]
+        evalP "1 metre + 1 km" @?= Right ["1001 metre"]
+        evalP "1 kohm == 1 kΩ" @?= Right ["true"]
+        evalP "1 week to day" @?= Right ["7 day"]
+        evalP "1 turn to deg" @?= Right ["360 deg"]
+        evalP "1 steradian == 1 sr" @?= Right ["true"]
+        evalP "0 kelvin to degC" @?= Right ["-273.15 degC"]
+        evalU ["imperial"] "1 mile to km" @?= Right ["1.609344 km"]
+        evalU ["imperial"] "1 psi to Pa" @?= Right ["6894.7572931683613367… Pa"]
+        evalU ["imperial"] "60 mph to km/h" @?= Right ["96.56064 km h^-1"]
+        evalU ["physics"] "1 eV to J" @?= Right ["1.602176634e-19 J"]
+        evalU ["astro", "physics"] "1 ly to AU" @?= Right ["63241.077084266280268… AU"]
+        -- A data type's dimension names a unit through the scope.
+        runLinesP ["data F = F (Num [N])", ":type F"]
+          @?= Right ["Num [kg m s^-2] -> F"]
     , testCase "cross is the Hodge dual of the wedge" $ do
         runLinesP [":view cross"] @?= Right ["cross = \\a -> \\b -> star (a ∧ b)"]
         evalP "[1, 2, 3] × [4, 5, 6] == star ([1, 2, 3] ∧ [4, 5, 6])" @?= Right ["true"]
@@ -2405,7 +2473,8 @@ displayTests =
         evalP "3 h + 30 min to h" @?= Right ["3.5 h"]
     , testCase "to converts for display" $ do
         evalP "5 km / h to m / s" @?= Right ["1.3888888888888888888… m s^-1"]
-        evalP "1 AU / c to min" @?= Right ["8.3167463972692735318… min"]
+        evalU ["astro", "physics"] "1 AU / c to min"
+          @?= Right ["8.3167463972692735318… min"]
         evalP "90 min to h" @?= Right ["1.5 h"]
     , testCase "a user-declared unit"
         $ runLinesP ["unit furlong = 201.168 * m", "1 km to furlong", "8 furlong to km"]
@@ -2663,9 +2732,9 @@ affineTests =
             , "  bound  sqrt    1e-26         0% of bound"
             ]
     , testCase "the prelude's G carries its σ and the derived masses inherit it" $ do
-        evalP "G" @?= Right ["6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
-        evalP "M_earth" @?= Right ["5.97217e24 ±σ 1.3e20 kg"]
-        case evalP ":budget M_earth" of
+        evalU ["astro"] "G" @?= Right ["6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
+        evalU ["astro"] "M_earth" @?= Right ["5.97217e24 ±σ 1.3e20 kg"]
+        case evalU ["astro"] ":budget M_earth" of
           Right (_ : _ : row : _) -> T.isInfixOf "σ      G" row && T.isInfixOf "100% of σ²" row @? T.unpack row
           other -> assertFailure (show other)
     , testCase "a unit is a name: a quantity sharing its hash is not one" $ do
@@ -2989,10 +3058,10 @@ affineTests =
           ]
           @?= Right ["130 bp", "40 mmHg"]
         runLinesP ["let boil = 100 degC", ":view boil"] @?= Right ["boil = 100 degC"]
-        -- The library lives under std, so :edit prints its definitions in that block.
+        -- The library lives in namespaces, so :edit prints its definitions in their block.
         runLinesP [":edit degC"]
-          @?= Right ["namespace std", "  scale degC = K at 273.15 * K"]
-        runLinesP [":edit km"] @?= Right ["namespace std", "  unit km = 10^3 * m"]
+          @?= Right ["namespace temperature", "  scale degC = K at 273.15 * K"]
+        runLinesP [":edit km"] @?= Right ["namespace si", "  unit km = kilo * metre"]
     , testCase "display units of one dimension cancel against each other" $ do
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
         evalP "3 h / min" @?= Right ["180"]
@@ -3210,8 +3279,9 @@ storeTests =
           @?= Right
             [ "6 km h^-1"
             , "6 km h^-1"
-            , "#lpdo2  (current)"
-            , "#erifi"
+            , -- These changed when km became kilo * metre and h an alias of hr.
+              "#tm912  (current)"
+            , "#fhtmk"
             , "201.168 m"
             , "0 mm"
             , "true"
@@ -3235,12 +3305,13 @@ storeTests =
           loaded.codebase.history @?= s.codebase.history
           loaded.codebase.units @?= s.codebase.units
           loaded.codebase.scales @?= s.codebase.scales
-          loaded.codebase.uses @?= [S.Use "std" Nothing]
-          linesIn loaded ["d", "G"]
+          loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
+          linesIn loaded ["d", "astro.G"]
             @?= Right ["3 km", "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
           -- The seed is at time 0, before the user's lines.
           ls <- T.lines <$> TIO.readFile (dir </> "names.log")
-          ("0 use std" `elem` ls) @? "the stored use is a log line"
+          all (\u -> ("0 use " <> u) `elem` ls) stdlibDefaultUses
+            @? "the stored uses are log lines"
           all ("0 " `T.isPrefixOf`) (takeWhile ("0 " `T.isPrefixOf`) ls) @? "seed first"
           length (filter (not . ("0 " `T.isPrefixOf`)) ls) @?= 1
     , testCase "a seeded store keeps the library's record type across a reload"
@@ -3269,14 +3340,17 @@ storeTests =
               , "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
               , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
               ]
-    , testCase "a root binding shadows the library's on reload; :unuse std persists" $ withTempStore $ \dir -> do
-        _ <- persistLines dir ["let c = 3e8 m / s", ":add", ":unuse std"]
+    , testCase
+        "a root binding shadows the library's on reload; :use and :unuse persist" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["let c = 3e8 m / s", ":add", ":use physics", ":unuse si"]
         (loaded, _) <- reload dir
-        loaded.codebase.uses @?= []
-        linesIn loaded ["c", "std.c", ":use std", "1 km"]
-          @?= Right ["300000000 m s^-1", "299792458 m s^-1", "stored use std", "1 km"]
+        loaded.codebase.uses
+          @?= [S.Use u Nothing | u <- filter (/= "si") stdlibDefaultUses ++ ["physics"]]
+        linesIn loaded ["c", "physics.c", "1 si.km", ":use si", "1 km"]
+          @?= Right
+            ["300000000 m s^-1", "299792458 m s^-1", "1 si.km", "stored use si", "1 km"]
         ls <- T.lines <$> TIO.readFile (dir </> "names.log")
-        any (" unuse std" `T.isSuffixOf`) ls @? "an unuse line"
+        any (" unuse si" `T.isSuffixOf`) ls @? "an unuse line"
     , testCase
         "a format-3 store is migrated: seeded before its log, the old G kept as history"
         $ withTempStore
@@ -3300,48 +3374,124 @@ storeTests =
           before <- T.lines <$> TIO.readFile (dir </> "names.log")
           (loaded, notes) <- reload dir
           notes @?= []
-          readFile (dir </> "format") >>= (@?= "eval codebase 4\n")
-          loaded.codebase.uses @?= [S.Use "std" Nothing]
+          -- Format 3 goes to 4, and 4 to 5: the format-4 library is replaced.
+          readFile (dir </> "format") >>= (@?= "eval codebase 5\n")
+          loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
+          isJust (lookupName "std.km" loaded.codebase) @?= False
           -- The user's own lines are still there, after the seed.
           afterwards <- T.lines <$> TIO.readFile (dir </> "names.log")
           lastN (length before) afterwards @?= before
-          linesIn loaded ["c", "std.c", "d", "1 km", "w"]
+          linesIn loaded ["c", "physics.c", "1 km", "w"]
             @?= Right
               [ "300000000 m s^-1"
               , "299792458 m s^-1"
-              , "3 km"
               , "1 km"
               , "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2"
               ]
           -- The seed brings the library's record type, its labels included.
           linesIn loaded ["(jointCovariance ([1, 2] m ±σ 1 m, [3, 4] m ±σ 1 m)).rr"]
             @?= Right ["[1, 0; 0, 1] m^2"]
-          expecting (linesIn loaded [":ls std"]) $ \outs ->
+          expecting (linesIn loaded [":ls si"]) $ \outs ->
             ("unit km : Num [m]" `elem` outs) @? "the library is listed"
-          -- w uses the root G the old prelude had, which is now std.G's history.
-          linesIn loaded [":view w", ":todo"]
-            @?= Right ["w = 2 * G#e1bms", "stale: w uses G#e1bms (use :upgrade G)"]
-          expecting (linesIn loaded [":upgrade std.G", ":view w"]) $ \outs ->
-            last outs @?= "w = 2 * G"
-          -- The old G in std.G's history is the migration's, not the user's:
+          -- d and w use the old root prelude's km and G, which are now in the
+          -- history of si.km and astro.G.
+          linesIn loaded [":todo"]
+            @?= Right
+              [ "stale: d uses km#90tke (use :upgrade km)"
+              , "stale: w uses astro.G#e1bms (use :upgrade astro.G)"
+              ]
+          expecting
+            (linesIn loaded [":upgrade si.km", ":upgrade astro.G", ":view d", ":view w", "d"])
+            $ \outs -> lastN 3 outs @?= ["d = 3 * km", "w = 2 * astro.G", "3 km"]
+          -- The old G in astro.G's history is the migration's, not the user's:
           -- a newer library's G still updates it.
           moved <- either (assertFailure . T.unpack) pure stdlibMoved
           newer <-
             either
               (assertFailure . T.unpack)
               pure
-              (sessionP [multiline ["namespace std", "  let G = 7"], ":update"])
+              (sessionP [multiline ["namespace astro", "  let G = 7"], ":update"])
           case stdlibUpgrade newer.codebase moved loaded of
             Left err -> assertFailure (T.unpack err)
             Right (_, outs) ->
-              any ("updated G #" `T.isPrefixOf`) outs @? show outs
-          -- Merged into a store seeded fresh, std.G still ends on the new G.
+              any ("updated astro.G #" `T.isPrefixOf`) outs @? show outs
+          -- Merged into a store seeded fresh, astro.G still ends on the new G.
           let fresh = dir </> "fresh"
           _ <- persistLines fresh []
           _ <- mergeInto fresh dir
           (merged, _) <- reload fresh
-          lookupName "std.G" merged.codebase @?= lookupName "std.G" seeded.codebase
+          lookupName "astro.G" merged.codebase @?= lookupName "astro.G" seeded.codebase
           linesIn merged ["w"] @?= Right ["1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2"]
+    , testCase
+        "a format-4 store is re-seeded: the old library's labels go, the user's stay"
+        $ withTempStore
+        $ \dir -> do
+          -- A store as the format-4 code wrote it: the library under std,
+          -- seeded at time 0, then the user's lines.
+          createDirectoryIfMissing True (dir </> "terms")
+          createDirectoryIfMissing True (dir </> "types")
+          seedStore (Store dir) stdlib4Session.codebase
+          writeFile (dir </> "format") "eval codebase 4\n"
+          user <-
+            either
+              (assertFailure . T.unpack)
+              pure
+              ( foldM
+                  (\s l -> fst <$> feed s l)
+                  stdlib4Session
+                  [ "let d = 3 km"
+                  , "let w = 2 * G"
+                  , multiline ["namespace std", "  let mine = 5"]
+                  , ":add"
+                  , multiline ["namespace std", "  let c = 3e8 m / s"]
+                  , ":update"
+                  ]
+              )
+          sync (Store dir) stdlib4Session.codebase user.codebase
+          (loaded, notes) <- reload dir
+          notes @?= []
+          readFile (dir </> "format") >>= (@?= "eval codebase 5\n")
+          loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
+          -- The old library's labels are gone, except the one the user rebound;
+          -- the user's own label under std is kept.
+          isJust (lookupName "std.km" loaded.codebase) @?= False
+          isJust (lookupName "std.G" loaded.codebase) @?= False
+          lookupName "si.km" loaded.codebase @?= lookupName "si.km" seeded.codebase
+          linesIn loaded ["std.mine", "std.c", "1 km", "astro.G"]
+            @?= Right
+              [ "5"
+              , "300000000 m s^-1"
+              , "1 km"
+              , "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"
+              ]
+          -- The user's definitions still use the old library's terms, which
+          -- are in the history of the new homes: stale, and :upgrade moves them.
+          expecting (linesIn loaded [":todo"]) $ \outs -> do
+            any ("stale: d uses km#" `T.isPrefixOf`) outs @? show outs
+            any ("stale: w uses astro.G#" `T.isPrefixOf`) outs @? show outs
+          -- Stale, d still evaluates; its old km is no unit name any more, so it
+          -- prints in base units until it is upgraded.
+          linesIn loaded ["d", "w"]
+            @?= Right ["3000 m", "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2"]
+          expecting
+            (linesIn loaded [":upgrade si.km", ":upgrade astro.G", ":view d", ":todo"])
+            $ \outs -> lastN 2 outs @?= ["d = 3 * km", "nothing to do"]
+          -- The migrated names count as untouched for :stdlib upgrade.
+          moved <- either (assertFailure . T.unpack) pure stdlibMoved
+          newer <-
+            either
+              (assertFailure . T.unpack)
+              pure
+              (sessionP [multiline ["namespace si", "  unit km = 999 * m"], ":update"])
+          case stdlibUpgrade newer.codebase moved loaded of
+            Left err -> assertFailure (T.unpack err)
+            Right (_, outs) -> any ("updated km #" `T.isPrefixOf`) outs @? show outs
+          -- Merged into a store seeded fresh, si.km still ends on the new km.
+          let fresh = dir </> "fresh"
+          _ <- persistLines fresh []
+          _ <- mergeInto fresh dir
+          (merged, _) <- reload fresh
+          lookupName "si.km" merged.codebase @?= lookupName "si.km" seeded.codebase
     , testCase "merging two seeded stores brings nothing across for the library"
         $ withTempStore
         $ \root -> do
@@ -4873,8 +5023,8 @@ namespaceTests =
               (orbitalSetup ++ [":uses", "use orbital", ":uses", ":unuse orbital", ":uses"])
           )
           $ \outs ->
-            lastN 4 outs
-              @?= ["use std (stored)", "use std (stored)", "use orbital", "use std (stored)"]
+            let stored = ["use " <> u <> " (stored)" | u <- stdlibDefaultUses]
+             in lastN 19 outs @?= stored ++ stored ++ ["use orbital"] ++ stored
     , testCase "use … as: an alias prefix"
         $ expecting (runLinesP (orbitalSetup ++ ["use orbital as o", "o.period 2"]))
         $ \outs ->
@@ -4955,13 +5105,13 @@ namespaceTests =
               ["let period = 1", ":add", multiline ["namespace period", "  let x = 1"]]
           )
           "`period` is a definition; it cannot also be a namespace"
-        -- The library's labels are under std (design §7.7).
+        -- The library's labels are under its namespaces (design §7.7).
         expectError
-          (runLinesP [multiline ["namespace std.km", "  let x = 1"]])
-          "`std.km` is a definition; it cannot also be a namespace"
+          (runLinesP [multiline ["namespace si.km", "  let x = 1"]])
+          "`si.km` is a definition; it cannot also be a namespace"
         expectError
-          (runLinesP [":namespace std.km"])
-          "`std.km` is a definition; it cannot also be a namespace"
+          (runLinesP [":namespace si.km"])
+          "`si.km` is a definition; it cannot also be a namespace"
     , testCase "a ± definition's namespace reaches its hash; a plain one's does not" $ do
         let hashOf ls n = fmap last (runLinesP (ls ++ [":hash " <> n]))
         -- The owner stamp is the full path (design §3.2.4).
@@ -5048,10 +5198,8 @@ namespaceTests =
           lastN 2 outs @?= ["mu : Num", "period : Num d -> Num d"]
         -- Alone at the root: the root's own labels, then the namespaces under it.
         expecting (runLinesP (orbitalSetup ++ [":ls"])) $ \outs ->
-          lastN 2 outs
-            @?= [ "namespace orbital (2 names)"
-                , "namespace std (" <> T.pack (show (length stdlibNames)) <> " names)"
-                ]
+          lastN 10 outs
+            @?= sort ("namespace orbital (2 names)" : libraryListing)
         expecting
           ( runLinesP
               ( orbitalSetup
@@ -5192,7 +5340,7 @@ namespaceTests =
         expecting
           ( runLinesP
               [ multiline
-                  ["namespace orbital", "  let km = 5", "  let d = 2 std.km", "  let e = km"]
+                  ["namespace orbital", "  let km = 5", "  let d = 2 si.km", "  let e = km"]
               , ":add"
               , ":namespace orbital"
               , ":view d"
@@ -5200,7 +5348,7 @@ namespaceTests =
               , "d"
               ]
           )
-          $ \outs -> lastN 3 outs @?= ["d = 2 * std.km", "e = km", "2 std.km"]
+          $ \outs -> lastN 3 outs @?= ["d = 2 * si.km", "e = km", "2 si.km"]
         -- A root name with the spelling the library has takes a leading dot.
         expecting
           ( runLinesP
@@ -5264,12 +5412,12 @@ namespaceTests =
         s <- either (assertFailure . T.unpack) pure (sessionP exportScript)
         expecting (runLinesP (exportScript ++ [":export orbital.kepler"])) $ \outs ->
           T.lines (last outs)
-            @?= [ "use std"
-                , "namespace orbital"
-                , "  namespace kepler"
-                , "    let anomaly = \\e -> \\x -> x + e * x"
-                , "    let viaParent = orbital.size * 2"
-                ]
+            @?= ["use " <> u | u <- stdlibDefaultUses]
+              ++ [ "namespace orbital"
+                 , "  namespace kepler"
+                 , "    let anomaly = \\e -> \\x -> x + e * x"
+                 , "    let viaParent = orbital.size * 2"
+                 ]
         runLinesP [":export"] @?= Right []
         case exportSource s{scratch = []} (Just "nowhere") of
           Right t -> t @?= ""
@@ -5323,7 +5471,7 @@ namespaceTests =
                   ]
               , "data Pair = Pair orbital.Orbit orbital.Orbit"
               ]
-        runLinesP (setup ++ ["2 orbital.au", "orbital.one to km", "3 .std.km"])
+        runLinesP (setup ++ ["2 orbital.au", "orbital.one to km", "3 .si.km"])
           @?= Right ["added orbital.au", "2 orbital.au", "149597870.7 km", "3 km"]
         expecting (runLinesP (setup ++ [":add", ":view Pair", ":edit orbital.Orbit"])) $ \outs ->
           lastN 3 outs
@@ -5616,26 +5764,26 @@ editTests =
         case editRequest s{scratch = []} ["nosuch"] of
           Left err -> ("unknown name" `T.isInfixOf` err) @? T.unpack err
           Right other -> assertFailure (show other)
-    , testCase "(j) :edit std includes the library; :edit alone never touches it" $ do
+    , testCase "(j) :edit si includes the library; :edit alone never touches it" $ do
         s <- editSession
-        file <- editFileOf s ["std"]
-        ("unit km = 10^3 * m" `T.isInfixOf` file) @? "std.km is in the file"
-        file' <- replaceOnce "unit km = 10^3 * m\n" "unit km = 1001 * m\n" file
-        (s', outs) <- edited (EditNamespace "std") file' s
+        file <- editFileOf s ["si"]
+        ("unit km = kilo * metre" `T.isInfixOf` file) @? "si.km is in the file"
+        file' <- replaceOnce "unit km = kilo * metre\n" "unit km = 1001 * m\n" file
+        (s', outs) <- edited (EditNamespace "si") file' s
         -- The library's own users are in the file; the user's are propagated.
         outs
-          @?= [ T.replace "std.km" "km" (movedLine "updated" s s' "std.km")
-              , movedLine "upgraded" s s' "trip"
+          @?= [ T.replace "si.km" "km" (movedLine "updated" s s' "si.km")
               , movedLine "upgraded" s s' "orbital.earth"
+              , movedLine "upgraded" s s' "trip"
               ]
         snd <$> feed s' "trip to m" @?= Right ["2002 m"]
-        -- The codebase without std: nothing under std is removed.
+        -- The codebase without the library: nothing under si is removed.
         plain <- editFileOf s []
         ("unit km" `T.isInfixOf` plain) @?= False
         changed <- replaceOnce "let size = 10\n" "let size = 11\n" plain
         (s2, _) <- edited EditCodebase changed s
-        let underStd c = Map.filterWithKey (\k _ -> "std." `T.isPrefixOf` k) c.names
-        underStd s2.codebase @?= underStd s.codebase
+        let underSi c = Map.filterWithKey (\k _ -> "si." `T.isPrefixOf` k) c.names
+        underSi s2.codebase @?= underSi s.codebase
     , testCase "(k) :edit --file resumes from a file" $ do
         s <- editSession
         dir <- getTemporaryDirectory
@@ -5713,16 +5861,26 @@ legacyPrelude =
     (s', _) <- feed s ":add"
     pure s'
 
+-- | A session on the library as format 4 seeded it: everything under std.
+stdlib4Session :: Session
+stdlib4Session =
+  either
+    (error . T.unpack)
+    (\cb -> emptySession{codebase = cb, staging = cb})
+    stdlib4Codebase
+
 stdlibTests :: TestTree
 stdlibTests =
   testGroup
     "standard library"
-    [ testCase "the move under std keeps the hash of every definition without a ±" $ do
+    [ testCase "the move under std kept the hash of every definition without a ±" $ do
         -- Printed by `:hash km` and `:hash map` in a prelude session at 21cb8e8,
-        -- before the library moved under std.
-        runLinesP [":hash std.km", ":hash std.map"] @?= Right ["#90tke", "#v2enr.0"]
+        -- before the library moved under std: the format-4 library, kept for
+        -- the migrations, still has them.
+        linesIn' stdlib4Session [":hash std.km", ":hash std.map"]
+          @?= Right ["#90tke", "#v2enr.0"]
         let old n = lookupName n legacyPrelude.codebase
-            new n = lookupName ("std." <> n) seeded.codebase
+            new n = lookupName ("std." <> n) stdlib4Session.codebase
         old "km" @?= new "km"
         old "map" @?= new "map"
         old "degC" @?= new "degC"
@@ -5733,93 +5891,181 @@ stdlibTests =
           , old n /= new n
           ]
           @?= ["G", "M_earth", "M_sun"]
-    , testCase "a ± definition is stamped with its full path: std.G is not a root G" $ do
+    , testCase "the split by domain: what kept its hash and what did not" $ do
+        let old n = lookupName ("std." <> n) stdlib4Session.codebase
+            new n = lookupName n seeded.codebase
+        -- A definition written as before keeps its hash under its new path.
+        old "map" @?= new "std.map"
+        old "N" @?= new "si.N"
+        old "min" @?= new "time.min"
+        old "degC" @?= new "temperature.degC"
+        old "c" @?= new "physics.c"
+        old "planck" @?= new "physics.h"
+        -- A prefixed unit is now `kilo * metre`, not `10^3 * m`, so its hash
+        -- changed (#90tke before), and so did the hour, now `60 * min`.
+        runLinesP [":hash si.km", ":hash time.hr", ":hash time.h"]
+          @?= Right ["#0sfk8", "#0jn6m", "#0jn6m"]
+        (old "km" /= new "si.km") @? "si.km has a new hash"
+        -- Every name of the format-4 library has a home, and the bare ones
+        -- moved to a namespace no stored use reaches are the documented ones.
+        homes <- either (assertFailure . T.unpack) pure stdlibHomes
+        sort (map fst homes) @?= sort (Map.keys stdlib4Session.codebase.names)
+        lookup "std.h" homes @?= Just "time.h"
+        lookup "std.km" homes @?= Just "si.km"
+        lookup "std.G" homes @?= Just "astro.G"
+        sort
+          [ S.lastSegment o
+          | (o, home) <- homes
+          , not (any (\u -> (u <> ".") `T.isPrefixOf` home) stdlibDefaultUses)
+          ]
+          @?= sort stdlibMovedOut
+    , testCase
+        "every name bare before the split still resolves bare, as the same kind" $ do
+        -- The format-4 library's names as `use std` offered them bare.
+        let old = stdlib4Session.codebase
+            bare = Map.keys old.names ++ Map.keys old.conNames
+            moved = map ("std." <>) stdlibMovedOut
+            kind cb n = (isUnitName n cb, isScaleName n cb)
+        forM_ [n | n <- bare, n `notElem` moved] $ \n -> do
+          let short = S.lastSegment n
+          case qualifyName TermLabel S.rootScope seeded.codebase short of
+            Found full ->
+              when (Map.member n old.names)
+                $ kind seeded.codebase full
+                  @?= kind old n
+            other -> assertFailure (T.unpack short <> ": " <> show other)
+        forM_ (Map.keys old.typeNames) $ \n ->
+          qualifyName TypeLabel S.rootScope seeded.codebase (S.lastSegment n)
+            @?= Found ("linalg." <> S.lastSegment n)
+        forM_ (Map.keys old.fieldNames) $ \n ->
+          qualifyName FieldLabel S.rootScope seeded.codebase (S.lastSegment n)
+            @?= Found ("linalg." <> S.lastSegment n)
+        -- The moved ones need their namespace.
+        forM_ stdlibMovedOut $ \n ->
+          qualifyName TermLabel S.rootScope seeded.codebase n @?= NotFound
+    , testCase "no name is ambiguous among the namespaces used by default" $ do
+        let cb = seeded.codebase
+            used n = any (\u -> (u <> ".") `T.isPrefixOf` n) stdlibDefaultUses
+            check kind labels =
+              forM_ (filter used labels) $ \n ->
+                qualifyName kind S.rootScope cb (S.lastSegment n) @?= Found n
+        check TermLabel (Map.keys cb.names ++ Map.keys cb.conNames)
+        check TypeLabel (Map.keys cb.typeNames)
+        check FieldLabel (Map.keys cb.fieldNames)
+        -- The labels are the ones the source and its aliases declare.
+        sort
+          ( Map.keys cb.names
+              ++ Map.keys cb.conNames
+              ++ Map.keys cb.fieldNames
+              ++ Map.keys (Map.difference cb.typeNames cb.conNames)
+          )
+          @?= sort stdlibNames
+    , testCase "a ± definition is stamped with its full path: astro.G is not a root G" $ do
         -- `:hash G` printed #e1bms at 21cb8e8, when the prelude's G was at the root.
-        expecting (runLinesP [":hash G", ":hash std.G"]) $ \case
-          [g, stdG] -> do
-            g @?= stdG
-            (g /= "#e1bms") @? "std.G has a new hash"
+        expecting (runLinesP [":use astro", ":hash G", ":hash astro.G"]) $ \case
+          [_, g, astroG] -> do
+            g @?= astroG
+            (g /= "#e1bms") @? "astro.G has a new hash"
           outs -> assertFailure (show outs)
         expecting
           ( runLinesP
-              [ ":unuse std"
-              , "let G = (6.67430e-11 ±σ 1.5e-15) * m^3 / (kg * s^2)"
+              [ "let G = (6.67430e-11 ±σ 1.5e-15) * m^3 / (kg * s^2)"
               , ":add"
               , ":hash G"
-              , ":hash std.G"
+              , ":hash astro.G"
               ]
           )
           $ \outs -> case lastN 2 outs of
-            [g, stdG] -> do
+            [g, astroG] -> do
               -- The root G has the hash the root prelude's G had.
               g @?= "#e1bms"
-              (stdG /= g) @? "std.G differs from the root G"
+              (astroG /= g) @? "astro.G differs from the root G"
             other -> assertFailure (show other)
-    , testCase "units resolve through the stored use std and print bare" $ do
+    , testCase "units resolve through the stored uses and print bare" $ do
         evalP "5 km" @?= Right ["5 km"]
-        runLinesP ["5 std.km", "1 km to m", "3 degC"]
-          @?= Right ["5 km", "1000 m", "3 degC"]
-        runLinesP [":type std.G"] @?= Right ["Num [m^3 kg^-1 s^-2]"]
-    , testCase ":ls alone shows the root and one line for std; :ls std the library" $ do
-        runLinesP [":ls"]
-          @?= Right ["namespace std (" <> T.pack (show (length stdlibNames)) <> " names)"]
-        -- :ls lists a type and its constructor on two lines and no fields:
-        -- std.Cov2 is one label and two lines, its three fields none.
-        let listed = length stdlibNames + 1 - 3
-        expecting (runLinesP [":ls std"]) $ \outs -> do
-          length outs @?= listed
+        runLinesP ["5 si.km", "1 km to m", "3 degC", "2 time.h"]
+          @?= Right ["5 km", "1000 m", "3 degC", "2 h"]
+        runLinesP [":type astro.G"] @?= Right ["Num [m^3 kg^-1 s^-2]"]
+        expectError (evalP "G") "unknown name `G`"
+        evalU ["astro"] "1 AU to km" @?= Right ["149597870.7 km"]
+    , testCase ":ls alone shows the root and a line per namespace; :ls si the SI" $ do
+        runLinesP [":ls"] @?= Right libraryListing
+        expecting (runLinesP [":ls si"]) $ \outs -> do
+          length outs @?= librarySize "si"
           ("unit km : Num [m]" `elem` outs) @? "km"
+          ("unit newton : Num [kg m s^-2]" `elem` outs) @? "newton"
+          ("kilo : Num" `elem` outs) @? "kilo"
+        expecting (runLinesP [":ls temperature"]) $ \outs ->
           ("scale degC : Scale [K]" `elem` outs) @? "degC"
+        -- :ls lists a type and its constructor on two lines and no fields:
+        -- linalg.Cov2 is one label and two lines, its three fields none.
+        expecting (runLinesP [":ls linalg"]) $ \outs ->
+          length outs @?= librarySize "linalg" + 1 - 3
         expecting (runLinesP [":ls --all"]) $ \outs -> do
-          ("unit std.km : Num [m]" `elem` outs) @? "full paths with --all"
-          length outs @?= listed
+          ("unit si.km : Num [m]" `elem` outs) @? "full paths with --all"
+          length outs @?= length stdlibNames + 1 - 3
         runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
-    , testCase "a root name shadows the library's: c and std.c" $ do
-        runLinesP ["let c = 3e8 m/s", "c", "std.c", ":add", "c", "std.c"]
+    , testCase "a root name shadows the library's: c and physics.c" $ do
+        runLinesP
+          [":use physics", "let c = 3e8 m/s", "c", "physics.c", ":add", "c", "physics.c"]
           @?= Right
-            [ "300000000 m s^-1"
+            [ "stored use physics"
+            , "300000000 m s^-1"
             , "299792458 m s^-1"
             , "added c"
             , "300000000 m s^-1"
             , "299792458 m s^-1"
             ]
         expecting
-          (runLinesP ["let c = 3e8 m/s", "let x = c + std.c", ":add", ":view x"])
+          ( runLinesP
+              [":use physics", "let c = 3e8 m/s", "let x = c + physics.c", ":add", ":view x"]
+          )
           $ \outs ->
-            last outs @?= "x = c + std.c"
+            last outs @?= "x = c + physics.c"
     , testCase "library names are names: :rename, :unname, :edit" $ do
-        runLinesP [":rename std.h std.hour", "3 hour", "2 hour + 30 min"]
-          @?= Right ["renamed `std.h` to `std.hour`", "3 hour", "150 min"]
-        expectError (runLinesP [":rename std.h std.hour", "3 h"]) "unknown name `h`"
-        expectError (runLinesP [":unname std.AU", "1 AU"]) "unknown name `AU`"
-        runLinesP [":edit std.km"] @?= Right ["namespace std", "  unit km = 10^3 * m"]
-    , testCase ":uses, :unuse and :use for the stored use std" $ do
-        runLinesP [":uses"] @?= Right ["use std (stored)"]
-        runLinesP [":unuse std", ":uses"]
-          @?= Right ["removed the stored use std; :use std puts it back", "no uses"]
-        expectError (runLinesP [":unuse std", "5 km"]) "unknown name `km`"
-        runLinesP [":unuse std", "5 std.km", ":use std", "5 km", ":uses"]
+        runLinesP [":rename time.hr time.hour", "3 hour", "2 hour + 30 min", "3 h"]
+          @?= Right ["renamed `time.hr` to `time.hour`", "3 hour", "150 min", "3 h"]
+        expectError
+          (runLinesP [":rename time.hr time.hour", "3 hr"])
+          "unknown name `hr`"
+        expectError
+          (runLinesP [":use astro", ":unname astro.AU", "1 AU"])
+          "unknown name `AU`"
+        runLinesP [":edit si.km"] @?= Right ["namespace si", "  unit km = kilo * metre"]
+    , testCase ":uses, :unuse and :use for the stored uses" $ do
+        let stored = ["use " <> u <> " (stored)" | u <- stdlibDefaultUses]
+            withoutSi = ["use " <> u <> " (stored)" | u <- stdlibDefaultUses, u /= "si"]
+        runLinesP [":uses"] @?= Right stored
+        runLinesP [":unuse si", ":uses"]
+          @?= Right ("removed the stored use si; :use si puts it back" : withoutSi)
+        expectError (runLinesP [":unuse si", "5 km"]) "unknown name `km`"
+        runLinesP [":unuse si", "5 si.km", ":use si", "5 km", ":uses"]
           @?= Right
-            [ "removed the stored use std; :use std puts it back"
-            , "5 std.km"
-            , "stored use std"
-            , "5 km"
-            , "use std (stored)"
-            ]
-        expectError (runLinesP [":use std"]) "use std is already stored"
+            ( [ "removed the stored use si; :use si puts it back"
+              , "5 si.km"
+              , "stored use si"
+              , "5 km"
+              ]
+                ++ withoutSi
+                ++ ["use si (stored)"]
+            )
+        expectError (runLinesP [":use si"]) "use si is already stored"
         -- A session use and a stored one of the same path: the stored goes first.
-        runLinesP ["use std", ":uses", ":unuse std", ":uses", ":unuse std", ":uses"]
+        runLinesP ["use si", ":uses", ":unuse si", ":uses", ":unuse si", ":uses"]
           @?= Right
-            [ "use std (stored)"
-            , "use std"
-            , "removed the stored use std; :use std puts it back"
-            , "use std"
-            , "no uses"
-            ]
+            ( stored
+                ++ ["use si", "removed the stored use si; :use si puts it back"]
+                ++ withoutSi
+                ++ ["use si"]
+                ++ withoutSi
+            )
         -- The scratch must still check without it.
         expectError
-          (runLinesP ["let d = 2 km", ":unuse std"])
+          (runLinesP ["let d = 2 km", ":unuse si"])
           "the pending definitions would not check"
+        -- × is the library's cross, so it needs linalg.
+        evalP "[1, 0, 0] × [0, 1, 0]" @?= Right ["[0, 0, 1]"]
+        expectError (runLinesP [":unuse linalg", "[1, 0, 0] × [0, 1, 0]"]) "cross"
     , testCase ":stdlib upgrade: up to date, added, updated, kept" $ do
         runLinesP [":stdlib upgrade"] @?= Right ["the library is up to date"]
         lib <- either (assertFailure . T.unpack) pure stdlibCodebase
@@ -5830,30 +6076,38 @@ stdlibTests =
             pure
             ( sessionWith
                 emptySession
-                [ multiline ["namespace std", "  let G = 1", "  let c = 2", "  let gone = 3"]
+                [ multiline ["namespace astro", "  let G = 1", "  let gone = 3"]
+                , multiline ["namespace physics", "  let c = 2"]
                 , ":add"
-                , multiline ["namespace std", "  let c = 5"]
-                , "let twice = std.G * 2"
+                , multiline ["namespace physics", "  let c = 5"]
+                , "let twice = astro.G * 2"
                 , ":update"
                 ]
             )
         case stdlibUpgrade lib [] old of
           Left err -> assertFailure (T.unpack err)
           Right (s, outs) -> do
-            ("added std.km" `elem` outs) @? "km added"
-            any ("updated std.G " `T.isPrefixOf`) outs @? "G updated"
-            ("kept std.c (yours)" `elem` outs) @? "c kept"
+            ("added si.km" `elem` outs) @? "km added"
+            ("added astro.AU" `elem` outs) @? "AU added"
+            any ("updated astro.G " `T.isPrefixOf`) outs @? "G updated"
+            ("kept physics.c (yours)" `elem` outs) @? "c kept"
             any ("upgraded twice " `T.isPrefixOf`) outs @? "twice upgraded"
-            linesIn' s ["std.c", "std.gone", "twice", "1 std.km"]
-              @?= Right ["5", "3", "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2", "1 std.km"]
+            linesIn' s ["physics.c", "astro.gone", "twice", "1 si.km"]
+              @?= Right ["5", "3", "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2", "1 si.km"]
             -- A library type comes with its constructor and field labels.
-            ("added data std.Cov2" `elem` outs) @? "Cov2 added"
-            ("added std.jointCovariance" `elem` outs) @? "jointCovariance added"
+            ("added data linalg.Cov2" `elem` outs) @? "Cov2 added"
+            ("added linalg.jointCovariance" `elem` outs) @? "jointCovariance added"
+            -- An alias is a label like any other: added as a unit.
+            ("added si.newton" `elem` outs) @? "newton added"
             linesIn'
               s
               -- A field is found through a use, as a bare name is.
-              [":use std", "(jointCovariance ([1, 2] m ±σ 1 m, [3, 4] m ±σ 1 m)).rv"]
-              @?= Right ["stored use std", "[0, 0; 0, 0] m^2"]
+              [ ":use linalg"
+              , ":use si"
+              , "(jointCovariance ([1, 2] m ±σ 1 m, [3, 4] m ±σ 1 m)).rv"
+              , "2 newton"
+              ]
+              @?= Right ["stored use linalg", "stored use si", "[0, 0; 0, 0] m^2", "2 newton"]
         -- A type label the codebase has is left alone.
         old2 <-
           either
@@ -5861,13 +6115,14 @@ stdlibTests =
             pure
             ( sessionWith
                 emptySession
-                [multiline ["namespace std", "  data Cov2 = Cov2"], ":add"]
+                [multiline ["namespace linalg", "  data Cov2 = Cov2"], ":add"]
             )
         case stdlibUpgrade lib [] old2 of
           Left err -> assertFailure (T.unpack err)
           Right (s, outs) -> do
-            ("added data std.Cov2" `notElem` outs) @? "Cov2 kept"
-            lookupTypeName "std.Cov2" s.codebase @?= lookupTypeName "std.Cov2" old2.codebase
+            ("added data linalg.Cov2" `notElem` outs) @? "Cov2 kept"
+            lookupTypeName "linalg.Cov2" s.codebase
+              @?= lookupTypeName "linalg.Cov2" old2.codebase
     , testCase
         ":rename and :move re-hash a stamped definition and upgrade its dependents"
         $ do
@@ -5900,12 +6155,12 @@ stdlibTests =
           hashOf (lab ++ [":move lab.x field"]) "field.x"
             @?= hashOf [multiline ["namespace field", "  let x = 1 ± 0.1"], ":add"] "field.x"
           -- The library's G: its dependents follow it.
-          expecting (runLinesP [":rename std.G std.Gn", ":todo"]) $ \outs ->
+          expecting (runLinesP [":rename astro.G astro.Gn", ":todo"]) $ \outs ->
             map (T.unwords . take 2 . T.words) outs
-              @?= [ "renamed `std.G`"
-                  , "re-hashed Gn"
-                  , "upgraded M_earth"
-                  , "upgraded M_sun"
+              @?= [ "renamed `astro.G`"
+                  , "re-hashed astro.Gn"
+                  , "upgraded astro.M_earth"
+                  , "upgraded astro.M_sun"
                   , "nothing to"
                   ]
     , testCase

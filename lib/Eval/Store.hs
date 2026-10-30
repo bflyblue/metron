@@ -3,7 +3,7 @@
 A store is a directory:
 
 @
-format          "eval codebase 4"
+format          "eval codebase 5"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
 names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias]
@@ -17,7 +17,7 @@ which is what 'mergeStore' does.
 
 The standard library lives in the store like everything else (design
 §7.7). A new store is seeded with it: its terms and types are written,
-and its labels and its @use std@ are written to the log stamped with time
+and its labels and its stored @use@s are written to the log stamped with time
 0, so they sort before every line of the user's and are the same lines in
 every store, which a merge then recognises. A store is loaded on top of
 the empty codebase; nothing is entered in memory first.
@@ -40,7 +40,7 @@ module Eval.Store (
 import Control.Monad (filterM, foldM, foldM_, forM_, unless, void, when)
 import Data.ByteString qualified as BS
 import Data.Either (lefts, rights)
-import Data.List (sortOn)
+import Data.List (nub, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe)
@@ -54,7 +54,13 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Eval.Codebase
 import Eval.Core
 import Eval.Hash
-import Eval.Prelude (stdlibCodebase, stdlibMoved)
+import Eval.Prelude (
+  stdlib4Codebase,
+  stdlib4Moved,
+  stdlibCodebase,
+  stdlibHomes,
+  stdlibMoved,
+ )
 import Eval.Resolve (storeTerm)
 import Eval.Syntax (Use (..), renderUse)
 import Eval.Type (TypeDef)
@@ -69,10 +75,12 @@ formatLine v = "eval codebase " <> tshow v
 {- | Bumped whenever the store's layout changes: the storage encoding
 ('storageVersion', 3), or what a store holds. Format 4 holds the standard
 library as seeded labels instead of assuming a prelude entered in memory
-(design §7.7); see core.md on hash stability and migrations.
+(design §7.7); format 5 holds it split by domain into sibling namespaces
+and re-seeds a format-4 store. See core.md on hash stability and
+migrations.
 -}
 formatVersion :: Int
-formatVersion = 4
+formatVersion = 5
 
 {- | The store to use: the directory given, else a @.eval@ directory found by
 walking up from the working directory, else the user store under
@@ -95,21 +103,34 @@ locateStore = \case
         let parent = takeDirectory d
          in if parent == d then pure Nothing else findUp parent
 
-{- | What a new store is seeded with (design §7.7), and what a format-3
-store is migrated with: the library's codebase, with its stored @use
-std@, and the references the old root prelude gave the library's names
+{- | What a new store is seeded with (design §7.7), and what an older store
+is migrated with: the library's codebase, with its stored @use@s, and the
+earlier references of its names; and the format-4 library, everything
+under @std@, with the references the old root prelude gave its names
 where the move under @std@ changed them (the definitions whose @±@ is
 stamped with their name, design §3.2.4, and those that use them).
 -}
 data Seed = Seed
   { library :: Codebase
   , moved :: [(Text, Reference)]
+  -- ^ @si.km@ and the reference @std.km@ had, oldest first (design §7.4)
+  , homes :: [(Text, Text)]
+  -- ^ each format-4 library name and its home now: @std.km@, @si.km@
+  , library4 :: Codebase
+  -- ^ the format-4 library, for the 3 to 4 and 4 to 5 migrations
+  , moved4 :: [(Text, Reference)]
   -- ^ @std.G@ and the reference the root @G@ had
   }
 
 -- | The standard library as a 'Seed'.
 stdlibSeed :: Either Text Seed
-stdlibSeed = Seed <$> stdlibCodebase <*> stdlibMoved
+stdlibSeed =
+  Seed
+    <$> stdlibCodebase
+    <*> stdlibMoved
+    <*> stdlibHomes
+    <*> stdlib4Codebase
+    <*> stdlib4Moved
 
 {- | Create the directory if needed and seed it, or check that an existing
 one is ours, migrating an older format in place. The seed is only looked
@@ -131,27 +152,23 @@ openStore seeding d = do
       line <- T.strip <$> TIO.readFile formatFile
       if line == formatLine formatVersion
         then pure (Right (Store d))
-        else
-          if line == formatLine (1 :: Int)
-            then withSeed (\seed -> migrate1to2 >> migrate2to3 >> migrate3to4 seed)
-            else
-              if line == formatLine (2 :: Int)
-                then withSeed (\seed -> migrate2to3 >> migrate3to4 seed)
-                else
-                  if line == formatLine (3 :: Int)
-                    then withSeed migrate3to4
-                    else
-                      pure
-                        ( Left
-                            ( T.pack d
-                                <> " is not an eval codebase of format "
-                                <> tshow formatVersion
-                                <> " (found \""
-                                <> line
-                                <> "\"); see core.md on migrations"
-                            )
-                        )
+        else case [v | v <- [1 .. formatVersion - 1], line == formatLine v] of
+          -- Each step takes the store one format on and says so in its format
+          -- file, so an interrupted chain resumes where it stopped.
+          [v] -> withSeed (\seed -> mapM_ ($ seed) (drop (v - 1) steps))
+          _ ->
+            pure
+              ( Left
+                  ( T.pack d
+                      <> " is not an eval codebase of format "
+                      <> tshow formatVersion
+                      <> " (found \""
+                      <> line
+                      <> "\"); see core.md on migrations"
+                  )
+              )
  where
+  steps = [const migrate1to2, const migrate2to3, migrate3to4, migrate4to5]
   withSeed k = case seeding of
     Left err -> pure (Left ("the standard library does not load:\n" <> err))
     Right seed -> k seed >> pure (Right (Store d))
@@ -219,16 +236,72 @@ openStore seeding d = do
   -- first, so `:todo` reports the user's term as stale and `:upgrade std.G`
   -- moves it. The current one is bound again at time 1, so a merge with a
   -- store seeded fresh, whose time-0 lines sort first, ends on it too.
+  -- The library of format 4 is the one seeded here, everything under `std`;
+  -- the 4 to 5 step that follows replaces it.
   migrate3to4 seed = do
-    old <-
-      filterM
-        (\(_, r) -> doesFileExist (d </> "terms" </> T.unpack (hashHex r.hash)))
-        seed.moved
-    let current = [(n, r) | (n, _) <- old, Just r <- [lookupName n seed.library]]
+    old <- filterM (hasTerm . snd) seed.moved4
+    let current = [(n, r) | (n, _) <- old, Just r <- [lookupName n seed.library4]]
         history = [seedStamp <> " bind " <> n <> " " <> refText r | (n, r) <- old]
         rebound = ["1 bind " <> n <> " " <> refText r | (n, r) <- current]
-    seedStoreWith history rebound (Store d) seed.library
-    TIO.writeFile (d </> "format") (formatLine formatVersion <> "\n")
+    seedStoreWith history rebound id (Store d) seed.library4
+    TIO.writeFile (d </> "format") (formatLine (4 :: Int) <> "\n")
+  -- Format 5 splits the library by domain into sibling namespaces (design
+  -- §7.7), and `km` is written `kilo * metre`, so most library hashes
+  -- changed: the store is re-seeded. Every label still on the binding the
+  -- format-4 library gave it is removed, with every log line that names
+  -- it; a label the user rebound or added is kept. The stored `use std` is
+  -- replaced by the new library's six, unless the user had removed it. The
+  -- new library is seeded before the log, as a new store is, and each
+  -- removed name's earlier references (the format-4 `std.km`, and before
+  -- it the root prelude's where the move under `std` changed it) go first
+  -- into the history of its new home, so `:todo` reports a user term that
+  -- still uses one as stale and `:upgrade si.km` moves it. The current
+  -- reference is bound again at time 1, as in the 3 to 4 step.
+  migrate4to5 seed = do
+    (cb, _) <- loadStore (Store d) emptyCodebase
+    let still :: (Eq v) => (Codebase -> Map Text v) -> Set Text
+        still field =
+          Map.keysSet
+            ( Map.filterWithKey
+                (\n v -> Map.lookup n (field cb) == Just v)
+                (field seed.library4)
+            )
+        gone = Set.unions [still (.names), still (.typeNames), still (.conNames)]
+        goneFields = still (.fieldNames)
+        names n =
+          Set.member n gone || maybe False (`Set.member` goneFields) (T.stripPrefix "." n)
+        dropped l = case T.words l of
+          [_, kw, "std"] -> kw `elem` ["use", "unuse"]
+          [_, kw, n] -> kw `elem` ["unname", "unit", "scale", "unflag"] && names n
+          [_, "field", n, _] -> Set.member n goneFields
+          [_, kw, n, _] -> kw `elem` ["bind", "type", "con"] && Set.member n gone
+          _ -> False
+        library
+          | Use "std" Nothing `elem` cb.uses = seed.library
+          | otherwise = seed.library{uses = []}
+    earlier <-
+      filterM
+        (hasTerm . snd)
+        ( nub
+            [ (h, r)
+            | (o, h) <- seed.homes
+            , Set.member o gone
+            , (h', r) <- seed.moved
+            , h' == h
+            ]
+        )
+    let current =
+          nub [(h, r) | (h, _) <- earlier, Just r <- [lookupName h seed.library]]
+        history = [seedStamp <> " bind " <> n <> " " <> refText r | (n, r) <- earlier]
+        rebound = ["1 bind " <> n <> " " <> refText r | (n, r) <- current]
+    seedStoreWith
+      history
+      rebound
+      (T.unlines . filter (not . dropped) . T.lines)
+      (Store d)
+      library
+    TIO.writeFile (d </> "format") (formatLine (5 :: Int) <> "\n")
+  hasTerm r = doesFileExist (d </> "terms" </> T.unpack (hashHex r.hash))
 
 {- | The time a seeded store's library lines carry (design §7.7): 0, before
 any line of the user's, and the same in every store, so a merge of two
@@ -243,11 +316,14 @@ before whatever the log already holds. The log is written whole, through a
 temporary file, after the terms.
 -}
 seedStore :: Store -> Codebase -> IO ()
-seedStore = seedStoreWith [] []
+seedStore = seedStoreWith [] [] id
 
--- | 'seedStore' with log lines to put before the seed's and after them.
-seedStoreWith :: [Text] -> [Text] -> Store -> Codebase -> IO ()
-seedStoreWith before after store seed = do
+{- | 'seedStore' with log lines to put before the seed's and after them, and
+a change to make to the log already there.
+-}
+seedStoreWith ::
+  [Text] -> [Text] -> (Text -> Text) -> Store -> Codebase -> IO ()
+seedStoreWith before after edit store seed = do
   writeContent store emptyCodebase seed
   let logFile = store.dir </> "names.log"
   present <- doesFileExist logFile
@@ -255,7 +331,9 @@ seedStoreWith before after store seed = do
   let tmp = store.dir </> "names.log.seed"
   TIO.writeFile
     tmp
-    (T.unlines (before ++ logEntries seedStamp emptyCodebase seed ++ after) <> old)
+    ( T.unlines (before ++ logEntries seedStamp emptyCodebase seed ++ after)
+        <> edit old
+    )
   renameFile tmp logFile
 
 {- | Load the store on top of a codebase, the empty one at start: decode

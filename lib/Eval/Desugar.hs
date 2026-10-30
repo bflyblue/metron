@@ -744,11 +744,15 @@ unitExpr ctx e = case e.node of
     | Just _ <- lookupCtx x ctx -> pure False
     -- A base unit is a unit; a declared name is what it was declared; any
     -- other primitive or special form (pi, sin, noise) is not; an unknown
-    -- name is let through so that the ordinary path reports it as unknown.
+    -- name is let through so that the ordinary path reports it as unknown,
+    -- and so is a name two uses offer, which it reports as ambiguous.
     | otherwise ->
-        maybe
-          (isJust (baseUnit x) || (isNothing (primArity x) && x `notElem` specialNames))
-          (maybe False (.isUnit) . asTerm . snd)
+        ( \case
+            Nothing ->
+              isJust (baseUnit x) || (isNothing (primArity x) && x `notElem` specialNames)
+            Just (_, AAmbiguous _) -> True
+            Just (_, r) -> maybe False (.isUnit) (asTerm r)
+        )
           <$> resolveWritten x
   -- A qualified unit, @5 orbital.furlong@ (design §7.6).
   S.FieldOf _ _ -> do

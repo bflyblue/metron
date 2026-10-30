@@ -115,7 +115,7 @@ the current namespace (@x@ is @current.x@), then the @use@d namespaces
 (@u.x@ for each @use u@, and @u.y@ for @k.y@ under @use u as k@), which
 must not offer it twice, then the root (@x@ itself), and last the
 codebase's stored default @use@s (design §7.7), which must not offer it
-twice either. So a root name shadows the library's @std.x@ that @use std@
+twice either. So a root name shadows the library's @physics.c@ that @use physics@
 offers, while a @use@ of the session still beats a root name. A local
 binder comes before all of these, in the desugarer. A full path written
 out resolves as itself at the root step, unless something nearer takes it
@@ -223,8 +223,8 @@ path relative to each @use@ (under its alias, if it has one), the
 session's and then the codebase's stored ones (design §7.7); the full
 path; and, only when the full path itself would resolve to something else
 here, the absolute @.full.path@. At the root with no @use@, every root
-name prints as itself, and so does every library name the stored @use
-std@ reaches and no root name shadows.
+name prints as itself, and so does every library name the stored @use@s
+reach and no root name shadows.
 -}
 shortestName :: S.Scope -> Codebase -> Text -> Text
 shortestName = shortestNameOf TermLabel

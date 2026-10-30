@@ -53,7 +53,7 @@ import Eval.Eval
 import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
 import Eval.Parser (parseExpr, parseProgram, parseType)
-import Eval.Prelude (stdlibCodebase, stdlibMoved, stdlibNamespace)
+import Eval.Prelude (isLibraryPath, stdlibCodebase, stdlibMoved)
 import Eval.Pretty
 import Eval.Resolve
 import Eval.Syntax qualified as S
@@ -119,8 +119,8 @@ emptySession =
     S.rootScope
 
 {- | A session on a seeded codebase (design §7.7): the standard library
-entered under @std@ as one group and added, with the stored default @use
-std@, as a new codebase starts and as @--no-codebase@ runs. Fails only if
+entered by domain as one group and added, with its six stored default
+@use@s, as a new codebase starts and as @--no-codebase@ runs. Fails only if
 the library itself does not check, which is a build error.
 -}
 seededSession :: Either Text Session
@@ -430,7 +430,7 @@ command session src = \case
   -- The covariance view (design §3.5): Σ cᵢcᵢᵀ over the statistical nudges of
   -- a vector, with the bound radii beside it as a bias box. A pair of
   -- vectors (r, v) prints its joint covariance as the three blocks of
-  -- std.jointCovariance, rr, rv and vv (design §3.7), and both boxes.
+  -- linalg.jointCovariance, rr, rv and vv (design §3.7), and both boxes.
   ("covariance" : rest) -> keep $ do
     (h, v) <- evalOf rest
     let shown =
@@ -1070,14 +1070,14 @@ upgrade n session = case lookupName n session.codebase of
           )
 
 {- | @:stdlib upgrade@ (design §7.7), a sketch of upgrading a library from a
-newer version of it: the shipped library's labels under @std@ against the
-codebase's. A name the codebase has never had is added, and so is a type
+newer version of it: the shipped library's labels under its namespaces against
+the codebase's. A name the codebase has never had is added, and so is a type
 label, constructor label or field label it has never had. A name still on
 the binding it was seeded with and whose shipped version differs is
 updated, and its dependents are upgraded as @:update@ does. "Still on the
 binding it was seeded with" is read off the history: its one entry, or,
-in a store migrated from format 3, that entry after the reference the old
-root prelude gave the name (the moved references, 'stdlibMoved'). A name
+in a migrated store, that entry after the references the earlier
+libraries gave the name (the moved references, 'stdlibMoved'). A name
 the user rebound or unnamed is kept: the user's choice wins. The codebase
 cannot know which versions earlier libraries shipped, so a name rebound
 by an earlier upgrade counts as the user's.
@@ -1089,7 +1089,7 @@ stdlibUpgrade shipped moved session =
       library =
         [ (n, r)
         | (n, r) <- Map.toList shipped.names
-        , (stdlibNamespace <> ".") `T.isPrefixOf` n
+        , isLibraryPath n
         ]
       added =
         [ (n, r) | (n, r) <- library, isNothing (lookupName n cb0), null (historyOf n cb0)
@@ -1128,7 +1128,7 @@ stdlibUpgrade shipped moved session =
       newLabels m lookupIn =
         [ (n, x)
         | (n, x) <- Map.toList m
-        , (stdlibNamespace <> ".") `T.isPrefixOf` n
+        , isLibraryPath n
         , isNothing (lookupIn n cb0)
         ]
       addedTypes = newLabels shipped.typeNames lookupTypeName
@@ -1359,7 +1359,7 @@ nameTypes scope cb
 (design §7.3): names in the codebase with their types, one per line,
 sorted. Alone, the current namespace's own labels (the root's at the
 root), then a line for each namespace directly under it with the number of
-names in it (@namespace std (794 names)@). A word that names a namespace
+names in it (@namespace si (800 names)@). A word that names a namespace
 lists everything under it, relative to it; @--all@ lists everything by its
 full path; a glob (@*@ anywhere, else a case-insensitive substring; on the
 full path or its last segment), a
@@ -1605,8 +1605,8 @@ exportRequest session = \case
   _ -> Left "usage: :export [namespace] [file]"
 
 {- | The stored codebase, or the namespace at a path, as source that @:load@
-reads back (design §7.4): every label, except the standard library's under
-@std@ unless that is the path asked for, as a @namespace@ block per
+reads back (design §7.4): every label, except the standard library's namespaces
+unless one is the path asked for, as a @namespace@ block per
 namespace, nested as the paths nest, with root definitions outside any
 block. The codebase's stored @use@s head it as @use@ statements (design
 §7.7), and every name is spelled for them: a @use@ in a file comes before
@@ -1622,7 +1622,7 @@ source, and refuses the export.
 exportSource :: Session -> Maybe Text -> Either Text Text
 exportSource session = \case
   Just p -> exportLabels session ((p <> ".") `T.isPrefixOf`)
-  Nothing -> exportLabels session (not . ((stdlibNamespace <> ".") `T.isPrefixOf`))
+  Nothing -> exportLabels session (not . isLibraryPath)
 
 {- | 'exportSource' for the labels whose full paths pass a test: the
 definitions, and the types with their constructors and fields.
@@ -1929,7 +1929,7 @@ applyEdit target text session = case reconcile of
     Left _ -> cb0
   short0 = shortestName session.scope cb0
   inTarget n = case target of
-    EditCodebase -> not ((stdlibNamespace <> ".") `T.isPrefixOf` n)
+    EditCodebase -> not (isLibraryPath n)
     EditNamespace ns -> (ns <> ".") `T.isPrefixOf` n
     EditName _ -> False
   scopeText = case target of

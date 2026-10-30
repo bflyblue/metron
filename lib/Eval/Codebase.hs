@@ -83,8 +83,8 @@ data Codebase = Codebase
   , fieldNames :: Map Text (Hash, Int, Int)
   -- ^ record field names: labels on a constructor's positions (design §2.3)
   , uses :: [Use]
-  {- ^ the codebase's stored default @use@s, oldest first (design §7.7): @use
-  std@ from seeding. A name resolves through them after the root.
+  {- ^ the codebase's stored default @use@s, oldest first (design §7.7): the
+  library's six from seeding. A name resolves through them after the root.
   -}
   }
 
