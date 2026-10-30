@@ -9,6 +9,12 @@ contracting product need shape concatenation, and equality is an instance
 constraint over tensors and booleans. These are carried as pending
 constraints, solved as soon as the shapes involved are known, and defaulted
 at generalisation when they cannot be.
+
+A length can be the rank of a shape variable plus an offset (§4.1), as in
+@timap@'s index @Vec (rank s)@. Unifying such a rank with a literal or a
+length variable binds a variable outright; only two ranks of different
+shape variables wait, as a pending 'Rank' equation, which is an error if
+it is still unsolved at generalisation.
 -}
 module Eval.Infer (
   TypeError (..),
@@ -50,6 +56,8 @@ data Constraint
     EqInstance Type
   | -- | lt, le, gt, ge: a number or a point (design §3.6)
     OrdInstance Type
+  | -- | @rank s ~ l@, pending only while both sides are ranks of different shape variables (design §4.2)
+    Rank Shape Len
 
 data St = St
   { subst :: Subst
@@ -241,19 +249,22 @@ bindVar p v arg = do
 
 -- | Element-wise, with a shape variable allowed at the tail.
 unifyShape :: Path -> Shape -> Shape -> Infer ()
-unifyShape p x y = do
-  s <- gets (.subst)
-  go (applyShape s x) (applyShape s y)
+unifyShape p x y = go x y
  where
-  go a b = case (a, b) of
-    (SNil, SNil) -> pure ()
-    (SVar v, sh) -> bindVar p v (AShape sh)
-    (sh, SVar v) -> bindVar p v (AShape sh)
-    (SCons l1 r1, SCons l2 r2) -> unifyLen p l1 l2 >> go r1 r2
-    -- The ranks differ: say so of the whole shapes, not of the tails.
-    _ -> do
-      s <- gets (.subst)
-      failAt p (describe (applyShape s x) <> " against " <> describe (applyShape s y))
+  -- The substitution is applied at every step: unifying two lengths can
+  -- bind a shape variable through its rank (design §4.1).
+  go a0 b0 = do
+    s0 <- gets (.subst)
+    case (applyShape s0 a0, applyShape s0 b0) of
+      (SNil, SNil) -> pure ()
+      (SVar v, sh) -> bindVar p v (AShape sh)
+      (sh, SVar v) -> bindVar p v (AShape sh)
+      (SCons l1 r1, SCons l2 r2) -> unifyLen p l1 l2 >> go r1 r2
+      _ -> mismatch
+  -- The ranks differ: say so of the whole shapes, not of the tails.
+  mismatch = do
+    s <- gets (.subst)
+    failAt p (describe (applyShape s x) <> " against " <> describe (applyShape s y))
   describe sh = case rankOf sh of
     (0, False) -> "a number"
     (1, False) -> "a vector"
@@ -270,6 +281,12 @@ unifyShape p x y = do
 {- | Design §4.1: literals must agree; a variable plus offset against a
 literal solves the variable when the literal is large enough; two offset
 forms solve for the smaller offset.
+
+A rank @rank s + k@ (design §4.1, §4.2) is solved through the shape: against
+a literal @j@, @s@ is @j - k@ fresh lengths; against @n + m@, @n@ is @rank s
++ (k - m)@ when @k ≥ m@, and otherwise @s@ gains @m - k@ fresh leading
+lengths, which is what "at least" means for a rank. Ranks of two
+different shape variables are equal only by a pending 'Rank' equation.
 -}
 unifyLen :: Path -> Len -> Len -> Infer ()
 unifyLen p x y = do
@@ -285,6 +302,19 @@ unifyLen p x y = do
           unless (k == j) (failAt p ("lengths differ by " <> tshow (abs (k - j))))
       | j >= k -> bindVar p v (ALen (LVar w (j - k)))
       | otherwise -> bindVar p w (ALen (LVar v (k - j)))
+    (LRank v k, LLit j) -> rankIs v k j
+    (LLit j, LRank v k) -> rankIs v k j
+    (LRank v k, LVar w m) -> rankVar v k w m
+    (LVar w m, LRank v k) -> rankVar v k w m
+    (LRank v k, LRank w j)
+      | v == w ->
+          unless (k == j) (failAt p ("ranks differ by " <> tshow (abs (k - j))))
+      | k >= j -> do
+          w' <- grow w (k - j)
+          defer p (Rank (SVar v) (LRank w' 0))
+      | otherwise -> do
+          v' <- grow v (j - k)
+          defer p (Rank (SVar w) (LRank v' 0))
  where
   bindLen v k j
     | j >= k = bindVar p v (ALen (LLit (j - k)))
@@ -297,6 +327,32 @@ unifyLen p x y = do
               <> tshow k
               <> " needed"
           )
+  -- rank v + k = j: v is a shape of j - k lengths, each still unknown.
+  rankIs v k j
+    | j >= k = do
+        ls <- mapM (const (freshLen 0)) [1 .. j - k]
+        bindVar p v (AShape (foldr SCons SNil ls))
+    | otherwise =
+        failAt
+          p
+          ("a rank of at least " <> tshow k <> " cannot be " <> tshow j)
+  -- rank v + k = w + m.
+  rankVar v k w m
+    | k >= m = bindVar p w (ALen (LRank v (k - m)))
+    | otherwise = do
+        v' <- grow v (m - k)
+        bindVar p w (ALen (LRank v' 0))
+  -- Give a shape variable n fresh leading lengths and a fresh tail, which
+  -- is returned: rank v = rank v' + n.
+  grow v n
+    | n == 0 = pure v
+    | otherwise = do
+        ls <- mapM (const (freshLen 0)) [1 .. n]
+        tl <- freshShape
+        bindVar p v (AShape (foldr SCons tl ls))
+        case tl of
+          SVar v' -> pure v'
+          _ -> error "freshShape"
 
 {- | Kennedy's algorithm (design §4.4): to unify two dimensions, solve
 @d1 · d2⁻¹ = 1@. Pick the variable with the smallest exponent; if it
@@ -412,6 +468,11 @@ solveOne p = \case
         failAt
           p
           ("no ordering on " <> renderType t' <> "; only numbers and points compare")
+  Rank sh l -> do
+    s <- gets (.subst)
+    case (rankLen (applyShape s sh), applyLen s l) of
+      (LRank v _, LRank w _) | v /= w -> pure False
+      (a, b) -> unifyLen p a b >> pure True
 
 {- | At a generalisation point, constraints that only mention variables about
 to be quantified cannot wait: default them (design §4.2). The unknown-rank
@@ -427,7 +488,6 @@ settle here ctx = do
   s <- gets (.subst)
   let envVars = concat [map fst (freeVars (applyType s b)) | Forall _ b <- vecToList ctx]
       touchesEnv c = any (`elem` envVars) (constraintVars (applyC s c))
-      outside p = not (here `isSuffixOf` p)
   st <- get
   let (stay, dflt) = partitionWith (\(p, c) -> outside p || touchesEnv c) st.pending
   put st{pending = stay}
@@ -440,21 +500,42 @@ settle here ctx = do
       d <- freshDim
       unify p (numD d) t
       defer p c
+    -- A rank equation has no default; it waits for the others, which may
+    -- fix one of its shapes.
+    Rank _ _ -> modify' (\st' -> st'{pending = (p, c) : st'.pending})
   solvePending
+  -- Two shapes of equal but unknown rank: no type says that, and picking a
+  -- rank would be a guess (design §4.2).
+  s' <- gets (.subst)
+  left <- gets (.pending)
+  let envVars' = concat [map fst (freeVars (applyType s' b)) | Forall _ b <- vecToList ctx]
+  forM_
+    [ p
+    | (p, c@(Rank _ _)) <- left
+    , not (outside p)
+    , not (any (`elem` envVars') (constraintVars (applyC s' c)))
+    ]
+    $ \p ->
+      failAt
+        p
+        "two tensors here must have the same rank, which a generalised type cannot say; give one of them a known rank"
  where
   partitionWith f xs = (filter f xs, filter (not . f) xs)
+  outside p = not (here `isSuffixOf` p)
 
 applyC :: Subst -> Constraint -> Constraint
 applyC s = \case
   Append a b c -> Append (applyShape s a) (applyShape s b) (applyShape s c)
   EqInstance t -> EqInstance (applyType s t)
   OrdInstance t -> OrdInstance (applyType s t)
+  Rank sh l -> Rank (applyShape s sh) (applyLen s l)
 
 constraintVars :: Constraint -> [VarId]
 constraintVars = \case
   Append a b c -> map fst (concatMap (freeVars . (`TTensor` dimOne)) [a, b, c])
   EqInstance t -> map fst (freeVars t)
   OrdInstance t -> map fst (freeVars t)
+  Rank sh l -> map fst (freeVars (TTensor (SCons l sh) dimOne))
 
 -- Generalisation and instantiation ---------------------------------------------------
 

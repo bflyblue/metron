@@ -162,6 +162,8 @@ scales =
 {- | Tensor algebra: the 3D Levi-Civita tensor, the cross product as the
 Hodge dual of the wedge product, the trace as a contraction, and @vimap@,
 a map that also sees each component's position as a value (design §3.3).
+@vimap@ is for vectors, with the position as one number; the primitive
+@timap@ is the general form, at any rank, with the multi-index as a vector.
 -}
 algebra :: [(Text, Text)]
 algebra =

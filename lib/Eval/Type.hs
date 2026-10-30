@@ -20,6 +20,7 @@ module Eval.Type (
   structuralLabel,
   renderTypeDef,
   Len (..),
+  rankLen,
   Shape (..),
   Arg (..),
   Scheme (..),
@@ -79,12 +80,27 @@ data Type
   deriving stock (Eq, Ord, Show)
 
 {- | A literal length, or a length variable plus a literal offset: @n + k@
-means "at least @k@ long" (design §4.1).
+means "at least @k@ long" (design §4.1); or the rank of a shape variable
+plus a literal offset, @rank s + k@, the one type-level function. It is
+kept in normal form by 'rankLen', so it only ever names a shape variable
+that is not bound.
 -}
 data Len
   = LLit Int
   | LVar VarId Int
+  | LRank VarId Int
   deriving stock (Eq, Ord, Show)
+
+{- | The rank of a shape as a length, normalised: @rank [] = 0@, @rank (l :
+s) = rank s + 1@, and the rank of a shape variable stays a residual.
+-}
+rankLen :: Shape -> Len
+rankLen = go 0
+ where
+  go k = \case
+    SNil -> LLit k
+    SCons _ rest -> go (k + 1) rest
+    SVar v -> LRank v k
 
 -- | A list of lengths, possibly ending in a shape variable.
 data Shape
@@ -148,11 +164,16 @@ applyLen s = \case
   LVar v k -> case Map.lookup v s of
     Just (ALen l) -> shiftLen k (applyLen s l)
     _ -> LVar v k
+  -- The rank of a bound shape variable is normalised again.
+  LRank v k -> case Map.lookup v s of
+    Just (AShape sh) -> shiftLen k (rankLen (applyShape s sh))
+    _ -> LRank v k
 
 shiftLen :: Int -> Len -> Len
 shiftLen k = \case
   LLit j -> LLit (j + k)
   LVar w j -> LVar w (j + k)
+  LRank w j -> LRank w (j + k)
 
 applyShape :: Subst -> Shape -> Shape
 applyShape s = \case
@@ -216,6 +237,9 @@ substOnce m = go
     LVar v k -> case Map.lookup v m of
       Just (ALen l) -> shiftLen k l
       _ -> LVar v k
+    LRank v k -> case Map.lookup v m of
+      Just (AShape sh) -> shiftLen k (rankLen sh)
+      _ -> LRank v k
   arg = \case
     AType t -> AType (go t)
     ALen l -> ALen (len l)
@@ -252,6 +276,7 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
   len = \case
     LLit _ -> []
     LVar v _ -> [(v, KLen)]
+    LRank v _ -> [(v, KShape)]
   argVars = \case
     AType t -> go t
     ALen l -> len l
@@ -290,15 +315,18 @@ renderSchemeIds (Forall _ t) = renderTypeIds t
 renderArg :: Arg -> Text
 renderArg = \case
   AType t -> renderTypeIds t
-  ALen l -> renderLen (idNames [(v, KLen) | LVar v _ <- [l]]) l
+  ALen l -> renderLen (idNames (lenVars l)) l
   AShape sh -> renderShapeList (idNames (shapeVars sh)) sh
   ADim d -> renderDimWith (\v -> "d" <> T.pack (show v)) d
  where
   shapeVars = \case
     SNil -> []
-    SCons (LVar v _) rest -> (v, KLen) : shapeVars rest
-    SCons _ rest -> shapeVars rest
+    SCons l rest -> lenVars l ++ shapeVars rest
     SVar v -> [(v, KShape)]
+  lenVars = \case
+    LLit _ -> []
+    LVar v _ -> [(v, KLen)]
+    LRank v _ -> [(v, KShape)]
 
 renderWith :: Spelling -> Map VarId Text -> Int -> Type -> Text
 renderWith spelling names prec = \case
@@ -352,10 +380,13 @@ renderWith spelling names prec = \case
       | [(DVar v, 1)] <- dimAtoms d -> dimName v
       | otherwise -> renderDimIn spelling dimName d
 
--- | A length on its own: an offset form is parenthesised, @Vec (n + 1)@.
+{- | A length on its own: an offset form or a rank is parenthesised, @Vec (n +
+1)@, @Vec (rank s)@.
+-}
 renderLen :: Map VarId Text -> Len -> Text
 renderLen names = \case
   l@(LVar _ k) | k /= 0 -> "(" <> renderLenBare names l <> ")"
+  l@(LRank _ _) -> "(" <> renderLenBare names l <> ")"
   l -> renderLenBare names l
 
 -- | A length inside a list or a cons chain, where no parentheses are needed.
@@ -364,8 +395,11 @@ renderLenBare names = \case
   LLit k -> T.pack (show k)
   LVar v 0 -> name v
   LVar v k -> name v <> " + " <> T.pack (show k)
+  LRank v 0 -> "rank " <> shapeName v
+  LRank v k -> "rank " <> shapeName v <> " + " <> T.pack (show k)
  where
   name v = Map.findWithDefault ("n" <> T.pack (show v)) v names
+  shapeName v = Map.findWithDefault ("s" <> T.pack (show v)) v names
 
 -- | @[2, 3]@ for a closed shape, @(n + 1 : s)@ when it ends in a variable.
 renderShapeList :: Map VarId Text -> Shape -> Text

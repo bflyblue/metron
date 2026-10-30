@@ -175,6 +175,19 @@ primScheme name = case name of
                   (TFun sd (TFun sd2 (TTensor s d3)))
               )
           )
+  -- vmap that also passes each component's multi-index, a vector of
+  -- exact naturals as long as the rank: Vec (rank s) is the one use of the
+  -- type-level rank (design §4.1). The index is a value, never consumed as
+  -- a position (design §2.10).
+  "timap" ->
+    Just
+      ( Forall
+          [sv, dv, d2v]
+          ( TFun
+              (TFun (vecT (LRank 0 0)) (TFun (numD d) (numD d2)))
+              (TFun sd (TTensor s d2))
+          )
+      )
   _ -> case baseUnit name of
     Just b -> mono (numD (dimBase b))
     Nothing -> Nothing
@@ -479,8 +492,10 @@ lint look ctx = \case
     case tt of
       TTensor (SCons (LLit k) rest) d | i < k -> mono (TTensor rest d)
       TTensor (SCons (LVar _ k) rest) d | i < k -> mono (TTensor rest d)
+      TTensor (SCons (LRank _ k) rest) d | i < k -> mono (TTensor rest d)
       TPoint (SCons (LLit k) rest) d | i < k -> mono (TPoint rest d)
       TPoint (SCons (LVar _ k) rest) d | i < k -> mono (TPoint rest d)
+      TPoint (SCons (LRank _ k) rest) d | i < k -> mono (TPoint rest d)
       _ -> Left ("projection ." <> T.pack (show i) <> " from " <> renderType tt)
   TTyLam v k body -> do
     Forall vs t <- lint look ctx body
@@ -595,10 +610,14 @@ results in a scheme, so by the time a composite dimension such as
 @d1 d2@ is met, its variables are bound and it is checked by equality;
 the one composite that binds is a single variable to a power (@sqrt@),
 solved by taking the root.
+
+A rank in the pattern (@timap@'s @Vec (rank s)@) can come before the shape
+that fixes it, so it is skipped while matching, and the whole pattern,
+substituted and normalised, is compared with the type at the end.
 -}
 isInstanceOf :: Type -> Scheme -> Bool
 isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
-  Just _ -> True
+  Just m -> substOnce m pat == ty
   Nothing -> False
  where
   -- The scheme's variable ids are small fixed numbers that can coincide
@@ -628,7 +647,9 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     LVar v off | quantified v -> case l of
       LLit j | j >= off -> bindArg v (ALen (LLit (j - off))) m
       LVar u j | j >= off -> bindArg v (ALen (LVar u (j - off))) m
+      LRank u j | j >= off -> bindArg v (ALen (LRank u (j - off))) m
       _ -> Nothing
+    LRank v _ | quantified v -> Just m
     _ -> if p == l then Just m else Nothing
   -- Bound pattern variables are replaced once (their replacements come
   -- from another namespace and must not be chased); the remaining

@@ -166,8 +166,11 @@ on every tensor. The answer is decided by whether the operation has one meaning
 at every rank:
 
 - **Elementwise, shape-polymorphic**: `+`, `-`, `⊙`, `⊘`, `neg`, `abs`, `mid`,
-  `bound`, `sd`, `vmap`, `vzipWith`, and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
-  flat buffer. Scalars are the rank-zero instance of the same path.
+  `bound`, `sd`, `vmap`, `vzipWith`, `timap`, and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
+  flat buffer. Scalars are the rank-zero instance of the same path. `timap`
+  also passes each component's multi-index, typed `Vec (rank s)` with the
+  type-level `rank` of design §4.1; it is an ordinary primitive (arity 2) with
+  a fixed scheme, so it needs no Core form.
 - **Products that change rank**: `*` (the tensor product, `s1 ++ s2`) and `·` (the
   contracting product, `s1 ++ s2` after removing the paired index). Scalar
   scaling and plain multiplication are `*` with a rank-zero operand; the dot

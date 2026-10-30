@@ -15,7 +15,7 @@ import Eval.Affine qualified as A
 import Eval.Codebase (Codebase (..), lookupTypeName)
 import Eval.Core
 import Eval.Desugar
-import Eval.Dimension (DimAtom (..), Spelling (..), dimAtoms, isDimOne)
+import Eval.Dimension (DimAtom (..), Spelling (..), dimAtoms, dimOne, isDimOne)
 import Eval.Driver
 import Eval.Eval
 import Eval.Hash
@@ -369,6 +369,21 @@ tcoreTests =
           )
           @?= Left
             "primitive add used at Bool -> Bool -> Bool, not an instance of Tensor s d -> Tensor s d -> Tensor s d"
+    , testCase "lint rejects timap with an index shorter than the rank" $ do
+        let at n =
+              TPrimApp
+                "timap"
+                ( TFun
+                    (TFun (vecT (LLit n)) (TFun numT numT))
+                    (TFun (vecT (LLit 3)) (vecT (LLit 3)))
+                )
+                [ TLam "i" (vecT (LLit n)) (TLam "x" numT (TVr FZ))
+                , TLit (LTensor ([3], [1, 2, 3]))
+                ]
+        lintClosed noLookup (at 1) @?= Right [Forall [] (vecT (LLit 3))]
+        case lintClosed noLookup (at 2) of
+          Left err -> T.isInfixOf "not an instance of" err @? T.unpack err
+          Right sc -> assertFailure (show sc)
     , testCase "lint rejects a mismatched let annotation"
         $ case lintClosed
           noLookup
@@ -1177,6 +1192,80 @@ typeTests =
           @?= Right "(Num d -> Num d1 -> Num d2) -> Tensor s d -> Tensor s d1 -> Tensor s d2"
         typeOfTextP "vimap" @?= Right "(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1"
         typeOfText "indices ([1, 2] m)" @?= Right "Vec 2"
+    , testCase "timap's index is a Vec (rank s) (design §4.1)" $ do
+        typeOfText "timap"
+          @?= Right "(Vec (rank s) -> Num d -> Num d1) -> Tensor s d -> Tensor s d1"
+        -- Projecting from the index asks for that many leading lengths.
+        typeOfText "\\t -> timap (\\i x -> i.0 * x) t"
+          @?= Right "Tensor (n : s) d -> Tensor (n : s) d"
+        typeOfText "\\t -> timap (\\i x -> if i.0 == i.1 then x else 0) t"
+          @?= Right "Tensor (n : m : s) -> Tensor (n : m : s)"
+        -- A length-polymorphic function on the index leaves the rank open.
+        typeOfText "\\t -> timap (\\i x -> dot i i * x) t"
+          @?= Right "Tensor s d -> Tensor s d"
+        -- The function returns a number.
+        case typeOfText "timap (\\i x -> i) [[1, 2], [3, 4]]" of
+          Left err -> T.isInfixOf "expected Num d, got Vec (rank s)" err @? T.unpack err
+          Right t -> assertFailure (T.unpack t)
+        -- At a known shape the rank is a literal.
+        typeOfText "timap (\\i x -> norm i) [[1, 2], [3, 4]]" @?= Right "Mat 2 2"
+        -- Two shapes whose ranks must agree cannot be generalised.
+        case typeOfText "\\f t u -> (timap f t, timap f u)" of
+          Left err -> T.isInfixOf "must have the same rank" err @? T.unpack err
+          Right t -> assertFailure (T.unpack t)
+    , testCase "a definition over timap generalises with its index demands" $ do
+        runLines
+          [ "let diag t = timap (\\i x -> if i.0 == i.1 then x else 0) t"
+          , ":type diag"
+          , "diag [[1, 2, 3], [4, 5, 6], [7, 8, 9]]"
+          ]
+          @?= Right
+            [ "Tensor (n : m : s) -> Tensor (n : m : s)"
+            , "[1, 0, 0; 0, 5, 0; 0, 0, 9]"
+            ]
+        case runLines
+          [ "let diag t = timap (\\i x -> if i.0 == i.1 then x else 0) t"
+          , "diag [1, 2, 3]"
+          ] of
+          Left err ->
+            T.isInfixOf
+              "expected Tensor (n : m : s), got Vec 3: a tensor of rank at least 2 against a vector"
+              err
+              @? T.unpack err
+          Right v -> assertFailure (show v)
+        runLines
+          [ "let scale2 t = timap (\\i x -> i.0 * x) t"
+          , "scale2 [1, 2, 3]"
+          , "scale2 [[1, 2], [3, 4]]"
+          ]
+          @?= Right ["[0, 2, 6]", "[0, 0; 3, 4]"]
+        -- The rank stays inside the body: linted, and run at two ranks.
+        runLines
+          [ "let sq t = timap (\\i x -> dot i i * x) t"
+          , "sq [[1, 1], [1, 1]]"
+          , "sq [1, 1, 1]"
+          , "sq 7"
+          ]
+          @?= Right ["[0, 1; 1, 2]", "[0, 1, 4]", "0"]
+        -- A stored definition whose scheme shows the rank.
+        runLines
+          [ "let tm g t = timap g t"
+          , ":add"
+          , ":type tm"
+          , "tm (\\i x -> i.1 * x) [[1, 2], [3, 4]]"
+          ]
+          @?= Right
+            [ "added tm"
+            , "(Vec (rank s) -> Num d -> Num d1) -> Tensor s d -> Tensor s d1"
+            , "[0, 2; 0, 4]"
+            ]
+        -- A rank in a type encodes under its own length tag and decodes back.
+        let def =
+              TypeDef
+                [(0, KShape)]
+                [[TTensor (SCons (LRank 0 1) (SVar 0)) dimOne]]
+                structuralLabel
+        decodeTypeDef (encodeTypeDef def) @?= Right def
     , testCase "recursive definitions get types"
         $ runLines ["let fact n = if n == 0 then 1 else n * fact (n - 1)", ":type fact"]
           @?= Right ["Num -> Num"]
@@ -1312,6 +1401,34 @@ productTests =
           @?= Right ["[0.1, 0.1]"]
         case evalText "vzipWith (\\a b -> a * b) [1, 2] [1, 2, 3]" of
           Left err -> T.isInfixOf "lengths differ: 2 and 3" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "timap maps with each component's multi-index (design §3.3)" $ do
+        evalText "timap (\\i x -> i.0 * x) [10, 20, 30]" @?= Right ["[0, 20, 60]"]
+        evalText "timap (\\i x -> i.0 + i.1) [[0, 0], [0, 0]]"
+          @?= Right ["[0, 1; 1, 2]"]
+        evalText
+          "timap (\\i x -> if i.0 == i.1 then x else 0) [[1, 2, 3], [4, 5, 6], [7, 8, 9]]"
+          @?= Right ["[1, 0, 0; 0, 5, 0; 0, 0, 9]"]
+        evalText
+          "timap (\\i x -> i.2) [[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]] == [[[0, 1, 2], [0, 1, 2]], [[0, 1, 2], [0, 1, 2]]]"
+          @?= Right ["true"]
+        evalText
+          "timap (\\i x -> 100 * i.0 + 10 * i.1 + i.2) [[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]] == [[[0, 1, 2], [10, 11, 12]], [[100, 101, 102], [110, 111, 112]]]"
+          @?= Right ["true"]
+        -- A number has rank 0 and an empty index.
+        evalText "timap (\\i x -> x + 1) 5" @?= Right ["6"]
+        -- Units ride along, and the result's dimension is the function's.
+        evalText "timap (\\i x -> x) ([1, 2] m)" @?= Right ["[1, 2] m"]
+        evalText "timap (\\i x -> i.0 * x / 1 s) ([1, 2] m)" @?= Right ["[0, 2] m s^-1"]
+        evalText "bound (timap (\\i x -> x) ([1, 2] ± 0.1))" @?= Right ["[0.1, 0.1]"]
+        -- The index is exact.
+        evalText "timap (\\i x -> i.0 / 3) [0, 0] == [0, 1/3]" @?= Right ["true"]
+        case evalText "timap (\\i x -> i.1 * x) [1, 2, 3]" of
+          Left err ->
+            T.isInfixOf
+              "expected Tensor (n : m : s) d, got Vec 3: a tensor of rank at least 2 against a vector"
+              err
+              @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "elementwise product and division" $ do
         evalText "[1, 2] ⊙ [3, 4]" @?= Right ["[3, 8]"]

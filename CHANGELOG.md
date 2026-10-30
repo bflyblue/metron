@@ -314,3 +314,23 @@
   is no computed indexing (design §2.10): `x ^ i` is still a parse error and
   `v.i` reads a record field `i` ("unknown field `i`"). Two primitives appended (arities 1 and 3); Core, the
   encoding and stored hashes are unchanged.
+- `timap`, the indexed map at any rank, and `rank`, the first type-level
+  function (design §3.3, §4.1, §4.2). `timap : (Vec (rank s) -> Num d ->
+  Num d1) -> Tensor s d -> Tensor s d1` applies a function to each
+  component's multi-index, a vector of exact dimensionless naturals as long
+  as the rank, and then to the component, with `vmap`'s strictness and no
+  display unit: `timap (\i x -> if i.0 == i.1 then x else 0) m` keeps a
+  matrix's diagonal. A length may now be `rank s + k`, normalised on every
+  substitution so that it only names an unbound shape variable. Against a
+  literal it fixes the shape to that many fresh lengths; against `n + m` it
+  binds `n`, or gives the shape leading lengths when the rank must be at
+  least `m`; so `let diag t = timap (\i x -> if i.0 == i.1 then x else 0) t`
+  generalises to `Tensor (n : m : s) -> Tensor (n : m : s)` and `diag [1, 2,
+  3]` is refused ("expected Tensor (n : m : s), got Vec 3: a tensor of rank
+  at least 2 against a vector"). Two ranks of different unknown shapes wait
+  as a pending rank equation, which is an error if still unsolved at
+  generalisation. Lint compares the normalised instance with `timap`'s
+  scheme, and accepts projections from `Vec (rank s + k)` below `k`. The
+  prelude's `vimap` is unchanged. One primitive appended (arity 2); the type
+  encoding gains length tag 2 for `rank s + k`, appended, so Core, stored
+  terms and hashes are unchanged.

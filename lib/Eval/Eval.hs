@@ -823,6 +823,31 @@ runPrim cfg rt prim args = case (prim, args) of
         then Right d1
         else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
     Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
+  -- vmap that first passes each component's multi-index, read off its
+  -- row-major offset, as a vector of exact dimensionless naturals as long
+  -- as the rank (design §3.3). Same strictness as vmap.
+  ("timap", [f, a]) -> do
+    fv <- f
+    (dims, d, _, buf) <- tensor =<< a
+    let rank = length dims
+        index q =
+          VTensor
+            [rank]
+            dimOne
+            Nothing
+            (V.fromList (map (Right . Exact . fromIntegral) (unflatten dims q)))
+        results =
+          V.imap
+            ( \q x ->
+                apply cfg rt fv (Right (index q))
+                  >>= \g -> apply cfg rt g (Right (VTensor [] d Nothing (V.singleton x)))
+            )
+            buf
+    outDim <-
+      if V.null results
+        then Right d
+        else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
+    Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
   -- Conversion: the value, displayed in the unit's terms. A unit expression
   -- without a display unit of its own (a bare number) clears the hint.
   ("to", [a, u]) -> do

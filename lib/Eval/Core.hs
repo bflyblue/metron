@@ -393,6 +393,7 @@ primArity = \case
   "vmap" -> Just 2
   "indices" -> Just 1
   "vzipWith" -> Just 3
+  "timap" -> Just 2
   "pi" -> Just 0
   -- The seven SI base units (design §3.2.11).
   "m" -> Just 0

@@ -427,6 +427,8 @@ encLen :: Len -> Builder
 encLen = \case
   LLit k -> word8 0 <> varint (fromIntegral k)
   LVar v k -> word8 1 <> varint (fromIntegral v) <> varint (fromIntegral k)
+  -- rank s + k (design §4.1): appended, so older encodings are unchanged.
+  LRank v k -> word8 2 <> varint (fromIntegral v) <> varint (fromIntegral k)
 
 encDim :: Dim -> Builder
 encDim d =
@@ -497,6 +499,7 @@ decType =
     byte >>= \case
       0 -> LLit . fromIntegral <$> decVarint
       1 -> LVar . fromIntegral <$> decVarint <*> (fromIntegral <$> decVarint)
+      2 -> LRank . fromIntegral <$> decVarint <*> (fromIntegral <$> decVarint)
       k -> failDec ("unknown length tag " <> T.pack (show k))
   decDim = do
     n <- decVarint

@@ -527,8 +527,9 @@ can be passed to. Iteration over components is done with `vmap`, `dot`, `norm`
 and friends, never with a loop over indices; that is how both fixed geometry
 (`r.0`, `rotation.2.2`) and whole-vector computation are written in practice.
 Where a computation needs a component's position, `indices v` (and the
-prelude's `vimap`, §3.3) gives the positions as values, `[0, 1, …, n-1]`; it
-introduces no computed indexing, because no primitive takes such a value as a
+prelude's `vimap`, §3.3) gives the positions as values, `[0, 1, …, n-1]`, and
+`timap` gives each component of a tensor of any rank its multi-index as a
+vector; this introduces no computed indexing, because no primitive takes such a value as a
 position.
 
 Positions are numbers only. Letter names for positions are a planned sugar at
@@ -1037,6 +1038,8 @@ vzipWith   : (Num d1 -> Num d2 -> Num d3) -> Tensor s d1 -> Tensor s d2 -> Tenso
 indices    : Vec n d -> Vec n                -- [0, 1, …, n-1], exact; positions as values
 vimap      : (Num -> Num d1 -> Num d2) -> Vec n d1 -> Vec n d2
                                              -- prelude: vimap f v = vzipWith f (indices v) v
+timap      : (Vec (rank s) -> Num d1 -> Num d2) -> Tensor s d1 -> Tensor s d2
+                                             -- the multi-index as an exact vector, any rank (4.1)
 v.i        : Vec (n + i + 1) d -> Num d      -- projection, i a literal (§2.10, §4.1)
 m.i        : Mat (k + i + 1) n d -> Vec n d  -- row projection
 noise      : Vec n 1                         -- n is a literal; bound nudges
@@ -1113,6 +1116,36 @@ used where a literal is needed: `x ^ i` is a parse error, because an exponent
 is an integer literal (§2.5), and `v.i` reads a record field named `i` ("unknown
 field `i`"), not a position (§2.10). `indices` is rank one only; a matrix
 argument is a type error.
+
+`timap f t` is the indexed map at any rank. For each component of `t` it
+applies `f` first to the component's multi-index, a vector of exact
+dimensionless naturals with one entry per axis, read off the row-major
+offset, and then to the component. The index's length is the rank of `t`,
+written `Vec (rank s)` (§4.1), so inside `f` the index is an ordinary vector
+and `i.0`, `i.1` are ordinary projections with the usual static bound. Like
+`vmap` it evaluates each result only when that component is read, takes the
+result's dimension from the function, and gives the result no display unit of
+its own. `vimap` stays the vector form with a scalar position; `timap` is the
+general one. A diagonal mask:
+
+```
+> timap (\i x -> if i.0 == i.1 then x else 0) [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+[1, 0, 0; 0, 5, 0; 0, 0, 9]
+> timap (\i x -> i.0 * x) [10, 20, 30]
+[0, 20, 60]
+> :type timap
+(Vec (rank s) -> Num d -> Num d1) -> Tensor s d -> Tensor s d1
+> let diag t = timap (\i x -> if i.0 == i.1 then x else 0) t
+> :type diag
+Tensor (n : m : s) -> Tensor (n : m : s)
+```
+
+The projections inside `f` are what fix how much of the shape a definition
+needs: `i.1` asks for an index of length at least two, so `diag` takes a
+tensor of rank at least two, and `diag [1, 2, 3]` is refused with "expected
+Tensor (n : m : s), got Vec 3: a tensor of rank at least 2 against a
+vector". Applied directly, `timap (\i x -> i.1 * x) [1, 2, 3]` is refused the
+same way at the vector.
 
 Printing factors the common unit: `[1, 2, 3] m`, `[[1, 0], [0, 1]]`. Affine
 components print with their own certain digits.
@@ -1348,7 +1381,7 @@ concatenation for the products and an equality instance (§4.2).
 a ::= τ | σ | δ | ν                     -- an argument of a declared type T, by the kind of its parameter
 σ ::= [] | ν : σ | s                   -- a shape: a list of lengths, possibly ending in a shape variable
 δ ::= 1 | B | d | δ·δ | δ⁻¹          -- an abelian group, normalised
-ν ::= k | n | n + k                    -- a literal, a length variable, or a variable plus a literal offset
+ν ::= k | n | n + k | rank s + k       -- a literal, a length variable, a variable plus a literal offset, or the rank of a shape variable plus one
 ```
 
 `Num δ` abbreviates `Tensor [] δ`, `Vec ν δ` abbreviates `Tensor [ν] δ`, and
@@ -1371,8 +1404,9 @@ the offset rule below for lengths, element-wise for shapes, Kennedy's algorithm
 for dimensions. No term ever appears in a type, which is what keeps this on the
 indexed-types side of the line (Dependent ML, GHC's `DataKinds`) and not in
 dependent-type territory: lengths come only from syntax, literal element counts,
-projection positions and the literal index positions of `contract`,
-`permute` and `slice` (§4.2), so inference is Hindley-Milner plus constraint solving.
+projection positions, the literal index positions of `contract`,
+`permute` and `slice` (§4.2), and the ranks of shapes (below), so inference is
+Hindley-Milner plus constraint solving.
 Typed Core (§5.3) has one kinded abstraction form and one kinded application
 form for all of them.
 
@@ -1414,6 +1448,18 @@ There is no other length arithmetic, so `cross` fixes `3`, `inverse` forces a
 square shape, and `let first v = v.0` infers `Vec (n + 1) d -> Num d` by
 unification alone.
 
+**The rank of a shape.** `rank` is the first, and so far the only, type-level
+function: `rank σ` is the number of lengths in `σ`, a length, and it exists so
+that `timap` (§3.3) can type its index as `Vec (rank s)`. It is allowed
+because it always normalises to a residual over one shape variable plus a
+literal offset: `rank [] = 0`, `rank (ν : σ) = rank σ + 1`, and `rank s` of a
+shape variable stays as it is, so a length is still a literal, a variable plus
+an offset, or `rank s + k`. When `s` is bound the rank is normalised again, so
+`rank s` with `s := (n : m : s1)` becomes `rank s1 + 2`, and with `s := [2, 3]`
+the literal `2`. Unification therefore stays first-order; its rules for `rank`
+are in §4.2. It prints parenthesised where an offset form is, `Vec (rank s)`
+and `Vec (rank s + 1)`, and it is not part of the written type syntax.
+
 ### 4.2 Products, shape constraints and the equality instance
 
 Nothing in the language is overloaded except equality. Every product is its own
@@ -1449,6 +1495,43 @@ type system guesses, it guesses the common case, and it is the rule that
 dictionary passing will later remove: when data constructors exist, an
 unresolved constraint becomes a parameter of the definition instead of a
 default, and `\k v -> k * v` becomes polymorphic in the rank of `k`.
+
+**Ranks.** A length `rank s + k` (§4.1) unifies with another length by
+binding a variable outright wherever it can, because a rank says exactly how
+many lengths a shape has and nothing about the lengths themselves:
+
+- `rank s + k` against a literal `j`: if `j ≥ k` then `s` is `j - k` fresh
+  length variables, `s := [n1, …, n(j-k)]`, else fail ("a rank of at least 3
+  cannot be 2"). The lengths stay unknown; only the rank is fixed.
+- `rank s + k` against `n + m`: if `k ≥ m` then `n := rank s + (k - m)`.
+  Otherwise the rank must be at least `m - k`, which a shape says by its
+  leading lengths: `s := (n1 : … : n(m-k) : s1)` with fresh variables, and then
+  `n := rank s1`. No length ever carries a negative offset, so "at least" is
+  never lost: in `timap (\i x -> i.1 * x) t` the projection gives `i : Vec (n
+  + 2)`, and unifying that with `Vec (rank s)` makes `t : Tensor (n1 : n2 :
+  s1) d`.
+- `rank s + k` against `rank s + j`: the offsets must be equal.
+- `rank s + k` against `rank s' + j` for another shape variable: the
+  variable with the smaller offset gains the difference as leading lengths,
+  as above, and what remains, `rank s1
+  = rank s2` between two unbound variables, has no first-order solution. It is
+  recorded as a pending **rank equation**, beside the shape-append
+  constraints, and solved as soon as either shape is bound.
+
+A rank equation still pending at a generalisation point, with all its
+variables about to be quantified, is a static error: "two tensors here must
+have the same rank, which a generalised type cannot say; give one of them a
+known rank". It is not defaulted, because any rank picked would be a guess,
+and it is not dropped, because nothing in the scheme would then make a use
+site check it. It arises typically when one index function is shared by two maps
+of unknown shapes, as in `\f t u -> (timap f t, timap f u)`. Everything else
+about a rank is in the type itself, so a definition over `timap` generalises
+with no constraint: `\t -> timap (\i x -> i.0 * x) t` is `Tensor (n : s) d ->
+Tensor (n : s) d`, and `\t -> timap (\i x -> dot i i * x) t`, whose index
+function works at any length, is `Tensor s d -> Tensor s d`. Lint checks a
+use of `timap` like any fixed scheme: the recorded type, with the rank
+normalised, must be an instance of `timap`'s, so the index length must be the
+rank of the recorded shape.
 
 Equality is the single overloaded primitive. `==` and `/=` take two values of one
 type `τ` and emit an **instance constraint** `Eq τ`. Its instances are
@@ -1554,6 +1637,7 @@ covariance  : Vec n d -> Mat n n [d^2]                  -- Σ cᵢcᵢᵀ over t
 cholesky    : Mat n n [d^2] -> Mat n n d
 vzipWith    : (Num d1 -> Num d2 -> Num d3) -> Tensor s d1 -> Tensor s d2 -> Tensor s d3   -- per component pair, no display unit (3.3)
 indices     : Vec n d -> Vec n                          -- [0, 1, …, n-1], exact; the argument's components are not read
+timap       : (Vec (rank s) -> Num d1 -> Num d2) -> Tensor s d1 -> Tensor s d2   -- the multi-index, exact, then the component; no display unit (3.3, 4.1)
 x ± e, x ±σ e : Tensor s d -> Num d | Tensor s d -> Tensor s d   -- per component (3.4)
 v ±σ P      : Vec n d -> Mat n n [d^2] -> Vec n d       -- a vector with covariance P (3.5)
 pi e        : Num 1
@@ -1633,6 +1717,9 @@ Num [m s^-2]
   dimension. `sqrt` covers the `1/2` case; a `cbrt` can follow.
 - `det` requires a statically known size, for the same reason.
 - Dimension polymorphism is let-polymorphism; there is no polymorphic recursion.
+- `rank` is the only type-level function, and a type cannot say that two
+  unknown shapes have the same rank: a definition that needs that, such as
+  `\f t u -> (timap f t, timap f u)`, is refused at generalisation (§4.2).
 - Vectors and matrices are homogeneous in dimension (§3.3).
 - Component access needs a literal position (§2.10). Computed indices do not exist.
   The same holds for the positions of `contract` and `permute` (§4.2): a
@@ -1921,7 +2008,9 @@ or 1 and an empty text for `structural`). Types use tags of their own:
 | 0x28 | `T a…` | 32-byte hash, varint count, each argument as a kind byte and a type, length, shape or dimension |
 
 A shape is 0 for `[]`, 1 then a length and a shape, or 2 and a variable id; a
-length is 0 and a varint literal, or 1, a variable id and a varint offset; a
+length is 0 and a varint literal, 1, a variable id and a varint offset, or 2,
+a shape variable id and a varint offset for `rank s + k` (§4.1; appended, so
+earlier encodings decode unchanged); a
 dimension is a varint atom count and per atom 0 and a base-dimension byte or 1
 and a variable id, then the sint exponent. A recursive occurrence of the type
 being declared is `0x28` with the all-zero hash, so the definition never
