@@ -2275,14 +2275,20 @@ frame's axes. The decisions:
    one use and an inertial one in another; it meets a frame through `along`
    or a signature (`offset :: Vec body [m]`), and the first use against a
    frame says so. An ascription narrows and never relabels (§4.8).
-6. **Explicit `forall`, with kinds on binders.** Signatures keep quantifying
-   their lowercase variables implicitly (`offset :: Vec a [m]` already means
-   "any frame", the deliberate opt-in for decision 5), and may also say it:
-   `offset :: forall a. Vec a [m]`. A binder can carry a size, which replaces
-   a constraint clause: `cross :: forall (a : 3). Vec a d -> Vec a d1 -> Vec
-   a [d d1]` reads "any three-axis frame, the same one throughout". A
-   `forall` scopes its variables over the body, so an ascription inside
-   (`(v :: Vec a [m])`) refers to the signature's frame. Built in stage 4.
+6. **`forall` is required, with kinds on binders** (decided by the owner).
+   A signature or an ascription that has type variables binds them with
+   `forall`; every other name in a type is a name and resolves like one. This
+   removes the guess the resolver makes today (an unknown lowercase name is a
+   variable, a known unit is not), the printer's dodging of unit names when it
+   writes a variable back (`s1` for a shape variable), and the way a new unit
+   called `d` would change the meaning of existing signatures. A binder can
+   carry a size: `cross :: forall (a : 3) d d1. Vec a d -> Vec a d1 -> Vec a
+   [d d1]` reads "any three-axis frame, the same one throughout". `offset ::
+   forall a. Vec a [m]` is the deliberate opt-in of decision 5. A `forall`
+   scopes its variables over the body, so an ascription inside refers to the
+   signature's frame. `:type`, `:ls` and `:view` print the `forall`, so what
+   is printed can be pasted back; `:ls : type` queries stay implicit, being
+   search patterns; `data` parameters are already explicit. Built in stage 4.
 7. **The base axes are named** (decided by the owner). Every chart without
    a parent names its own axis set; a translated child shares its parent's,
    a rotated child names its own. Two unrelated root charts (`eci`, a lab
