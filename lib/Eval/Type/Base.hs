@@ -17,6 +17,7 @@ module Eval.Type.Base (
   Axis (..),
   Shape (..),
   Arg (..),
+  varArg,
   Scheme (..),
   Subst,
   emptySubst,
@@ -120,6 +121,15 @@ data Arg
   | ADim Dim
   | AAxis Axis
   deriving stock (Eq, Ord, Show)
+
+-- | A variable of a kind, as an argument.
+varArg :: Kind -> VarId -> Arg
+varArg k v = case k of
+  KType -> AType (TVar v)
+  KLen -> ALen (LVar v 0)
+  KShape -> AShape (SVar v)
+  KDim -> ADim (dimVar v)
+  KAxis -> AAxis (AVar v)
 
 -- | @forall (v : kind)…. type@.
 data Scheme = Forall [(VarId, Kind)] Type

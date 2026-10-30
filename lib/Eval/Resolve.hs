@@ -33,6 +33,7 @@ module Eval.Resolve (
 
 import Control.Monad (when, zipWithM)
 import Control.Monad.State.Strict (StateT, gets, lift, modify, runStateT)
+import Data.Bifunctor (bimap)
 import Data.Char (isLower)
 import Data.Containers.ListUtils (nubOrd)
 import Data.Foldable (foldlM)
@@ -879,11 +880,16 @@ enterData scope cb decl = do
     _ -> pure ()
   -- Two passes: the first learns the parameters' kinds from where they
   -- appear, the second converts with the kinds known, so that the
-  -- arguments of a recursive occurrence can be read by their kinds.
-  (_, kinds1) <- runStateT convertAll Map.empty
-  (fieldss, kinds) <- runStateT convertAll kinds1
+  -- arguments of a recursive occurrence can be read by their kinds, and
+  -- each length parameter with its companion axis parameter (design §3.9).
+  (_, kinds1) <- runStateT (convertAll env) Map.empty
+  let axes =
+        companionAxes [(p, Map.findWithDefault KType p kinds1) | p <- env.paramNames]
+  (fieldss, kinds) <-
+    runStateT (convertAll env{axisOf = Map.fromList axes}) kinds1
   let params =
         [(i, Map.findWithDefault KType p.text kinds) | (i, p) <- zip [0 ..] decl.params]
+          ++ [(v, KAxis) | (_, v) <- axes]
       def =
         TypeDef
           params
@@ -920,8 +926,9 @@ enterData scope cb decl = do
       , self = decl.name
       , params = Map.fromList (zip (map (.text) decl.params) [0 ..])
       , paramNames = map (.text) decl.params
+      , axisOf = Map.empty
       }
-  convertAll = mapM (mapM (tyType env . (.ty)) . snd) decl.constructors
+  convertAll e = mapM (mapM (tyType e . (.ty)) . snd) decl.constructors
   fieldLabels =
     [ (n, j)
     | (_, fs) <- decl.constructors
@@ -946,7 +953,19 @@ data DataEnv = DataEnv
   -- ^ the type being declared, by its full path
   , params :: Map.Map Text VarId
   , paramNames :: [Text]
+  , axisOf :: Map.Map Text VarId
+  -- ^ each length parameter's companion axis parameter (design §3.9)
   }
+
+{- | The companion axis parameters of written parameters with their kinds
+(design §3.9). A lowercase name in a length position stands for a whole
+axis set, a length and its axes, so each length parameter gains an axis
+parameter: in the order of the length parameters, numbered on from the
+written ones, so that a declaration's written parameters keep their ids
+and the @j@-th axis parameter goes with the @j@-th length parameter.
+-}
+companionAxes :: [(Text, Kind)] -> [(Text, VarId)]
+companionAxes written = zip [p | (p, KLen) <- written] [length written ..]
 
 -- | Conversion of written types, learning the parameters' kinds.
 type Kinds = StateT (Map.Map Text Kind) (Either ResolveError)
@@ -999,14 +1018,14 @@ tyType env t = case t.node of
         bad t ("parameter `" <> hd.text <> "` takes no arguments")
     | otherwise -> case (hd.text, args) of
         ("Num", [d]) -> TTensor SNil <$> tyDim env d
-        ("Vec", [n]) -> (\l -> TTensor (SCons l AAnon SNil) dimOne) <$> tyLen env n
-        ("Vec", [n, d]) -> (\l -> TTensor (SCons l AAnon SNil)) <$> tyLen env n <*> tyDim env d
+        ("Vec", [n]) -> (\l -> TTensor (position l SNil) dimOne) <$> tyLen env n
+        ("Vec", [n, d]) -> (\l -> TTensor (position l SNil)) <$> tyLen env n <*> tyDim env d
         ("Mat", [m, n]) ->
-          (\a b -> TTensor (SCons a AAnon (SCons b AAnon SNil)) dimOne)
+          (\a b -> TTensor (position a (position b SNil)) dimOne)
             <$> tyLen env m
             <*> tyLen env n
         ("Mat", [m, n, d]) ->
-          (\a b -> TTensor (SCons a AAnon (SCons b AAnon SNil)))
+          (\a b -> TTensor (position a (position b SNil)))
             <$> tyLen env m
             <*> tyLen env n
             <*> tyDim env d
@@ -1043,12 +1062,12 @@ applied env t n args
   | resolved == Found env.self.text = do
       arity (length env.paramNames)
       kinds <- mapM (gets . Map.findWithDefault KType) env.paramNames
-      TData selfType <$> zipWithM (argOf env) kinds args
+      TData selfType <$> argsAt env (kinds ++ [KAxis | KLen <- kinds]) args
   | Found full <- resolved
   , Just h <- lookupTypeName full env.codebase
   , Just def <- lookupTypeDef h env.codebase = do
-      arity (length def.params)
-      TData h <$> zipWithM (argOf env) (map snd def.params) args
+      arity (length [k | (_, k) <- def.params, k /= KAxis])
+      TData h <$> argsAt env (map snd def.params) args
   | Ambiguous fulls <- resolved =
       bad
         t
@@ -1080,27 +1099,54 @@ applied env t n args
             <> T.pack (show (length args))
         )
 
-argOf :: DataEnv -> Kind -> S.TyExpr -> Kinds Arg
+{- | The arguments of a declared type at its parameters' kinds: the written
+arguments in order, and at each axis parameter the axes of the length
+argument it is the companion of (design §3.9).
+-}
+argsAt :: DataEnv -> [Kind] -> [S.TyExpr] -> Kinds [Arg]
+argsAt env kinds args = do
+  converted <- zipWithM (argOf env) [k | k <- kinds, k /= KAxis] args
+  pure (fill kinds (map fst converted) [ax | (_, Just ax) <- converted])
+ where
+  fill ks ws axs = case (ks, ws, axs) of
+    (KAxis : ks', _, ax : axs') -> AAxis ax : fill ks' ws axs'
+    (KAxis : ks', _, []) -> AAxis AAnon : fill ks' ws []
+    (_ : ks', w : ws', _) -> w : fill ks' ws' axs
+    _ -> []
+
+-- | An argument at a written parameter's kind; a length's with its axes.
+argOf :: DataEnv -> Kind -> S.TyExpr -> Kinds (Arg, Maybe Axis)
 argOf env k a = case k of
-  KType -> AType <$> tyType env a
-  KLen -> ALen <$> tyLen env a
-  KShape -> AShape <$> tyShape env a
-  KDim -> ADim <$> tyDim env a
+  KType -> (,Nothing) . AType <$> tyType env a
+  KLen -> bimap ALen Just <$> tyLen env a
+  KShape -> (,Nothing) . AShape <$> tyShape env a
+  KDim -> (,Nothing) . ADim <$> tyDim env a
   KAxis -> bad a "an axis set cannot be written"
 
-tyLen :: DataEnv -> S.TyExpr -> Kinds Len
+-- | A position of a shape: a length and its axes.
+position :: (Len, Axis) -> Shape -> Shape
+position = uncurry SCons
+
+{- | A written length and the axes it means (design §3.9): a literal is
+that many anonymous axes, a parameter a whole axis set (its length and
+its companion axis parameter), and @rank s@ anonymous, as an index's
+positions are numbers.
+-}
+tyLen :: DataEnv -> S.TyExpr -> Kinds (Len, Axis)
 tyLen env a = case a.node of
-  S.TyInt k | k >= 0 -> pure (LLit (fromInteger k))
-  S.TyName p | Map.member p env.params -> (`LVar` 0) <$> useParam env a p KLen
+  S.TyInt k | k >= 0 -> pure (LLit (fromInteger k), AAnon)
+  S.TyName p | Map.member p env.params -> do
+    v <- useParam env a p KLen
+    pure (LVar v 0, maybe AAnon AVar (Map.lookup p env.axisOf))
   -- The one type-level function (design §4.1): the rank of a shape.
-  S.TyApp hd [sh] | hd.text == "rank" -> rankLen <$> tyShape env sh
+  S.TyApp hd [sh] | hd.text == "rank" -> (,AAnon) . rankLen <$> tyShape env sh
   S.TyName "rank" -> bad a "rank takes a shape: rank s"
   S.TyApp hd _ | hd.text == "rank" -> bad a "rank takes one shape: rank s"
   _ -> bad a "a length is a number, a parameter, or rank s"
 
 tyShape :: DataEnv -> S.TyExpr -> Kinds Shape
 tyShape env a = case a.node of
-  S.TyBracket items -> foldr (`SCons` AAnon) SNil <$> mapM item items
+  S.TyBracket items -> foldr position SNil <$> mapM item items
   S.TyName p | Map.member p env.params -> SVar <$> useParam env a p KShape
   _ -> bad a "a shape is a list of lengths like [2, 3], or a parameter"
  where
@@ -1154,11 +1200,20 @@ queryScheme scope cb t = do
           , self = S.Name t.span ""
           , params = Map.fromList (zip vars [0 ..])
           , paramNames = vars
+          , axisOf = Map.empty
           }
+  -- As for a declaration: kinds first, then each length variable with its
+  -- companion axis variable (design §3.9).
   (_, kinds1) <- runStateT (tyType env t) Map.empty
-  (ty, kinds) <- runStateT (tyType env t) kinds1
+  let axes = companionAxes [(v, Map.findWithDefault KType v kinds1) | v <- vars]
+  (ty, kinds) <- runStateT (tyType env{axisOf = Map.fromList axes} t) kinds1
   pure
-    (Forall [(i, Map.findWithDefault KType v kinds) | (i, v) <- zip [0 ..] vars] ty)
+    ( Forall
+        ( [(i, Map.findWithDefault KType v kinds) | (i, v) <- zip [0 ..] vars]
+            ++ [(i, KAxis) | (_, i) <- axes]
+        )
+        ty
+    )
  where
   -- Names resolve through the scope (design §7.6).
   isVar = typeVariable scope cb

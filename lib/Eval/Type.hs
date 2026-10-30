@@ -25,6 +25,7 @@ module Eval.Type (
   Axis (..),
   Shape (..),
   Arg (..),
+  varArg,
   Scheme (..),
   Subst,
   emptySubst,
@@ -127,13 +128,7 @@ so that two schemes that differ only in their variables' ids are equal.
 canonicalScheme :: Scheme -> Scheme
 canonicalScheme (Forall _ t) =
   let vs = freeVars t
-      fresh v k = case k of
-        KType -> AType (TVar v)
-        KLen -> ALen (LVar v 0)
-        KShape -> AShape (SVar v)
-        KDim -> ADim (dimVar v)
-        KAxis -> AAxis (AVar v)
-      renaming = Map.fromList [(v, fresh i k) | (i, (v, k)) <- zip [0 ..] vs]
+      renaming = Map.fromList [(v, varArg k i) | (i, (v, k)) <- zip [0 ..] vs]
    in Forall [(i, k) | (i, (_, k)) <- zip [0 ..] vs] (substOnce renaming t)
 
 renderWith :: Spelling -> Map VarId Text -> Int -> Type -> Text

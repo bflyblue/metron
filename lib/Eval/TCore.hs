@@ -669,7 +669,21 @@ lint look ctx = \case
     case vs of
       (v, k) : rest -> do
         require (kindOf arg == k) "type application at the wrong kind"
-        pure (Forall rest (substOnce (Map.singleton v arg) t))
+        -- Capture-avoiding: the argument's variables come from the run
+        -- that elaborated the term and can share ids with the variables
+        -- still to be applied, which are renamed apart first. (Axis
+        -- variables, numbered from one base in every run, always can.)
+        let argVars = map fst (freeVars (TData selfType [arg]))
+            clashing = [(w, kw) | (w, kw) <- rest, w `elem` argVars]
+            base = maximum (0 : map fst vs ++ map fst (freeVars t) ++ argVars) + 1
+            renamed = Map.fromList [(w, i) | ((w, _), i) <- zip clashing [base ..]]
+            rename w = Map.findWithDefault w w renamed
+            renaming = Map.fromList [(w, varArg kw (rename w)) | (w, kw) <- clashing]
+        pure
+          ( Forall
+              [(rename w, kw) | (w, kw) <- rest]
+              (substOnce (Map.insert v arg renaming) t)
+          )
       [] -> Left "type application to a term with no type abstraction"
   TCycle{} -> Left "a cycle inside an expression"
  where
@@ -798,13 +812,7 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
   -- The scheme's variable ids are small fixed numbers that can coincide
   -- with the inferred type's ids; rename them to negative ids, which no
   -- inferred type contains, so pattern and actual variables never mix.
-  renamed = Map.fromList [(v, fresh v k) | (v, k) <- vs0]
-  fresh v = \case
-    KType -> AType (TVar (negate (v + 1)))
-    KLen -> ALen (LVar (negate (v + 1)) 0)
-    KShape -> AShape (SVar (negate (v + 1)))
-    KDim -> ADim (dimVar (negate (v + 1)))
-    KAxis -> AAxis (AVar (negate (v + 1)))
+  renamed = Map.fromList [(v, varArg k (negate (v + 1))) | (v, k) <- vs0]
   vs = [(negate (v + 1), k) | (v, k) <- vs0]
   pat = applyType renamed pat0
   quantified v = v `elem` map fst vs

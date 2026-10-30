@@ -52,7 +52,7 @@ import Eval.Builtin
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
-import Eval.Dimension (Dim, Spelling (..), dimMul, dimPow, dimVar, renderDimIn)
+import Eval.Dimension (Dim, Spelling (..), dimMul, dimPow, renderDimIn)
 import Eval.Eval
 import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
@@ -64,17 +64,14 @@ import Eval.Syntax qualified as S
 import Eval.TCore
 import Eval.Type (
   Arg (..),
-  Axis (..),
-  Kind (..),
-  Len (..),
   Scheme (..),
-  Shape (..),
   Type (..),
   TypeDef (..),
   dataConstructors,
   renderScheme,
   renderSchemeIn,
   renderTypeDef,
+  varArg,
  )
 import Eval.Update
 
@@ -1655,18 +1652,12 @@ listNames session args = do
     | otherwise = Nothing
   -- A constructor's type: its fields to the type at its own parameters.
   constructorScheme h def i fields =
-    let tyArgs = [paramArg v k | (v, k) <- def.params]
+    let tyArgs = [varArg k v | (v, k) <- def.params]
         self = TData h tyArgs
         instantiated = case dataConstructors (`lookupTypeDef` cb) self of
           Just table | Just fs <- lookup (UserCon h i) table -> fs
           _ -> fields
      in Forall def.params (foldr TFun self instantiated)
-  paramArg v = \case
-    KType -> AType (TVar v)
-    KLen -> ALen (LVar v 0)
-    KShape -> AShape (SVar v)
-    KDim -> ADim (dimVar v)
-    KAxis -> AAxis (AVar v)
 
 {- | @*@ matches any run of characters; a pattern without @*@ matches as a
 case-insensitive substring.
