@@ -130,7 +130,8 @@ primScheme name = case name of
   "mkChart3" ->
     Just
       (Forall [sv, dv] (TFun (numD d) (TFun sd (TFun (TScale s d) (TScale s d)))))
-  -- Turned from the parent by a dimensionless generator over its axes.
+  -- Turned from the parent by a list of dimensionless generators over its
+  -- axes, applied in order.
   "mkChart4" ->
     Just
       ( Forall
@@ -139,7 +140,7 @@ primScheme name = case name of
               (numD d)
               ( TFun
                   (vecD n d)
-                  (TFun (TScale vn d) (TFun (matD n n dimOne) (TScale vn d)))
+                  (TFun (TScale vn d) (TFun (listT (matD n n dimOne)) (TScale vn d)))
               )
           )
       )
@@ -223,6 +224,9 @@ primScheme name = case name of
   -- R applied along every axis of a tensor. The type cannot say that every
   -- length of s is n; the evaluator checks it (design §4.3).
   "transformBy" -> Just (Forall [nv, sv, dv] (TFun (matD n n dimOne) (TFun sd sd)))
+  -- A chart's absolute rotation: its axes, as columns along the base axes
+  -- (design §3.8).
+  "rotationOf" -> Just (Forall [nv, dv] (TFun (TScale vn d) (matD n n dimOne)))
   _ -> case baseUnit name of
     Just b -> mono (numD (dimBase b))
     Nothing -> Nothing

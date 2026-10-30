@@ -34,6 +34,7 @@ import Data.Containers.ListUtils (nubOrd)
 import Data.Either (fromRight)
 import Data.Graph (flattenSCC, stronglyConnComp)
 import Data.List (partition, sortOn)
+import Data.Map.Lazy qualified as LazyMap
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
@@ -313,16 +314,27 @@ evalChecked ::
 evalChecked cfg scope cb src e = do
   (term, typed, _, linted) <- checkExpr scope cb src e
   let h = hashTerm term
-  v <- either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cb) h typed)
+  v <-
+    either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cfg cb) h typed)
   pure (h, v, LastExpr term linted typed cb)
 
-runtimeOf :: Codebase -> Runtime
-runtimeOf cb =
-  Runtime
-    { typedOf = (`lookupTyped` cb)
-    , unitName = \h i written -> unitNameFor (Reference h i) written cb
-    , scaleName = \h i written -> scaleNameFor (Reference h i) written cb
-    }
+{- | The runtime for one evaluation under a configuration. Every definition's
+value is shared by all the references to it in that evaluation: a lazy
+table over the codebase, each entry evaluated when first used, so that a
+turned chart's rotation (design §3.8) is computed once and not once per
+mention of the chart.
+-}
+runtimeOf :: Config -> Codebase -> Runtime
+runtimeOf cfg cb = rt
+ where
+  rt =
+    Runtime
+      { typedOf = (`lookupTyped` cb)
+      , unitName = \h i written -> unitNameFor (Reference h i) written cb
+      , scaleName = \h i written -> scaleNameFor (Reference h i) written cb
+      , shared = (`Map.lookup` values)
+      }
+  values = LazyMap.mapWithKey (\h (_, t) -> evalAt cfg rt h t) cb.derived
 
 {- | Desugar, typecheck, elaborate and lint an expression against a codebase.
 Returns the Core, the Typed Core, the inferred type and the types lint

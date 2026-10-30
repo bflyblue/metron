@@ -247,17 +247,14 @@ renderValueWith printer scale prefs showMagnitude = \case
     parts <- mapM (>>= \v -> fieldText v <$> recur v) fields
     pure (T.unwords (conText c : parts))
   -- A point prints on the scale it was written on (design §3.6): steps from
-  -- the origin, then the scale's name; without a scale, as an amount from
-  -- the base origin in base units.
+  -- the origin along the chart's axes (§3.8), then the scale's name;
+  -- without a scale, as an amount from the base origin in base units.
   VPoint dims d sc buf -> do
     xs <- sequence (V.toList buf)
     pure $ case sc of
       Just s
         | Just atom <- s.name
-        , Right steps <-
-            mapM
-              (\(x, o) -> divM (scale + 4) (subM x o) s.step)
-              (zip xs (V.toList s.origin)) ->
+        , Right steps <- coordinatesOn (scale + 4) s xs ->
             renderNested showMagnitude dims steps
               <> " "
               <> atomNameWith printer.unitName atom
@@ -560,8 +557,12 @@ renderTermUnits spelling namer isUnitRef = go 0
     (_, [a, b, c])
       | p == "mkChart3" ->
           paren (prec > 0) (go 1 ctx a <> " at " <> origin ctx b <> " " <> go 11 ctx c)
+    -- The generators read back as the sequence they were written as, `by
+    -- rotz a then rotx b`; a list that is not a literal has no such form
+    -- and prints as the primitive applied.
     (_, [a, b, c, g])
-      | p == "mkChart4" ->
+      | p == "mkChart4"
+      , Just gs@(_ : _) <- listSpine g ->
           paren
             (prec > 0)
             ( go 1 ctx a
@@ -570,7 +571,7 @@ renderTermUnits spelling namer isUnitRef = go 0
                 <> " "
                 <> go 11 ctx c
                 <> " by "
-                <> go 1 ctx g
+                <> T.intercalate " then " (map (go 1 ctx) gs)
             )
     (Just (sym, lvl, assoc), [a, b]) ->
       let (lp, rp) = case assoc of

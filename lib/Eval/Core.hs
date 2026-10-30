@@ -416,10 +416,11 @@ primArity = \case
   "mid" -> Just 1
   "bound" -> Just 1
   "sd" -> Just 1
-  -- Rotations (design §3.3, §3.8): the matrix exponential, and a matrix
-  -- applied along every axis of a tensor.
+  -- Rotations (design §3.3, §3.8): the matrix exponential, a matrix
+  -- applied along every axis of a tensor, and the rotation of a chart.
   "expm" -> Just 1
   "transformBy" -> Just 2
+  "rotationOf" -> Just 1
   _ -> Nothing
 
 -- Renaming and weakening ------------------------------------------------------

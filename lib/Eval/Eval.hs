@@ -32,6 +32,7 @@ module Eval.Eval (
   UnitFactor (..),
   Chart (..),
   turned,
+  coordinatesOn,
   Preferences,
   hintPow,
   hintProduct,
@@ -48,7 +49,7 @@ module Eval.Eval (
 import Control.Monad (foldM, zipWithM)
 import Data.List (nub, transpose)
 import Data.Map.Strict (Map)
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -88,6 +89,14 @@ data Runtime = Runtime
   , unitName :: Hash -> Maybe Int -> Text -> Maybe Text
   -- ^ given a reference and the name written for it, the unit name it is a unit under, if any (design §3.2.12)
   , scaleName :: Hash -> Maybe Int -> Text -> Maybe Text
+  , shared :: Hash -> Maybe Thunk
+  {- ^ the value of a definition (not a cycle member) evaluated once and
+  shared by every reference to it, when the caller keeps such a table:
+  @evalAt cfg rt h t@ under the same 'Config' and this runtime, so that an
+  expensive value (a turned chart's rotation, design §3.8) is computed once
+  per evaluation rather than once per reference. Pure, so sharing changes
+  no result; 'Nothing' evaluates the definition afresh
+  -}
   }
 
 data EvalError
@@ -151,11 +160,11 @@ data UnitHint = UnitHint
 {- | A chart (design §3.6, §3.8): how a point is written and printed. A step
 unit, an origin, the declared name if any, and the three parts a chart
 built by @mkChart3@ or @mkChart4@ may set: the chart its origin and axes are
-given in, the generator its axes are turned by from that chart's, and its
+given in, the generators its axes are turned by from that chart's, and its
 angular velocity. Points are stored as amounts from the base origin along
-the base axes, so for charts whose axes are all the base axes (no
-generator here or above) a conversion is a change of chart and nothing
-else; 'turned' charts wait for the rotation maths.
+the base axes, and the chart keeps its absolute frame (the origin and the
+rotation from the base), so that writing a point on it and reading one
+off it never walk the tree.
 -}
 data Chart = Chart
   { name :: Maybe UnitAtom
@@ -163,21 +172,35 @@ data Chart = Chart
   , stepHint :: Maybe UnitHint
   -- ^ the step's own display unit, which differences inherit
   , origin :: Vector Magnitude
-  {- ^ the origin as an amount from the base origin, one magnitude per
-  component: the parent's origin plus the amount the chart was given at.
-  Under a turned parent, the amount as given, which no use reads until
-  rotation is built
+  {- ^ the origin as an amount from the base origin along the base axes, one
+  magnitude per component: the parent's origin plus the amount the chart
+  was given at, which is along the parent's axes and so turned by the
+  parent's rotation
   -}
   , dims :: [Int]
   , dim :: Dim
   , parent :: Maybe Chart
-  {- ^ the chart the origin and the generator are given in; 'Nothing' is the
-  implicit base of the dimension. The chart value itself, not a hash: a
+  {- ^ the chart the origin and the generators are given in; 'Nothing' is
+  the implicit base of the dimension. The chart value itself, not a hash: a
   chart need not be named, and its definition's Core already refers to the
   parent's by hash
   -}
-  , generator :: Maybe (Vector Magnitude)
-  -- ^ an antisymmetric @n × n@ matrix, row-major; 'Nothing' is axis-aligned with the parent
+  , generators :: [Vector Magnitude]
+  {- ^ antisymmetric @n × n@ matrices, row-major, applied in order; none is
+  axis-aligned with the parent
+  -}
+  , rotation :: Maybe (Either EvalError (Vector Magnitude))
+  {- ^ the absolute rotation, row-major: the parent's times @expm g₁ · expm
+  g₂ · …@, whose columns are this chart's axes along the base axes.
+  'Nothing' when neither this chart nor any above it is turned. A lazy
+  field, so it is computed once, when first used, and shared by every use
+  of the value
+  -}
+  , rotationInverse :: Maybe (Either EvalError (Vector Magnitude))
+  {- ^ its inverse, from the generators negated in reverse order (@… · expm
+  (−g₂) · expm (−g₁)@, then the parent's inverse), never by inverting an
+  enclosure
+  -}
   , spin :: Maybe (Vector Magnitude)
   -- ^ the angular velocity of a moving chart (design §3.8, phase C): always 'Nothing' for now
   }
@@ -185,7 +208,7 @@ data Chart = Chart
 
 -- | A chart with a generator on it or on any chart above it.
 turned :: Chart -> Bool
-turned c = isJust c.generator || maybe False turned c.parent
+turned c = isJust c.rotation
 
 data Value
   = -- | lengths, dimension, display unit, flat row-major elements in SI base units
@@ -234,7 +257,7 @@ eval cfg rt = go
       Nothing -> Left (UnknownRef h)
       Just t -> do
         v <- case mi of
-          Nothing -> go (Site h []) VNil t
+          Nothing -> fromMaybe (go (Site h []) VNil t) (rt.shared h)
           Just i -> case t of
             TCycle _ _ bodies -> case vecIndex i (cycleMembers h VNil bodies) of
               Just member -> member
@@ -327,6 +350,14 @@ eval cfg rt = go
       case v of
         VTensor dims d hint buf -> slice dims (\rest -> VTensor rest d hint) buf
         -- A component of a point is a point on the sliced chart (design §3.6).
+        -- On a turned chart that component is along an axis the point is not
+        -- stored along, so it is refused rather than mislabelled (§3.8).
+        VPoint _ _ (Just sc) _
+          | turned sc ->
+              Left
+                ( Unsupported
+                    "a component of a point on a turned chart: take it on an axis-aligned chart, (p to eci).0"
+                )
         VPoint dims d sc buf -> slice dims (\rest -> VPoint rest d (sliceChart <$> sc)) buf
         _ -> Left (Internal "projection from a non-tensor")
      where
@@ -337,8 +368,8 @@ eval cfg rt = go
               let stride = product rest
                in Right (mk rest (V.slice (i * stride) stride buf))
         _ -> Left (Internal ("projection ." <> tshow i <> " out of range"))
-      -- The parent is sliced with it, so the sliced origins still add up. A
-      -- generator stays, so that a slice of a turned chart is still refused.
+      -- The parent is sliced with it, so the sliced origins still add up.
+      -- Only an unturned chart is sliced, so there is no rotation to slice.
       sliceChart :: Chart -> Chart
       sliceChart sc = case sc.dims of
         _ : rest ->
@@ -937,45 +968,58 @@ runPrim cfg rt prim args = case (prim, args) of
     (_, _, uh) <- scalarFull =<< u
     Right (VTensor dims d ((\h -> h{pinned = True}) <$> uh) buf)
   -- Points and charts (design §3.6, §3.8).
-  ("mkScale", [st, o]) -> mkChart st o Nothing Nothing
+  ("mkScale", [st, o]) -> mkChart st o Nothing []
   -- A chart whose origin is given in a parent chart.
   ("mkChart3", [st, o, par]) -> do
     parentChart <- chartOf =<< par
-    mkChart st o (Just parentChart) Nothing
-  -- And whose axes are turned from the parent's by a generator, which must
-  -- be antisymmetric exactly: the transpose is the negation, entry by entry.
+    mkChart st o (Just parentChart) []
+  -- And whose axes are turned from the parent's by a list of generators,
+  -- applied in order, each antisymmetric exactly: the transpose is the
+  -- negation, entry by entry.
   ("mkChart4", [st, o, par, g]) -> do
     parentChart <- chartOf =<< par
-    (gdims, _, _, gbuf) <- tensor =<< g
-    gs <- sequence gbuf
-    let n = case gdims of
-          [k, _] -> k
-          _ -> 0
-        entry i j = gs V.! (i * n + j)
-    if and [entry j i == negM (entry i j) | i <- [0 .. n - 1], j <- [i .. n - 1]]
-      then mkChart st o (Just parentChart) (Just gs)
-      else
-        Left
-          ( Eval.Eval.Domain
-              "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
-          )
+    gens <- mapM antisymmetric =<< listElems =<< g
+    mkChart st o (Just parentChart) gens
+  -- A point written on a chart: its coordinates times the step, along the
+  -- chart's axes, from its origin (design §3.8), stored from the base
+  -- origin along the base axes: o + R (step · c).
   ("pointOn", [s, x]) -> do
-    sc <- unturned =<< chartOf =<< s
+    sc <- chartOf =<< s
     (_, _, _, ks) <- tensor =<< x
-    Right
-      ( VPoint
-          sc.dims
-          sc.dim
-          (Just sc)
-          (V.zipWith (\o k -> (\k' -> addM o (mulM p k' sc.step)) <$> k) sc.origin ks)
-      )
+    case sc.rotation of
+      Nothing ->
+        Right
+          ( VPoint
+              sc.dims
+              sc.dim
+              (Just sc)
+              (V.zipWith (\o k -> (\k' -> addM o (mulM p k' sc.step)) <$> k) sc.origin ks)
+          )
+      Just r -> do
+        rm <- r
+        let along =
+              rotateElems
+                p
+                (V.length sc.origin)
+                rm
+                (V.map (fmap (\k' -> mulM p k' sc.step)) ks)
+        Right
+          ( VPoint
+              sc.dims
+              sc.dim
+              (Just sc)
+              (V.zipWith (\o e -> addM o <$> e) sc.origin along)
+          )
+  -- A point and an amount, and the amount between two points, are along the
+  -- base axes whatever chart the points are on (design §3.8): the chart is
+  -- how a point prints, never what its arithmetic means, so
+  -- @q .+ (p .- q)@ is @p@ on any charts. A difference carries the step unit
+  -- of the points' common chart. An amount along a turned chart's axes is
+  -- brought to the base axes with @inChart@.
   ("pointAdd", [pt, v]) -> do
     (dims, d, sc, buf) <- point =<< pt
     (_, _, _, vs) <- tensor =<< v
     Right (VPoint dims d sc (V.zipWith (\m dv -> addM <$> m <*> dv) buf vs))
-  -- The amount between two points, in the step unit of their common chart.
-  -- Points are amounts from the base origin, so across charts of one tree
-  -- (or none) the difference is taken at the common root, the base.
   ("pointSub", [pt, q]) -> do
     (dims, d, sc1, m1) <- point =<< pt
     (_, _, sc2, m2) <- point =<< q
@@ -983,10 +1027,19 @@ runPrim cfg rt prim args = case (prim, args) of
           (Just a, Just b) | a.name == b.name -> a.stepHint
           _ -> Nothing
     Right (VTensor dims d hint (V.zipWith (\x y -> subM <$> x <*> y) m1 m2))
+  -- The point does not change; only the chart it prints on does.
   ("toScale", [pt, s]) -> do
     (dims, d, _, buf) <- point =<< pt
-    sc <- unturned =<< chartOf =<< s
+    sc <- chartOf =<< s
     Right (VPoint dims d (Just sc) buf)
+  -- A chart's absolute rotation (design §3.8): its axes, as columns along
+  -- the base axes, computed once with the chart. Exactly the identity for a
+  -- chart that is not turned.
+  ("rotationOf", [s]) -> do
+    sc <- chartOf =<< s
+    let n = V.length sc.origin
+    rm <- fromMaybe (Right (identityMatrix n)) sc.rotation
+    Right (VTensor [n, n] dimOne Nothing (V.map Right rm))
   _
     | primArity prim == Just (length args) ->
         Left (Unsupported (prim <> ": not implemented yet"))
@@ -1000,23 +1053,55 @@ runPrim cfg rt prim args = case (prim, args) of
           )
  where
   p = precisionOf cfg
-  -- A chart's origin is stored from the base origin: the parent's origin
-  -- plus the amount it was given at, which is along the parent's axes. Under
-  -- a turned parent that sum needs the rotation, so the amount is kept as
-  -- given and every use of the chart is refused (design §3.8).
-  mkChart st o parentChart gen = do
+  -- A chart's absolute frame (design §3.8). The origin is stored from the
+  -- base origin along the base axes: the parent's origin plus the amount it
+  -- was given at, which is along the parent's axes and so turned by the
+  -- parent's absolute rotation. The rotation and its inverse are left
+  -- lazy, to be computed once when first used ('chartFrame').
+  mkChart st o parentChart gens = do
     (stepM, d, stepHint) <- scalarFull =<< st
     (odims, _, _, obuf) <- tensor =<< o
     amount <- sequence obuf
-    let originM = case parentChart of
-          Just pc | not (turned pc) -> V.zipWith addM pc.origin amount
-          _ -> amount
+    let n = V.length amount
+    originM <- case parentChart of
+      Nothing -> Right amount
+      Just pc -> case pc.rotation of
+        Nothing -> Right (V.zipWith addM pc.origin amount)
+        Just r -> do
+          rm <- r
+          Right (V.zipWith addM pc.origin (rotateVector p n rm amount))
+    let (forward, backward) = chartFrame p n parentChart gens
     Right
-      (VChart (Chart Nothing stepM stepHint originM odims d parentChart gen Nothing))
-  unturned c
-    | turned c =
-        Left (Unsupported "rotated charts are not yet supported: coming with expm")
-    | otherwise = Right c
+      ( VChart
+          ( Chart
+              Nothing
+              stepM
+              stepHint
+              originM
+              odims
+              d
+              parentChart
+              gens
+              forward
+              backward
+              Nothing
+          )
+      )
+  -- A generator of a chart: an exactly antisymmetric matrix.
+  antisymmetric g = do
+    (gdims, _, _, gbuf) <- tensor =<< g
+    gs <- sequence gbuf
+    let n = case gdims of
+          [k, _] -> k
+          _ -> 0
+        entry i j = gs V.! (i * n + j)
+    if and [entry j i == negM (entry i j) | i <- [0 .. n - 1], j <- [i .. n - 1]]
+      then Right gs
+      else
+        Left
+          ( Eval.Eval.Domain
+              "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
+          )
   pureOp op x y = Right (op x y)
   elementwise1 op a = do
     (dims, d, hint, buf) <- tensor =<< a
@@ -1288,6 +1373,98 @@ matrixExp p n b
   tidy = map (map (tidyM p))
   partial = foldr1 (zipWith (zipWith addM)) powers
   remainder = 2 * beta' ^ top / factorial top
+
+-- Charts ------------------------------------------------------------------------------
+
+{- | The absolute rotation of a chart and its inverse (design §3.8), from its
+parent's and its own generators, as lazy values: @R = R_parent · expm g₁ ·
+expm g₂ · …@ and @R⁻¹ = … · expm (−g₂) · expm (−g₁) · R_parent⁻¹@. The
+inverse comes from the generators, each inverted exactly by negation, and
+never from inverting a matrix of enclosures. 'Nothing' is the identity: no
+generator here or above.
+-}
+chartFrame ::
+  Precision ->
+  Int ->
+  Maybe Chart ->
+  [Vector Magnitude] ->
+  ( Maybe (Either EvalError (Vector Magnitude))
+  , Maybe (Either EvalError (Vector Magnitude))
+  )
+chartFrame p n parentChart gens =
+  ( compose (parentChart >>= (.rotation)) (local id gens)
+  , compose (local (V.map negM) (reverse gens)) (parentChart >>= (.rotationInverse))
+  )
+ where
+  local _ [] = Nothing
+  local sign gs = Just (foldr1 (\a b -> matrixProduct p n <$> a <*> b) (map (expOf . sign) gs))
+  expOf g = do
+    rows <- arith (matrixExp p n (chunk (V.toList g)))
+    Right (V.fromList (concat rows))
+  chunk xs
+    | null xs = []
+    | otherwise = let (r, rest) = splitAt n xs in r : chunk rest
+  compose Nothing b = b
+  compose a Nothing = a
+  compose (Just a) (Just b) = Just (matrixProduct p n <$> a <*> b)
+
+{- | The coordinates on a chart of a point stored from the base origin
+along the base axes (design §3.8): @R⁻¹ (x − o) / step@, with the cached
+inverse rotation.
+-}
+coordinatesOn ::
+  Precision -> Chart -> [Magnitude] -> Either EvalError [Magnitude]
+coordinatesOn p c xs = do
+  let fromOrigin = zipWith subM xs (V.toList c.origin)
+  along <- case c.rotationInverse of
+    Nothing -> Right fromOrigin
+    Just r -> do
+      rm <- r
+      Right (V.toList (rotateVector p (length fromOrigin) rm (V.fromList fromOrigin)))
+  arith (mapM (\x -> divM p x c.step) along)
+
+-- | The elements of a list value, as thunks.
+listElems :: Value -> Either EvalError [Thunk]
+listElems = \case
+  VData NilC [] -> Right []
+  VData ConsC [x, xs] -> (x :) <$> (listElems =<< xs)
+  _ -> Left (Internal "expected a list")
+
+-- | The @n × n@ identity, row-major and exact.
+identityMatrix :: Int -> Vector Magnitude
+identityMatrix n =
+  V.generate (n * n) (\k -> if k `div` n == k `mod` n then Exact 1 else Exact 0)
+
+-- | The product of two row-major @n × n@ matrices, its entries tidied.
+matrixProduct ::
+  Precision -> Int -> Vector Magnitude -> Vector Magnitude -> Vector Magnitude
+matrixProduct p n a b =
+  V.generate
+    (n * n)
+    ( \k ->
+        let (i, j) = k `divMod` n
+         in tidyM
+              p
+              (sumM [mulM p (a V.! (i * n + l)) (b V.! (l * n + j)) | l <- [0 .. n - 1]])
+    )
+
+-- | A row-major @n × n@ matrix applied to a vector.
+rotateVector ::
+  Precision -> Int -> Vector Magnitude -> Vector Magnitude -> Vector Magnitude
+rotateVector p n r v =
+  V.generate
+    n
+    (\i -> sumM [mulM p (r V.! (i * n + j)) (v V.! j) | j <- [0 .. n - 1]])
+
+-- | 'rotateVector' on elements, lazily: a component forces only what it uses.
+rotateElems ::
+  Precision -> Int -> Vector Magnitude -> Vector Elem -> Vector Elem
+rotateElems p n r v =
+  V.generate
+    n
+    ( \i ->
+        sumM <$> sequence [mulM p (r V.! (i * n + j)) <$> (v V.! j) | j <- [0 .. n - 1]]
+    )
 
 {- | A plain rendering for tests. Forces every element. Exact magnitudes
 print as @n/d@ in base units, affine ones as an approximate @mid±r@, and

@@ -237,8 +237,12 @@ chartStatement = do
 {- | A chart's origin and its @by@ part. @by@ is a keyword in this statement
 only, so that it stays a name everywhere else: the statement's tokens are
 cut at the first @by@ outside brackets, the origin is parsed from the
-tokens before it, and the generator from the tokens after it. Cutting the
-tokens rather than the parsed tree keeps @by a + b@ whole.
+tokens before it, and the generators from the tokens after it. Cutting the
+tokens rather than the parsed tree keeps @by a + b@ whole. The generators
+are one expression, or several separated by @then@ (@by rotz Ω then rotx
+i then rotz ω@), applied in that order (design §3.8). They become a list
+literal, which is what @mkChart4@ takes, so a single generator is a list
+of one. An @if@ inside a generator takes its own @then@.
 -}
 originAndGenerator :: Parser (Expr, Maybe Expr)
 originAndGenerator = do
@@ -251,8 +255,10 @@ originAndGenerator = do
       origin <- expr <* P.eof
       P.setInput input{toks = after}
       _ <- match "by" (\case TIdent "by" -> Just (); _ -> Nothing)
-      gen <- expr
-      pure (origin, Just gen)
+      g <- expr
+      gs <- P.many (kw KThen *> expr)
+      let sp = foldr (spanUnion . (.span)) g.span gs
+      pure (origin, Just (Expr sp (List (g : gs))))
  where
   byIndex = go (0 :: Int) 0
    where

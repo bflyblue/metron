@@ -223,7 +223,10 @@ holds. @dual v = ε \@ v@ is the inverse of @⋆@ and @b ∧ a = dual (b × a)@,
 so a bivector built from a computed vector is formed as the dual of one
 vector, angle and all: every entry is then exactly the negation of its
 partner, even when the vector is an enclosure, and @B + Bᵀ@ is exactly
-zero.
+zero. @euler313@ is the composed matrix, for @\@@ and @transformBy@; a
+chart is turned by the sequence itself, @by rotz Ω then rotx i then rotz
+ω@ (design §3.8). @inChart c x@ reads a tensor @x@ as given along the axes
+of chart @c@ and gives it along the base axes, @R x Rᵀ@ for a matrix.
 -}
 algebra :: [(Text, Text)]
 algebra =
@@ -258,6 +261,7 @@ algebra =
     ( "euler313"
     , "\\raan inc argp -> expm (rotz raan) @ expm (rotx inc) @ expm (rotz argp)"
     )
+  , ("inChart", "\\c x -> transformBy (rotationOf c) x")
   ]
 
 {- | Tuples and lists (design §2.3): the structural functions, recursive
@@ -303,7 +307,10 @@ expanded, @rr' = Φ_rr rr Φ_rrᵀ + Φ_rv rvᵀ Φ_rrᵀ + Φ_rr rv Φ_rvᵀ + 
 @updateCov2@ is @P − K (H P)@ with @H P = (P Hᵀ)ᵀ@, since @P@ is
 symmetric: written with @transpose h_r@ the measurement matrices have a
 known rank, where @h_r \@ p.rr@ alone would default @h_r@ to a vector
-(design §4.2).
+(design §4.2). @inChartCov2 c p@ reads a block covariance as given along
+the axes of chart @c@ and gives it along the base axes: each block is
+@R P Rᵀ@, since the state's rotation is @R@ on positions and on
+velocities alike (design §3.8).
 -}
 covarianceBlocks :: [(Text, Text)]
 covarianceBlocks =
@@ -350,6 +357,10 @@ covarianceBlocks =
         , "rv = p.rv - k_r @ transpose ph_v,"
         , "vv = p.vv - k_v @ transpose ph_v}"
         ]
+    )
+  ,
+    ( "inChartCov2"
+    , "\\c p -> Cov2 {rr = inChart c p.rr, rv = inChart c p.rv, vv = inChart c p.vv}"
     )
   ]
 

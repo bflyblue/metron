@@ -91,6 +91,7 @@ main =
         , contractionTests
         , sliceTests
         , rotationTests
+        , turnedChartTests
         , propertyTests
         , unitTests
         , lintRegressionTests
@@ -182,7 +183,7 @@ run defs t = do
       (T.pack . show)
       ( evalClosed
           defaultConfig
-          (Runtime typedOf (\_ _ _ -> Nothing) (\_ _ _ -> Nothing))
+          (Runtime typedOf (\_ _ _ -> Nothing) (\_ _ _ -> Nothing) (const Nothing))
           typed
       )
   first (T.pack . show) (render v)
@@ -1764,6 +1765,207 @@ encloses tol e t =
     <> tol
     <> " then 0 else 1) d == vmap (\\x -> 0) d"
 
+{- | Design §3.8: charts turned from their parent. Rotations are enclosures,
+so a conversion is checked with 'encloses' on the amount from a fixed
+point, divided by its unit, and never with @==@.
+-}
+turnedChartTests :: TestTree
+turnedChartTests =
+  testGroup
+    "turnedCharts"
+    [ testCase "one level: lvlh's x axis is eci's y, and back" $ do
+        runLinesP
+          ( frame
+              ++ [ encloses "1e-20" (fromEci "[1, 0, 0] lvlh to eci") "[7000000, 1, 0]"
+                 , -- reading back, by the generator negated
+                   encloses
+                     "1e-20"
+                     "transformBy (expm (-(rotz (90 deg)))) (([7000000, 1, 0] eci .- [0, 0, 0] lvlh) / m)"
+                     "[1, 0, 0]"
+                 , "[1, 0, 0] lvlh to eci"
+                 , "[7000000, 1, 0] eci to lvlh"
+                 , "[0, 0, 0] lvlh"
+                 ]
+          )
+          @?= Right
+            [ "true"
+            , "true"
+            , "[7000000.0000000000000…, 1.0000000000000000000…, 0] eci"
+            , "[1.0000000000000000000…, 3.0e-24 ± 3.8e-24, 0] lvlh"
+            , "[0, 0, 0] lvlh"
+            ]
+    , testCase
+        "two levels: the rotations compose in order, the origin turns with the parent" $ do
+        -- arm is turned from lvlh by rotx (90 deg), its origin [0, 2, 5] m
+        -- along lvlh's axes. By hand: R = Rz(90) Rx(90) = [0, 0, 1; 1, 0, 0;
+        -- 0, 1, 0], the origin [7000000, 0, 0] + Rz(90) [0, 2, 5] =
+        -- [6999998, 0, 5], so [1, 2, 3] arm is [6999998, 0, 5] + [3, 1, 2].
+        -- The product reversed would give [-2, -3, 1] for R [1, 2, 3], and
+        -- the origin not turned [7000000, 2, 5].
+        let arm = frame ++ ["chart arm = m at [0, 2, 5] m lvlh by rotx (90 deg)"]
+        runLinesP
+          ( arm
+              ++ [ encloses "1e-20" (fromEci "[1, 2, 3] arm") "[7000001, 1, 7]"
+                 , encloses "1e-20" (fromEci "[0, 0, 0] arm") "[6999998, 0, 5]"
+                 , encloses "1e-20" "rotationOf arm" "[0, 0, 1; 1, 0, 0; 0, 1, 0]"
+                 , encloses
+                     "1e-20"
+                     "transformBy (expm (-(rotx (90 deg))) @ expm (-(rotz (90 deg)))) (([7000001, 1, 7] eci .- [0, 0, 0] arm) / m)"
+                     "[1, 2, 3]"
+                 , "[7000001, 1, 7] eci to arm"
+                 ]
+          )
+          @?= Right
+            [ "true"
+            , "true"
+            , "true"
+            , "true"
+            , "[1.0000000000000000000…, 1.9999999999999999999…, 3.0000000000000000000…] arm"
+            ]
+    , testCase
+        "an origin is an amount along the parent's axes, not steps of the parent" $ do
+        runLinesP
+          [ eci
+          , "chart kmc = km at [0, 0, 0] km eci"
+          , "chart sub = m at [1, 0, 0] km kmc"
+          , "[0, 0, 0] sub to eci"
+          , "chart kmt = km at [0, 0, 0] km eci by rotz (90 deg)"
+          , "chart subt = m at [1, 0, 0] km kmt"
+          , encloses "1e-20" (fromEci "[0, 0, 0] subt") "[0, 1000, 0]"
+          , -- a chart under a turned one, not turned itself, has its parent's axes
+            encloses "1e-20" (fromEci "[1, 0, 0] subt") "[0, 1001, 0]"
+          ]
+          @?= Right ["[1000, 0, 0] eci", "true", "true"]
+    , testCase "a sequence with then is the Euler product, applied in order" $ do
+        let pf =
+              eci
+                : [ "chart pf = m at [0, 0, 0] m eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"
+                  ]
+        runLinesP
+          ( pf
+              ++ [ encloses "1e-20" "rotationOf pf" "euler313 (30 deg) (45 deg) (60 deg)"
+                 , encloses
+                     "1e-20"
+                     (fromEci "[1, 2, 3] pf")
+                     "euler313 (30 deg) (45 deg) (60 deg) @ [1, 2, 3]"
+                 ]
+          )
+          @?= Right ["true", "true"]
+    , testCase "displacements are along the base axes, with no origin term" $ do
+        runLinesP
+          ( frame
+              ++ [ -- the rotated difference: R (cp − cq)
+                   encloses
+                     "1e-20"
+                     "([1, 2, 3] lvlh .- [0, 5, 0] lvlh) / m"
+                     "expm (rotz (90 deg)) @ [1, -3, 3]"
+                 , encloses "1e-20" "([1, 2, 3] lvlh .- [0, 5, 0] lvlh) / m" "[3, 1, 3]"
+                 , -- q .+ (p .- q) is p, on any charts
+                   encloses
+                     "1e-20"
+                     "(([4, 5, 6] eci .+ ([1, 2, 3] lvlh .- [4, 5, 6] eci)) .- [1, 2, 3] lvlh) / m"
+                     "[0, 0, 0]"
+                 , "let p = [1, 2, 3] eci"
+                 , "let q = [7, 8, 9] eci"
+                 , "(p to lvlh) .- q == p .- q"
+                 , -- an amount along a chart's axes reaches the base axes with inChart
+                   encloses
+                     "1e-20"
+                     "([0, 0, 0] lvlh .+ inChart lvlh ([1, 0, 0] m) .- [1, 0, 0] lvlh) / m"
+                     "[0, 0, 0]"
+                 , "[1, 2, 3] lvlh .- [0, 5, 0] lvlh"
+                 ]
+          )
+          @?= Right
+            [ "true"
+            , "true"
+            , "true"
+            , "true"
+            , "true"
+            , "[3.0000000000000000000…, 0.99999999999999999999…, 3] m"
+            ]
+    , testCase "a covariance and a Cov2 block through inChart are R P Rᵀ" $ do
+        let pm = "[[4, 1, 0], [1, 9, 0], [0, 0, 1]]"
+        runLinesP
+          ( frame
+              ++ [ encloses
+                     "1e-20"
+                     ("inChart lvlh " <> pm)
+                     ("rotationOf lvlh @ " <> pm <> " @ transpose (rotationOf lvlh)")
+                 , encloses "1e-20" ("inChart lvlh " <> pm) "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
+                 , -- an unturned chart's is exactly the identity
+                   "inChart eci " <> pm <> " == " <> pm
+                 , "let blk = Cov2 {rr = "
+                     <> pm
+                     <> " * m^2, rv = "
+                     <> pm
+                     <> " * m^2 / s, vv = 2 * "
+                     <> pm
+                     <> " * (m / s)^2}"
+                 , "let turned = inChartCov2 lvlh blk"
+                 , encloses "1e-20" "turned.rr / m^2" "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
+                 , encloses "1e-20" "turned.rv / (m^2 / s)" "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
+                 , encloses
+                     "1e-20"
+                     "turned.vv / (m / s)^2"
+                     "2 * [[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
+                 ]
+          )
+          @?= Right ["true", "true", "true", "true", "true", "true"]
+    , testCase "an uncertain angle: the coordinates carry it, correlated" $ do
+        runLinesP
+          [ eci
+          , "chart tilt = m at [0, 0, 0] m eci by rotz (30 deg ± 0.001 rad)"
+          , "let v = ([1000, 0, 0] tilt .- [0, 0, 0] eci) / m"
+          , -- x = 1000 cos θ, y = 1000 sin θ: bounds near 0.5 and 0.87
+            "bound v.0 > 0.4 && bound v.0 < 0.6"
+          , "bound v.1 > 0.8 && bound v.1 < 0.95"
+          , -- the norm is 1000 whatever the angle: the first-order terms cancel
+            "bound (norm v) < bound v.0 / 100"
+          , "abs (mid (norm v) - 1000) < 1e-3"
+          ]
+          @?= Right ["true", "true", "true", "true"]
+    , testCase "a chart used in 100 conversions computes its rotation once" $ do
+        -- Each mention of lvlh shares one value, and so one rotation.
+        runLinesP
+          ( frame
+              ++ [ encloses
+                     "1e-15"
+                     "foldl (\\acc k -> acc + (([k, 0, 0] lvlh to eci) .- [0, 0, 0] lvlh).1 / m) 0 (range 1 100)"
+                     "5050"
+                 ]
+          )
+          @?= Right ["true"]
+    , testCase ":view and :edit of a sequence read back to the same hash" $ do
+        let pf = "chart pf = m at [0, 2, 0] km eci by rotz (30 deg) then rotx (45 deg)"
+        runLinesP [eci, pf, ":view pf"]
+          @?= Right
+            ["chart pf = m at [0, 2, 0] km eci by rotz (30 * deg) then rotx (45 * deg)"]
+        let hashAfter def = runLinesP [eci, def, ":hash pf"]
+        expecting (runLinesP [eci, pf, ":edit pf"]) $ \outs ->
+          hashAfter (T.strip (last outs)) @?= hashAfter pf
+    , testCase "a sequence-turned chart survives a reload" $ withTempStore $ \dir -> do
+        s <-
+          persistLines
+            dir
+            [ eci
+            , "chart lvlh = m at [7000, 0, 0] km eci by rotz (90 deg)"
+            , "chart pf = m at [0, 0, 0] m lvlh by rotz (30 deg) then rotx (45 deg)"
+            , ":add"
+            ]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        loaded.codebase.names @?= s.codebase.names
+        loaded.codebase.scales @?= s.codebase.scales
+        linesIn loaded [":view pf", ":hash pf"]
+          @?= linesIn s [":view pf", ":hash pf"]
+        linesIn loaded ["[1, 2, 3] pf to eci"] @?= linesIn s ["[1, 2, 3] pf to eci"]
+    ]
+ where
+  eci = "chart eci = m at [0, 0, 0] m"
+  frame = [eci, "chart lvlh = m at [7000, 0, 0] km eci by rotz (90 deg)"]
+  fromEci p = "((" <> p <> ") .- [0, 0, 0] eci) / m"
+
 -- | Design §3.3, §3.8: @expm@, @transformBy@ and the bivector constructors.
 rotationTests :: TestTree
 rotationTests =
@@ -2254,7 +2456,7 @@ pipelineProperties src =
         withElaborated src e $ \_ (_, typed) ->
           case evalClosed
             defaultConfig
-            (Runtime (const Nothing) (\_ _ _ -> Nothing) (\_ _ _ -> Nothing))
+            (Runtime (const Nothing) (\_ _ _ -> Nothing) (\_ _ _ -> Nothing) (const Nothing))
             typed
             >>= render of
             Left (Internal msg) -> counterexample (T.unpack msg) False
@@ -3445,14 +3647,15 @@ affineTests =
             Left _ -> pure ()
             Right v -> assertFailure (show v)
     , testCase
-        "mkChart3 and mkChart4: a parent, a generator, antisymmetry, the not-yet refusal"
+        "mkChart3 and mkChart4: a parent, a list of generators, antisymmetry"
         $ do
           let eci = "chart eci = m at [0, 0, 0] m"
-              turn = "[0, -1, 0; 1, 0, 0; 0, 0, 0]"
+              turn = "{[0, -1, 0; 1, 0, 0; 0, 0, 0]}"
           typeOfTextP "mkChart3"
             @?= Right "Num d -> Tensor s d -> Chart (Tensor s d) -> Chart (Tensor s d)"
           typeOfTextP "mkChart4"
-            @?= Right "Num d -> Vec n d -> Chart (Vec n d) -> Mat n n -> Chart (Vec n d)"
+            @?= Right "Num d -> Vec n d -> Chart (Vec n d) -> {Mat n n} -> Chart (Vec n d)"
+          typeOfTextP "rotationOf" @?= Right "Chart (Vec n d) -> Mat n n"
           -- The origin is an amount in the parent; points are amounts from the
           -- base origin, so a difference across the tree is a plain difference.
           runLinesP
@@ -3471,33 +3674,29 @@ affineTests =
           -- A generator: exact, or scaled by an approximate angle, is a bivector.
           runLinesP [eci, "mkChart4 m ([0, 0, 0] m) eci " <> turn]
             @?= Right ["chart: step 1 at [0, 0, 0] m"]
-          runLinesP [eci, "mkChart4 m ([0, 0, 0] m) eci (" <> turn <> " * pi / 6)"]
+          runLinesP
+            [eci, "mkChart4 m ([0, 0, 0] m) eci {[0, -1, 0; 1, 0, 0; 0, 0, 0] * pi / 6}"]
             @?= Right ["chart: step 1 at [0, 0, 0] m"]
           let refused lines' needle = case runLinesP lines' of
                 Left err -> T.isInfixOf needle err @? T.unpack err
                 Right v -> assertFailure (show v)
           refused
-            [eci, "mkChart4 m ([0, 0, 0] m) eci [0, 1, 0; 1, 0, 0; 0, 0, 0]"]
+            [eci, "mkChart4 m ([0, 0, 0] m) eci {[0, 1, 0; 1, 0, 0; 0, 0, 0]}"]
             "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
+          -- Every generator of the list is checked.
           refused
-            [eci, "mkChart4 m ([0, 0, 0] m) eci [1, 0, 0; 0, 0, 0; 0, 0, 0]"]
+            [ eci
+            , "mkChart4 m ([0, 0, 0] m) eci {rotz (30 deg), [1, 0, 0; 0, 0, 0; 0, 0, 0]}"
+            ]
             "must be antisymmetric"
-          -- Converting to a turned chart, or to a chart under one, waits for expm.
-          let notYet = "rotated charts are not yet supported: coming with expm"
-          refused
-            [ eci
-            , "toScale (pointOn eci [1, 2, 3]) (mkChart4 m ([0, 0, 0] m) eci " <> turn <> ")"
-            ]
-            notYet
-          refused
-            [eci, "pointOn (mkChart4 m ([0, 0, 0] m) eci " <> turn <> ") [1, 2, 3]"]
-            notYet
-          refused
-            [ eci
-            , "let lvlh = mkChart4 m ([0, 0, 0] m) eci " <> turn
-            , "pointOn (mkChart3 m ([1, 0, 0] m) lvlh) [1, 2, 3]"
-            ]
-            notYet
+          -- No generator is axis-aligned; an unnamed chart prints its points
+          -- from the base origin.
+          runLinesP [eci, "pointOn (mkChart4 m ([1, 0, 0] m) eci {}) [1, 2, 3]"]
+            @?= Right ["[2, 2, 3] m (point)"]
+          -- The type cannot tell a turned chart from another, so `rotationOf`
+          -- is exactly the identity on one that is not turned.
+          runLinesP [eci, "rotationOf eci == [1, 0, 0; 0, 1, 0; 0, 0, 1]"]
+            @?= Right ["true"]
           -- The parent's dimension and shape, and the generator's size, are the child's.
           refused
             [eci, "mkChart3 K (0 K) eci"]
@@ -3506,7 +3705,7 @@ affineTests =
             [eci, "mkChart3 m ([1, 2] m) eci"]
             "expected Chart (Vec 2 [m]), got Chart (Vec 3 [m])"
           refused
-            [eci, "mkChart4 m ([0, 0, 0] m) eci [0, 1; -1, 0]"]
+            [eci, "mkChart4 m ([0, 0, 0] m) eci {[0, 1; -1, 0]}"]
             "expected Mat 3 3, got Mat 2 2"
     , testCase "charts with a parent: the translated tree, to and .- through it" $ do
         -- design §3.8's hierarchy without the rotations
@@ -3579,11 +3778,10 @@ affineTests =
         -- A trailing unit is a unit, not a parent.
         runLinesP ["chart warm = K at 300 K", "0 warm to degC"] @?= Right ["26.85 degC"]
     , testCase
-        "a chart turned by a generator: by parses and is stored; to waits for expm"
+        "a chart turned by a generator: by and then parse, and read back as written"
         $ do
           let eci = "chart eci = m at [0, 0, 0] m"
               turn = "[0, -1, 0; 1, 0, 0; 0, 0, 0]"
-              notYet = "rotated charts are not yet supported: coming with expm"
           runLinesP
             [ eci
             , "chart lvlh = m at [0, 0, 0] m eci by " <> turn
@@ -3601,15 +3799,33 @@ affineTests =
             , ":view lvlh"
             ]
             @?= Right ["chart lvlh = m at [0, 0, 0] m eci by " <> turn <> " * pi / 6"]
+          -- Several generators, applied in order, separated by `then`; an `if`
+          -- inside one keeps its own `then`.
+          runLinesP
+            [ eci
+            , "chart pf = m at [0, 0, 0] m eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"
+            , ":view pf"
+            , "chart odd = m at [0, 0, 0] m eci by (if 1 < 2 then rotz (1 deg) else rotx (1 deg)) then rotx (2 deg)"
+            , ":view odd"
+            ]
+            @?= Right
+              [ "chart pf = m at [0, 0, 0] m eci by rotz (30 * deg) then rotx (45 * deg) then rotz (60 * deg)"
+              , "chart odd = m at [0, 0, 0] m eci by (if 1 < 2 then rotz (1 * deg) else rotx (1 * deg)) then rotx (2 * deg)"
+              ]
+          let hashOfChart c = runLinesP [eci, "chart odd = m at [0, 0, 0] m eci by " <> c, ":hash odd"]
+          hashOfChart "if 1 < 2 then rotz (1 deg) else rotx (1 deg) then rotx (2 deg)"
+            @?= hashOfChart "(if 1 < 2 then rotz (1 deg) else rotx (1 deg)) then rotx (2 deg)"
+          -- A component of a point on a turned chart is refused, not mislabelled.
           let lvlh = "chart lvlh = m at [0, 0, 0] m eci by " <> turn
-          expectError (runLinesP [eci, lvlh, "[1, 2, 3] eci to lvlh"]) notYet
-          expectError (runLinesP [eci, lvlh, "[1, 2, 3] lvlh"]) notYet
-          -- A chart under a turned one is turned too.
           expectError
-            ( runLinesP
-                [eci, lvlh, "chart arm = m at [1, 0, 0] m lvlh", "[1, 2, 3] eci to arm"]
-            )
-            notYet
+            (runLinesP [eci, lvlh, "([1, 2, 3] lvlh).0"])
+            "a component of a point on a turned chart"
+          runLinesP
+            [ eci
+            , lvlh
+            , "(([1, 2, 3] lvlh to eci) .- [0, 0, 0] eci) == ([1, 2, 3] lvlh .- [0, 0, 0] eci)"
+            ]
+            @?= Right ["true"]
           expectError
             ( runLinesP
                 [eci, "chart bad = m at [0, 0, 0] m eci by [0, 1, 0; 1, 0, 0; 0, 0, 0]", "bad"]
