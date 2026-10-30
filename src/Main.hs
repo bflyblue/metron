@@ -75,7 +75,12 @@ startSession opts = do
         Right st -> do
           (cb, notes) <- loadStore st base.codebase
           mapM_ (TIO.hPutStrLn stderr . ("note: " <>)) notes
-          pure (Live base{codebase = cb, staging = cb} (Just st))
+          session <-
+            either
+              (\err -> TIO.hPutStrLn stderr err >> exitFailure)
+              pure
+              (refreshPreferences base{codebase = cb, staging = cb})
+          pure (Live session (Just st))
 
 -- | Run one input and persist whatever it changed.
 step :: Live -> Text -> IO (Either Text (Live, [Text]))

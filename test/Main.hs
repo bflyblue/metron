@@ -2024,6 +2024,34 @@ affineTests =
             , "5 klick"
             , "d = 5 * klick"
             ]
+    , testCase ":prefer sets a display unit per dimension; to still wins; it persists" $ do
+        runLinesP
+          [ ":prefer km/h"
+          , "5 m/s"
+          , "100 km / (2 h)"
+          , "5 m/s to m/s"
+          , "3 m + 2 m"
+          , ":prefer m/s"
+          , ":prefer"
+          , "5 km/h"
+          , ":unprefer m/s"
+          , "5 km/h"
+          ]
+          @?= Right
+            [ "values of dimension [m s^-1] print in km/h"
+            , "18 km h^-1"
+            , "50 km h^-1"
+            , "5 m s^-1"
+            , "5 m"
+            , "values of dimension [m s^-1] print in m/s"
+            , "prefer m/s"
+            , "1.3888888888888888888… m s^-1"
+            , "removed the preference m/s"
+            , "5 km h^-1"
+            ]
+        case evalP ":prefer 5" of
+          Left err -> T.isInfixOf "has no unit to prefer" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "points: scales, .+ and .-, printing on the written scale" $ do
         evalP "20 degC" @?= Right ["20 degC"]
         evalP "20 °C .+ 5 K" @?= Right ["25 degC"]
@@ -2074,8 +2102,10 @@ affineTests =
         evalP "0 J2000 < 0 MJD" @?= Right ["false"]
         typeOfTextP "20 degC" @?= Right "Point [K]"
         typeOfTextP "degC" @?= Right "Scale [K]"
-        typeOfTextP "\\p q -> p .- q" @?= Right "Point (Tensor s d) -> Point (Tensor s d) -> Tensor s d"
-        typeOfTextP "\\p v -> p .+ v" @?= Right "Point (Tensor s d) -> Tensor s d -> Point (Tensor s d)"
+        typeOfTextP "\\p q -> p .- q"
+          @?= Right "Point (Tensor s d) -> Point (Tensor s d) -> Tensor s d"
+        typeOfTextP "\\p v -> p .+ v"
+          @?= Right "Point (Tensor s d) -> Tensor s d -> Point (Tensor s d)"
         typeOfTextP "\\a b -> a < b" @?= Right "Num d -> Num d -> Bool"
         case evalP "20 degC + 5 degC" of
           Left err -> T.isInfixOf "a point has no sum" err @? T.unpack err
@@ -2277,6 +2307,7 @@ storeTests =
           persistLines
             dir
             [ "let speed = 5 km / h"
+            , ":prefer kPa"
             , "unit furlong = 201.168 * m"
             , "let r = 10 mm ± 0.01 mm #batch7"
             , "let even n = if n == 0 then true else odd (n - 1); let odd n = if n == 0 then false else even (n - 1)"
@@ -2294,6 +2325,7 @@ storeTests =
         loaded.codebase.history @?= s.codebase.history
         loaded.codebase.units @?= s.codebase.units
         loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.preferences @?= s.codebase.preferences
         Map.keysSet s.codebase.terms `Set.isSubsetOf` Map.keysSet loaded.codebase.terms
           @? "every term came back"
         linesIn
@@ -2306,6 +2338,7 @@ storeTests =
           , "even 10"
           , "odd 10"
           , ":view r"
+          , "101325 Pa"
           ]
           @?= Right
             [ "6 km h^-1"
@@ -2317,6 +2350,7 @@ storeTests =
             , "true"
             , "false"
             , "r = 10 * mm ± 0.01 * mm #batch7"
+            , "101.325 kPa"
             ]
     , testCase
         "the store only holds what the user added, plus the prelude terms those use"
@@ -2378,7 +2412,13 @@ storeTests =
   reload dir = do
     st <- either (error . T.unpack) id <$> openStore dir
     (cb, notes) <- loadStore st withPrelude.codebase
-    pure (withPrelude{codebase = cb, staging = cb}, notes)
+    pure
+      ( either
+          (error . T.unpack)
+          id
+          (refreshPreferences withPrelude{codebase = cb, staging = cb})
+      , notes
+      )
   linesIn :: Session -> [Text] -> Either Text [Text]
   linesIn s0 = go s0 []
    where

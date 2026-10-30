@@ -14,6 +14,8 @@ module Eval.Codebase (
   markScale,
   isScaleName,
   clearFlags,
+  addPreference,
+  removePreference,
   scaleNameFor,
   lookupName,
   lookupTerm,
@@ -53,14 +55,16 @@ data Codebase = Codebase
   , names :: Map Text Reference
   , history :: Map Text [Reference] -- newest first
   , units :: Set.Set Text
+  -- ^ names declared with @unit@ (design §3.2.12); label-level metadata like names
   , scales :: Set.Set Text
-  {- ^ definitions declared with @scale@ (design §3.6)
-  ^ definitions declared with @unit@ (design §3.2.12); label-level metadata like names
-  -}
+  -- ^ names declared with @scale@ (design §3.6)
+  , preferences :: Set.Set Text
+  -- ^ display preferences as written (@km/h@), label-level metadata (design §3.2.12)
   }
 
 emptyCodebase :: Codebase
-emptyCodebase = Codebase Map.empty Map.empty Map.empty Map.empty Set.empty Set.empty
+emptyCodebase =
+  Codebase Map.empty Map.empty Map.empty Map.empty Set.empty Set.empty Set.empty
 
 {- | Declare a name a display unit (design §3.2.12). Units are names, not
 references: two names for one hash can be a unit and a plain quantity.
@@ -76,6 +80,10 @@ markScale n cb = cb{scales = Set.insert n cb.scales}
 
 isScaleName :: Text -> Codebase -> Bool
 isScaleName n cb = Set.member n cb.scales
+
+addPreference, removePreference :: Text -> Codebase -> Codebase
+addPreference t cb = cb{preferences = Set.insert t cb.preferences}
+removePreference t cb = cb{preferences = Set.delete t cb.preferences}
 
 clearFlags :: Text -> Codebase -> Codebase
 clearFlags n cb = cb{units = Set.delete n cb.units, scales = Set.delete n cb.scales}

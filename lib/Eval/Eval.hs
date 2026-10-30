@@ -27,6 +27,7 @@ module Eval.Eval (
   UnitHint (..),
   UnitFactor (..),
   ScaleHint (..),
+  Preferences,
   Site (..),
   eval,
   evalClosed,
@@ -38,6 +39,7 @@ module Eval.Eval (
 
 import Control.Monad (foldM)
 import Data.List (nub)
+import Data.Map.Strict (Map)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -128,6 +130,8 @@ data UnitHint = UnitHint
   -- ^ the product of the atoms
   , dim :: Dim
   -- ^ the product of the atoms
+  , pinned :: Bool
+  -- ^ set by @to@: an explicit choice that a display preference must not override (design §3.2.12)
   }
   deriving stock (Eq, Show)
 
@@ -361,7 +365,7 @@ asUnit :: UnitAtom -> Value -> Thunk
 asUnit atom = \case
   VTensor [] d _ buf | V.length buf == 1 -> do
     x <- V.head buf
-    Right (VTensor [] d (Just (UnitHint [UnitFactor atom 1 d x] x d)) buf)
+    Right (VTensor [] d (Just (UnitHint [UnitFactor atom 1 d x] x d False)) buf)
   v -> Right v
 
 -- | Name a scale value after the definition it came from.
@@ -396,6 +400,7 @@ mkHint p factors = do
         kept
         total
         (foldr (dimMul . (\u -> dimPow u.power u.unitDim)) dimOne kept)
+        False
     )
  where
   -- Within a dimension, mixed signs collapse onto the first-written unit
@@ -426,6 +431,11 @@ b + a print alike (design §3.2.12); the left one when they are equal.
 -}
 smallerUnit :: UnitHint -> UnitHint -> Maybe UnitHint
 smallerUnit a b = Just (if midpoint b.factor < midpoint a.factor then b else a)
+
+{- | Display preferences (design §3.2.12): a unit per exact dimension, used
+for a value whose own unit was not chosen with @to@.
+-}
+type Preferences = Map Dim UnitHint
 
 {- | The display unit of a product or quotient of two values: combine when
 both have one, keep the one that exists otherwise.
@@ -459,6 +469,7 @@ runPrim cfg rt prim args = case (prim, args) of
                       [UnitFactor (UnitBase unit) 1 (dimBase b) (Exact 1)]
                       (Exact 1)
                       (dimBase b)
+                      False
                   )
               )
               (Exact 1)
@@ -650,7 +661,7 @@ runPrim cfg rt prim args = case (prim, args) of
   ("to", [a, u]) -> do
     (dims, d, _, buf) <- tensor =<< a
     (_, _, uh) <- scalarFull =<< u
-    Right (VTensor dims d uh buf)
+    Right (VTensor dims d ((\h -> h{pinned = True}) <$> uh) buf)
   -- Points and scales (design §3.6).
   ("mkScale", [st, o]) -> do
     (stepM, d, stepHint) <- scalarFull =<< st

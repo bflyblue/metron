@@ -15,6 +15,7 @@ module Eval.Pretty (
 ) where
 
 import Data.Char (intToDigit)
+import Data.Map.Strict qualified as Map
 import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -161,13 +162,18 @@ prints its magnitudes in that unit (design §3.2.12); otherwise in SI base
 units. Unit names go through the namer so that a renamed unit prints under
 its current name.
 -}
-renderValue :: RefNamer -> Int -> Value -> Either EvalError Text
-renderValue namer scale = renderValueWith namer scale (renderMagnitude scale)
+renderValue :: RefNamer -> Int -> Preferences -> Value -> Either EvalError Text
+renderValue namer scale prefs = renderValueWith namer scale prefs (renderMagnitude scale)
 
 -- | 'renderValue' with a chosen rendering for each magnitude.
 renderValueWith ::
-  RefNamer -> Int -> (Magnitude -> Text) -> Value -> Either EvalError Text
-renderValueWith namer scale showMagnitude = \case
+  RefNamer ->
+  Int ->
+  Preferences ->
+  (Magnitude -> Text) ->
+  Value ->
+  Either EvalError Text
+renderValueWith namer scale prefs showMagnitude = \case
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
@@ -198,7 +204,7 @@ renderValueWith namer scale showMagnitude = \case
           <> renderNested showMagnitude s.dims (V.toList s.origin)
           <> (if T.null (renderUnits s.dim) then "" else " " <> renderUnits s.dim)
   v -> do
-    (dims, scaled, units) <- displayParts namer scale v
+    (dims, scaled, units) <- displayParts namer scale prefs v
     pure
       ( renderNested showMagnitude dims scaled
           <> (if T.null units then "" else " " <> units)
@@ -214,11 +220,23 @@ atomNameWith _ = \case
 (or in base units), and the unit text. Forces every element.
 -}
 displayParts ::
-  RefNamer -> Int -> Value -> Either EvalError ([Int], [Magnitude], Text)
-displayParts namer scale = \case
+  RefNamer ->
+  Int ->
+  Preferences ->
+  Value ->
+  Either EvalError ([Int], [Magnitude], Text)
+displayParts namer scale prefs = \case
   VTensor dims d hint buf -> do
     rs <- sequence (V.toList buf)
-    pure $ case hint of
+    -- The display rule of design §3.2.12, in order: a unit chosen with `to`;
+    -- a declared preference for this exact dimension; the units the value
+    -- was written in; base units.
+    let chosen = case hint of
+          Just h | h.pinned -> Just h
+          _ -> case Map.lookup d prefs of
+            Just pref -> Just pref
+            Nothing -> hint
+    pure $ case chosen of
       Just h
         | h.dim == d
         , midpoint h.factor /= 0

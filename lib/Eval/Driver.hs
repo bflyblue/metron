@@ -12,18 +12,21 @@ module Eval.Driver (
   emptySession,
   preludeSession,
   feed,
+  refreshPreferences,
 ) where
 
 import Data.List (partition)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Affine (Magnitude (..), addM)
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
+import Eval.Dimension (Dim, renderDim)
 import Eval.Eval
 import Eval.Hash (hashTerm, showHash)
 import Eval.Infer qualified as I
@@ -45,11 +48,14 @@ data Session = Session
   , staging :: Codebase
   -- ^ codebase with the scratch entered on top; what expressions see
   , config :: Config
-  -- ^ evaluation settings, changed with @:set@
+  , preferred :: Preferences
+  {- ^ the codebase's preference texts, evaluated to hints keyed by dimension (design §3.2.12)
+  ^ evaluation settings, changed with @:set@
+  -}
   }
 
 emptySession :: Session
-emptySession = Session emptyCodebase [] Map.empty emptyCodebase defaultConfig
+emptySession = Session emptyCodebase [] Map.empty emptyCodebase defaultConfig Map.empty
 
 {- | A session with the prelude (design §3.2.11) entered and added, as every
 interactive session starts. Fails only if the prelude itself does not
@@ -74,7 +80,8 @@ feed session src
           exprs = [e | S.SExpr e <- stmts]
       (session', notes) <-
         if null lets then Right (session, []) else propose session src lets
-      outs <- mapM (evalExpr session'.config session'.staging src) exprs
+      outs <-
+        mapM (evalExpr session'.config session'.preferred session'.staging src) exprs
       pure (session', notes ++ outs)
 
 {- | Put definitions into the scratch. A name already pending is replaced
@@ -115,13 +122,14 @@ renderResolveErrorWith sources src = \case
   err@(LintFailure _ _) -> renderResolveError err
 
 -- | Desugar, typecheck and elaborate, lint, evaluate, print.
-evalExpr :: Config -> Codebase -> Text -> S.Expr -> Either Text Text
-evalExpr cfg cb src e = do
+evalExpr ::
+  Config -> Preferences -> Codebase -> Text -> S.Expr -> Either Text Text
+evalExpr cfg prefs cb src e = do
   (_, v) <- evalValue cfg cb src e
   either
     (Left . renderEvalError)
     Right
-    (renderValue (refNamer cb) cfg.precision v)
+    (renderValue (refNamer cb) cfg.precision prefs v)
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design
@@ -176,6 +184,45 @@ command session src = \case
   ["set", "precision", n] ->
     setting n (\k -> cfg{precision = k}) "precision must be a non-negative integer"
   ["set", "sigma", n] -> setting n (\k -> cfg{sigma = k}) "sigma must be a non-negative integer"
+  -- Display preferences (design §3.2.12): a unit per exact dimension.
+  ["prefer"] ->
+    keep
+      ( Right
+          ( if Set.null cb.preferences
+              then ["no preferences"]
+              else map ("prefer " <>) (Set.toList cb.preferences)
+          )
+      )
+  ("prefer" : rest) -> do
+    let text = T.unwords rest
+    (d, _) <- preferenceOf text
+    -- One preference per dimension: an earlier one for the same dimension goes.
+    let stale =
+          [ t
+          | t <- Set.toList cb.preferences
+          , Just (d', _) <- [either (const Nothing) Just (preferenceOf t)]
+          , d' == d
+          ]
+        cb' = addPreference text (foldr removePreference session.codebase stale)
+    refreshed <-
+      refreshPreferences
+        session
+          { codebase = cb'
+          , staging = addPreference text (foldr removePreference cb stale)
+          }
+    pure
+      (refreshed, ["values of dimension " <> renderDim d <> " print in " <> text])
+  ("unprefer" : rest) -> do
+    let text = T.unwords rest
+    if Set.member text cb.preferences
+      then
+        (,["removed the preference " <> text])
+          <$> refreshPreferences
+            session
+              { codebase = removePreference text session.codebase
+              , staging = removePreference text cb
+              }
+      else Left ("no preference " <> text <> "; :prefer lists them")
   -- The raw magnitudes (design §3.2.10): midpoint, nudges, slack.
   ("exact" : rest) -> keep $ do
     (h, v) <- evalOf rest
@@ -186,6 +233,7 @@ command session src = \case
         ( renderValueWith
             (inputNamer h)
             cfg.precision
+            session.preferred
             (renderExact (inputNamer h) cfg.precision)
             v
         )
@@ -193,7 +241,7 @@ command session src = \case
   -- tensor's components.
   ("budget" : rest) -> keep $ do
     (h, v) <- evalOf rest
-    case displayParts (inputNamer h) cfg.precision v of
+    case displayParts (inputNamer h) cfg.precision session.preferred v of
       Right (_, xs, units) ->
         pure (renderBudget (inputNamer h) cfg.precision units (foldr addM (Exact 0) xs))
       Left (Internal _) -> Left "budget: not a number"
@@ -249,7 +297,7 @@ command session src = \case
     Left
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
           <> "          :view name  :core name  :hash name  :names #hash  :history name  :dependents name  :alias new old  :unname name\n"
-          <> "          :exact expr  :budget expr  :set [precision n | sigma k]"
+          <> "          :exact expr  :budget expr  :set [precision n | sigma k]  :prefer [unit]  :unprefer unit"
       )
  where
   cb = session.staging
@@ -264,6 +312,7 @@ command session src = \case
     evalValue cfg cb (T.unwords rest) e
   -- Nudges declared in the expression itself are labelled "input".
   inputNamer h h' i written = if h' == h then "input" else refNamer cb h' i written
+  preferenceOf = preferenceHint cfg cb
   commit cb' outs = Right (session{codebase = cb', staging = cb'}, outs)
   withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n cb)
   withName' n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName n session.codebase)
@@ -473,3 +522,29 @@ renderEvalError = \case
   UnknownRef h -> "error: unknown reference " <> showHash h
   BadCycleIndex i -> "error: bad cycle index " <> T.pack (show i)
   Unsupported msg -> "not implemented: " <> msg
+
+{- | Evaluate a preference text (@km/h@) to the unit it names and the exact
+dimension it applies to. It must be a scalar with a display unit.
+-}
+preferenceHint :: Config -> Codebase -> Text -> Either Text (Dim, UnitHint)
+preferenceHint cfg cb text = do
+  e <- parseExpr text
+  (_, v) <- evalValue cfg cb text e
+  case v of
+    VTensor [] d (Just h) _ | h.dim == d -> Right (d, h)
+    VTensor [] _ Nothing _ ->
+      Left ("`" <> text <> "` has no unit to prefer; write one, as in :prefer km/h")
+    _ -> Left ("a preference must be a scalar unit expression, not `" <> text <> "`")
+
+{- | Recompute the evaluated preferences from the codebase's texts, as after a
+load or a change. A text that no longer evaluates (its unit was unnamed) is
+dropped from the evaluated set but kept in the codebase.
+-}
+refreshPreferences :: Session -> Either Text Session
+refreshPreferences session =
+  let hints =
+        [ (d, h)
+        | t <- Set.toList session.staging.preferences
+        , Right (d, h) <- [preferenceHint session.config session.staging t]
+        ]
+   in Right session{preferred = Map.fromList hints}

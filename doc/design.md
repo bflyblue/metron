@@ -795,14 +795,15 @@ come from:
 - `x to u` replaces the display unit with `u`'s. `to` is shape-polymorphic.
 
 The rule for which unit a result prints in, in order: an explicit `to` wins;
+otherwise a declared **preference** for the value's exact dimension
+(`:prefer km/h` makes every velocity print in km/h until `:unprefer km/h`; one
+preference per dimension, kept in the codebase and so across sessions);
 otherwise the written units, carried and simplified as above (dimensionless
 results are plain numbers, units of one dimension cancel, sums take the smaller
 unit); otherwise, when an operation drops the hint, SI base units. There is no
 best unit for a result, only the one the user wrote or asked for, so the rule
 never invents one: `1 V * 1 A` prints `1 V A`, not `1 W`, because `N m` is as
-often a torque as a joule. A declared preference per dimension (`:prefer km/h`,
-Frink's `:->`) would slot in between the first two steps and is left for later.
-
+often a torque as a joule. 
 A display unit whose dimension does not match the value's is ignored and base
 units are printed, so the rule can never show a wrong number. Units print by
 current name through the same resolution as `:view`, so a renamed unit prints
@@ -1669,6 +1670,8 @@ Inspection
 Session
 :set precision n   significant digits printed; working precision is n + 4 (3.2.8)
 :set sigma k       confidence multiplier for comparisons on statistical values (3.2.9)
+:prefer [unit]     print values of the unit's dimension in it (3.2.12); alone, list preferences
+:unprefer unit     remove that preference
 :set unicode on    pretty-print with unicode spellings (2.8); off for ASCII
 :exact e           raw rational, or midpoint and nudge list
 :budget e          error budget (3.2.6)
@@ -1700,6 +1703,8 @@ names.log          append-only, one event per line:
                      <unix time> unname <name>
                      <unix time> unit <name>
                      <unix time> scale <name>
+                     <unix time> prefer <unit text>
+                     <unix time> unprefer <unit text>
 history            the REPL's line history
 ```
 
@@ -1902,8 +1907,8 @@ tuned, and compilation is a later milestone.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),
-   haskeline with a history file beside the store, `:store`. Remaining:
-   `:covariance`, `:set unicode`, a merge tool for two stores' logs.
+   haskeline with a history file beside the store, `:store`, `:prefer`.
+   Remaining: `:covariance`, `:set unicode`, a merge tool for two stores' logs.
 7. **Tuples**, then **lists** with a `case` construct in the core.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons

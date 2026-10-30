@@ -180,3 +180,6 @@
   `Point (Vec 3 [m])`, `p .- q` a displacement, `p .+ v` a moved position,
   `p.0` a coordinate as a scalar point, `p to eci` the same position in
   another frame. Scalar points print as `Point [K]` as before.
+- `:prefer unit` and `:unprefer unit` (design §3.2.12): a display unit per
+  exact dimension, applied after `to` and before the written units, one per
+  dimension, kept in the codebase so it persists. `:prefer` alone lists them.

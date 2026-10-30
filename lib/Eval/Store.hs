@@ -5,7 +5,7 @@ A store is a directory:
 @
 format          "eval codebase 1"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
-names.log       append-only: time, then  bind name ref | unname name | unit ref | scale ref
+names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text
 @
 
 Terms are content-addressed, so they never conflict and are only ever
@@ -188,6 +188,8 @@ loadStore store base = do
     -- reference; every name then bound to it is flagged.
     [_, "unit", target] -> (flagNames markUnit target cb, notes)
     [_, "scale", target] -> (flagNames markScale target cb, notes)
+    (_ : "prefer" : rest) -> (addPreference (T.unwords rest) cb, notes)
+    (_ : "unprefer" : rest) -> (removePreference (T.unwords rest) cb, notes)
     [] -> (cb, notes)
     _ -> (cb, ("names.log:" <> tshow lineNo <> ": unreadable line, skipped") : notes)
 
@@ -217,7 +219,15 @@ sync store old new = do
       scales =
         [ stamp <> " scale " <> n | n <- Set.toList (Set.difference new.scales old.scales)
         ]
-      entries = binds ++ unnames ++ units ++ scales
+      prefers =
+        [ stamp <> " prefer " <> t
+        | t <- Set.toList (Set.difference new.preferences old.preferences)
+        ]
+      unprefers =
+        [ stamp <> " unprefer " <> t
+        | t <- Set.toList (Set.difference old.preferences new.preferences)
+        ]
+      entries = binds ++ unnames ++ units ++ scales ++ prefers ++ unprefers
   unless (null entries)
     $ TIO.appendFile (store.dir </> "names.log") (T.unlines entries)
  where
