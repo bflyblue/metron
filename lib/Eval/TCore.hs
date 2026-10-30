@@ -153,6 +153,14 @@ primScheme name = case name of
   -- vector's statistical nudges, and a vector with a given covariance.
   "cholesky" -> Just (Forall [nv, dv] (TFun (matD n n (dimPow 2 d)) (matD n n d)))
   "covariance" -> Just (Forall [nv, dv] (TFun (vecD n d) (matD n n (dimPow 2 d))))
+  -- The covariance of two vectors' shared statistical nudges: a joint
+  -- covariance's off-diagonal block, in the product of their dimensions.
+  "crossCovariance" ->
+    Just
+      ( Forall
+          [nv, mv, dv, d2v]
+          (TFun (vecD n d) (TFun (vecD m d2) (matD n m (dimMul d d2))))
+      )
   -- The parts of an enclosure (design §3.2.9), elementwise, in the
   -- operand's dimension.
   "mid" -> Just (Forall [sv, dv] (TFun sd sd))

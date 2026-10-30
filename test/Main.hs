@@ -2442,6 +2442,17 @@ displayTests =
 -- enclosures, declared uncertainty keeps its identity, and printing never
 -- shows a digit that is not certain.
 
+{- | A position and a velocity built on two shared statistical nudges, so
+that their cross-covariance is full: over @(e0, e1)@, @r@ has coefficient
+rows @(1, 2)@ and @(3, 0)@, @v@ rows @(0, 1)@ and @(1, -1)@.
+-}
+correlatedPair :: [Text]
+correlatedPair =
+  [ "let e = gauss 2"
+  , "let r = [e.0 + 2 * e.1, 3 * e.0] m"
+  , "let v = [e.1, e.0 - e.1] m/s"
+  ]
+
 affineTests :: TestTree
 affineTests =
   testGroup
@@ -2742,6 +2753,37 @@ affineTests =
             [ "covariance [0, 0, 0; 0, 0, 0; 0, 0, 0] km^2"
             , "bound box [0.00071, 0.00071, 0] km"
             ]
+    , testCase
+        "crossCovariance sums cᵢc'ⱼᵀ over the statistical nudges two vectors share"
+        $ do
+          -- Over (e0, e1): r has rows (1, 2) and (3, 0), v rows (0, 1) and
+          -- (1, -1), so Cov(r, v) = [1·0 + 2·1, 1·1 + 2·(-1); 3·0, 3·1].
+          runLinesP
+            ( correlatedPair
+                ++ [ "crossCovariance r v"
+                   , "crossCovariance v r == transpose (crossCovariance r v)"
+                   , "crossCovariance r r == covariance r"
+                   ]
+            )
+            @?= Right ["[2, -1; 0, 3] m^2 s^-1", "true", "true"]
+          -- Correlated nudges from a covariance matrix.
+          runLinesP
+            [ "let w = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"
+            , "crossCovariance w w == covariance w"
+            , "crossCovariance w w"
+            ]
+            @?= Right ["true", "[4, 2; 2, 10] m^2"]
+          -- Independent vectors: all zeros, in the product of the dimensions.
+          runLinesP
+            [ "crossCovariance ([1, 2] m ±σ 1 m) ([3, 4, 5] s ±σ 1 s)"
+            , ":type crossCovariance ([1, 2] m ±σ 1 m) ([3, 4, 5] s ±σ 1 s)"
+            , "crossCovariance ([1, 2] km ±σ 1 m) ([1, 2] h ±σ 1 s)"
+            ]
+            @?= Right ["[0, 0, 0; 0, 0, 0] m s", "Mat 2 3 [m s]", "[0, 0; 0, 0] km h"]
+          -- A shared bound nudge is no covariance.
+          evalP "crossCovariance ([1, 2] m ± 1 m #a) ([3, 4] m ± 1 m #a)"
+            @?= Right ["[0, 0; 0, 0] m^2"]
+          typeOfTextP "crossCovariance" @?= Right "Vec n d -> Vec m d1 -> Mat n m [d d1]"
     , testCase "points: scales, .+ and .-, printing on the written scale" $ do
         evalP "20 degC" @?= Right ["20 degC"]
         evalP "20 °C .+ 5 K" @?= Right ["25 degC"]
