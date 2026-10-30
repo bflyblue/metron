@@ -864,7 +864,58 @@ codebaseTests :: TestTree
 codebaseTests =
   testGroup
     "codebase"
-    [ testCase "scratch definitions are usable before :add"
+    [ testCase
+        ":ls lists names with their types, filtered by glob, kind or type query" $ do
+        let ls args =
+              runLinesP
+                ( [ "let speed = 7.5 km/s"
+                  , "unit furlong = 201.168 * m"
+                  , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+                  , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+                  ]
+                    ++ [":ls " <> args]
+                )
+        ls ""
+          @?= Right
+            [ "area : Shape -> Num [m^2]"
+            , "unit furlong : Num [m]"
+            , "speed : Num [m s^-1]"
+            , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+            , "Circle : Num [m] -> Shape"
+            , "Rect : Num [m] -> Num [m] -> Shape"
+            , "("
+                <> T.pack (show (length preludeNames))
+                <> " prelude names hidden; :ls --all or a filter shows them)"
+            ]
+        ls "k*m"
+          @?= Right
+            [ "unit klm : Num [cd rad^2]"
+            , "unit km : Num [m]"
+            , "unit kohm : Num [kg m^2 s^-3 A^-2]"
+            ]
+        ls "--units furl" @?= Right ["unit furlong : Num [m]"]
+        ls "--scales degC" @?= Right ["scale degC : Scale [K]"]
+        ls "--types"
+          @?= Right
+            [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+            , "Circle : Num [m] -> Shape"
+            , "Rect : Num [m] -> Num [m] -> Shape"
+            ]
+        ls ": Shape -> a" @?= Right ["area : Shape -> Num [m^2]"]
+        ls ": {a} -> Num" @?= Right ["length : {a} -> Num"]
+        -- unification both ways: the query's d is one variable, cross has two
+        ls ": Vec 3 d -> Vec 3 d -> Vec 3 [d^2]"
+          @?= Right ["cross : Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"]
+        ls "Rect : Num [m] -> Num [m] -> b"
+          @?= Right ["Rect : Num [m] -> Num [m] -> Shape"]
+        ls "nothing-like-this" @?= Right ["nothing matches"]
+        case ls "--bogus" of
+          Left err -> T.isInfixOf "unknown flag --bogus" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case ls ": Nope" of
+          Left err -> T.isInfixOf "unknown type `Nope`" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "scratch definitions are usable before :add"
         $ runLines ["let x = 5", "x + 1"] @?= Right ["6"]
     , testCase "redefining a pending name replaces it with a notice"
         $ runLines ["let x = 5", "let x = 6", "x"]

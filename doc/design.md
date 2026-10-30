@@ -1851,6 +1851,10 @@ Scratch and codebase (7.5)
 :edit name              print a definition, or a data declaration, as source, ready to paste back
 
 Inspection
+:ls [glob] [--all|--units|--scales|--types] [: type]
+                   every name with its type, sorted; the prelude hidden unless a filter or --all;
+                   a glob (* anywhere, else a substring), a kind, or a type query whose lowercase
+                   unknown names are variables, matched by unification both ways
 :type e            inferred type scheme of e
 :hash name         current ref of name
 :names #hash       every name that points at the hash (current or historical)

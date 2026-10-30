@@ -222,3 +222,9 @@
 - `Rect 3 m 4 m` is four arguments again, not two quantities; a type error
   that lands on such a literal or unit now carries a hint to write `(3 m)`.
   Provenance carries hints beside spans.
+- `:ls [glob] [--all | --units | --scales | --types] [: type]` browses the
+  codebase: every name with its type, declared types with their
+  constructors, the prelude hidden unless asked for. The type query is a
+  written type whose lowercase unknown names are variables, matched by
+  unification both ways, so `:ls : {a} -> Num` finds `length` and
+  `:ls : Vec 3 d -> Vec 3 d -> Vec 3 [d^2]` finds `cross`.

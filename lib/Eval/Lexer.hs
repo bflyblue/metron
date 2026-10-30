@@ -12,6 +12,7 @@ module Eval.Lexer (
   Keyword (..),
   Located (..),
   tokenize,
+  prepare,
   showToken,
 ) where
 

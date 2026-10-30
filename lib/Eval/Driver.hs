@@ -16,10 +16,10 @@ module Eval.Driver (
 ) where
 
 import Data.Char (isDigit)
-import Data.List (partition)
+import Data.List (partition, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -34,17 +34,29 @@ import Eval.Affine (
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
-import Eval.Dimension (Dim, dimPow, renderDim)
+import Eval.Dimension (Dim, dimPow, dimVar, renderDim)
 import Eval.Eval
 import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
-import Eval.Parser (parseExpr, parseProgram)
-import Eval.Prelude (preludeSource)
+import Eval.Lexer (prepare)
+import Eval.Parser (parseExpr, parseProgram, parseType)
+import Eval.Prelude (preludeNames, preludeSource)
 import Eval.Pretty
 import Eval.Resolve
 import Eval.Syntax qualified as S
 import Eval.TCore
-import Eval.Type (TypeDef (..), renderScheme, renderTypeDef)
+import Eval.Type (
+  Arg (..),
+  Kind (..),
+  Len (..),
+  Scheme (..),
+  Shape (..),
+  Type (..),
+  TypeDef (..),
+  dataConstructors,
+  renderScheme,
+  renderTypeDef,
+ )
 import Eval.Update
 
 data Session = Session
@@ -333,6 +345,8 @@ command session src = \case
       Left err -> Left ("lint failed: " <> err)
       Right schemes -> pure (map renderScheme schemes)
   ["core", n] -> keep $ withName n $ \r -> (: []) . ((n <> " = ") <>) <$> viewTyped cb r
+  -- Browse the codebase (design §7.3): names with their types, filtered.
+  ("ls" : rest) -> keep (listNames session rest)
   ["hash", n] -> keep $ withName n $ \r -> pure [showReference r]
   ["names", h] -> keep $ case findByPrefix h cb of
     [] -> Left ("no definition with hash " <> h)
@@ -364,7 +378,8 @@ command session src = \case
   _ ->
     Left
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
-          <> "          :view name  :core name  :hash name  :names #hash  :history name  :dependents name  :alias new old  :unname name\n"
+          <> "          :ls [glob] [--all|--units|--scales|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
+          <> "          :history name  :dependents name  :alias new old  :unname name\n"
           <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k]  :prefer [unit]  :unprefer unit"
       )
  where
@@ -686,3 +701,135 @@ nameTypes cb
               | Nothing <- idx, Just n <- typeNameOf h cb -> before <> n <> go after'
             _ -> before <> "#" <> go (T.drop 1 rest)
   isBase32 c = isDigit c || (c >= 'a' && c <= 'v')
+
+{- | @:ls [glob] [--all | --units | --scales | --types] [: type]@ (design
+§7.3): every name in the codebase with its type, one per line, sorted.
+Without a filter the prelude is hidden; a glob (@*@ anywhere, else a
+case-insensitive substring), a kind flag or a type query searches everything.
+The type query is a written type whose unknown names are variables, matched
+by unification both ways, so @: a -> a@ finds @Num [m] -> Num [m]@ and
+@: Num -> Num@ finds @a -> a@.
+-}
+listNames :: Session -> [Text] -> Either Text [Text]
+listNames session args = do
+  let (before, after) = break (== ":") args
+      flags = filter (T.isPrefixOf "--") before
+      globs = filter (not . T.isPrefixOf "--") before
+      typeText = T.unwords (drop 1 after)
+  mapM_
+    ( \f ->
+        if f `elem` ["--all", "--units", "--scales", "--types"]
+          then Right ()
+          else
+            Left ("unknown flag " <> f <> "; :ls takes --all, --units, --scales, --types")
+    )
+    flags
+  query <-
+    if null after
+      then Right Nothing
+      else do
+        t <- parseType typeText
+        either (Left . renderResolveError) (Right . Just) (queryScheme cb t)
+  let filtered = not (null globs) || not (null flags) || isJust query
+      hidePrelude = not filtered
+      kindOk n
+        | "--units" `elem` flags = isUnitName n cb
+        | "--scales" `elem` flags = isScaleName n cb
+        | "--types" `elem` flags = False
+        | otherwise = True
+      nameOk n =
+        all (`matchesGlob` n) globs && (not hidePrelude || n `Set.notMember` preludeSet)
+      typeOk sc = maybe True (`I.matchesQuery` sc) query
+      definitions =
+        [ prefix n <> n <> " : " <> renderScheme sc
+        | (n, r) <- sortOn (T.toLower . fst) (Map.toList cb.names)
+        , kindOk n
+        , nameOk n
+        , Just sc <- [typeOf r cb]
+        , typeOk sc
+        ]
+      types =
+        [ line
+        | "--units" `notElem` flags
+        , "--scales" `notElem` flags
+        , (n, h) <- sortOn (T.toLower . fst) (Map.toList cb.typeNames)
+        , Just def <- [lookupTypeDef h cb]
+        , line <-
+            [ declaration h n def
+            | nameOk n
+            , isNothing query
+            ]
+              ++ [ c <> " : " <> renderScheme sc
+                 | (i, fields) <- zip [0 ..] def.constructors
+                 , Just c <- [conNameOf h i cb]
+                 , nameOk c
+                 , let sc = constructorScheme h def i fields
+                 , typeOk sc
+                 ]
+        ]
+      hidden =
+        if hidePrelude
+          then length (filter (`Set.member` preludeSet) (Map.keys cb.names))
+          else 0
+      footer =
+        [ "("
+            <> tshow hidden
+            <> " prelude names hidden; :ls --all or a filter shows them)"
+        | hidden > 0
+        ]
+  pure
+    ( case definitions ++ types of
+        [] -> ["nothing matches"] ++ footer
+        ls -> ls ++ footer
+    )
+ where
+  cb = session.staging
+  tshow = T.pack . show
+  preludeSet = Set.fromList (map prepare preludeNames)
+  prefix n
+    | isUnitName n cb = "unit "
+    | isScaleName n cb = "scale "
+    | otherwise = ""
+  declaration h n def =
+    renderTypeDef
+      h
+      n
+      [ fromMaybe (showHash h <> "." <> tshow i) (conNameOf h i cb)
+      | i <- [0 .. length def.constructors - 1]
+      ]
+      [fieldNamesOf h i (length fs) cb | (i, fs) <- zip [0 ..] def.constructors]
+      def
+  -- A constructor's type: its fields to the type at its own parameters.
+  constructorScheme h def i fields =
+    let tyArgs = [paramArg v k | (v, k) <- def.params]
+        self = TData h tyArgs
+        instantiated = case dataConstructors (`lookupTypeDef` cb) self of
+          Just table | Just fs <- lookup (UserCon h i) table -> fs
+          _ -> fields
+     in Forall def.params (foldr TFun self instantiated)
+  paramArg v = \case
+    KType -> AType (TVar v)
+    KLen -> ALen (LVar v 0)
+    KShape -> AShape (SVar v)
+    KDim -> ADim (dimVar v)
+
+{- | @*@ matches any run of characters; a pattern without @*@ matches as a
+case-insensitive substring.
+-}
+matchesGlob :: Text -> Text -> Bool
+matchesGlob pat name
+  | T.any (== '*') pat = go (T.splitOn "*" (T.toLower pat)) (T.toLower name)
+  | otherwise = T.toLower pat `T.isInfixOf` T.toLower name
+ where
+  go [] s = T.null s
+  go [p] s = p `T.isSuffixOf` s
+  go (p : ps) s
+    | p == "" = anywhere ps s
+    | p `T.isPrefixOf` s = anywhere ps (T.drop (T.length p) s)
+    | otherwise = False
+  anywhere [] _ = True
+  anywhere (p : ps) s = case T.breakOn p s of
+    (_, rest) | p /= "" && T.null rest -> False
+    (_, rest) -> case ps of
+      [] -> p `T.isSuffixOf` s
+      _ -> anywhere ps (T.drop (T.length p) rest)

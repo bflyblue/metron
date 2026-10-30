@@ -9,16 +9,19 @@ module Eval.Resolve (
   typeLookupFor,
   processGroup,
   enterData,
+  queryScheme,
   storeTerm,
   withHint,
 ) where
 
 import Control.Monad (when, zipWithM)
 import Control.Monad.State.Strict (StateT, gets, lift, modify, runStateT)
+import Data.Char (isLower)
 import Data.Foldable (foldlM)
 import Data.Graph (SCC (..), stronglyConnComp)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isNothing)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -527,3 +530,38 @@ tyDim env a = case a.node of
       bad
         f
         "a dimension is a product of base units (m kg s A K mol cd rad), units and parameters"
+
+{- | A type written as a search query (design §7.3): every name that is not
+a built-in type, a declared type, a base unit or a unit is a variable, of
+the kind its position gives it.
+-}
+queryScheme :: Codebase -> S.TyExpr -> Either ResolveError Scheme
+queryScheme cb t = do
+  let vars = Set.toList (Set.filter isVar (names t))
+      env =
+        DataEnv
+          { codebase = cb
+          , self = S.Name t.span ""
+          , params = Map.fromList (zip vars [0 ..])
+          , paramNames = vars
+          }
+  (_, kinds1) <- runStateT (tyType env t) Map.empty
+  (ty, kinds) <- runStateT (tyType env t) kinds1
+  pure
+    (Forall [(i, Map.findWithDefault KType v kinds) | (i, v) <- zip [0 ..] vars] ty)
+ where
+  isVar n =
+    maybe False (isLower . fst) (T.uncons n)
+      && n `notElem` builtinTypeNames
+      && isNothing (lookupTypeName n cb)
+      && n `notElem` [baseSymbol b | b <- [minBound .. maxBound]]
+      && not (isUnitName n cb)
+  names :: S.TyExpr -> Set Text
+  names e = case e.node of
+    S.TyName n -> Set.singleton n
+    S.TyInt _ -> Set.empty
+    S.TyApp hd args -> Set.insert hd.text (foldMap names args)
+    S.TyTuple ts -> foldMap names ts
+    S.TyList a -> names a
+    S.TyFun a b -> names a <> names b
+    S.TyBracket items -> foldMap (foldMap (names . fst)) items

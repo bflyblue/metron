@@ -15,6 +15,7 @@ module Eval.Infer (
   TypeLookup,
   elaborateClosed,
   inferClosed,
+  matchesQuery,
 ) where
 
 import Control.Monad (foldM, forM_, unless, zipWithM, zipWithM_)
@@ -954,3 +955,18 @@ checkExhaustive look p ty cs = case dataConstructors look.typeDefOf ty of
             <> " in that order; got "
             <> T.intercalate ", " (map conText cs)
         )
+
+{- | Whether a definition's type can be an instance of a query type, both
+quantified: the type search of @:ls@ (design §7.3). Each side is instantiated
+with fresh variables and the two are unified, so @a -> a@ matches a query
+@Num -> Num@ and @Num [m] -> Num [m]@ matches a query @a -> a@.
+-}
+matchesQuery :: Scheme -> Scheme -> Bool
+matchesQuery query sc = case runStateT go (St emptySubst 0 []) of
+  Right _ -> True
+  Left _ -> False
+ where
+  go = do
+    (q, _) <- instantiate query
+    (t, _) <- instantiate sc
+    unify [] q t
