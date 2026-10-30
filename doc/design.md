@@ -1770,6 +1770,41 @@ distinction is what refuses `20 degC + 30 degC`. Per-axis units in one chart
 A.
 
 
+**Interfaces fixed for the build**, so that the pieces, built by several
+hands, meet:
+
+- The chart value (`Eval.Eval.ScaleHint`, to be renamed `Chart`) gains
+  `parent :: Maybe Hash` (the chart its origin and generator are given in;
+  `Nothing` means the implicit base of the dimension), `generator :: Maybe
+  (Vector Magnitude)` (an antisymmetric `n × n` matrix, row-major; `Nothing`
+  means axis-aligned) and `spin :: Maybe (Vector Magnitude)` (the angular
+  velocity, phase C). The primitive `mkScale step origin` stays for the
+  two-part form; `mkChart step origin parent generator` (arity 4) builds the
+  full value, with the parent passed as a chart value and the generator as a
+  `Mat n n` that must satisfy `B + Bᵀ == 0` exactly, else "the generator of a
+  chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b".
+- `expm : Mat n n -> Mat n n` (dimensionless; a rigorous enclosure; Rodrigues
+  for a single plane in 3D, the exponential series otherwise). `expm (-B)` is
+  the exact inverse of `expm B` for antisymmetric `B`.
+- `transformBy : Mat n n -> Tensor s d -> Tensor s d`: `R` applied along every
+  axis of a tensor whose lengths are all `n` (a vector gets `R v`, a matrix
+  `R P Rᵀ`); other shapes are a type error through the shape unifier.
+- The bivector constructors live in `linalg` and return antisymmetric
+  matrices: `rotx θ`, `roty θ`, `rotz θ` (`rotz θ = θ * (e1 ∧ e2)`, and
+  `expm (rotz (90 deg)) @ [1, 0, 0]` is `[0, 1, 0]`), `axisAngle n θ`,
+  `rotation a b` (the bivector taking `a` to `b`), `euler313 Ω i ω`
+  (composed at the matrix level: it returns the matrix, not a bivector, and
+  its name says the sequence).
+- Printed type: `Chart (Vec 3 [m])`, `Chart [K]`; `:ls --charts`; `:view`
+  of a chart prints `chart name = step at origin [parent] [by B] [spinning ω]`
+  with the optional parts only when set.
+
+**Open, to settle when building:** the exact keywords for the optional parts
+(`by`, `spinning`, the parent after the origin); whether `eci` is a library
+definition or a primitive root; whether `rotz` and friends return a bare
+bivector or a wrapper, if `by` must be kept from accepting an arbitrary
+matrix; and the exponential series on enclosures beyond a single plane.
+
 **Axis sets.** Named positions and vectors typed by their axes are designed in
 §3.9, to be decided with charts: a chart is an axis set with an origin, and
 what `p to lvlh` returns is what decides whether `Vec lvlh` exists.
