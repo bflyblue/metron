@@ -2267,13 +2267,14 @@ frame's axes. The decisions:
    is always visible as a function call.
 6. **Signatures take a constraint clause**: `cross :: Vec a d -> Vec a d1 ->
    Vec a [d d1] where card a ~ 3`. A small grammar addition to §4.8.
-7. **The base axes.** OPEN, the owner's choice. If the base axes are the
-   anonymous set, every existing program keeps working (`p .+ [1, 0, 0] m`
-   stays legal) and only named frames are protected. If they are a named set
-   (`base`), literal displacements need `withAxes base`, which is stricter
-   and breaks today's examples. The same choice decides whether a
-   translated-only chart like `site` introduces its own axis set or shares
-   its parent's.
+7. **The base axes are named** (decided by the owner). Every chart without
+   a parent names its own axis set; a translated child shares its parent's,
+   a rotated child names its own. Literals stay anonymous: anonymous vectors
+   combine with each other freely (`cross [1, 0, 0] [0, 1, 0]`, `norm`), but
+   an anonymous vector meets a frame only through `along c v`, so no vector
+   ever means "whatever frame you are in", and two unrelated root charts
+   (`eci`, a lab bench) never mix without a `to`. A shorter spelling than
+   `along eci [1, 0, 0] m` may come later without changing the meaning.
 8. **Encoding.** The anonymous set of size `k` encodes byte for byte as
    today's length `k`, so stored `data` types and `sig` lines do not change;
    a named set or an axis variable is an appended type tag. No format bump
@@ -2295,12 +2296,28 @@ v.0         : Vec a d -> Num d                             where card a ≥ 1
 v.x         : Vec a d -> Num d                             where x ∈ a
 ```
 
-**Build in three stages, each neutral until the last:** (1) shapes carry
-axis sets but everything is anonymous, every existing test byte-identical
-and the property generator still producing well-typed programs, the risky
-refactor validated alone; (2) named axis sets from `chart` and `axes`,
-row/column-typed matrices, `rotationOf`, `coordinates`, `along`, `withAxes`;
-(3) `where` clauses in signatures and the library generalised.
+**Build in four stages**, each landing green on its own:
+
+1. **Axis sets in shapes, all anonymous.** The kind `Axes`, `Anon k`, `card`,
+   the `card` constraints; every shape position holds an axis set; every
+   primitive's scheme rewritten over axis sets; encoding byte-identical for
+   the anonymous case. No behaviour changes: every existing test passes
+   unchanged and the property generator still produces well-typed programs.
+   The risky refactor, validated alone.
+2. **Named axis sets for amounts.** `chart` and `axes` declare axis-set names
+   (root charts their own, translated children their parent's, rotated
+   children their own); matrices carry a row and a column axis set and `@`
+   checks the contracted pair; `rotationOf c : Mat (parent c) c`; `along`,
+   `withAxes`, `inChart` typed; `transformBy` becomes `Mat a a -> …`;
+   printing of named vectors.
+3. **Points typed by axes and stored in chart coordinates.** The point value
+   changes representation (chart coordinates and the chart, not base form);
+   `to` becomes the typed conversion between axis sets and needs a moving
+   chart's arguments; `.-` on one chart gives that chart's `Vec`; `p.0` reads
+   a chart coordinate; `velocityIn`/`stateFrom` retyped; `coordinates`.
+4. **Constraint clauses and the library.** `where card a ~ 3` in signatures;
+   `cross`, `norm`, `dual`, the rotation constructors, `Cov2`, `timap`
+   generalised over axis sets; §12's sessions rewritten to the typed form.
 
 ## 4. Type system
 
