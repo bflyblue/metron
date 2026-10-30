@@ -269,6 +269,8 @@ exprDepth e =
     S.SectionR a _ -> exprDepth a
     S.Vec es -> maximum (0 : map exprDepth es)
     S.Proj a _ -> exprDepth a
+    S.FieldOf a _ -> exprDepth a
+    S.Record hd fs -> maximum (exprDepth hd : map (exprDepth . snd) fs)
 
 -- Literals and units ------------------------------------------------------------------
 

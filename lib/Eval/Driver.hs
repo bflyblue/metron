@@ -361,10 +361,7 @@ command session src = \case
           (flagged (bindName new r cb))
           ["`" <> new <> "` now also names " <> showReference r]
   ["unname", n]
-    | Map.member n session.codebase.names
-        || Map.member n session.codebase.typeNames
-        || Map.member n session.codebase.conNames ->
-        commit (unbindName n cb) ["removed the label `" <> n <> "`"]
+    | labelled n -> commit (unbindName n cb) ["removed the label `" <> n <> "`"]
     | otherwise -> Left ("unknown name `" <> n <> "`")
   _ ->
     Left
@@ -408,9 +405,17 @@ command session src = \case
             [ fromMaybe (showHash h <> "." <> tshow i) (conNameOf h i cb)
             | i <- [0 .. length def.constructors - 1]
             ]
+            [fieldNamesOf h i (length fs) cb | (i, fs) <- zip [0 ..] def.constructors]
             def
         ]
     Nothing -> Left ("unknown name `" <> n <> "`")
+  -- A label of any kind: a definition, a type, a constructor, or a field written with its dot.
+  labelled n = case T.stripPrefix "." n of
+    Just f -> Map.member f session.codebase.fieldNames
+    Nothing ->
+      Map.member n session.codebase.names
+        || Map.member n session.codebase.typeNames
+        || Map.member n session.codebase.conNames
   _ = src
 
 {- | Store scratch definitions whose names are new (or unchanged). A name

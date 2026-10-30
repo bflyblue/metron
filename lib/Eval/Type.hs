@@ -477,18 +477,33 @@ structuralLabel = Tag ""
 …@, with the type's own hash standing for recursive occurrences (the
 driver names it) and parameters named by kind as in 'renderType'.
 -}
-renderTypeDef :: Hash -> Text -> [Text] -> TypeDef -> Text
-renderTypeDef h name conNames def =
+renderTypeDef :: Hash -> Text -> [Text] -> [[Maybe Text]] -> TypeDef -> Text
+renderTypeDef h name conNames fieldNames def =
   (if def.label == structuralLabel then "structural " else "")
     <> "data "
     <> T.unwords (name : map (\(v, _) -> Map.findWithDefault "?" v names) def.params)
     <> " = "
     <> T.intercalate
       " | "
-      (zipWith constructor (conNames ++ repeat "?") def.constructors)
+      ( zipWith3
+          constructor
+          (conNames ++ repeat "?")
+          (fieldNames ++ repeat [])
+          def.constructors
+      )
  where
   names = prettyNames def.params
-  constructor c fields = T.unwords (c : map (field . unself) fields)
+  -- A record, when every field is named; else positional.
+  constructor c labels fields = case sequence (take (length fields) (labels ++ repeat Nothing)) of
+    Just ls
+      | not (null fields) ->
+          c
+            <> " {"
+            <> T.intercalate
+              ", "
+              (zipWith (\l t -> l <> " :: " <> renderWith names 0 (unself t)) ls fields)
+            <> "}"
+    _ -> T.unwords (c : map (field . unself) fields)
   -- A field is an atom: a compound type goes in parentheses.
   field t =
     let s = renderWith names 11 t

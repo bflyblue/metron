@@ -71,20 +71,28 @@ renderResolveError = \case
 
 -- | Free names resolve to whatever the codebase currently binds.
 resolverFor :: Codebase -> Resolver
-resolverFor cb n = case lookupName n cb of
-  Just (Reference h i) -> Just (ATerm (Resolution (h, i) (isUnitName n cb) (isScaleName n cb)))
-  Nothing -> case lookupConName n cb of
-    Just (h, i)
-      | Just def <- lookupTypeDef h cb ->
-          Just
-            ( AConstructor
-                ( ConInfo
-                    (UserCon h i)
-                    (length (def.constructors !! i))
-                    [(UserCon h j, length fs) | (j, fs) <- zip [0 ..] def.constructors]
+resolverFor cb n
+  -- A field is looked up under its dot, the one way it is written (design §2.3).
+  | Just f <- T.stripPrefix "." n = case lookupFieldName f cb of
+      Just (h, i, j)
+        | Just def <- lookupTypeDef h cb
+        , let arity = length (def.constructors !! i) ->
+            Just (AField (FieldInfo (UserCon h i) arity j (fieldNamesOf h i arity cb)))
+      _ -> Nothing
+  | otherwise = case lookupName n cb of
+      Just (Reference h i) -> Just (ATerm (Resolution (h, i) (isUnitName n cb) (isScaleName n cb)))
+      Nothing -> case lookupConName n cb of
+        Just (h, i)
+          | Just def <- lookupTypeDef h cb ->
+              Just
+                ( AConstructor
+                    ( ConInfo
+                        (UserCon h i)
+                        (length (def.constructors !! i))
+                        [(UserCon h j, length fs) | (j, fs) <- zip [0 ..] def.constructors]
+                    )
                 )
-            )
-    _ -> Nothing
+        _ -> Nothing
 
 typeLookupFor :: Codebase -> TypeLookup
 typeLookupFor cb = TypeLookup (`lookupTypes` cb) (`lookupTypeDef` cb)
@@ -242,6 +250,8 @@ freeNames = go Set.empty
     S.SectionR a op -> opNames op <> go bound a
     S.Vec es -> foldMap (go bound) es
     S.Proj a _ -> go bound a
+    S.FieldOf a _ -> go bound a
+    S.Record hd fs -> go bound hd <> foldMap (go bound . snd) fs
   opNames = \case
     S.Infix n -> Set.singleton n
     _ -> Set.empty
@@ -286,6 +296,12 @@ enterData :: Codebase -> S.DataDecl -> Either ResolveError Codebase
 enterData cb decl = do
   distinct "parameter" decl.params
   distinct "constructor" (map fst decl.constructors)
+  distinct "field" (map fst fieldLabels)
+  -- Field names make a record: a type of one constructor, so that @r.f@ is total.
+  case (decl.constructors, fieldLabels) of
+    (_ : _ : _, (n, _) : _) ->
+      Left (DataError n.span "field names need a type with one constructor")
+    _ -> pure ()
   when (decl.name.text `elem` builtinTypeNames)
     $ Left
       (DataError decl.name.span ("`" <> decl.name.text <> "` is a built-in type"))
@@ -303,12 +319,13 @@ enterData cb decl = do
           (if decl.structural then structuralLabel else Owner decl.name.text)
       h = hashTypeDef def
       cb' = bindTypeName decl.name.text h (addTypeDef h def cb)
+      withCons =
+        foldl
+          (\acc (i, (c, _)) -> bindConName c.text h i acc)
+          cb'
+          (zip [0 ..] decl.constructors)
   pure
-    ( foldl
-        (\acc (i, (c, _)) -> bindConName c.text h i acc)
-        cb'
-        (zip [0 ..] decl.constructors)
-    )
+    (foldl (\acc (n, j) -> bindFieldName n.text h 0 j acc) withCons fieldLabels)
  where
   env =
     DataEnv
@@ -317,7 +334,12 @@ enterData cb decl = do
       , params = Map.fromList (zip (map (.text) decl.params) [0 ..])
       , paramNames = map (.text) decl.params
       }
-  convertAll = mapM (mapM (tyType env) . snd) decl.constructors
+  convertAll = mapM (mapM (tyType env . (.ty)) . snd) decl.constructors
+  fieldLabels =
+    [ (n, j)
+    | (_, fs) <- decl.constructors
+    , (j, S.FieldDecl (Just n) _) <- zip [0 :: Int ..] fs
+    ]
   distinct what = go Set.empty
    where
     go _ [] = Right ()

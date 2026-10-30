@@ -18,6 +18,7 @@ module Eval.Syntax (
   TyExpr (..),
   TyNode (..),
   DataDecl (..),
+  FieldDecl (..),
   Decl (..),
   declOf,
   renderSpanError,
@@ -115,6 +116,10 @@ data Node
     Vec [Expr]
   | -- | @e.i@ with a literal position.
     Proj Expr Int
+  | -- | @e.name@: a record field (§2.10)
+    FieldOf Expr Text
+  | -- | @C {f = e, …}@ builds a record when @C@ is a constructor; @e {f = e'}@ updates one
+    Record Expr [(Name, Expr)]
   | -- | @(a, b, …)@: two or more components (§2.3)
     Tuple [Expr]
   | -- | @{a, b, c}@: a list literal
@@ -183,9 +188,13 @@ data DataDecl = DataDecl
   { span :: Span
   , name :: Name
   , params :: [Name]
-  , constructors :: [(Name, [TyExpr])]
+  , constructors :: [(Name, [FieldDecl])]
   , structural :: Bool
   }
+  deriving stock (Eq, Show)
+
+-- | A constructor field: its type, and its name when the constructor is a record.
+data FieldDecl = FieldDecl {label :: Maybe Name, ty :: TyExpr}
   deriving stock (Eq, Show)
 
 -- | What the scratch holds: a definition or a data declaration.

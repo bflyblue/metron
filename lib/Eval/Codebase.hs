@@ -14,6 +14,9 @@ module Eval.Codebase (
   lookupConName,
   typeNameOf,
   conNameOf,
+  bindFieldName,
+  lookupFieldName,
+  fieldNamesOf,
   bindName,
   unbindName,
   markUnit,
@@ -73,6 +76,8 @@ data Codebase = Codebase
   -- ^ type names: labels on type definitions
   , conNames :: Map Text (Hash, Int)
   -- ^ constructor names: labels on a type's constructors
+  , fieldNames :: Map Text (Hash, Int, Int)
+  -- ^ record field names: labels on a constructor's positions (design §2.3)
   }
 
 emptyCodebase :: Codebase
@@ -85,6 +90,7 @@ emptyCodebase =
     Set.empty
     Set.empty
     Set.empty
+    Map.empty
     Map.empty
     Map.empty
     Map.empty
@@ -177,14 +183,17 @@ constructor), and with it any unit or scale declaration it carried. The
 term and the name's history stay.
 -}
 unbindName :: Text -> Codebase -> Codebase
-unbindName n cb =
-  cb
-    { names = Map.delete n cb.names
-    , units = Set.delete n cb.units
-    , scales = Set.delete n cb.scales
-    , typeNames = Map.delete n cb.typeNames
-    , conNames = Map.delete n cb.conNames
-    }
+unbindName n cb
+  -- A field label is named with its dot: @:unname .mass@.
+  | Just f <- T.stripPrefix "." n = cb{fieldNames = Map.delete f cb.fieldNames}
+  | otherwise =
+      cb
+        { names = Map.delete n cb.names
+        , units = Set.delete n cb.units
+        , scales = Set.delete n cb.scales
+        , typeNames = Map.delete n cb.typeNames
+        , conNames = Map.delete n cb.conNames
+        }
 
 lookupName :: Text -> Codebase -> Maybe Reference
 lookupName n cb = Map.lookup n cb.names
@@ -262,3 +271,19 @@ conNameOf :: Hash -> Int -> Codebase -> Maybe Text
 conNameOf h i cb = case [n | (n, (h', i')) <- Map.toList cb.conNames, h' == h, i' == i] of
   n : _ -> Just n
   [] -> Nothing
+
+-- | Name field @j@ of constructor @i@ of a type.
+bindFieldName :: Text -> Hash -> Int -> Int -> Codebase -> Codebase
+bindFieldName n h i j cb = cb{fieldNames = Map.insert n (h, i, j) cb.fieldNames}
+
+lookupFieldName :: Text -> Codebase -> Maybe (Hash, Int, Int)
+lookupFieldName n cb = Map.lookup n cb.fieldNames
+
+-- | The field names of a constructor, by position; 'Nothing' where unnamed.
+fieldNamesOf :: Hash -> Int -> Int -> Codebase -> [Maybe Text]
+fieldNamesOf h i arity cb =
+  [ case [n | (n, (h', i', j')) <- Map.toList cb.fieldNames, h' == h, i' == i, j' == j] of
+      n : _ -> Just n
+      [] -> Nothing
+  | j <- [0 .. arity - 1]
+  ]

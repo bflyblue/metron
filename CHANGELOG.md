@@ -212,3 +212,11 @@
   an application: `Rect 3 m 4 m` passes two quantities. Constructors and
   definitions share one namespace, the newer label winning. Not yet: `==`
   on declared types, records, mutually recursive types.
+- Records (design §2.3). `data Body = Body {mass :: Num [kg], pos :: Vec 3
+  [m]}` names the fields of a one-constructor type; `b.mass` reads one,
+  `Body {mass = 5 kg, pos = …}` builds the record and `b {pos = …}`
+  rebuilds it, all as `case` on the constructor, so Core and hashes are
+  unchanged. Field names are labels (`field` log lines, `:unname .mass`),
+  looked up by the field alone. A dot glued on both sides is now a field
+  access; composition is `f . g` or `∘`. Printed data values parenthesise
+  every compound field: `Rect (1 m) (2 m)`.

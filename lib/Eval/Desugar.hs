@@ -19,18 +19,19 @@ module Eval.Desugar (
   Resolution (..),
   Resolved (..),
   ConInfo (..),
+  FieldInfo (..),
   desugarIn,
   renderDesugarError,
 ) where
 
-import Control.Monad (zipWithM)
+import Control.Monad (when, zipWithM)
 import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (StateT, modify', runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -71,7 +72,13 @@ whole constructor table of its type, for case analysis.
 -}
 data ConInfo = ConInfo {con :: ConRef, arity :: Int, siblings :: [(ConRef, Int)]}
 
-data Resolved = ATerm Resolution | AConstructor ConInfo
+{- | A record field (design §2.3), resolved under its dotted name: the
+constructor it belongs to, that constructor's arity, the field's position,
+and the names of all the constructor's fields, for hints.
+-}
+data FieldInfo = FieldInfo {con :: ConRef, arity :: Int, index :: Int, names :: [Maybe Text]}
+
+data Resolved = ATerm Resolution | AConstructor ConInfo | AField FieldInfo
 
 type Resolver = Text -> Maybe Resolved
 
@@ -274,6 +281,18 @@ desugar path ctx e = do
       elems <- zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
       pure (foldConstant elems)
     S.Proj a i -> (`Proj` i) <$> desugar (0 : path) ctx a
+    -- A field is a case on the record's one constructor (design §2.3).
+    S.FieldOf a f -> do
+      resolved <- asks (\env -> env.resolve ("." <> f))
+      case resolved of
+        Just (AField info) -> do
+          a' <- desugar (0 : path) ctx a
+          case vecFromList [if j == info.index then f else "_" | j <- [0 .. info.arity - 1]] of
+            SomeVec hs -> case fieldVar hs ctx info.index of
+              Just v -> pure (Case a' [Alt info.con (vecMap Hint hs) (Var v)])
+              Nothing -> failWith (BadSpecialForm e.span ("field " <> f <> " is out of range"))
+        _ -> failWith (BadSpecialForm e.span ("unknown field `" <> f <> "`"))
+    S.Record hd fields -> recordExpr path ctx e hd fields
  where
   prim p args = PrimApp p <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
   synthLam sp x body = S.Expr sp (S.Lam [S.Name sp x] body)
@@ -321,6 +340,12 @@ headApp path ctx hd x args = case lookupCtx x ctx of
               ctx
               (\p -> saturated p ctx (Con info.con) (take info.arity args))
               (drop info.arity args)
+      Just (AField _) ->
+        failWith
+          ( BadSpecialForm
+              hd.span
+              ("`" <> x <> "` is a field; write it after a value, as in r." <> x)
+          )
       -- noise n and gauss n take a literal count (design §3.2.5): the
       -- number of nudges is part of the type.
       Nothing
@@ -338,7 +363,16 @@ headApp path ctx hd x args = case lookupCtx x ctx of
                 )
       Nothing ->
         asks (.owner) >>= \l -> case specialForm l x of
-          Nothing -> failWith (UnknownName hd.span x)
+          Nothing -> do
+            asField <- asks (\env -> env.resolve ("." <> x))
+            case asField of
+              Just (AField _) ->
+                failWith
+                  ( BadSpecialForm
+                      hd.span
+                      ("`" <> x <> "` is a field; write it after a value, as in r." <> x)
+                  )
+              _ -> failWith (UnknownName hd.span x)
           Just (arity, Builder build)
             | length args == arity -> saturated path ctx build args
             | length args < arity ->
@@ -610,7 +644,7 @@ caseOf path ctx sp scrut alts0 = do
 asTerm :: Resolved -> Maybe Resolution
 asTerm = \case
   ATerm r -> Just r
-  AConstructor _ -> Nothing
+  _ -> Nothing
 
 {- | Group a literal argument with the unit names that follow it into one
 quantity (§2.6): @f 3 m 4 m@ is @f (3 m) (4 m)@. A name bound in scope is
@@ -656,3 +690,90 @@ regroup ctx = go
             )
     S.Pow b _ -> isUnitName b
     _ -> pure False
+
+-- | The variable for field @i@ among @k@ fields bound innermost.
+fieldVar :: Vec k a -> Ctx n -> Int -> Maybe (Fin (Plus k n))
+fieldVar VNil _ _ = Nothing
+fieldVar (VCons _ _) _ 0 = Just FZ
+fieldVar (VCons _ rest) ctx i = FS <$> fieldVar rest ctx (i - 1)
+
+{- | @C {f = e, …}@ with @C@ a constructor builds the record, every field
+given once; @r {f = e, …}@ otherwise rebuilds @r@ with those fields replaced:
+a case on the one constructor whose body is the constructor applied to the
+old fields, except the new ones (design §2.3). The new values are desugared
+outside the case and weakened, so a field name never captures a variable.
+-}
+recordExpr ::
+  Path -> Ctx n -> S.Expr -> S.Expr -> [(S.Name, S.Expr)] -> M (Term n)
+recordExpr path ctx e hd fields = do
+  infos <-
+    mapM
+      ( \(n, _) -> do
+          resolved <- asks (\env -> env.resolve ("." <> n.text))
+          case resolved of
+            Just (AField info) -> pure (n, info)
+            _ -> failWith (BadSpecialForm n.span ("unknown field `" <> n.text <> "`"))
+      )
+      fields
+  (lead, leadInfo) <- case infos of
+    x : _ -> pure x
+    [] -> failWith (BadSpecialForm e.span "a record needs at least one field")
+  mapM_
+    ( \(n, info) ->
+        when (info.con /= leadInfo.con)
+          $ failWith
+            (BadSpecialForm n.span ("field `" <> n.text <> "` belongs to another type"))
+    )
+    infos
+  let dup =
+        [ n
+        | ((n, info), i) <- zip infos [0 :: Int ..]
+        , info.index `elem` map ((.index) . snd) (take i infos)
+        ]
+  mapM_
+    ( \n -> failWith (BadSpecialForm n.span ("field `" <> n.text <> "` is given twice"))
+    )
+    (take 1 dup)
+  let given = Map.fromList [(info.index, ex) | ((_, info), (_, ex)) <- zip infos fields]
+      fieldName j = fromMaybe ("_" <> T.pack (show j)) (leadInfo.names !! j)
+  construction <- case hd.node of
+    S.Var c | Nothing <- lookupCtx c ctx -> do
+      resolved <- asks (\env -> env.resolve c)
+      case resolved of
+        Just (AConstructor info)
+          | info.con == leadInfo.con -> pure True
+          | otherwise ->
+              failWith
+                (BadSpecialForm hd.span ("`" <> c <> "` has no field `" <> lead.text <> "`"))
+        _ -> pure False
+    _ -> pure False
+  if construction
+    then do
+      let missing = [fieldName j | j <- [0 .. leadInfo.arity - 1], Map.notMember j given]
+      case missing of
+        [] -> pure ()
+        _ ->
+          failWith
+            ( BadSpecialForm
+                e.span
+                ( "missing "
+                    <> (if length missing == 1 then "field " else "fields ")
+                    <> T.intercalate ", " missing
+                )
+            )
+      Con leadInfo.con
+        <$> mapM (\j -> desugar (j : path) ctx (given Map.! j)) [0 .. leadInfo.arity - 1]
+    else do
+      hd' <- desugar (0 : path) ctx hd
+      case vecFromList (map fieldName [0 .. leadInfo.arity - 1]) of
+        SomeVec hs -> do
+          args <-
+            mapM
+              ( \j -> case Map.lookup j given of
+                  Just ex -> weakenBy hs <$> desugar (j + 1 : path) ctx ex
+                  Nothing -> case fieldVar hs ctx j of
+                    Just v -> pure (Var v)
+                    Nothing -> failWith (BadSpecialForm e.span "field out of range")
+              )
+              [0 .. leadInfo.arity - 1]
+          pure (Case hd' [Alt leadInfo.con (vecMap Hint hs) (Con leadInfo.con args)])

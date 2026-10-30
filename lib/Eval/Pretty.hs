@@ -496,6 +496,7 @@ renderTerm namer = go 0
        in VCons h' (freshenAll rest (VCons h' ctx))
   freshen :: Text -> Vec m Text -> Text
   freshen h ctx
+    | h == "_" = h -- binds nothing, so it never captures
     | T.null h || "§" `T.isPrefixOf` h = freshen "x" ctx
     | h `elem` vecToList ctx = freshen (h <> "'") ctx
     | otherwise = h
@@ -552,14 +553,14 @@ listSpine = \case
   Con (Builtin "Cons") [x, xs] -> (x :) <$> listSpine xs
   _ -> Nothing
 
-{- | A field of a printed data value must read back as one argument: a
-value with fields of its own, a negative number or an uncertain one goes in
-parentheses; @Rect 1 m 2 m@ is fine by the quantity rule.
+{- | A field of a printed data value must read back as one argument: anything
+but a single token goes in parentheses, @Rect (1 m) (2 m)@, since @m s^-1@
+after an argument would raise the whole application to the power.
 -}
 fieldText :: Value -> Text -> Text
 fieldText v s
   | VData _ (_ : _) <- v = paren
-  | T.isPrefixOf "-" s || T.isInfixOf "±" s = paren
+  | T.isPrefixOf "-" s || T.any (== ' ') s = paren
   | otherwise = s
  where
   paren = "(" <> s <> ")"

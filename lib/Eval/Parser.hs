@@ -210,7 +210,7 @@ dataStatement = do
   let start = maybe s fst structural
       end = case last cons of
         (c, []) -> c.span
-        (_, fs) -> (.span) (last fs)
+        (_, fs) -> (last fs).ty.span
   pure
     ( SData
         ( DataDecl
@@ -222,7 +222,13 @@ dataStatement = do
         )
     )
  where
-  constructor = (,) <$> name <*> P.many typeAtom
+  constructor = (,) <$> name <*> (recordFields P.<|> P.many (FieldDecl Nothing <$> typeAtom))
+  -- @C {f :: type, g :: type}@: named fields (§2.3).
+  recordFields = tok TLBrace *> P.sepBy1 fieldDecl (tok TComma) <* tok TRBrace
+  fieldDecl = do
+    n <- name
+    _ <- tok (TOp "::")
+    FieldDecl (Just n) <$> typeExpr
 
 -- Types ---------------------------------------------------------------------------
 
@@ -443,12 +449,30 @@ application = do
           >> fail "a literal next to a vector literal: write the multiplication, 2 * [1, 2]"
       _ -> withPower a
 
--- | A primary expression with any glued projections.
+{- | A primary expression with any glued projections.
+| A primary expression with its glued projections, field accesses and record braces.
+-}
 atom :: Parser Expr
-atom = do
-  p <- primary
-  projs <- P.many (match "projection" (\case TProj i -> Just i; _ -> Nothing))
-  pure (foldl (\acc (sp, i) -> Expr (spanUnion acc.span sp) (Proj acc i)) p projs)
+atom = primary >>= postfixes
+ where
+  postfixes acc =
+    P.choice
+      [ (\(sp, i) -> Expr (spanUnion acc.span sp) (Proj acc i))
+          <$> match "projection" (\case TProj i -> Just i; _ -> Nothing)
+          >>= postfixes
+      , (\(sp, f) -> Expr (spanUnion acc.span sp) (FieldOf acc f))
+          <$> match "field" (\case TField f -> Just f; _ -> Nothing)
+          >>= postfixes
+      , recordBraces acc >>= postfixes
+      , pure acc
+      ]
+  -- @{f = e, …}@ after an expression: a record construction or update (§2.3).
+  -- A list literal also starts with a brace, so look for @name =@ first.
+  recordBraces acc = do
+    _ <- P.try (tok TLBrace <* P.lookAhead (name *> tok TEquals))
+    fields <- P.sepBy1 ((,) <$> name <* tok TEquals <*> expr) (tok TComma)
+    e <- tok TRBrace
+    pure (Expr (spanUnion acc.span e) (Record acc fields))
 
 primary :: Parser Expr
 primary =

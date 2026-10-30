@@ -6,7 +6,7 @@ A store is a directory:
 format          "eval codebase 1"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
-names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i
+names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j
 @
 
 Terms are content-addressed, so they never conflict and are only ever
@@ -269,6 +269,23 @@ loadStore store base = do
                 )
                   : notes
               )
+    [_, "field", name, target]
+      | [hex, i, j] <- T.splitOn "." target
+      , Just h <- hashFromHex hex
+      , [(i', "")] <- reads (T.unpack i)
+      , [(j', "")] <- reads (T.unpack j) ->
+          if Map.member h cb.typeDefs
+            then (bindFieldName name h i' j' cb, notes)
+            else
+              ( cb
+              , ( "names.log:"
+                    <> tshow lineNo
+                    <> ": "
+                    <> name
+                    <> " names a field of a missing type, skipped"
+                )
+                  : notes
+              )
     -- Units and scales are names (design §3.2.12). A format-1 log flagged a
     -- reference; every name then bound to it is flagged.
     [_, "unit", target] -> (flagNames markUnit target cb, notes)
@@ -334,6 +351,24 @@ sync store old new = do
         | (name, (h, i)) <- Map.toList new.conNames
         , Map.lookup name old.conNames /= Just (h, i)
         ]
+      fields =
+        [ stamp
+            <> " field "
+            <> name
+            <> " "
+            <> hashHex h
+            <> "."
+            <> tshow i
+            <> "."
+            <> tshow j
+        | (name, (h, i, j)) <- Map.toList new.fieldNames
+        , Map.lookup name old.fieldNames /= Just (h, i, j)
+        ]
+      -- A field label is unnamed with its dot.
+      unnamedFields =
+        [ stamp <> " unname ." <> name
+        | name <- Map.keys (Map.difference old.fieldNames new.fieldNames)
+        ]
       -- An unname line covers a type or constructor label as well.
       unnamedTypes =
         [ stamp <> " unname " <> name
@@ -345,9 +380,11 @@ sync store old new = do
       entries =
         types
           ++ cons
+          ++ fields
           ++ binds
           ++ unnames
           ++ unnamedTypes
+          ++ unnamedFields
           ++ units
           ++ scales
           ++ prefers

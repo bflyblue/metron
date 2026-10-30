@@ -72,6 +72,8 @@ data Token
   | TSqrt
   | -- | A superscript power glued to the preceding atom: @m²@, @s⁻²@.
     TSup Integer
+  | -- | A field access glued to the preceding atom: @b.mass@ (§2.10).
+    TField Text
   | -- | A projection glued to the preceding atom: @v.0@, @m.1.2@.
     TProj Int
   | -- | @#label@ after a @±@, @noise@ or @gauss@ (§3.2.4).
@@ -274,6 +276,7 @@ symbol =
     , string "><" $> TOp "×"
     , char '×' $> TOp "×"
     , projection
+    , field
     , char '.' $> TOp "."
     , char '<' $> TOp "<"
     , char '>' $> TOp ">"
@@ -283,6 +286,7 @@ symbol =
     , char '*' $> TOp "*"
     , oneOf ("/÷" :: String) $> TOp "/"
     , char '^' $> TOp "^"
+    , string "::" $> TOp "::"
     , char ':' $> TOp ":"
     , oneOf ("\\λ" :: String) $> TLambda
     , char '√' $> TSqrt
@@ -313,6 +317,17 @@ projection = try $ do
   _ <- char '.'
   TProj . read . T.unpack <$> takeWhile1P (Just "digit") isDigit
 
+-- | @.name@: a record field, glued to what precedes it (§2.10).
+field :: Lexer Token
+field = try $ do
+  _ <- char '.'
+  c <- satisfy (\x -> isLetter x && x /= 'λ')
+  rest <-
+    takeWhileP
+      (Just "identifier character")
+      (\x -> (isAlphaNum x && not (isSuperscriptDigit x)) || x == '_' || x == '\'')
+  pure (TField (T.cons c rest))
+
 -- Adjacency ----------------------------------------------------------------
 
 {- | Compute gluedness from spans and enforce the rules that depend on it:
@@ -332,6 +347,7 @@ adjacency = go Nothing
             TRParen -> True
             TRBracket -> True
             TProj _ -> True
+            TField _ -> True
             TNum _ -> True
             TSup _ -> True
             TKw KTrue -> True
@@ -352,6 +368,18 @@ adjacency = go Nothing
               ( at
                   t.span
                   "a projection like .0 must be attached to a vector or matrix, as in v.0"
+              )
+      TField f
+        | not (gluedToPrev && endsAtom) ->
+            Left
+              ( at
+                  t.span
+                  ( "a field access like ."
+                      <> f
+                      <> " must be attached to a value, as in b."
+                      <> f
+                      <> "; composition is f . g or f ∘ g"
+                  )
               )
       _ -> pure ()
     rest <- go (Just t) ts
@@ -445,6 +473,7 @@ showToken = \case
   TSqrt -> "sqrt"
   TSup n -> "^" <> T.pack (show n)
   TProj i -> "." <> T.pack (show i)
+  TField f -> "." <> f
   THashLabel l -> "#" <> l
   TSep -> "newline"
   TSemis n -> T.replicate n ";"

@@ -210,7 +210,8 @@ Constructors are functions and values: `Circle` has type `Num [m] -> Shape`,
 quantities because a literal argument takes the units after it (§2.6). A
 `case` takes a value apart one constructor deep, naming the fields in order;
 `_` and variables fill in the constructors not written, as for lists. Values
-print as they are written, `Rect 3 m 4 m` and `Just (Circle 1 m)`.
+print with each compound field in parentheses, `Rect (3 m) (4 m)` and
+`Just (Circle (1 m))`, so that they read back whatever their units.
 
 A type's identity is its definition: parameter kinds, the constructors' field
 types in order, and the type's name as an owner stamp (§3.2.4), so two users
@@ -224,6 +225,27 @@ namespace, the newer label winning (declaring `data Temp = T (Num [K])`
 unnames the tesla until a `let T = …` takes the name back). A declaration is
 pending in the scratch (§7.5) until `:add`, like a definition. There is no
 `==` on declared types yet, and no records; both are open (§11).
+
+**Records.** A constructor may name its fields, which makes the type a record:
+
+```
+data Body = Body {mass :: Num [kg], pos :: Vec 3 [m], vel :: Vec 3 [m/s]}
+let b = Body {mass = 5 kg, pos = [1, 2, 3] km, vel = [4, 5, 6] km/s}
+b.mass                              -- 5 kg
+b {vel = [0, 0, 0] m/s}             -- the same body, stopped
+Body (5 kg) ([1, 2, 3] km) ([4, 5, 6] km/s)   -- positional construction still works
+```
+
+`b.mass` is a field access when the dot is glued to both sides (§2.10);
+`C {f = e, …}` with a constructor builds the record and must give every field
+once; `e {f = e', …}` with anything else rebuilds `e` with those fields
+replaced. All of it desugars to `case` on the one constructor, so a record
+is an ordinary data type to Core and to the hash, and `:view` shows the
+`case`. Field names are labels like constructor names, looked up by the
+field alone, so two record types cannot share a field name (the newer
+declaration takes it), and `:unname .mass` removes one. Field names need a
+type with one constructor, so that `b.mass` is total. Values print
+positionally, with each compound field in parentheses.
 
 Further sugar, all removed by desugaring (§2.9):
 
@@ -343,7 +365,7 @@ statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | 'scale' name '=' expr 'at' expr            -- a point scale (3.6)
              | ['structural'] 'data' name param* '=' con ( '|' con )*   -- a data type (2.3)
              | expr
-con        ::= name tyatom*
+con        ::= name tyatom* | name '{' name '::' type ( ',' name '::' type )* '}'   -- a record (2.3)
 type       ::= tyapp [ '->' type ]
 tyapp      ::= name tyatom* | tyatom
 tyatom     ::= name | natural | '(' type ( ',' type )* ')' | '{' type '}' | '[' bracket ']'
@@ -365,7 +387,9 @@ power      ::= app [ '^' [ '-' ] natural ]
 app        ::= quantity | atom atom*
 quantity   ::= number unitatom+ | vector unitatom+
 unitatom   ::= atom [ '^' [ '-' ] natural ]
-atom       ::= primary ( '.' projection )*          -- no whitespace around '.'
+atom       ::= primary postfix*
+postfix    ::= '.' projection | '.' name                -- glued: a component, or a record field (2.10)
+             | '{' name '=' expr ( ',' name '=' expr )* '}'    -- record construction or update (2.3)
 projection ::= natural
 primary    ::= number | name | 'true' | 'false'
              | '(' expr ')' | section | vector | matrix
@@ -475,11 +499,11 @@ numeric projection and therefore hashing identically. The design of that
 declaration is open (roadmap §10).
 
 Lexing: the dot must follow the atom immediately and be followed immediately by
-digits. `v .0` and `v. 0` are errors. `1.5` is still a number because the lexer
-tokenises numbers before it looks for projections, and a projection can only
-follow a name, a parenthesised expression, a literal or another projection. A dot
-followed by anything else (`f.g`, `f . g`) is composition; `∘` or spaces are
-clearer.
+digits, or by a name for a record field (§2.3). `v .0` and `v. 0` are errors.
+`1.5` is still a number because the lexer tokenises numbers before it looks for
+projections, and a projection or field can only follow a name, a parenthesised
+expression, a literal or another projection. A dot with space on either side
+(`f . g`) is composition, as is `∘`; `f.g` is the field `g` of `f`.
 
 ---
 
@@ -1755,6 +1779,7 @@ Codebase = { terms   :: Map Hash Term                -- Core, the hashed content
            , typeDefs  :: Map Hash TypeDef           -- declared types by definition hash (2.3)
            , typeNames :: Map Name Hash              -- type labels
            , conNames  :: Map Name (Hash, Int)       -- constructor labels: a type and a position
+           , fieldNames :: Map Name (Hash, Int, Int) -- record field labels: type, constructor, position
            }
 Ref      = Ref Hash (Maybe Int)                 -- hash plus optional cycle index
 ```
@@ -1832,7 +1857,7 @@ Inspection
 :lint name         re-run lint on a stored definition and print its type(s)
 :dependents name   definitions whose terms reference the current ref of name
 :alias new old     point new at old's current ref
-:unname name       remove the label (of a definition, a type or a constructor); the term stays
+:unname name       remove the label (of a definition, a type or a constructor; .f for a field); the term stays
 
 Session
 :set precision n   significant digits printed; working precision is n + 4 (3.2.8)
@@ -1876,6 +1901,7 @@ names.log          append-only, one event per line:
                      <unix time> unprefer <unit text>
                      <unix time> type <name> <hex hash>          -- a type label
                      <unix time> con <name> <hex hash>.<i>       -- a constructor label
+                     <unix time> field <name> <hex hash>.<i>.<j>  -- a record field label
 history            the REPL's line history
 ```
 
@@ -2095,10 +2121,11 @@ tuned, and compilation is a later milestone.
    `Con` and `Case` replaced `If` and the boolean literal (core.md §5). User
    data types (§2.3): done, as the same mechanism with declared constructors,
    kinded parameters inferred from use, self-recursion, owner-stamped or
-   structural identity, and persistence in `types/`. Remaining: records as a
-   sugar over one-constructor types (`s.v` field access, update syntax),
-   `==` on declared types, mutually recursive types, and re-expressing `Bool`,
-   tuples and lists as prelude declarations.
+   structural identity, and persistence in `types/`. Records: done, as field
+   labels on one-constructor types with `b.f`, `C {f = e}` and `b {f = e}`
+   desugaring to `case`. Remaining: `==` on declared types, mutually
+   recursive types, record values printing with their field names, and
+   re-expressing `Bool`, tuples and lists as prelude declarations.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
    (re-evaluate at higher `p`); type annotations; mixed-dimension matrices, which
@@ -2138,9 +2165,9 @@ tuned, and compilation is a later milestone.
   alone?
 - Equality on declared types: derive `==` structurally when every field is
   comparable (the rule tuples and lists follow), or make it opt-in per type?
-- Records: `data Body = Body {mass :: Num [kg], pos :: Vec 3 [m]}` with `b.mass`
-  as field access clashes with the glued projection `v.0` only lexically
-  (a name against a natural); update syntax is the open part.
+- Record values print positionally. Printing `Body {mass = 5 kg, …}` needs
+  the field labels at print time, which the hash-only printer does not have;
+  a namer for fields, as for references, would give it.
 - A constructor that takes a prelude unit's name (`data Temp = T …`) unnames
   the tesla silently. Warn, refuse, or keep the newer-label rule?
 

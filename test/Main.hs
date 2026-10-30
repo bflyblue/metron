@@ -434,8 +434,8 @@ lexerTests =
             , TIdent "r"
             , L.TProj 12
             ]
-    , testCase "a dot followed by letters is composition, not a projection"
-        $ toks "r.x" @?= Right [TIdent "r", TOp ".", TIdent "x"]
+    , testCase "a dot glued to a name is a field access, not composition"
+        $ toks "r.x" @?= Right [TIdent "r", TField "x"]
     , testCase "dot with spaces is composition, .xs is not a projection"
         $ toks "f . g" @?= Right [TIdent "f", TOp ".", TIdent "g"]
     , testCase "projection must be glued to an atom"
@@ -540,6 +540,8 @@ shape e = case e.node of
   S.List es -> Vc (map shape es)
   S.CaseOf s _ -> shape s
   S.Proj a i -> Pj (shape a) i
+  S.FieldOf a f -> A (shape a) (V f)
+  S.Record hd fs -> foldl (\acc (n, x) -> A acc (A (V n.text) (shape x))) (shape hd) fs
 
 parserTests :: TestTree
 parserTests =
@@ -2445,24 +2447,30 @@ storeTests =
         (loaded, _) <- reload dir
         linesIn loaded ["c"] @?= Right ["300000000 m s^-1"]
     , testCase
-        "declared types, their names and a type that uses another survive a reload" $ withTempStore $ \dir -> do
-        s <-
-          persistLines
-            dir
-            [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
-            , "data Wrap a = Wrap Shape a"
-            , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
-            , ":add"
-            , ":unname Circle"
-            ]
-        (loaded, notes) <- reload dir
-        notes @?= []
-        loaded.codebase.typeDefs @?= s.codebase.typeDefs
-        loaded.codebase.typeNames @?= s.codebase.typeNames
-        loaded.codebase.conNames @?= s.codebase.conNames
-        Map.member "Circle" loaded.codebase.conNames @?= False
-        linesIn loaded ["area (Rect 2 m 3 m)", "Wrap (Rect 1 m 1 m) 2", ":view Wrap"]
-          @?= Right ["6 m^2", "Wrap (Rect 1 m 1 m) 2", "data Wrap a = Wrap Shape a"]
+        "declared types, their names and a type that uses another survive a reload"
+        $ withTempStore
+        $ \dir -> do
+          s <-
+            persistLines
+              dir
+              [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+              , "data Wrap a = Wrap {shape :: Shape, extra :: a}"
+              , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+              , ":add"
+              , ":unname Circle"
+              ]
+          (loaded, notes) <- reload dir
+          notes @?= []
+          loaded.codebase.typeDefs @?= s.codebase.typeDefs
+          loaded.codebase.typeNames @?= s.codebase.typeNames
+          loaded.codebase.conNames @?= s.codebase.conNames
+          Map.member "Circle" loaded.codebase.conNames @?= False
+          loaded.codebase.fieldNames @?= s.codebase.fieldNames
+          linesIn
+            loaded
+            ["area (Rect 2 m 3 m)", "(Wrap (Rect 1 m 1 m) 2).shape", ":view Wrap"]
+            @?= Right
+              ["6 m^2", "Rect (1 m) (1 m)", "data Wrap a = Wrap {shape :: Shape, extra :: a}"]
     , testCase ":unname persists" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add", ":alias y x", ":unname y"]
         (loaded, _) <- reload dir
@@ -2631,7 +2639,7 @@ dataTests =
             [ "12 m^2"
             , "Num [m] -> Shape"
             , "Shape -> Num [m^2]"
-            , "Rect 1 m 2 m"
+            , "Rect (1 m) (2 m)"
             , "{3.1415926535897932384… m^2, 2 m^2}"
             , "{Shape}"
             , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
@@ -2681,6 +2689,80 @@ dataTests =
             , "5 kg"
             , "data E = E (Num [kg m^2 s^-2]) (Num [kg m s^-2]) (Num [m s^-2]) (Point [K]) Bool (Num, {Num [m]})"
             ]
+    , testCase "records: named fields, construction, access, update, printing" $ do
+        runLinesP
+          [ "data Body = Body {mass :: Num [kg], pos :: Vec 3 [m], vel :: Vec 3 [m/s]}"
+          , "let b = Body {mass = 5 kg, pos = [1,2,3] km, vel = [4,5,6] km/s}"
+          , "b.mass"
+          , ":type b.pos"
+          , "let b2 = b {vel = [0,0,0] m/s, mass = 6 kg}"
+          , "b2"
+          , "let kinetic b = 0.5 * b.mass * norm b.vel ^ 2"
+          , ":type kinetic"
+          , ":view kinetic"
+          , "let bump dv b = b {vel = b.vel + dv}"
+          , "(bump ([1,1,1] m/s) b).vel"
+          , ":view bump"
+          , -- a field name never captures a variable of the same name
+            "let vel = [9,9,9] m/s"
+          , "(b {vel = vel}).vel"
+          , ":view Body"
+          , "data Pair a b = Pair {first :: a, second :: b}"
+          , "(Pair {first = 1, second = 2 m}).second"
+          , "(Pair 1 true).first"
+          , ":type Pair"
+          ]
+          @?= Right
+            [ "5 kg"
+            , "Vec 3 [m]"
+            , "Body (6 kg) ([1, 2, 3] km) ([0, 0, 0] m s^-1)"
+            , "Body -> Num [kg m^2 s^-2]"
+            , "kinetic = \\b -> 0.5 * (case b of Body mass _ _ -> mass) * norm (case b of Body _ _ vel -> vel)^2"
+            , "[4001, 5001, 6001] m s^-1"
+            , "bump = \\dv -> \\b -> case b of Body mass pos vel -> Body mass pos ((case b of Body _ _ vel' -> vel') + dv)"
+            , "[9, 9, 9] m s^-1"
+            , "data Body = Body {mass :: Num [kg], pos :: Vec 3 [m], vel :: Vec 3 [m s^-1]}"
+            , "2 m"
+            , "1"
+            , "a -> b -> Pair a b"
+            ]
+        let refused src needle = case runLinesP src of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+            body = "data Body = Body {mass :: Num [kg], pos :: Vec 3 [m]}"
+        refused [body, "Body {mass = 1 kg}"] "missing field pos"
+        refused
+          [body, "Body {mass = 1 kg, pos = [0,0,0] m, mass = 2 kg}"]
+          "field `mass` is given twice"
+        refused
+          [body, "let b = Body {mass = 1 kg, pos = [0,0,0] m}", "b {nope = 1}"]
+          "unknown field `nope`"
+        refused
+          [body, "let b = Body {mass = 1 kg, pos = [0,0,0] m}", "b.nope"]
+          "unknown field `nope`"
+        refused
+          [body, "data P = P {x :: Num}", "P {mass = 1 kg}"]
+          "`P` has no field `mass`"
+        refused
+          [body, "data P = P {x :: Num}", "P {x = 1, mass = 1 kg}"]
+          "field `mass` belongs to another type"
+        refused
+          ["data E = A {x :: Num} | B {y :: Num}"]
+          "field names need a type with one constructor"
+        refused ["data E = E {x :: Num, x :: Num}"] "field `x` appears twice"
+        refused [body, "mass"] "is a field; write it after a value"
+        -- field labels can be removed, with their dot; the type then prints positionally
+        runLinesP [body, ":add", ":unname .mass", ":view Body"]
+          @?= Right
+            [ "added Body"
+            , "removed the label `.mass`"
+            , "data Body = Body (Num [kg]) (Vec 3 [m])"
+            ]
+        -- a glued .name is a field, so composition needs spaces
+        evalP "(sqrt . abs) (-16)" @?= Right ["4"]
+        case evalP "(sqrt.abs) (-16)" of
+          Left err -> T.isInfixOf "unknown field `abs`" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "declared types: identity is the stamped or structural definition" $ do
         s <-
           either (assertFailure . T.unpack) pure
@@ -2745,7 +2827,7 @@ dataTests =
                 [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
                 , ":add"
                 , ":unname Circle"
-                , "Rect 1 m 2 m"
+                , "Rect (1 m) (2 m)"
                 , ":view Shape"
                 , ":unname Shape"
                 , ":type Rect"
@@ -2753,24 +2835,25 @@ dataTests =
         case outs of
           Right [_, removed, rect, viewed, _, ty] -> do
             removed @?= "removed the label `Circle`"
-            rect @?= "Rect 1 m 2 m"
+            rect @?= "Rect (1 m) (2 m)"
             T.isPrefixOf "data Shape = #" viewed @? T.unpack viewed
             T.isPrefixOf "Num [m] -> Num [m] -> #" ty @? T.unpack ty
           other -> assertFailure (show other)
     , testCase
-        "constructors and definitions share one namespace; the newer label wins" $ do
-        runLinesP
-          [ "1 T"
-          , "data Temp = T (Num [K])"
-          , "T (300 K)"
-          , ":type T"
-          , "let T = 2"
-          , "T + 1"
-          ]
-          @?= Right ["1 T", "T 300 K", "Num [K] -> Temp", "3"]
-        case runLinesP ["data Temp = T (Num [K])", "1 T"] of
-          Left err -> T.isInfixOf "`T` is not a unit" err @? T.unpack err
-          Right v -> assertFailure (show v)
+        "constructors and definitions share one namespace; the newer label wins"
+        $ do
+          runLinesP
+            [ "1 T"
+            , "data Temp = T (Num [K])"
+            , "T (300 K)"
+            , ":type T"
+            , "let T = 2"
+            , "T + 1"
+            ]
+            @?= Right ["1 T", "T (300 K)", "Num [K] -> Temp", "3"]
+          case runLinesP ["data Temp = T (Num [K])", "1 T"] of
+            Left err -> T.isInfixOf "`T` is not a unit" err @? T.unpack err
+            Right v -> assertFailure (show v)
     , testCase "the quantity rule inside an application" $ do
         runLinesP
           [ "let f a b = a + b"
