@@ -175,3 +175,8 @@
   quantity; `:alias` of a unit is a unit; a renamed unit prints under its new
   name. Storage format 2; format-1 stores migrate in place on first open.
   Hashes are unchanged.
+- Points over tensors (design §3.6). `Point` and `Scale` take a shape:
+  `scale site = m at [100, 200, 0] m` is a frame, `[1, 2, 3] site` a
+  `Point (Vec 3 [m])`, `p .- q` a displacement, `p .+ v` a moved position,
+  `p.0` a coordinate as a scalar point, `p to eci` the same position in
+  another frame. Scalar points print as `Point [K]` as before.

@@ -174,15 +174,18 @@ renderValueWith namer scale showMagnitude = \case
   -- A point prints on the scale it was written on (design §3.6): steps from
   -- the origin, then the scale's name; without a scale, as an amount from
   -- the base origin in base units.
-  VPoint d sc m -> do
-    x <- m
+  VPoint dims d sc buf -> do
+    xs <- sequence (V.toList buf)
     pure $ case sc of
       Just s
         | Just atom <- s.name
-        , Right steps <- divM (scale + 4) (subM x s.origin) s.step ->
-            showMagnitude steps <> " " <> atomNameWith namer atom
+        , Right steps <-
+            mapM
+              (\(x, o) -> divM (scale + 4) (subM x o) s.step)
+              (zip xs (V.toList s.origin)) ->
+            renderNested showMagnitude dims steps <> " " <> atomNameWith namer atom
       _ ->
-        showMagnitude x
+        renderNested showMagnitude dims xs
           <> (if T.null (renderUnits d) then "" else " " <> renderUnits d)
           <> " (point)"
   VScale s ->
@@ -192,7 +195,7 @@ renderValueWith namer scale showMagnitude = \case
         "scale: step "
           <> showMagnitude s.step
           <> " at "
-          <> showMagnitude s.origin
+          <> renderNested showMagnitude s.dims (V.toList s.origin)
           <> (if T.null (renderUnits s.dim) then "" else " " <> renderUnits s.dim)
   v -> do
     (dims, scaled, units) <- displayParts namer scale v

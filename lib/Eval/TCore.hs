@@ -107,11 +107,13 @@ primScheme name = case name of
   "log" -> num1
   "atan2" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) angleT)))
   -- Points and scales (design §3.6).
-  "mkScale" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) (TScale d))))
-  "pointOn" -> Just (Forall [dv] (TFun (TScale d) (TFun numT (TPoint d))))
-  "pointAdd" -> Just (Forall [dv] (TFun (TPoint d) (TFun (numD d) (TPoint d))))
-  "pointSub" -> Just (Forall [dv] (TFun (TPoint d) (TFun (TPoint d) (numD d))))
-  "toScale" -> Just (Forall [dv] (TFun (TPoint d) (TFun (TScale d) (TPoint d))))
+  "mkScale" -> Just (Forall [sv, dv] (TFun (numD d) (TFun sd (TScale s d))))
+  "pointOn" ->
+    Just
+      (Forall [sv, dv] (TFun (TScale s d) (TFun (TTensor s dimOne) (TPoint s d))))
+  "pointAdd" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun sd (TPoint s d))))
+  "pointSub" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun (TPoint s d) sd)))
+  "toScale" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun (TScale s d) (TPoint s d))))
   -- lt, le, gt, ge have instance types; see lintConstrained.
   "and" -> mono (TFun TBool (TFun TBool TBool))
   "or" -> mono (TFun TBool (TFun TBool TBool))
@@ -291,6 +293,8 @@ lint look ctx = \case
     case tt of
       TTensor (SCons (LLit k) rest) d | i < k -> mono (TTensor rest d)
       TTensor (SCons (LVar _ k) rest) d | i < k -> mono (TTensor rest d)
+      TPoint (SCons (LLit k) rest) d | i < k -> mono (TPoint rest d)
+      TPoint (SCons (LVar _ k) rest) d | i < k -> mono (TPoint rest d)
       _ -> Left ("projection ." <> T.pack (show i) <> " from " <> renderType tt)
   TTyLam v k body -> do
     Forall vs t <- lint look ctx body
@@ -352,13 +356,13 @@ lintConstrained name ty = case (name, ty) of
         case t of
           TTensor _ _ -> Right ()
           TBool -> Right ()
-          TPoint _ -> Right ()
+          TPoint _ _ -> Right ()
           _ -> Left ("no equality on " <> renderType t)
     | eqName `elem` ["lt", "le", "gt", "ge"] -> do
         require (t == t') (eqName <> ": operands differ in type")
         case t of
           TTensor SNil _ -> Right ()
-          TPoint _ -> Right ()
+          TPoint SNil _ -> Right ()
           _ -> Left ("no ordering on " <> renderType t)
   _ ->
     Left
@@ -429,8 +433,8 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (TVar v, _) | quantified v -> bindArg v (AType t) m
     (TFun a b, TFun c d) -> matchType a c m >>= matchType b d
     (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
-    (TPoint da, TPoint db) -> matchDim da db m
-    (TScale da, TScale db) -> matchDim da db m
+    (TPoint a da, TPoint b db) -> matchShape a b m >>= matchDim da db
+    (TScale a da, TScale b db) -> matchShape a b m >>= matchDim da db
     _ -> if p == t then Just m else Nothing
   matchShape p sh m = case (p, sh) of
     (SVar v, _) | quantified v -> bindArg v (AShape sh) m

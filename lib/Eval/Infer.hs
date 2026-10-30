@@ -152,8 +152,8 @@ unify p expected actual = do
     (TVar v, t) -> bindVar p v (AType t)
     (t, TVar v) -> bindVar p v (AType t)
     (TFun a1 b1, TFun a2 b2) -> unify p a1 a2 >> unify p b1 b2
-    (TPoint d1, TPoint d2) -> dims d1 d2
-    (TScale d1, TScale d2) -> dims d1 d2
+    (TPoint s1 d1, TPoint s2 d2) -> shapeAndDims s1 d1 s2 d2
+    (TScale s1 d1, TScale s2 d2) -> shapeAndDims s1 d1 s2 d2
     (TTensor s1 d1, TTensor s2 d2) -> do
       st <- get
       case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
@@ -162,7 +162,7 @@ unify p expected actual = do
           failAt
             p
             ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
-    (TPoint _, TTensor _ _) ->
+    (TPoint _ _, TTensor _ _) ->
       failAt
         p
         ( "expected "
@@ -171,7 +171,7 @@ unify p expected actual = do
             <> renderType a
             <> ": a point and an amount; a point has no sum, multiple or unit; use .+ and .-, or to with a scale (design §3.6)"
         )
-    (TTensor _ _, TPoint _) ->
+    (TTensor _ _, TPoint _ _) ->
       failAt
         p
         ( "expected "
@@ -182,9 +182,9 @@ unify p expected actual = do
         )
     _ -> failAt p ("expected " <> renderType e <> ", got " <> renderType a)
  where
-  dims d1 d2 = do
+  shapeAndDims s1 d1 s2 d2 = do
     st <- get
-    case runStateT (unifyDim p d1 d2) st of
+    case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
       Right ((), st') -> put st'
       Left (TypeError _ detail) -> do
         e <- resolve expected
@@ -344,7 +344,7 @@ solveOne p = \case
     case t' of
       TTensor _ _ -> pure True
       TBool -> pure True
-      TPoint _ -> pure True
+      TPoint _ _ -> pure True
       TVar _ -> pure False
       _ -> failAt p ("no equality on " <> renderType t')
   OrdInstance t -> do
@@ -352,7 +352,8 @@ solveOne p = \case
     case t' of
       TTensor SNil _ -> pure True
       TTensor (SVar _) _ -> pure False
-      TPoint _ -> pure True
+      TPoint SNil _ -> pure True
+      TPoint (SVar _) _ -> pure False
       TVar _ -> pure False
       _ ->
         failAt
@@ -468,8 +469,8 @@ negativeOnly quantified ts =
   exponents v = \case
     TBool -> []
     TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
-    TPoint d -> [k | (DVar w, k) <- dimAtoms d, w == v]
-    TScale d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TPoint _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TScale _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TFun a b -> exponents v a ++ exponents v b
     TVar _ -> []
 
@@ -606,6 +607,22 @@ infer look p ctx = \case
         unifyLen p l atLeast
         pure (TTensor rest d)
       TTensor SNil _ -> failAt p ("cannot project ." <> tshow i <> " from a number")
+      -- A component of a point is a point (design §3.6).
+      TPoint (SCons (LLit n) rest) d
+        | i < n -> pure (TPoint rest d)
+        | otherwise ->
+            failAt
+              p
+              ( "position "
+                  <> tshow i
+                  <> " is out of range for a point over a vector of length "
+                  <> tshow n
+              )
+      TPoint (SCons l rest) d -> do
+        atLeast <- freshLen (i + 1)
+        unifyLen p l atLeast
+        pure (TPoint rest d)
+      TPoint SNil _ -> failAt p ("cannot project ." <> tshow i <> " from a scalar point")
       -- Rank unknown so far: it must be at least one.
       _ -> do
         atLeast <- freshLen (i + 1)

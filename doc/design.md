@@ -1056,8 +1056,20 @@ second is a rise and as nothing if it is a temperature; written with a
 factor-and-offset "unit" it silently becomes `298.15 °C`. The point/amount
 distinction is the information the arithmetic needs, and it is the same
 distinction as instant/duration, position/displacement, potential/potential
-difference and absolute/gauge pressure. One type covers them all. Points on
-tensors (`Point` positions as vectors) are a later extension of the same idea.
+difference and absolute/gauge pressure. One type covers them all.
+
+**Points over tensors.** `Point` is indexed by a shape as well as a dimension:
+a position is a `Point (Vec 3 [m])`, a point of the affine space over
+`Vec 3 [m]`, and its scale is a *frame*: a step unit and an origin vector,
+`scale site = m at [100, 200, 0] m`. `[1, 2, 3] site` is the point with those
+coordinates in the frame; `p .- q` is a displacement `Vec 3 [m]`; `p .+ v` moves
+a position by a displacement; `p.0` is the first coordinate as a scalar point on
+the sliced frame; `p to eci` re-expresses a position in another frame of the
+same dimension. A frame here is an origin and a scale only. A frame with a
+rotated basis (ECI against ECEF) is a later extension: `to` between such frames
+would rotate as well as translate, which is exactly the distinction between
+points and displacements that the type already enforces, since a displacement
+only rotates.
 
 ## 4. Type system
 
@@ -1069,16 +1081,17 @@ concatenation for the products and an equality instance (§4.2).
 ### 4.1 Types
 
 ```
-τ ::= Tensor σ δ | Point δ | Scale δ | Bool | τ -> τ | α
+τ ::= Tensor σ δ | Point σ δ | Scale σ δ | Bool | τ -> τ | α
 σ ::= [] | ν : σ | s                   -- a shape: a list of lengths, possibly ending in a shape variable
 δ ::= 1 | B | d | δ·δ | δ⁻¹          -- an abelian group, normalised
 ν ::= k | n | n + k                    -- a literal, a length variable, or a variable plus a literal offset
 ```
 
 `Num δ` abbreviates `Tensor [] δ`, `Vec ν δ` abbreviates `Tensor [ν] δ`, and
-`Mat μ ν δ` abbreviates `Tensor [μ, ν] δ`. `Point δ` is a point of an affine space
-over `Num δ` and `Scale δ` a scale for writing and printing them (§3.6); both
-are indexed by a dimension only.
+`Mat μ ν δ` abbreviates `Tensor [μ, ν] δ`. `Point σ δ` is a point of the affine space
+over `Tensor σ δ` and `Scale σ δ` a scale, or frame, for writing and printing
+them (§3.6). `Point [K]` prints for a scalar point and `Point (Vec 3 [m])` for
+a position.
 
 **Variables are kinded.** There is one namespace of variables, each with a kind:
 `Type`, `Len`, `Shape`, and `Dim` when dimensions arrive. Each kind is an index
@@ -1192,11 +1205,12 @@ sin cos tan : Num [rad] -> Num 1
 asin acos atan : Num 1 -> Num [rad]
 sinh cosh tanh exp log : Num 1 -> Num 1
 atan2       : Num d -> Num d -> Num [rad]
-mkScale     : Num d -> Num d -> Scale d      -- step, origin (3.6)
-pointOn     : Scale d -> Num 1 -> Point d    -- what the quantity rule builds for `20 degC`
-pointAdd    : Point d -> Num d -> Point d    -- `.+`
-pointSub    : Point d -> Point d -> Num d    -- `.-`
-toScale     : Point d -> Scale d -> Point d  -- `p to s` when s is a scale
+mkScale     : Num d -> Tensor s d -> Scale s d          -- step, origin (3.6)
+pointOn     : Scale s d -> Tensor s 1 -> Point s d      -- what the quantity rule builds for `20 degC`, `[1, 2, 3] site`
+pointAdd    : Point s d -> Tensor s d -> Point s d      -- `.+`
+pointSub    : Point s d -> Point s d -> Tensor s d      -- `.-`
+toScale     : Point s d -> Scale s d -> Point s d       -- `p to s` when s is a scale
+p.i         : Point (n + i + 1 : s) d -> Point s d      -- a coordinate is a point
 pi e        : Num 1
 e ^ n       : Num d -> Num [d^n]            -- special form, n an integer literal
 noise n     : Vec n 1                        -- special form, n a natural literal
@@ -1883,8 +1897,8 @@ tuned, and compilation is a later milestone.
    `det` kernels: done (Gaussian elimination with pivots whose enclosure
    excludes zero). Remaining: `covariance`, `:covariance`, `cholesky`, `±` on
    tensors (§3.4), and `contract`/`permute` for ranks above two.
-   Points and scales (§3.6): done for scalars; points on tensors (positions
-   as vectors) remain.
+   Points and scales (§3.6): done, over any shape; frames with a rotated
+   basis remain.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),

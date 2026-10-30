@@ -139,7 +139,9 @@ data ScaleHint = ScaleHint
   , step :: Magnitude
   , stepHint :: Maybe UnitHint
   -- ^ the step's own display unit, which differences inherit
-  , origin :: Magnitude
+  , origin :: Vector Magnitude
+  -- ^ the origin as an amount from the base origin, one magnitude per component
+  , dims :: [Int]
   , dim :: Dim
   }
   deriving stock (Eq, Show)
@@ -147,8 +149,8 @@ data ScaleHint = ScaleHint
 data Value
   = -- | lengths, dimension, display unit, flat row-major elements in SI base units
     VTensor [Int] Dim (Maybe UnitHint) (Vector Elem)
-  | -- | a point of the affine space over the dimension, as an amount from the base origin, with the scale it was written on
-    VPoint Dim (Maybe ScaleHint) Elem
+  | -- | a point of the affine space over a tensor type: lengths, dimension, the scale it was written on, and its position as an amount from the base origin
+    VPoint [Int] Dim (Maybe ScaleHint) (Vector Elem)
   | VScale ScaleHint
   | VBool Bool
   | VClosure Closure
@@ -240,13 +242,25 @@ eval cfg rt = go
             (Right _ : _, []) -> Left (Internal "unreachable: a tensor with no shape")
     -- Slice out component i: a view, not a copy.
     TProj t i -> do
-      (dims, d, hint, buf) <- tensor =<< go (child 0) env t
-      case dims of
+      v <- go (child 0) env t
+      case v of
+        VTensor dims d hint buf -> slice dims (\rest -> VTensor rest d hint) buf
+        -- A component of a point is a point on the sliced scale (design §3.6).
+        VPoint dims d sc buf -> slice dims (\rest -> VPoint rest d (sliceScale <$> sc)) buf
+        _ -> Left (Internal "projection from a non-tensor")
+     where
+      slice :: [Int] -> ([Int] -> Vector a -> Value) -> Vector a -> Thunk
+      slice dims mk buf = case dims of
         k : rest
           | i < k ->
               let stride = product rest
-               in Right (VTensor rest d hint (V.slice (i * stride) stride buf))
+               in Right (mk rest (V.slice (i * stride) stride buf))
         _ -> Left (Internal ("projection ." <> tshow i <> " out of range"))
+      sliceScale sc = case sc.dims of
+        _ : rest ->
+          let stride = product rest
+           in sc{origin = V.slice (i * stride) stride sc.origin, dims = rest}
+        [] -> sc
     -- Erasure.
     TTyLam _ _ b -> go site env b
     TTyApp b _ -> go site env b
@@ -310,9 +324,9 @@ tensor = \case
   VTensor dims d hint buf -> Right (dims, d, hint, buf)
   _ -> Left (Internal "expected a tensor")
 
-point :: Value -> Either EvalError (Dim, Maybe ScaleHint, Elem)
+point :: Value -> Either EvalError ([Int], Dim, Maybe ScaleHint, Vector Elem)
 point = \case
-  VPoint d sc m -> Right (d, sc, m)
+  VPoint dims d sc buf -> Right (dims, d, sc, buf)
   _ -> Left (Internal "expected a point")
 
 scaleOf :: Value -> Either EvalError ScaleHint
@@ -323,7 +337,7 @@ scaleOf = \case
 -- | A number or a point: what the comparisons order.
 ordered :: Value -> Either EvalError Magnitude
 ordered = \case
-  VPoint _ _ m -> m
+  VPoint [] _ _ buf | V.length buf == 1 -> V.head buf
   v -> scalar v
 
 -- | The one element of a rank-zero tensor.
@@ -640,28 +654,35 @@ runPrim cfg rt prim args = case (prim, args) of
   -- Points and scales (design §3.6).
   ("mkScale", [st, o]) -> do
     (stepM, d, stepHint) <- scalarFull =<< st
-    (originM, _, _) <- scalarFull =<< o
-    Right (VScale (ScaleHint Nothing stepM stepHint originM d))
+    (odims, _, _, obuf) <- tensor =<< o
+    originM <- sequence obuf
+    Right (VScale (ScaleHint Nothing stepM stepHint originM odims d))
   ("pointOn", [s, x]) -> do
     sc <- scaleOf =<< s
-    k <- scalar =<< x
-    Right (VPoint sc.dim (Just sc) (Right (addM sc.origin (mulM p k sc.step))))
+    (_, _, _, ks) <- tensor =<< x
+    Right
+      ( VPoint
+          sc.dims
+          sc.dim
+          (Just sc)
+          (V.zipWith (\o k -> (\k' -> addM o (mulM p k' sc.step)) <$> k) sc.origin ks)
+      )
   ("pointAdd", [pt, v]) -> do
-    (d, sc, m) <- point =<< pt
-    (dv, _, _) <- scalarFull =<< v
-    Right (VPoint d sc ((`addM` dv) <$> m))
+    (dims, d, sc, buf) <- point =<< pt
+    (_, _, _, vs) <- tensor =<< v
+    Right (VPoint dims d sc (V.zipWith (\m dv -> addM <$> m <*> dv) buf vs))
   -- The amount between two points, in the step unit of their common scale.
   ("pointSub", [pt, q]) -> do
-    (d, sc1, m1) <- point =<< pt
-    (_, sc2, m2) <- point =<< q
+    (dims, d, sc1, m1) <- point =<< pt
+    (_, _, sc2, m2) <- point =<< q
     let hint = case (sc1, sc2) of
           (Just a, Just b) | a.name == b.name -> a.stepHint
           _ -> Nothing
-    Right (VTensor [] d hint (V.singleton (subM <$> m1 <*> m2)))
+    Right (VTensor dims d hint (V.zipWith (\x y -> subM <$> x <*> y) m1 m2))
   ("toScale", [pt, s]) -> do
-    (d, _, m) <- point =<< pt
+    (dims, d, _, buf) <- point =<< pt
     sc <- scaleOf =<< s
-    Right (VPoint d (Just sc) m)
+    Right (VPoint dims d (Just sc) buf)
   _
     | primArity prim == Just (length args) ->
         Left (Unsupported (prim <> ": not implemented yet"))
@@ -713,10 +734,10 @@ runPrim cfg rt prim args = case (prim, args) of
         ys' <- sequence (V.toList ys)
         and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
       (VBool m, VBool n) -> Right (m == n)
-      (VPoint _ _ xm, VPoint _ _ ym) -> do
-        xv <- xm
-        yv <- ym
-        arith (equalM cfg.sigma p xv yv)
+      (VPoint _ _ _ xs, VPoint _ _ _ ys) -> do
+        xs' <- sequence (V.toList xs)
+        ys' <- sequence (V.toList ys)
+        and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
       _ ->
         Left
           (Internal "==: operands are not both tensors, both booleans or both points")
@@ -811,7 +832,7 @@ render = \case
   VTensor dims _ _ buf -> do
     rs <- sequence (V.toList buf)
     pure (nested dims rs)
-  VPoint _ _ m -> ("point " <>) . magnitude <$> m
+  VPoint dims _ _ buf -> ("point " <>) . nested dims <$> sequence (V.toList buf)
   VScale _ -> Right "<scale>"
   VBool True -> Right "true"
   VBool False -> Right "false"

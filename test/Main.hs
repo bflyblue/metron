@@ -1499,8 +1499,8 @@ generatorProperty =
   targetKind = \case
     TBool -> "Bool"
     TFun _ _ -> "function"
-    TPoint _ -> "Point"
-    TScale _ -> "Scale"
+    TPoint _ _ -> "Point"
+    TScale _ _ -> "Scale"
     TTensor sh d ->
       ( case rankOf sh of
           0 -> "Num"
@@ -2036,14 +2036,46 @@ affineTests =
         evalP "0 J2000 to JD" @?= Right ["2451545 JD"]
         evalP "(0 J2000 .+ 365.25 day) .- 0 J2000" @?= Right ["365.25 day"]
         evalP "100 gauge .- 0 gauge" @?= Right ["100 Pa"]
+    , testCase "points over vectors: frames, projection, conversion between frames" $ do
+        runLinesP
+          [ "scale site = m at [100, 200, 0] m"
+          , "[1, 2, 3] site"
+          , ":type [1, 2, 3] site"
+          , "([1, 2, 3] site) .- ([0, 0, 0] site)"
+          , "([1, 2, 3] site) .+ [1, 1, 1] km"
+          , "([1, 2, 3] site).0"
+          , ":type ([1, 2, 3] site).0"
+          , "[1, 2, 3] site == [1, 2, 3] site"
+          , "scale eci = km at [0, 0, 0] km"
+          , "[7000, 0, 0] eci to site"
+          ]
+          @?= Right
+            [ "[1, 2, 3] site"
+            , "Point (Vec 3 [m])"
+            , "[1, 2, 3] m"
+            , "[1001, 1002, 1003] site"
+            , "1 site"
+            , "Point [m]"
+            , "true"
+            , "[6999900, -200, 0] site"
+            ]
+        typeOfTextP "\\p v -> p .+ v"
+          @?= Right "Point (Tensor s d) -> Tensor s d -> Point (Tensor s d)"
+        case runLinesP ["scale site = m at [100, 200, 0] m", "[1, 2, 3] site + [1, 1, 1] m"] of
+          Left err -> T.isInfixOf "a point has no sum" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case runLinesP
+          ["scale site = m at [100, 200, 0] m", "[1, 2, 3] site < [2, 3, 4] site"] of
+          Left err -> T.isInfixOf "no ordering on Point (Vec 3 [m])" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "points compare and have no sum" $ do
         evalP "20 degC < 70 degF" @?= Right ["true"]
         evalP "20 degC == 68 degF" @?= Right ["true"]
         evalP "0 J2000 < 0 MJD" @?= Right ["false"]
         typeOfTextP "20 degC" @?= Right "Point [K]"
         typeOfTextP "degC" @?= Right "Scale [K]"
-        typeOfTextP "\\p q -> p .- q" @?= Right "Point d -> Point d -> Num d"
-        typeOfTextP "\\p v -> p .+ v" @?= Right "Point d -> Num d -> Point d"
+        typeOfTextP "\\p q -> p .- q" @?= Right "Point (Tensor s d) -> Point (Tensor s d) -> Tensor s d"
+        typeOfTextP "\\p v -> p .+ v" @?= Right "Point (Tensor s d) -> Tensor s d -> Point (Tensor s d)"
         typeOfTextP "\\a b -> a < b" @?= Right "Num d -> Num d -> Bool"
         case evalP "20 degC + 5 degC" of
           Left err -> T.isInfixOf "a point has no sum" err @? T.unpack err
