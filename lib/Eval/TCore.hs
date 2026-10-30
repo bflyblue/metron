@@ -123,46 +123,53 @@ primScheme name = case name of
   "exp" -> num1
   "log" -> num1
   "atan2" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) angleT)))
-  -- Points and scales (design §3.6).
-  "mkScale" -> Just (Forall [sv, dv] (TFun (numD d) (TFun sd (TScale s AAnon d))))
+  -- Points and charts (design §3.6, §3.8). A chart's root slot (design
+  -- §3.9) is a variable no primitive reads yet: a root chart's is free,
+  -- and a child shares its parent's.
+  "mkScale" -> Just (Forall [sv, dv, rv] (TFun (numD d) (TFun sd (chartOf s))))
   -- A chart in a parent of its own shape and dimension (design §3.8); the
   -- origin is an amount along the parent's axes.
   "mkChart3" ->
     Just
       ( Forall
-          [sv, dv]
-          (TFun (numD d) (TFun sd (TFun (TScale s AAnon d) (TScale s AAnon d))))
+          [sv, dv, rv]
+          (TFun (numD d) (TFun sd (TFun (chartOf s) (chartOf s))))
       )
-  -- Turned from the parent by a list of dimensionless generators over its
-  -- axes, applied in order.
+  -- Turned from the parent by a list of dimensionless generators, applied
+  -- in order. The generators are matrices over axes of their own, not yet
+  -- tied to the chart's.
   "mkChart4" ->
     Just
       ( Forall
-          [nv, dv]
+          [nv, dv, xav, xbv, rv]
           ( TFun
               (numD d)
               ( TFun
-                  (vecD n d)
-                  (TFun (TScale vn AAnon d) (TFun (listT (matD n n dimOne)) (TScale vn AAnon d)))
+                  (vecA n xa d)
+                  ( TFun
+                      (chartOf (pos n xa))
+                      (TFun (listT (matA (n, xb) (n, xb) dimOne)) (chartOf (pos n xa)))
+                  )
               )
           )
       )
-  -- And spinning: an angular velocity along its own axes, relative to the
-  -- parent, which only a three-dimensional chart has. The radian is
-  -- stripped as rotz strips it, so the chart keeps it in s^-1.
+  -- And spinning: an angular velocity relative to the parent, which only a
+  -- three-dimensional chart has. The radian is stripped as rotz strips it,
+  -- so the chart keeps it in s^-1. The literal 3 has an axis variable
+  -- beside it, so a named three-axis frame will do.
   "mkChart5" ->
     Just
       ( Forall
-          [dv]
+          [dv, xav, xbv, xcv, rv]
           ( TFun
               (numD d)
               ( TFun
-                  (vecD three d)
+                  (vecA three xa d)
                   ( TFun
-                      (TScale v3 AAnon d)
+                      (chartOf (pos three xa))
                       ( TFun
-                          (listT (matD three three dimOne))
-                          (TFun (vecD three angularRate) (TScale v3 AAnon d))
+                          (listT (matA (three, xb) (three, xb) dimOne))
+                          (TFun (vecA three xc angularRate) (chartOf (pos three xa)))
                       )
                   )
               )
@@ -170,12 +177,12 @@ primScheme name = case name of
       )
   "pointOn" ->
     Just
-      (Forall [sv, dv] (TFun (TScale s AAnon d) (TFun (TTensor s dimOne) (TPoint s d))))
+      (Forall [sv, dv, rv] (TFun (chartOf s) (TFun (TTensor s dimOne) (TPoint s d))))
   "pointAdd" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun sd (TPoint s d))))
   "pointSub" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun (TPoint s d) sd)))
   "toScale" ->
     Just
-      (Forall [sv, dv] (TFun (TPoint s d) (TFun (TScale s AAnon d) (TPoint s d))))
+      (Forall [sv, dv, rv] (TFun (TPoint s d) (TFun (chartOf s) (TPoint s d))))
   -- lt, le, gt, ge have instance types; see lintConstrained.
   "and" -> mono (TFun boolT (TFun boolT boolT))
   "or" -> mono (TFun boolT (TFun boolT boolT))
@@ -183,31 +190,64 @@ primScheme name = case name of
   "pi" -> mono numT
   "to" -> Just (Forall [sv, dv] (TFun sd (TFun (numD d) sd)))
   -- The wedge product is the general binary product of vectors; the 3D
-  -- cross product is `star (wedge a b)` and lives in the prelude.
+  -- cross product is `star (wedge a b)` and lives in the prelude. Both
+  -- vectors and the matrix are along one axis set (design §3.9).
   "wedge" ->
     Just
       ( Forall
-          [nv, dv, d2v]
-          (TFun (vecD n d) (TFun (vecD n d2) (matD n n (dimMul d d2))))
+          [nv, dv, d2v, xav]
+          ( TFun
+              (vecA n xa d)
+              (TFun (vecA n xa d2) (matA (n, xa) (n, xa) (dimMul d d2)))
+          )
       )
-  "star" -> Just (Forall [dv] (TFun (matD three three d) (vecD three d)))
-  "norm" -> Just (Forall [nv, dv] (TFun (vecD n d) (numD d)))
-  "transpose" -> Just (Forall [nv, mv, dv] (TFun (matD n m d) (matD m n d)))
-  "inverse" -> Just (Forall [nv, dv] (TFun (matD n n d) (matD n n (dimInv d))))
+  "star" ->
+    Just
+      (Forall [dv, xav] (TFun (matA (three, xa) (three, xa) d) (vecA three xa d)))
+  "norm" -> Just (Forall [nv, dv, xav] (TFun (vecA n xa d) (numD d)))
+  -- Rows and columns swap, each keeping its axes.
+  "transpose" ->
+    Just
+      ( Forall
+          [nv, mv, dv, xav, xbv]
+          (TFun (matA (n, xa) (m, xb) d) (matA (m, xb) (n, xa) d))
+      )
+  "inverse" ->
+    Just
+      ( Forall
+          [nv, dv, xav, xbv]
+          (TFun (matA (n, xa) (n, xb) d) (matA (n, xb) (n, xa) (dimInv d)))
+      )
   -- det : Mat n n d -> Num [d^n] needs the length as an exponent; until that
-  -- relation exists, det is on dimensionless matrices.
-  "det" -> Just (Forall [nv] (TFun (matD n n dimOne) numT))
+  -- relation exists, det is on dimensionless matrices. Its rows and
+  -- columns are along one axis set.
+  "det" -> Just (Forall [nv, xav] (TFun (matA (n, xa) (n, xa) dimOne) numT))
   -- Covariance (design §3.5): a square-root factor, the covariance of a
   -- vector's statistical nudges, and a vector with a given covariance.
-  "cholesky" -> Just (Forall [nv, dv] (TFun (matD n n (dimPow 2 d)) (matD n n d)))
-  "covariance" -> Just (Forall [nv, dv] (TFun (vecD n d) (matD n n (dimPow 2 d))))
+  -- The factor keeps the rows and the columns of what it factors.
+  "cholesky" ->
+    Just
+      ( Forall
+          [nv, dv, xav, xbv]
+          (TFun (matA (n, xa) (n, xb) (dimPow 2 d)) (matA (n, xa) (n, xb) d))
+      )
+  "covariance" ->
+    Just
+      ( Forall
+          [nv, dv, xav]
+          (TFun (vecA n xa d) (matA (n, xa) (n, xa) (dimPow 2 d)))
+      )
   -- The covariance of two vectors' shared statistical nudges: a joint
-  -- covariance's off-diagonal block, in the product of their dimensions.
+  -- covariance's off-diagonal block, in the product of their dimensions,
+  -- rows along the first's axes and columns along the second's.
   "crossCovariance" ->
     Just
       ( Forall
-          [nv, mv, dv, d2v]
-          (TFun (vecD n d) (TFun (vecD m d2) (matD n m (dimMul d d2))))
+          [nv, mv, dv, d2v, xav, xbv]
+          ( TFun
+              (vecA n xa d)
+              (TFun (vecA m xb d2) (matA (n, xa) (m, xb) (dimMul d d2)))
+          )
       )
   -- The parts of an enclosure (design §3.2.9), elementwise, in the
   -- operand's dimension.
@@ -218,8 +258,10 @@ primScheme name = case name of
     Just
       (Forall [sv, dv, d2v] (TFun (TFun (numD d) (numD d2)) (TFun sd (TTensor s d2))))
   -- The positions of a vector as values, [0, 1, …, n-1]: never consumed as
-  -- positions, so there is still no computed indexing (design §2.10).
-  "indices" -> Just (Forall [nv, dv] (TFun (vecD n d) (vecT n)))
+  -- positions, so there is still no computed indexing (design §2.10). The
+  -- result is along the argument's axes.
+  "indices" ->
+    Just (Forall [nv, dv, xav] (TFun (vecA n xa d) (vecA n xa dimOne)))
   -- Elementwise combination of two tensors of one shape, ⊙'s general form.
   "vzipWith" ->
     let d3 = dimVar 5
@@ -234,7 +276,8 @@ primScheme name = case name of
   -- vmap that also passes each component's multi-index, a vector of
   -- exact naturals as long as the rank: Vec (rank s) is the one use of the
   -- type-level rank (design §4.1). The index is a value, never consumed as
-  -- a position (design §2.10).
+  -- a position (design §2.10); its axes are anonymous, since its positions
+  -- are the tensor's axes by number, not any frame's (design §3.9).
   "timap" ->
     Just
       ( Forall
@@ -245,21 +288,47 @@ primScheme name = case name of
           )
       )
   -- The matrix exponential (design §3.3): dimensionless in and out, so a
-  -- matrix with a unit is refused by the unifier.
-  "expm" -> Just (Forall [nv] (TFun (matD n n dimOne) (matD n n dimOne)))
+  -- matrix with a unit is refused by the unifier; a map of one axis set
+  -- to itself.
+  "expm" ->
+    Just
+      ( Forall
+          [nv, xav]
+          (TFun (matA (n, xa) (n, xa) dimOne) (matA (n, xa) (n, xa) dimOne))
+      )
   -- R applied along every axis of a tensor. The type cannot say that every
-  -- length of s is n; the evaluator checks it (design §4.3).
-  "transformBy" -> Just (Forall [nv, sv, dv] (TFun (matD n n dimOne) (TFun sd sd)))
+  -- length of s is n; the evaluator checks it (design §4.3). Its axes are
+  -- free until stage 2 of design §3.9 types it as a map of one axis set.
+  "transformBy" ->
+    Just
+      ( Forall
+          [nv, sv, dv, xav, xbv]
+          (TFun (matA (n, xa) (n, xb) dimOne) (TFun sd sd))
+      )
   -- A chart's absolute rotation: its axes, as columns along the base axes
-  -- (design §3.8).
-  "rotationOf" -> Just (Forall [nv, dv] (TFun (TScale vn AAnon d) (matD n n dimOne)))
+  -- (design §3.8). The rows' axes are free, not the root slot: a written
+  -- type cannot say the root yet, and `Chart (Vec n d) -> Mat n n` must
+  -- still hold of rotationOf (design §3.9, stage 2 ties them).
+  "rotationOf" ->
+    Just
+      ( Forall
+          [nv, dv, xav, xbv, rv]
+          (TFun (chartOf (pos n xa)) (matA (n, xb) (n, xa) dimOne))
+      )
   -- Its absolute angular velocity and the velocity of its origin, along
   -- the base axes (design §3.8): zero for a chart that does not move.
   "spinOf" ->
-    Just (Forall [dv] (TFun (TScale v3 AAnon d) (vecD three (dimInv (dimBase T)))))
+    Just
+      ( Forall
+          [dv, xav, xbv, rv]
+          (TFun (chartOf (pos three xa)) (vecA three xb (dimInv (dimBase T))))
+      )
   "originVelocityOf" ->
     Just
-      (Forall [dv] (TFun (TScale v3 AAnon d) (vecD three (dimDiv d (dimBase T)))))
+      ( Forall
+          [dv, xav, xbv, rv]
+          (TFun (chartOf (pos three xa)) (vecA three xb (dimDiv d (dimBase T))))
+      )
   _ -> case baseUnit name of
     Just b -> mono (numD (dimBase b))
     Nothing -> Nothing
@@ -269,18 +338,29 @@ primScheme name = case name of
   d2v = (2, KDim)
   nv = (3, KLen)
   mv = (4, KLen)
+  -- Axis variables (design §3.9): the axes of positions, and a chart's root.
+  xav = (6, KAxis)
+  xbv = (7, KAxis)
+  rv = (8, KAxis)
+  xcv = (9, KAxis)
   s = SVar 0
   d = dimVar 1
   d2 = dimVar 2
   n = LVar 3 0
   m = LVar 4 0
+  xa = AVar 6
+  xb = AVar 7
+  root = AVar 8
+  xc = AVar 9
   three = LLit 3
   sd = TTensor s d
   sd2 = TTensor s d2
-  vn = SCons n AAnon SNil
-  v3 = SCons three AAnon SNil
   angularRate = dimDiv (dimBase Ang) (dimBase T)
-  matD r c = TTensor (SCons r AAnon (SCons c AAnon SNil))
+  -- One position, a vector along it, a matrix of two, a chart of a shape.
+  pos l x = SCons l x SNil
+  vecA l x = TTensor (pos l x)
+  matA (r, x) (c, y) = TTensor (SCons r x (pos c y))
+  chartOf sh = TScale sh root d
   mono = Just . Forall []
   num1 = mono (TFun numT numT)
   angleT = numD (dimBase Ang)
@@ -300,6 +380,9 @@ pk-1]@ has @Vec k -> Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … :
 lpk-1 : s) d@. @slice k i@ has @Num -> Num -> Tensor (l0 : … : lk-1 : n +
 i + 1 : s) d -> Tensor (l0 : … : lk-1 : s) d@: axis @k@ is long enough for
 position @i@ and is dropped.
+
+Each position is a length and an axis variable (design §3.9), moved or
+dropped with its length: @contract@'s paired positions share both.
 -}
 primSchemeFor :: Text -> [Maybe Lit] -> Maybe (Either Text Scheme)
 primSchemeFor name lits = case name of
@@ -313,7 +396,7 @@ primSchemeFor name lits = case name of
               kept = [l | (q, l) <- zip [0 ..] ls, q /= a, q /= b]
            in Right
                 ( Forall
-                    (sv : dv : [(lenId q, KLen) | q <- [0 .. b - 1]])
+                    (sv : dv : positionVars [0 .. b - 1])
                     ( TFun
                         numT
                         ( TFun
@@ -331,7 +414,7 @@ primSchemeFor name lits = case name of
           let ls = map lenAt [0 .. k - 1]
            in Right
                 ( Forall
-                    (sv : dv : [(lenId q, KLen) | q <- [0 .. k - 1]])
+                    (sv : dv : positionVars [0 .. k - 1])
                     ( TFun
                         (vecT (LLit k))
                         ( TFun
@@ -350,13 +433,13 @@ primSchemeFor name lits = case name of
           let before = map lenAt [0 .. k - 1]
            in Right
                 ( Forall
-                    (sv : dv : [(lenId q, KLen) | q <- [0 .. k]])
+                    (sv : dv : positionVars [0 .. k])
                     ( TFun
                         numT
                         ( TFun
                             numT
                             ( TFun
-                                (TTensor (appendShape (before ++ [(LVar (lenId k) (i + 1), AAnon)]) s) d)
+                                (TTensor (appendShape (before ++ [(LVar (lenId k) (i + 1), axisAt k)]) s) d)
                                 (TTensor (appendShape before s) d)
                             )
                         )
@@ -369,8 +452,13 @@ primSchemeFor name lits = case name of
   dv = (1, KDim)
   s = SVar 0
   d = dimVar 1
-  lenId q = 10 + q
-  lenAt q = (LVar (lenId q) 0, AAnon)
+  -- Position q's length and axis variables, interleaved so that they never
+  -- share an id.
+  lenId q = 10 + 2 * q
+  axisId q = 11 + 2 * q
+  axisAt q = AVar (axisId q)
+  lenAt q = (LVar (lenId q) 0, axisAt q)
+  positionVars qs = [(lenId q, KLen) | q <- qs] ++ [(axisId q, KAxis) | q <- qs]
   position = \case
     LTensor ([], [r]) -> integral r
     _ -> Nothing
