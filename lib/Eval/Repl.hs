@@ -97,6 +97,7 @@ commands =
   , ":namespace"
   , ":uses"
   , ":unuse"
+  , ":export"
   , ":exact"
   , ":budget"
   , ":covariance"

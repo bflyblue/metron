@@ -4430,6 +4430,39 @@ orbitalSetup =
   , ":add"
   ]
 
+{- | A codebase for the export round trip: two namespaces, a nested one, a
+root definition, a unit, a scale, a record with a field a function uses, a
+cycle, a block definition shadowing a root name, and a prelude reference.
+-}
+exportScript :: [Text]
+exportScript =
+  [ multiline
+      [ "let size = 10"
+      , "let d = 2 km"
+      , "unit furlong = 201.168 * m"
+      , "namespace orbital"
+      , "  unit au = 149597870700 * m"
+      , "  scale tip = au at 1 au"
+      , "  data Body = Body {mass :: Num [kg], dist :: Num [m]}"
+      , "  let weight b = b.mass * 9.81 m/s^2"
+      , "  let size = 3"
+      , "  let both = size + .size"
+      , "  let even n = if n == 0 then true else odd (n - 1)"
+      , "  let odd n = if n == 0 then false else even (n - 1)"
+      , "  let earth = Body {mass = 6 kg, dist = 1 au}"
+      , "  namespace kepler"
+      , "    let anomaly e x = x + e * x"
+      , "    let viaParent = orbital.size * 2"
+      , "namespace mechanics"
+      , "  let g0 = 9.80665 m/s^2"
+      , "  let fall t = g0 * t^2 / 2"
+      , "  let useOrbital = orbital.kepler.anomaly 1 2 + orbital.weight orbital.earth / g0 / kg"
+      , "  data Probe = Probe {body :: orbital.Body, place :: Num [m]}"
+      , "  let probePlace p = p.place"
+      ]
+  , ":add"
+  ]
+
 -- | An error that mentions a text.
 expectError :: Either Text [Text] -> Text -> Assertion
 expectError r needle = case r of
@@ -4788,6 +4821,71 @@ namespaceTests =
         R.continuation "namespace orbital" @?= Just R.Block
         R.continuation "namespace orbital.kepler" @?= Just R.Block
         R.continuation "use orbital" @?= Nothing
+    , testCase ":export reads back to the same labels and hashes" $ do
+        original <- either (assertFailure . T.unpack) pure (sessionP exportScript)
+        source <- either (assertFailure . T.unpack) pure (exportSource original Nothing)
+        reloaded <-
+          either
+            (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
+            pure
+            (sessionP [source, ":add"])
+        let same :: (Eq a, Show a) => String -> (Codebase -> a) -> Assertion
+            same what f =
+              assertEqual
+                (what <> "\n" <> T.unpack source)
+                (f original.codebase)
+                (f reloaded.codebase)
+        same "names" (.names)
+        same "typeNames" (.typeNames)
+        same "conNames" (.conNames)
+        same "fieldNames" (.fieldNames)
+        same "units" (.units)
+        same "scales" (.scales)
+        -- The shadowed root name needs its leading dot inside the block.
+        (".size" `T.isInfixOf` source) @? T.unpack source
+        -- A prelude term is referenced by name, never exported.
+        ("let km" `T.isInfixOf` source) @?= False
+        -- Every declared type is named, none left as a hash.
+        ("#" `T.isInfixOf` source) @?= False
+    , testCase ":export of a namespace, of nothing, and with a pending scratch" $ do
+        s <- either (assertFailure . T.unpack) pure (sessionP exportScript)
+        expecting (runLinesP (exportScript ++ [":export orbital.kepler"])) $ \outs ->
+          T.lines (last outs)
+            @?= [ "namespace orbital"
+                , "  namespace kepler"
+                , "    let anomaly = \\e -> \\x -> x + e * x"
+                , "    let viaParent = orbital.size * 2"
+                ]
+        runLinesP [":export"] @?= Right []
+        case exportSource s{scratch = []} (Just "nowhere") of
+          Right t -> t @?= ""
+          Left err -> assertFailure (T.unpack err)
+        expecting (runLinesP (exportScript ++ ["let pending = 1", ":export mechanics"])) $ \outs ->
+          last (T.lines (last outs))
+            @?= "-- not exported: 1 pending definitions (:add or :update them first)"
+        expectError (runLinesP [":export a b c"]) "usage: :export"
+        -- A single word that is no namespace is a file, which only the REPL writes.
+        expectError (runLinesP [":export out.ev"]) "only the REPL writes files"
+        expectError
+          (runLinesP [":export nowhere out.ev"])
+          "`nowhere` is not a namespace"
+        fmap fst (exportRequest s ["out.ev"]) @?= Right (Just "out.ev")
+        fmap fst (exportRequest s ["orbital", "out.ev"]) @?= Right (Just "out.ev")
+        fmap snd (exportRequest s ["orbital", "out.ev"])
+          @?= exportSource s (Just "orbital")
+    , testCase ":export refuses a definition on a version no name points at"
+        $ expectError
+          ( runLinesP
+              [ "let x = 5"
+              , "let y = x + 1"
+              , ":add"
+              , "let x = 6"
+              , ":update --no-upgrade"
+              , ":unname x"
+              , ":export"
+              ]
+          )
+          "cannot export: `y` uses"
     , testCase "lexing: a dot not glued to a value is an absolute name" $ do
         toks ".km" @?= Right [TAbs "km"]
         toks "2 .km" @?= Right [L.TNum 2, TAbs "km"]

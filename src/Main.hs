@@ -222,6 +222,25 @@ repl opts interactive = do
       [":load", path] -> do
         src <- liftIO (TIO.readFile (T.unpack path))
         run feedFile src
+      -- The codebase as source, into a file (design §7.4); without a file
+      -- the Driver prints it.
+      ":export" : args -> do
+        live <- liftIO (readIORef ref)
+        case exportRequest live.session args of
+          Right (Just file, source) -> do
+            liftIO (TIO.writeFile file (if T.null source then source else source <> "\n"))
+            emit
+              ref
+              colour
+              ( Right
+                  ( ("exported to " <> T.pack file)
+                      : [ "note: the pending scratch is not exported; :add or :update it first"
+                        | not (null live.session.scratch)
+                        ]
+                  )
+              )
+            again
+          _ -> run feed input
       _ -> run feed input
     again = loop ref colourRef
     run feeder src = do

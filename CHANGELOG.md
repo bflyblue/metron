@@ -413,3 +413,13 @@
   `:unname` and `:ls` take a namespace. `:load` keeps a file's `use`s to
   the file. New tokens: the keywords `namespace` and `use` (`as` stays a
   name: it is attoseconds), and `TAbs` for a dot not glued to a value.
+- `:export [namespace] [file]` (design §7.4): the stored codebase, or one
+  namespace, as source that `:load` reads back to the same labels and
+  hashes. Namespaces become nested `namespace` blocks with root definitions
+  outside them; definitions print as `:edit` prints them, spelled for their
+  block (`.km` where the block shadows the root's); prelude definitions are
+  left out; types come first, then terms after what they reference, a
+  cycle's members together. A definition on a version no name points at
+  refuses the export. Without a file the source is printed; the pending
+  scratch is not exported, and a comment or note says so. New in
+  `Eval.Driver`: `exportSource` and `exportRequest`.

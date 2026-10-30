@@ -14,12 +14,15 @@ module Eval.Driver (
   preludeSession,
   feed,
   feedFile,
+  exportRequest,
+  exportSource,
   refreshPreferences,
 ) where
 
 import Control.Monad (foldM)
 import Data.Char (isDigit)
 import Data.Either (fromRight)
+import Data.Graph (flattenSCC, stronglyConnComp)
 import Data.List (partition, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -613,12 +616,17 @@ command session src = \case
      in if null gone
           then Left ("`" <> p <> "` is not in use; :uses lists them")
           else Right (session{scope = scope{S.uses = kept}}, [])
+  -- The codebase as source (design §7.4); the REPL writes it to a file.
+  ("export" : args) ->
+    exportRequest session args >>= \case
+      (Nothing, source) -> Right (session, [source | not (T.null source)])
+      (Just file, _) -> Left ("only the REPL writes files; :export there to write " <> T.pack file)
   _ ->
     Left
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
           <> "          :ls [glob|namespace] [--all|--units|--scales|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
           <> "          :history name  :dependents name  :alias new old  :unname name  :rename old new  :move name… namespace\n"
-          <> "          :namespace [path|.]  :uses  :unuse path\n"
+          <> "          :namespace [path|.]  :uses  :unuse path  :export [namespace] [file]\n"
           <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k | unicode on|off]  :prefer [unit]  :unprefer unit  :colour on|off"
       )
  where
@@ -1323,3 +1331,197 @@ absorbLast session le = case session.lastExpr of
         linted <- either (Left . ("internal error: " <>)) Right (lintClosed look typed')
         pure le{term = term', schemes = linted, typed = typed'}
   _ -> pure le
+
+-- Export (design §7.4) --------------------------------------------------------------
+
+{- | @:export [path] [file]@: what to export and where. No argument, or
+@.@, is the whole codebase; a word that names a namespace (relative to the
+current one, or absolute) is that namespace; any other single word is the
+file. With two words, the first is the path and the second the file.
+Returns the file, if any, and the source.
+-}
+exportRequest :: Session -> [Text] -> Either Text (Maybe FilePath, Text)
+exportRequest session = \case
+  [] -> (Nothing,) <$> exportSource session Nothing
+  [w]
+    | w == "." -> (Nothing,) <$> exportSource session Nothing
+    | Just ns <- namespaceArg w -> (Nothing,) <$> exportSource session (Just ns)
+    | otherwise -> (Just (T.unpack w),) <$> exportSource session Nothing
+  [p, f]
+    | p == "." -> (Just (T.unpack f),) <$> exportSource session Nothing
+    | Just ns <- namespaceArg p ->
+        (Just (T.unpack f),) <$> exportSource session (Just ns)
+    | otherwise -> Left ("`" <> p <> "` is not a namespace")
+  _ -> Left "usage: :export [namespace] [file]"
+ where
+  cb = session.codebase
+  namespaceArg w
+    | Just p <- T.stripPrefix "." w = if isNamespace cb p then Just p else Nothing
+    | not (null session.scope.namespace)
+    , here <- S.qualify session.scope.namespace w
+    , isNamespace cb here =
+        Just here
+    | isNamespace cb w = Just w
+    | otherwise = Nothing
+
+-- | The prelude's labels, as every session starts with them.
+preludeLabels :: Codebase
+preludeLabels = either (const emptyCodebase) (.codebase) preludeSession
+
+{- | The stored codebase, or the namespace at a path, as source that @:load@
+reads back (design §7.4): every label the prelude does not give (a prelude
+name rebound by the user is exported), as a @namespace@ block per
+namespace, nested as the paths nest, with root definitions outside any
+block. Types come first, each after the types it uses, then the terms,
+each after what it references and a cycle's members together. Inside a
+block, names print as that block's scope spells them (design §7.6), with
+no @use@. The pending scratch is not exported; a closing comment says so.
+A definition that refers to a version no name points at any more cannot be
+written as source, and refuses the export.
+-}
+exportSource :: Session -> Maybe Text -> Either Text Text
+exportSource session path = do
+  case [ (n, r)
+       | (n, Reference h _) <- terms
+       , Just t <- [lookupTerm h cb]
+       , r <- Set.toList (refsWithIndex t)
+       , null (namesOf (uncurry Reference r) cb)
+       ] of
+    (n, (h, i)) : _ ->
+      Left
+        ( "cannot export: `"
+            <> n
+            <> "` uses "
+            <> refNamer S.rootScope cb h i ""
+            <> ", which no name points at; :upgrade or :update it first"
+        )
+    [] -> Right ()
+  typeItems <- mapM typeItem orderedTypes
+  termItems <- concat <$> mapM termItems' orderedTerms
+  let body = nest [] (typeItems ++ termItems)
+      pendingNote =
+        [ "-- not exported: "
+            <> T.pack (show (length session.scratch))
+            <> " pending definitions (:add or :update them first)"
+        | not (null session.scratch)
+        ]
+  pure (T.intercalate "\n" (body ++ pendingNote))
+ where
+  cb = session.codebase
+  under n = maybe True (\p -> (p <> ".") `T.isPrefixOf` n) path
+  -- A label the prelude gives, pointing where the prelude points.
+  fromPrelude m n v = Map.lookup n (m preludeLabels) == Just v
+  terms =
+    [ (n, r)
+    | (n, r) <- Map.toList cb.names
+    , under n
+    , not (fromPrelude (.names) n r)
+    ]
+  types =
+    [ (n, h)
+    | (n, h) <- Map.toList cb.typeNames
+    , under n
+    , not (fromPrelude (.typeNames) n h)
+    ]
+  namespaceOf n = init (T.splitOn "." n)
+  -- Types after the types their fields use.
+  orderedTypes =
+    dependencyOrder
+      [ ((n, h), n, maybe [] (defRefs h) (lookupTypeDef h cb))
+      | (n, h) <- types
+      ]
+  defRefs self def =
+    let used = Set.delete self (foldMap (foldMap typeRefs) def.constructors)
+     in [n | (n, h) <- types, h `Set.member` used]
+  typeItem (n, _) =
+    let scope = S.Scope (namespaceOf n) []
+     in (namespaceOf n,) . map (nameTypes scope cb) <$> viewData Ascii scope cb n
+  -- Terms by hash, so that a cycle's members and aliases stay together,
+  -- after what they reference.
+  byHash = Map.fromListWith (++) [(r.hash, [(n, r)]) | (n, r) <- terms]
+  keyOf = Map.map (minimum . map fst) byHash
+  orderedTerms =
+    dependencyOrder
+      [ ( sortOn (\(n, r) -> (r.index, n)) members
+        , Map.findWithDefault "" h keyOf
+        , maybe
+            []
+            (mapMaybe (`Map.lookup` keyOf) . Set.toList . Set.delete h . refs)
+            (lookupTerm h cb)
+        )
+      | (h, members) <- Map.toList byHash
+      ]
+  termItems' = mapM $ \(n, r) ->
+    let scope = S.Scope (namespaceOf n) []
+        keyword
+          | isUnitName n cb = "unit "
+          | isScaleName n cb = "scale "
+          | otherwise = "let "
+     in ( \b ->
+            (namespaceOf n, [nameTypes scope cb (keyword <> S.lastSegment n <> " = " <> b)])
+        )
+          <$> viewReference Ascii scope cb r
+  -- Open and close blocks as the namespaces of consecutive items change.
+  nest :: [Text] -> [([Text], [Text])] -> [Text]
+  nest _ [] = []
+  nest current ((ns, ls) : rest) =
+    let common = length (takeWhile id (zipWith (==) current ns))
+        opens =
+          [ indent k <> "namespace " <> seg
+          | (k, seg) <- zip [common ..] (drop common ns)
+          ]
+     in opens ++ map (indent (length ns) <>) ls ++ nest ns rest
+  indent k = T.replicate (2 * k) " "
+
+{- | Dependencies first; among what is ready, what stays in the namespace of
+the last item, then by namespace and name, so that an export reopens as few
+blocks as it can (design §7.4). Each node is an item, its key (a full
+path) and the keys it depends on; mutually dependent nodes come out
+together.
+-}
+dependencyOrder :: [(a, Text, [Text])] -> [a]
+dependencyOrder nodes = map fst (go [] Set.empty (Map.keysSet comps))
+ where
+  comps =
+    Map.fromList
+      ( zip
+          [0 :: Int ..]
+          (map flattenSCC (stronglyConnComp [((a, k), k, ds) | (a, k, ds) <- nodes]))
+      )
+  compOf = Map.fromList [(k, i) | (i, members) <- Map.toList comps, (_, k) <- members]
+  depsOf = Map.fromList [(k, ds) | (_, k, ds) <- nodes]
+  compDeps i =
+    Set.delete
+      i
+      ( Set.fromList
+          [ j
+          | (_, k) <- Map.findWithDefault [] i comps
+          , d <- Map.findWithDefault [] k depsOf
+          , Just j <- [Map.lookup d compOf]
+          ]
+      )
+  key i = minimum (map snd (Map.findWithDefault [] i comps))
+  space i = init (T.splitOn "." (key i))
+  go current done remaining
+    | Set.null remaining = []
+    | otherwise =
+        let ready = [i | i <- Set.toList remaining, compDeps i `Set.isSubsetOf` done]
+            pick = case sortOn (\i -> (space i /= current, space i, key i)) ready of
+              i : _ -> i
+              -- Not reachable: the components form a DAG.
+              [] -> Set.findMin remaining
+         in Map.findWithDefault [] pick comps
+              ++ go (space pick) (Set.insert pick done) (Set.delete pick remaining)
+
+-- | The declared types a type mentions.
+typeRefs :: Type -> Set.Set Hash
+typeRefs = \case
+  TData h args -> Set.insert h (foldMap argRefs args)
+  TTuple ts -> foldMap typeRefs ts
+  TList t -> typeRefs t
+  TFun a b -> typeRefs a <> typeRefs b
+  _ -> Set.empty
+ where
+  argRefs = \case
+    AType t -> typeRefs t
+    _ -> Set.empty

@@ -2246,7 +2246,9 @@ Session
 :exact e           raw rational, or midpoint and nudge list
 :budget e          error budget (3.2.6)
 :covariance e      covariance (or variance) of the statistical nudges, and the bound box (3.5)
-:load file         enter a file into the scratch as one binding group
+:load file         enter a file into the scratch as one binding group; its `use`s last for the file
+:export [ns] [file] the stored codebase, or the namespace ns, as source :load reads back (7.4);
+                   to the file when one is given (a word that is no namespace is the file)
 :colour [on|off]   colour the REPL's output; alone, say whether it is on (a REPL-level setting, below)
 :quit
 ```
@@ -2511,6 +2513,45 @@ The user store lives at `$XDG_DATA_HOME/eval/` and is what the daily calculator
 uses. A project-local `.eval/` directory, found by walking up from the current
 directory, shadows the user store, and `--codebase DIR` names one explicitly;
 `--no-codebase` runs in memory. iapetus commits its `.eval/` to git.
+
+**Export: the text form of a store.** `:export [ns] [file]` writes the
+stored codebase, or the namespace `ns`, as source that `:load` reads back:
+in a fresh session, `:load file` then `:add` gives the same labels on the
+same hashes (`names`, `typeNames`, `conNames`, `fieldNames`, `units`,
+`scales`). Each namespace is a `namespace` block, nested as the paths nest,
+with root definitions outside any block. Each definition is rendered as
+`:edit` renders it (`let name = body`, `unit name = …`, `scale name = … at
+…`, `data` declarations with their field names), names inside a block
+spelled for that block with no `use` (§7.6), so a name the block shadows
+gets its leading dot (`.km`). Prelude definitions are not exported, since
+every session enters them; a prelude name the user rebound is, and a
+prelude term a user definition references prints by its name, which
+resolves. Types come first, each after the types it uses, since `data`
+declarations are entered in order; then the terms, each after what it
+references, a cycle's members together, and among what is ready the ones
+in the same namespace as the last, so few blocks are reopened. `:export
+orbital` exports that subtree as `namespace orbital …`, so loading it
+elsewhere lands it in the same place; an empty codebase exports nothing;
+the pending scratch is not exported, and a closing comment (or, for a
+file, a note) says so.
+
+What does not round-trip, and why: a definition that refers to a version
+no name points at (after `:update --no-upgrade` and an `:unname`) cannot
+be written as source, so the export refuses and names it; a definition
+with a `±` and a nominal type are stamped with their name as declared
+(§3.2.4, §2.3, §7.6), so after a rename of the definition or type itself
+(not of its namespace) re-entering the export gives a new hash; two labels
+on one reference export as two definitions, which hash alike only when the
+body declares no `±` and is not recursive (the second refers to the first
+by name instead of being a member of its cycle); a type or constructor
+that a definition uses but no label names any more prints as a hash and
+does not read back; a rebound prelude name needs `:update` rather than
+`:add` after loading, and a prelude name the user unnamed comes back;
+history, preferences and the `use`s of the session are not part of the
+export. This answers the question of §11 for iapetus:
+the binary `.eval/` store stays the source of truth for history and
+hashes, and an export beside it is the reviewable text, diffable in git
+and enough to rebuild the current labels.
 
 The prelude is entered at the start of every session as an ordinary binding
 group, in memory, and the store's log is replayed on top of it. Prelude
@@ -2944,6 +2985,9 @@ tuned, and compilation is a later milestone.
   "same inputs, same measurement"; a "measure twice" model wants independence.
 - Does iapetus commit the binary `.eval/` store, or export definitions to `.ev`
   source files (text, reviewable in diffs) and treat the store as a cache?
+  Partly answered: `:export` (§7.4) writes the codebase as source that
+  reads back to the same labels and hashes, so both can be committed; open
+  is whether the store may then be dropped, which would lose history.
 - Should `:view` of a stale reference print `x#a3f9k` (Unison style) or `#a3f9k`
   alone?
 - Equality on declared types is derived structurally when every field is
