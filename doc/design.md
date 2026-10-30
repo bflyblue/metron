@@ -1609,6 +1609,104 @@ of mixed dimensions: a measurement vector of mixed dimension (range and
 range rate together) makes `S` itself a 2×2 block matrix, whose inverse is a
 Schur-complement formula over the blocks. When either appears in real use,
 route A is the next step, and its rules are above.
+### 3.8 Charts: frames with an orientation (design; not yet built)
+
+A `scale` (§3.6) is a coordinate chart with two of its three parts set: a
+step unit and an origin. The third part is an orientation, and with it the
+same construct describes a temperature scale, a surveyed site, an orbital
+frame and a rotating planet. The declaration is renamed `chart`, with `scale`
+kept as a spelling; nothing about §3.6 changes except that a chart may also
+say which way its axes point.
+
+**The one representation.** A chart over the affine space of `Tensor s δ` is
+a value of three fields: the step (a unit of the amount space), the origin (a
+point), and a *generator* `B`, an antisymmetric `Mat n n` that is the oriented
+plane of rotation with the angle as its magnitude (a bivector, in Grassmann's
+terms). The axes of the chart are those of its parent rotated by `exp B`; an
+axis-aligned chart has `B = 0`, and that is every chart written today.
+
+```
+chart degC = K at 273.15 K                         -- step, origin
+chart site = m at [100, 200, 0] m                  -- step, origin
+chart lvlh = m at r0 by B                          -- step, origin, orientation
+chart ecef t = m at [0, 0, 0] m by rotz (gmst t) spinning [0, 0, ω_earth]  -- moving
+```
+
+Why the generator and not the matrix: `exp` of an antisymmetric matrix is
+always a rotation, so there is nothing to check, and its inverse is
+`exp (-B)`, exact by negation. The inverse of a rotation stored as a matrix of
+enclosures would be the one place the affine arithmetic suffers (§3.3,
+`inverse`). The matrix is computed when a conversion needs it, by Rodrigues'
+formula for a single plane and by the exponential series in general, with
+the same rigorous enclosures as `sin` and `cos` (§3.2.3); `mkChart` checks
+`B + Bᵀ == 0` exactly, which holds for anything built with `∧`.
+
+**Every other description is a library function to a bivector**, so the
+Euler, axis-angle and quaternion forms are sugar and carry their conventions
+in their names:
+
+```
+rotz θ         = θ * (e1 ∧ e2)        -- rotx, roty likewise; the right-hand rule: rotz (90 deg) turns x toward y
+axisAngle n θ  = θ * dual n            -- 3D: the axis is the dual of the plane
+rotation a b   = the bivector taking a to b, angle atan2 (norm (a ∧ b)) (a · b)
+euler313 Ω i ω = three single-plane rotations composed at the matrix level
+fromQuaternion q = the logarithm of the rotor, for input only
+```
+
+Euler angles have gimbal lock and twelve sequence conventions, so each
+sequence is its own function; quaternions double-cover (`q` and `-q` are one
+rotation), so they are accepted as input and never stored. The generator has
+neither problem: one plane, one angle.
+
+**Conversion.** `p to c` gives `p`'s coordinates on chart `c`: `(exp (-B_c)
+(p .- o_c)) / step_c`, components of a vector in `c`'s axes. A displacement
+converts by the rotation alone, a point by rotation and translation; `.-`
+between points on different charts is taken in the destination's axes. A
+tensor of any rank converts by applying the rotation along every axis, so a
+covariance block goes as `R P Rᵀ` (§3.7), and one kernel ("apply `R` on every
+index") serves every rank. Charts form a tree: a chart names the chart its
+origin and axes are given in (`eci` at the root, a library definition), and
+`a to b` goes up to the common ancestor and down, composing at the matrix
+level since two rotations in different planes do not add as bivectors.
+
+**Moving charts and the transport term.** A chart that moves is a function of
+an epoch to a chart, and the epoch is itself a point on a time chart (`unix`,
+`J2000`). The only values that carry an epoch are states: a record
+`{epoch, r, v}`, so `state to ecef` evaluates the chart at `state.epoch`,
+while `p to ecef` for a bare position is a type error ("`ecef` moves: give a
+state, or apply it at a time, `p to ecef t0`"), which makes the classic
+wrong-epoch mistake a type error. A velocity seen from a rotating chart picks
+up the transport term, so a moving chart states its angular velocity, since
+differentiating `exp B(t)` would need automatic differentiation we do not
+have:
+
+```
+r' = R r
+v' = R v - ω × r'
+```
+
+For the Earth `ω` is a constant; for a lunar or spacecraft chart it comes from
+the theory that defines the chart, which is where it belongs.
+
+**Uncertainty comes for free.** `gmst t` with an uncertain `t` gives an
+enclosure for the angle, so `R` has affine entries and `R @ r` carries the
+chart's uncertainty, correlated across components as always (§3.4). No part
+of this design is about error; it inherits §3.2.
+
+**What stays as it is.** Points and amounts keep their types and operators;
+`unit` stays separate from `chart`, because a unit is a basis element of a
+vector space and a chart puts coordinates on an affine space, and that
+distinction is what refuses `20 degC + 30 degC`. Per-axis units in one chart
+(x in km, z in m) are a basis with mixed dimensions and wait on §3.7's route
+A.
+
+**Open, to settle when building:** the exact syntax of the three optional
+parts (`by`, `spinning`, `relative to` or `in`); whether `eci` is a library
+definition or a primitive root; whether `rotz` and friends return the
+bivector or a `Rot n` wrapper (the bivector, unless a wrapper is needed to
+keep `by` from accepting an arbitrary matrix); and the matrix exponential's
+series on enclosures beyond a single plane.
+
 
 ## 4. Type system
 
@@ -3497,9 +3595,12 @@ tuned, and compilation is a later milestone.
      with what building them takes. Route A is not to be started until the
      escalation signal of §3.7.2 appears: block formulas beyond 2×2 blocks,
      or the inverse of a single matrix of mixed dimensions.
-   - *Frames with a rotated basis.* The semantics of a scale over a tensor
-     with a rotation as well as an origin (§3.6): what `to` does, how
-     displacements and covariances transform.
+   - *Charts: frames with an orientation.* Designed in §3.8: one chart value
+     (step, origin, a bivector generator), rotations as `exp` of the
+     generator with an exact inverse, every other description sugar to a
+     bivector, moving charts as functions of an epoch carried by a state, the
+     transport term from a declared angular velocity. Build constant
+     orientations first (`by B`), then moving charts and states.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's
      architecture (§3.2.9).
