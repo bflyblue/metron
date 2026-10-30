@@ -372,3 +372,16 @@
   is bold. The REPL-level command `:colour on|off` overrides the default.
   The logic is pure, in the new module `Eval.Repl`. The text that `feed`
   prints is unchanged.
+- REPL colour is now a syntax-highlighting theme on the 16 ANSI colours
+  (design §7.3). It has no dim text, because some terminal themes do not
+  show it. Keywords are magenta. Units, base units and scales are cyan.
+  Types, constructors and the built-in heads are yellow. Notes, comments,
+  `#hash` references and the `≡` mark are bright black. Errors are red,
+  carets bold red, and the prompt bold. Numbers, operators and other
+  names are plain. Each line is lexed and coloured token by token: the `≡`
+  echo, `:view`/`:edit` output, `data` declarations, values, `:type`
+  output, the type in `:ls` lines, an error's source excerpt (the carets
+  stay aligned) and the input echo of `eval -i`. A line that does not lex
+  is coloured by its kind, as before. New in `Eval.Repl`: `Names`,
+  `namesOf`, `highlight`, `highlightType`, `render` and `echoInput`.
+  `paint` now takes the `Names`. Without colour every byte is as before.

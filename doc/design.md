@@ -2285,15 +2285,52 @@ names. Nobody presses TAB in a lambda such as `\x -> x`, so the two uses
 never meet; TAB after `\x` would offer `\xi`.
 
 **Colour.** The REPL colours its output when stdout is a terminal, `TERM`
-is not `dumb` and `NO_COLOR` is not set:
+is not `dumb` and `NO_COLOR` is not set. The theme uses only the 16 ANSI
+colours, so it shows on any terminal. It has no dim text, because some
+terminal themes do not show dim text:
 
-- In an error, the `error at` line and the message are red and the carets
-  bold red. The source excerpt stays plain.
-- Notes are dim: `pending:`, `added`, `updated`, `left`, `nothing to …`,
-  the hidden-prelude line of `:ls` and the like.
-- In a `name : type` line of `:ls`, the type is dim.
-- In a value, the trailing unit is dim (`12.566… m^2`, `[1, 2, 3] km s⁻¹`).
-- The prompt is bold.
+| what | colour |
+|---|---|
+| an error's `error at` line and message | red |
+| an error's carets | bold red |
+| notes: `pending:`, `added`, `updated`, `nothing …`, the hidden-prelude line of `:ls`, `(input abandoned)`, the `≡` of the unicode echo | bright black (grey) |
+| comments, `-- …` and `{- … -}` | bright black |
+| keywords: `let unit scale data case of in where if then else to true false at`, and `structural` before `data` | magenta |
+| numbers and superscript powers | plain |
+| units, the SI base units and scales | cyan |
+| type names, constructors, the built-in heads `Num Vec Mat Tensor Point Scale Bool` | yellow |
+| `#hash` references and `#label` tags | bright black |
+| operators, brackets, `->`, `\`, `=`, `:` | plain |
+| other names: definitions, variables, fields | plain |
+| the prompt, and the `> ` of the scripted echo | bold |
+
+Highlighting follows the lexer. The REPL lexes each printed line of source
+text or value and colours each token by its span. A comment is the text
+between tokens that is not blank. The highlighted lines are the `≡` echo,
+`:view` and `:edit` output, `data` declarations, the source excerpt of an
+error, values, `:type` output, the type in a `name : type` line of `:ls`,
+and the input echo of `eval -i`. An error's carets stay under the excerpt,
+because colour codes take no columns. The name in a `name : type` line
+stays plain. Its `unit` or `scale` is a keyword.
+
+Some details of the rules:
+
+- In a type, a name is cyan only inside `[…]`. So a type variable such
+  as `m` or `g` stays plain in `(g → m) → {g}`.
+- In a `data` declaration, the type name and the constructor names are
+  yellow even before the session knows them.
+- A name that a line binds (between `let`, `where`, `\`, `of` or `;` and
+  the next `=` or `->`) is a variable on that whole line. So `s` and `h`
+  stay plain in `\s -> case s of Rect w h -> w * h`. The highlighter does
+  not resolve scope.
+- A `…` in a value lexes as a space, and `#hash.1` lexes as one token.
+
+If a line does not lex, its kind decides the colour instead. A value then
+gets its trailing unit cyan, a type turns yellow, a note turns grey, and
+an excerpt stays plain. A line also counts as not lexing when NFC would
+change its length or when it has a tab. In those cases the spans would
+not index the printed text. Colour only adds escape codes. Remove them
+and the text is the same as without colour.
 
 `:colour on` and `:colour off` override the default. This is a setting of
 the REPL, not of the session: `:set` does not list it, and the one-shot and

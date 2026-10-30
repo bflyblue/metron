@@ -161,7 +161,7 @@ repl opts interactive = do
       Nothing -> pure ()
       Just raw -> do
         let input = T.strip (T.pack raw)
-        unless interactive (outputStrLn ("> " <> T.unpack input))
+        unless interactive (echo ref colour input)
         case T.words input of
           [cmd] | cmd `elem` [":quit", ":q"] -> pure ()
           [] -> again
@@ -175,7 +175,7 @@ repl opts interactive = do
               [] -> outputStrLn ("colour " <> if colour then "on" else "off")
               ["on"] -> liftIO (writeIORef colourRef True)
               ["off"] -> liftIO (writeIORef colourRef False)
-              _ -> emit colour (Left "usage: :colour [on|off]")
+              _ -> emit ref colour (Left "usage: :colour [on|off]")
             again
           -- Multi-line definitions come from a file: the layout rule treats
           -- later lines as continuations, and a REPL line is one input.
@@ -190,20 +190,25 @@ repl opts interactive = do
       result <- liftIO (step live src)
       colour <- liftIO (readIORef colourRef)
       case result of
-        Left err -> emit colour (Left err)
+        Left err -> emit ref colour (Left err)
         Right (live', outs) -> do
           liftIO (writeIORef ref live')
-          emit colour (Right outs)
+          emit ref colour (Right outs)
       again
 
 {- | Print what 'step' returned: as is without colour, painted line by line
-with it (design §7.3).
+with it (design §7.3), by the names of the session as it now is.
 -}
-emit :: Bool -> Either Text [Text] -> InputT IO ()
-emit colour result
-  | colour = mapM_ (outputStrLn . T.unpack . uncurry R.paint) (R.classify result)
-  | otherwise =
-      either (outputStrLn . T.unpack) (mapM_ (outputStrLn . T.unpack)) result
+emit :: IORef Live -> Bool -> Either Text [Text] -> InputT IO ()
+emit ref colour result = do
+  live <- liftIO (readIORef ref)
+  mapM_ (outputStrLn . T.unpack) (R.render colour (R.namesOf live.session) result)
+
+-- | Echo an input line in scripted mode, highlighted with colour.
+echo :: IORef Live -> Bool -> Text -> InputT IO ()
+echo ref colour input = do
+  live <- liftIO (readIORef ref)
+  outputStrLn (T.unpack (R.echoInput colour (R.namesOf live.session) input))
 
 {- | A prompt, bold with colour. haskeline treats @\\SOH…\\STX@ as zero
 width and strips the markers, so the cursor lands where it should.
