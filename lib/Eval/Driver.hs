@@ -495,7 +495,7 @@ command session src = \case
       ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit name  :type expr\n"
           <> "          :ls [glob] [--all|--units|--scales|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
           <> "          :history name  :dependents name  :alias new old  :unname name\n"
-          <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k | unicode on|off]  :prefer [unit]  :unprefer unit"
+          <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k | unicode on|off]  :prefer [unit]  :unprefer unit  :colour on|off"
       )
  where
   cb = session.staging
