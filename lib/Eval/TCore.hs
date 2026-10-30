@@ -29,6 +29,7 @@ import Data.Maybe (fromMaybe)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Eval.Builtin
 import Eval.Core
 import Eval.Dimension
 import Eval.Type
@@ -131,9 +132,9 @@ primScheme name = case name of
   "pointSub" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun (TPoint s d) sd)))
   "toScale" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun (TScale s d) (TPoint s d))))
   -- lt, le, gt, ge have instance types; see lintConstrained.
-  "and" -> mono (TFun TBool (TFun TBool TBool))
-  "or" -> mono (TFun TBool (TFun TBool TBool))
-  "not" -> mono (TFun TBool TBool)
+  "and" -> mono (TFun boolT (TFun boolT boolT))
+  "or" -> mono (TFun boolT (TFun boolT boolT))
+  "not" -> mono (TFun boolT boolT)
   "pi" -> mono numT
   "to" -> Just (Forall [sv, dv] (TFun sd (TFun (numD d) sd)))
   -- The wedge product is the general binary product of vectors; the 3D
@@ -563,7 +564,7 @@ lintConstrained look name ty = case (name, ty) of
     require
       (d3 == dimMul d1 d2)
       "dot: result dimension is not the product of its operands'"
-  (eqName, TFun t (TFun t' TBool))
+  (eqName, TFun t (TFun t' BoolT))
     | eqName `elem` ["eq", "ne"] -> do
         require (t == t') (eqName <> ": operands differ in type")
         equatable look.typeDefOf t
@@ -657,10 +658,6 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
     (TPoint a da, TPoint b db) -> matchShape a b m >>= matchDim da db
     (TScale a da, TScale b db) -> matchShape a b m >>= matchDim da db
-    (TTuple as, TTuple bs)
-      | length as == length bs ->
-          foldM (\acc (a, b) -> matchType a b acc) m (zip as bs)
-    (TList a, TList b) -> matchType a b m
     (TData h as, TData h' bs)
       | h == h' && length as == length bs ->
           foldM (\acc (a, b) -> matchArg a b acc) m (zip as bs)
@@ -742,16 +739,16 @@ renderTTerm namer = go 0
             <> go 0 (VCons h ctx) b
         )
     TCon c _ args -> case (c, args) of
-      (Builtin "True", []) -> "true"
-      (Builtin "False", []) -> "false"
-      (Builtin "Tuple", _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
-      (Builtin "Nil", []) -> "{}"
-      (Builtin "Cons", [x, xs]) -> paren (prec > 4) (go 5 ctx x <> " : " <> go 4 ctx xs)
+      (TrueC, []) -> "true"
+      (FalseC, []) -> "false"
+      (TupleC _, _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
+      (NilC, []) -> "{}"
+      (ConsC, [x, xs]) -> paren (prec > 4) (go 5 ctx x <> " : " <> go 4 ctx xs)
       _ ->
         paren
           (prec > 10 && not (null args))
           (T.unwords (conText c : map (go 11 ctx) args))
-    TCase sc _ [TAlt (Builtin "False") VNil e, TAlt (Builtin "True") VNil t] ->
+    TCase sc _ [TAlt FalseC VNil e, TAlt TrueC VNil t] ->
       paren
         (prec > 0)
         ("if " <> go 0 ctx sc <> " then " <> go 0 ctx t <> " else " <> go 0 ctx e)
@@ -809,11 +806,11 @@ renderTTerm namer = go 0
 -- | How a constructor pattern is written (design §2.3).
 patternText :: ConRef -> [Text] -> Text
 patternText c names = case (c, names) of
-  (Builtin "True", []) -> "true"
-  (Builtin "False", []) -> "false"
-  (Builtin "Tuple", _) -> "(" <> T.intercalate ", " names <> ")"
-  (Builtin "Nil", []) -> "{}"
-  (Builtin "Cons", [x, xs]) -> x <> " : " <> xs
+  (TrueC, []) -> "true"
+  (FalseC, []) -> "false"
+  (TupleC _, _) -> "(" <> T.intercalate ", " names <> ")"
+  (NilC, []) -> "{}"
+  (ConsC, [x, xs]) -> x <> " : " <> xs
   _ -> T.unwords (conText c : names)
 
 {- | The types `==` is defined at (design §4.2): tensors, booleans, points,
@@ -822,9 +819,6 @@ and structured data whose components are: tuples, lists and declared types.
 equatable :: (Hash -> Maybe TypeDef) -> Type -> Either Text ()
 equatable defs t = case t of
   TTensor _ _ -> Right ()
-  TBool -> Right ()
   TPoint _ _ -> Right ()
-  TTuple ts -> mapM_ (equatable defs) ts
-  TList e -> equatable defs e
   TData h as | Just ts <- equalityArgs defs h as -> mapM_ (equatable defs) ts
   _ -> Left ("no equality on " <> renderType t)

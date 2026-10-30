@@ -56,6 +56,7 @@ module Eval.Builtin (
   pattern TupleC,
   pattern NilC,
   pattern ConsC,
+  builtinCons,
   builtinConName,
   builtinTypeName,
 ) where
@@ -191,6 +192,16 @@ tupleC k = UserCon (tupleHash k) 0
 -- | The constructor for a boolean.
 boolC :: Bool -> ConRef
 boolC b = if b then trueC else falseC
+
+{- | A built-in type's constructors with their numbers of fields, in
+canonical order; none for any other hash.
+-}
+builtinCons :: Hash -> [(ConRef, Int)]
+builtinCons h =
+  [ (UserCon h i, length fields)
+  | Just def <- [builtinDefs h]
+  , (i, fields) <- zip [0 ..] def.constructors
+  ]
 
 pattern FalseC :: ConRef
 pattern FalseC <- UserCon ((== boolHash) -> True) 0

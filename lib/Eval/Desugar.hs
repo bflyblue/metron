@@ -39,6 +39,7 @@ import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Eval.Builtin
 import Eval.Core
 import Eval.Syntax qualified as S
 import Eval.TCore (baseUnit)
@@ -328,14 +329,22 @@ desugar path ctx e = do
           record [ascriptionPath k] e.span
           (\inner' -> PrimApp marker [inner']) <$> desugar (0 : path) ctx inner
     S.Num r -> pure (Lit (LTensor ([], [r])))
-    S.Bool b -> pure (Con (Builtin (if b then "True" else "False")) [])
-    S.Tuple es ->
-      Con (Builtin "Tuple") <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
+    -- true, (a, b) and lists are constructors of the built-in declarations.
+    S.Bool b -> pure (Con (boolC b) [])
+    S.Tuple es
+      | length es > maxTupleArity ->
+          failWith
+            ( BadSpecialForm
+                e.span
+                ("a tuple has at most " <> T.pack (show maxTupleArity) <> " components")
+            )
+      | otherwise ->
+          Con (tupleC (length es))
+            <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
     S.List es ->
       foldr
-        ( \(i, a) rest -> (\x r -> Con (Builtin "Cons") [x, r]) <$> desugar (i : path) ctx a <*> rest
-        )
-        (pure (Con (Builtin "Nil") []))
+        (\(i, a) rest -> (\x r -> Con consC [x, r]) <$> desugar (i : path) ctx a <*> rest)
+        (pure (Con nilC []))
         (zip [0 ..] es)
     S.CaseOf scrut alts -> caseOf path ctx e.span scrut alts
     S.Var x -> headApp path ctx e x []
@@ -371,7 +380,7 @@ desugar path ctx e = do
       c' <- desugar (0 : path) ctx c
       t' <- desugar (1 : path) ctx t
       f' <- desugar (2 : path) ctx f
-      pure (Case c' [Alt (Builtin "False") VNil f', Alt (Builtin "True") VNil t'])
+      pure (Case c' [Alt falseC VNil f', Alt trueC VNil t'])
     S.BinOp op a b -> case op of
       S.PlusMinus k ->
         asks (Uncertain k . (.owner))
@@ -383,7 +392,7 @@ desugar path ctx e = do
         prim (if scaleName then "toScale" else "to") [a, b]
       S.PAdd -> prim "pointAdd" [a, b]
       S.Cons ->
-        (\x r -> Con (Builtin "Cons") [x, r])
+        (\x r -> Con consC [x, r])
           <$> desugar (0 : path) ctx a
           <*> desugar (1 : path) ctx b
       S.PSub -> prim "pointSub" [a, b]
@@ -938,20 +947,26 @@ caseOf path ctx sp scrut alts0 = do
   -- A constructor's reference and its type's table of (constructor, arity).
   conRefFor :: S.Pattern -> Text -> Int -> M (ConRef, [(ConRef, Int)])
   conRefFor p c k = case c of
-    "True" -> pure (Builtin "True", bools)
-    "False" -> pure (Builtin "False", bools)
-    "Tuple" -> pure (Builtin "Tuple", [(Builtin "Tuple", k)])
-    "Nil" -> pure (Builtin "Nil", lists)
-    "Cons" -> pure (Builtin "Cons", lists)
+    -- The patterns the syntax builds: constructors of the built-in
+    -- declarations, with their tables read off the declarations.
+    "True" -> pure (trueC, builtinCons boolHash)
+    "False" -> pure (falseC, builtinCons boolHash)
+    "Tuple"
+      | k > maxTupleArity ->
+          failWith
+            ( BadSpecialForm
+                p.span
+                ("a tuple has at most " <> T.pack (show maxTupleArity) <> " components")
+            )
+      | otherwise -> pure (tupleC k, builtinCons (tupleHash k))
+    "Nil" -> pure (nilC, builtinCons listHash)
+    "Cons" -> pure (consC, builtinCons listHash)
     _ -> do
       resolved <- resolveWritten c
       case snd <$> resolved of
         Just (AConstructor info) -> pure (info.con, info.siblings)
         Just (AAmbiguous fulls) -> ambiguous p.span c fulls
         _ -> failWith (BadSpecialForm p.span ("unknown constructor pattern " <> c))
-   where
-    bools = [(Builtin "False", 0), (Builtin "True", 0)]
-    lists = [(Builtin "Nil", 0), (Builtin "Cons", 2)]
   build ::
     forall m.
     Ctx m ->

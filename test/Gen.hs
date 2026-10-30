@@ -34,6 +34,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
+import Eval.Builtin
 import Eval.Core (NudgeKind (..))
 import Eval.Dimension
 import Eval.Syntax qualified as S
@@ -98,7 +99,7 @@ genType n =
       , (3, tensor <$> genShape 1 <*> genDim)
       , (2, tensor <$> genShape 2 <*> genDim)
       , (1, tensor <$> genShape 3 <*> genDim)
-      , (2, pure TBool)
+      , (2, pure BoolT)
       ]
       ++ [(3, TFun <$> genType (n `div` 2) <*> genType (n `div` 2)) | n > 1]
 
@@ -213,7 +214,7 @@ helperUse h t = case h of
   HApplyTo -> Just ((\a -> [a, TFun a t]) <$> genArgType, Never)
   HCompose ->
     Just ((\a b -> [TFun b t, TFun a b, a]) <$> genArgType <*> genArgType, Never)
-  HEq -> if t == TBool then Just (pure [numT, numT], Always) else Nothing
+  HEq -> if t == BoolT then Just (pure [numT, numT], Always) else Nothing
   HNormSq -> do
     ([], d) <- asTensor t
     d' <- dimRoot 2 d
@@ -360,7 +361,7 @@ pin :: Type -> G -> G
 pin t g
   | g.pinned = g
   | otherwise = case t of
-      TBool -> G (binop S.And g.expr (mk (S.Bool True))) True
+      BoolT -> G (binop S.And g.expr (mk (S.Bool True))) True
       _ | Just (ls, d) <- asTensor t -> G (binop S.Add g.expr (zeroOf ls d)) True
       _ -> g
 
@@ -392,7 +393,7 @@ gen sc t n
          , (1, ifThen sc t n)
          ]
   specific = case t of
-    TBool -> boolProds sc n
+    BoolT -> boolProds sc n
     TFun a b -> funProds sc a b n
     _ -> case asTensor t of
       Just (ls, d) -> tensorProds sc ls d n
@@ -404,7 +405,7 @@ leaf sc t = frequency ((3, literal) : [(3, elements vars) | not (null vars)])
  where
   vars = [G (var x) p | Entry x (Mono ty p) <- sc, ty == t]
   literal = case t of
-    TBool -> (\b -> G (mk (S.Bool b)) True) <$> arbitrary
+    BoolT -> (\b -> G (mk (S.Bool b)) True) <$> arbitrary
     TFun a b -> do
       x <- genName
       body <- leaf (bindName x (Mono a False) sc) b
@@ -520,7 +521,7 @@ applyFresh sc t n = do
 
 ifThen :: Scope -> Type -> Int -> Gen G
 ifThen sc t n = do
-  c <- gen sc TBool (n `div` 3)
+  c <- gen sc BoolT (n `div` 3)
   a <- gen sc t (n `div` 3)
   b <- gen sc t (n `div` 3)
   pure (G (mk (S.If c.expr a.expr b.expr)) (a.pinned || b.pinned))
@@ -529,7 +530,7 @@ ifThen sc t n = do
 genEqType :: Gen Type
 genEqType =
   frequency
-    [(4, tensor <$> (choose (0, 2) >>= genShape) <*> genDim), (1, pure TBool)]
+    [(4, tensor <$> (choose (0, 2) >>= genShape) <*> genDim), (1, pure BoolT)]
 
 boolProds :: Scope -> Int -> [(Int, Gen G)]
 boolProds sc n =
@@ -560,11 +561,11 @@ boolProds sc n =
     ( 2
     , do
         op <- elements [S.And, S.Or]
-        a <- gen sc TBool half
-        b <- gen sc TBool half
+        a <- gen sc BoolT half
+        b <- gen sc BoolT half
         pure (G (binop op a.expr b.expr) True)
     )
-  , (1, (\a -> G (app (var "not") a.expr) True) <$> gen sc TBool (n - 1))
+  , (1, (\a -> G (app (var "not") a.expr) True) <$> gen sc BoolT (n - 1))
   ]
  where
   half = n `div` 2
@@ -638,7 +639,7 @@ funProds sc a b n =
     [(1, pure (var "neg")) | a == b, Just _ <- [ta]]
       ++ [(1, pure (var "abs")) | a == b, Just _ <- [ta]]
       ++ [(1, (\e -> app (var "add") e.expr) <$> gen sc a half) | a == b, Just _ <- [ta]]
-      ++ [(1, pure (var "not")) | a == TBool, b == TBool]
+      ++ [(1, pure (var "not")) | a == BoolT, b == BoolT]
       ++ [ (1, pure (var "transpose"))
          | Just ([r, c], d) <- [ta]
          , Just ([c', r'], d') <- [tb]
@@ -878,7 +879,7 @@ instanceOf (Forall vs pat) target = case matchType pat target (Map.empty, []) of
     (TVar v, _) | quantified v -> bindArg v (AType t) st
     (TFun a b, TFun c d) -> matchType a c st >>= matchType b d
     (TTensor sa da, TTensor sb db) -> second ((da, db) :) <$> matchShape sa sb st
-    (TBool, TBool) -> Just st
+    (BoolT, BoolT) -> Just st
     _ -> Nothing
   matchShape p sh st = case (p, sh) of
     (SVar v, _) | quantified v -> bindArg v (AShape sh) st

@@ -220,8 +220,6 @@ propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []
 retypeType :: Map Hash Hash -> Type -> Type
 retypeType m = \case
   TData h as -> TData (Map.findWithDefault h h m) (map arg as)
-  TTuple ts -> TTuple (map (retypeType m) ts)
-  TList t -> TList (retypeType m t)
   TFun a b -> TFun (retypeType m a) (retypeType m b)
   t -> t
  where
@@ -328,7 +326,6 @@ restamp moves cb0 = do
   retype = retypeType
   constructor = \case
     UserCon h i -> UserCon (newType h) i
-    c -> c
 
   -- Terms: every current definition, dependencies first.
   current = Set.fromList [h | Reference h _ <- Map.elems cb0.names]
@@ -411,4 +408,3 @@ conTypes = \case
  where
   conType = \case
     UserCon h _ -> Set.singleton h
-    Builtin _ -> Set.empty

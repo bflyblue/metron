@@ -38,6 +38,7 @@ import Data.Ord (comparing)
 import Data.Ratio (numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Eval.Builtin
 import Eval.Core
 import Eval.Desugar (Path, ascriptionMarker, unmarked)
 import Eval.Dimension
@@ -194,7 +195,7 @@ unify p expected actual = do
     (TVar v, t) -> bindVar p v (AType t)
     (t, TVar v) -> bindVar p v (AType t)
     (TFun a1 b1, TFun a2 b2) -> unify p a1 a2 >> unify p b1 b2
-    (TTuple as, TTuple bs)
+    (TupleT as, TupleT bs)
       | length as == length bs -> zipWithM_ (unify p) as bs
       | otherwise ->
           failAt
@@ -204,7 +205,6 @@ unify p expected actual = do
                 <> " components, got one of "
                 <> tshow (length bs)
             )
-    (TList a1, TList a2) -> unify p a1 a2
     (TData h1 as, TData h2 bs)
       | h1 == h2 && length as == length bs -> zipWithM_ unifyArg as bs
     (TPoint s1 d1, TPoint s2 d2) -> shapeAndDims s1 d1 s2 d2
@@ -471,12 +471,9 @@ solveOne p = \case
     t' <- resolve t
     case t' of
       TTensor _ _ -> pure True
-      TBool -> pure True
       TPoint _ _ -> pure True
-      -- Structured data compares when its components do.
-      TTuple ts -> mapM_ (defer p . EqInstance) ts >> pure True
-      TList elt -> defer p (EqInstance elt) >> pure True
-      -- A declared type compares when its fields do (design §4.2).
+      -- A declared type compares when its fields do (design §4.2): Bool,
+      -- tuples and lists among them.
       TData h as -> do
         defs <- gets (.typeDefs)
         case equalityArgs defs h as of
@@ -629,12 +626,9 @@ negativeOnly quantified ts =
   ]
  where
   exponents v = \case
-    TBool -> []
     TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TPoint _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TScale _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
-    TTuple parts -> concatMap (exponents v) parts
-    TList t -> exponents v t
     TData _ args -> concatMap argExponents args
     TFun a b -> exponents v a ++ exponents v b
     TVar _ -> []
@@ -971,11 +965,11 @@ primType p name argc = do
     _ | name == "eq" || name == "ne" -> do
       a <- freshType
       defer p (EqInstance a)
-      pure (TFun a (TFun a TBool))
+      pure (TFun a (TFun a boolT))
     _ | name `elem` ["lt", "le", "gt", "ge"] -> do
       a <- freshType
       defer p (OrdInstance a)
-      pure (TFun a (TFun a TBool))
+      pure (TFun a (TFun a boolT))
     _ -> case primScheme name of
       Just sc -> fst <$> instantiate sc
       Nothing -> failAt p ("unknown primitive " <> name)
@@ -1068,15 +1062,9 @@ with fresh variables where the constructor is polymorphic.
 -}
 constructorType :: TypeLookup -> Path -> ConRef -> Int -> Infer ([Type], Type)
 constructorType look p c k = case c of
-  Builtin "True" | k == 0 -> pure ([], TBool)
-  Builtin "False" | k == 0 -> pure ([], TBool)
-  Builtin "Tuple" | k >= 2 -> do
-    ts <- mapM (const freshType) [1 .. k]
-    pure (ts, TTuple ts)
-  Builtin "Nil" | k == 0 -> (\t -> ([], TList t)) <$> freshType
-  Builtin "Cons" | k == 2 -> (\t -> ([t, TList t], TList t)) <$> freshType
-  -- A declared type: fresh arguments for its parameters, by kind.
-  UserCon h i | Just def <- look.typeDefOf h -> do
+  -- A declared type, the built-in ones among them: fresh arguments for its
+  -- parameters, by kind.
+  UserCon h i | Just def <- withBuiltins look.typeDefOf h -> do
     args <- mapM (freshArg . snd) def.params
     let ty = TData h args
     case dataConstructors look.typeDefOf ty of
@@ -1136,7 +1124,7 @@ inferAlt look p ctx scrutTy result (Alt c hs body) = do
               <> renderType st
               <> " against the constructor "
               <> conText c
-              <> ( if c `elem` [Builtin "True", Builtin "False"]
+              <> ( if c `elem` [TrueC, FalseC]
                      then ": the condition of `if` must be a Bool"
                      else ""
                  )
@@ -1150,7 +1138,7 @@ inferAlt look p ctx scrutTy result (Alt c hs body) = do
   attach :: Vec k Hint -> [Type] -> Vec k (Hint, Type)
   attach VNil _ = VNil
   attach (VCons h rest) (t : ts) = VCons (h, t) (attach rest ts)
-  attach (VCons h rest) [] = VCons (h, TBool) (attach rest []) -- unreachable: lengths were checked
+  attach (VCons h rest) [] = VCons (h, boolT) (attach rest []) -- unreachable: lengths were checked
 
 {- | A case covers exactly the constructors of its scrutinee's type, in
 canonical order (design §5.1).

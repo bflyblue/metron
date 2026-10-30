@@ -112,11 +112,11 @@ num :: Rational -> Term n
 num r = Lit (LTensor ([], [r]))
 
 bool :: Bool -> Term n
-bool b = Con (if b then "True" else "False") []
+bool b = Con (boolC b) []
 
 -- | An if, as the desugarer writes it: a case on Bool in canonical order.
 ifT :: Term n -> Term n -> Term n -> Term n
-ifT c t e = Case c [Alt (Builtin "False") VNil e, Alt (Builtin "True") VNil t]
+ifT c t e = Case c [Alt FalseC VNil e, Alt TrueC VNil t]
 
 prim2 :: Text -> Term n -> Term n -> Term n
 prim2 p a b = PrimApp p [a, b]
@@ -386,7 +386,7 @@ tcoreTests =
           noLookup
           ( TLam
               "x"
-              TBool
+              BoolT
               (TPrimApp "add" (TFun numT (TFun numT numT)) [TVr FZ, TLit (LTensor ([], [1]))])
           )
           @?= Left "argument of add has type Bool, expected Num"
@@ -396,8 +396,8 @@ tcoreTests =
           noLookup
           ( TPrimApp
               "add"
-              (TFun TBool (TFun TBool TBool))
-              [TCon "True" TBool [], TCon "False" TBool []]
+              (TFun BoolT (TFun BoolT BoolT))
+              [TCon trueC BoolT [], TCon falseC BoolT []]
           )
           @?= Left
             "primitive add used at Bool -> Bool -> Bool, not an instance of Tensor s d -> Tensor s d -> Tensor s d"
@@ -419,11 +419,11 @@ tcoreTests =
     , testCase "lint rejects a mismatched let annotation"
         $ case lintClosed
           noLookup
-          (TLet "x" (Forall [] TBool) (TLit (LTensor ([], [1]))) (TVr FZ)) of
+          (TLet "x" (Forall [] BoolT) (TLit (LTensor ([], [1]))) (TVr FZ)) of
           Left err -> T.isPrefixOf "let binder annotated" err @? T.unpack err
           Right sc -> assertFailure (show sc)
     , testCase "lint rejects a type application without an abstraction"
-        $ lintClosed noLookup (TTyApp (TLit (LTensor ([], [1]))) (AType TBool))
+        $ lintClosed noLookup (TTyApp (TLit (LTensor ([], [1]))) (AType BoolT))
           @?= Left "type application to a term with no type abstraction"
     ]
 
@@ -2005,13 +2005,13 @@ generatorProperty =
     | d < 20 = "15-19"
     | otherwise = "20+"
   targetKind = \case
-    TBool -> "Bool"
+    BoolT -> "Bool"
     TData _ _ -> "data"
     TFun _ _ -> "function"
     TPoint _ _ -> "Point"
     TScale _ _ -> "Scale"
-    TTuple _ -> "tuple"
-    TList _ -> "list"
+    TupleT _ -> "tuple"
+    ListT _ -> "list"
     TTensor sh d ->
       ( case rankOf sh of
           0 -> "Num"
@@ -5933,9 +5933,10 @@ stdlibTests =
     [ testCase "the move under std kept the hash of every definition without a ±" $ do
         -- Printed by `:hash km` and `:hash map` in a prelude session at 21cb8e8,
         -- before the library moved under std: the format-4 library, kept for
-        -- the migrations, still has them.
+        -- the migrations, still has them. map was #v2enr.0 until format 6
+        -- made lists a declared type, which re-hashed it.
         linesIn' stdlib4Session [":hash std.km", ":hash std.map"]
-          @?= Right ["#90tke", "#v2enr.0"]
+          @?= Right ["#90tke", "#hba29.0"]
         let old n = lookupName n legacyPrelude.codebase
             new n = lookupName ("std." <> n) stdlib4Session.codebase
         old "km" @?= new "km"

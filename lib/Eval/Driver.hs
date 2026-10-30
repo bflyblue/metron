@@ -47,6 +47,7 @@ import Eval.Affine (
   addM,
   collapse,
  )
+import Eval.Builtin
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
@@ -492,7 +493,7 @@ command session src = \case
           [ (if null dims then "variance " else "covariance ") <> covText
           , (if null dims then "bound " else "bound box ") <> boundText
           ]
-      VData (Builtin "Tuple") [a, b]
+      VData (TupleC 2) [a, b]
         | Just (n1, d1, h1, buf1) <- vectorOf a
         , Just (n2, d2, h2, buf2) <- vectorOf b -> do
             xs <- components buf1
@@ -505,7 +506,7 @@ command session src = \case
             boxes <-
               rough
                 ( VData
-                    (Builtin "Tuple")
+                    pairC
                     [Right (boundsOf [n1] d1 h1 xs), Right (boundsOf [n2] d2 h2 ys)]
                 )
             pure ["rr " <> rr, "rv " <> rv, "vv " <> vv, "bound box " <> boxes]
@@ -974,7 +975,6 @@ viewData spelling scope cb n =
       pure
         [ renderTypeDef
             spelling
-            h
             (shortestNameOf TypeLabel scope cb n)
             [ maybe
                 (showHash h <> "." <> T.pack (show i))
@@ -1591,7 +1591,6 @@ listNames session args = do
   declaration shownType shown h n def =
     renderTypeDef
       (spellingOf session.config)
-      h
       (shownType n)
       [ maybe (showHash h <> "." <> tshow i) shown (conNameOf h i cb)
       | i <- [0 .. length def.constructors - 1]
@@ -1852,8 +1851,6 @@ dependencyOrder nodes = map fst (go [] Set.empty (Map.keysSet comps))
 typeRefs :: Type -> Set.Set Hash
 typeRefs = \case
   TData h args -> Set.insert h (foldMap argRefs args)
-  TTuple ts -> foldMap typeRefs ts
-  TList t -> typeRefs t
   TFun a b -> typeRefs a <> typeRefs b
   _ -> Set.empty
  where

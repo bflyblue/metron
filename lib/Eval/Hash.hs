@@ -17,6 +17,7 @@ module Eval.Hash (
   decodeStoredV,
   encodeTypeDef,
   decodeTypeDef,
+  decodeTypeDefV,
   hashTypeDef,
   storageVersion,
   hashHex,
@@ -35,6 +36,7 @@ import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Eval.Builtin
 import Eval.Core
 import Eval.Dimension
 import Eval.Encode
@@ -124,32 +126,36 @@ enc ph hint depth = \case
   label = \case
     Owner t -> word8 0 <> text t
     Tag t -> word8 1 <> text t
-  -- A built-in constructor is its name; a declared one is an empty name,
-  -- the type's hash and the index, so built-in encodings never changed.
-  conRef = \case
-    Builtin c -> text c
-    UserCon (Hash h) i -> text "" <> byteString h <> varint (fromIntegral i)
+  -- A constructor is an empty name, the type's hash and the index. The
+  -- empty name is what is left of the built-in constructors, which were
+  -- their names until storage version 4 (design §6.1).
+  conRef (UserCon (Hash h) i) = text "" <> byteString h <> varint (fromIntegral i)
 
 -- Decoding ------------------------------------------------------------------------
 
-{- | Read a term in the storage encoding. The scope is rebuilt as the binders
-are entered, so the result is well-scoped by construction; an index that
-escapes its scope, an unknown tag or a placeholder is an error.
+{- | The storage encoding version this build writes (design §7.4). Version
+2 added the written name after a reference; version 4 retired the
+built-in constructors' names and the types @Bool@, tuple and list, which
+are declared types on the hashes of "Eval.Builtin".
 -}
-
--- | The storage encoding version this build writes (design §7.4).
 storageVersion :: Int
-storageVersion = 3
+storageVersion = 4
 
 decodeStored :: ByteString -> Either Text (Term Z)
 decodeStored = decodeStoredV storageVersion
 
-{- | Decode a term written by a given storage version. Version 1 wrote no
-name hint after a reference.
+{- | Read a term in the storage encoding written by a given storage version.
+The scope is rebuilt as the binders are entered, so the result is
+well-scoped by construction; an index that escapes its scope, an unknown
+tag or a placeholder is an error. Version 1 wrote no name hint after a
+reference; versions up to 3 may hold the retired forms (the boolean
+literal, @If@, the built-in constructors by name), which are read as the
+constructors of the built-in declarations, so the term read back is a
+current one, with a new hash where it held them.
 -}
 decodeStoredV :: Int -> ByteString -> Either Text (Term Z)
 decodeStoredV version bs = do
-  (t, end) <- runDec (term (version >= 2) DZ) bs 0
+  (t, end) <- runDec (term version DZ) bs 0
   if end == BS.length bs
     then Right t
     else Left ("trailing bytes after the term at offset " <> T.pack (show end))
@@ -247,8 +253,8 @@ decLabel =
 decHint :: Dec Hint
 decHint = Hint <$> decText
 
-term :: Bool -> Depth n -> Dec (Term n)
-term refHints d =
+term :: Int -> Depth n -> Dec (Term n)
+term version d =
   byte >>= \case
     0x00 -> do
       i <- decVarint
@@ -259,59 +265,83 @@ term refHints d =
     0x01 -> do
       h <- bytes 32
       idx <- decVarint
-      name <- if refHints then decHint else pure (Hint "")
+      name <- if version >= 2 then decHint else pure (Hint "")
       pure
         (Ref (Hash h) (if idx == 0 then Nothing else Just (fromIntegral idx - 1)) name)
     0x02 -> do
       p <- decText
       case primArity p of
         Nothing -> failDec ("unknown primitive " <> p)
-        Just n -> PrimApp p <$> traverse (const (term refHints d)) [1 .. n]
+        Just n -> PrimApp p <$> traverse (const sub) [1 .. n]
     0x03 -> do
       rank <- decVarint
       dims <- traverse (const (fromIntegral <$> decVarint)) [1 .. rank]
       rs <- traverse (const ((%) <$> decSint <*> decVarint)) [1 .. product dims]
       pure (Lit (LTensor (dims, rs)))
     -- Retired tags, read from stores of format 2 and before (design §6.1).
-    0x04 -> (\b -> Con (Builtin (if b == 1 then "True" else "False")) []) <$> byte
-    0x05 -> Lam <$> decHint <*> term refHints (DS d)
-    0x06 -> App <$> term refHints d <*> term refHints d
-    0x07 -> Let <$> decHint <*> term refHints d <*> term refHints (DS d)
-    0x08 -> do
-      c <- term refHints d
-      t <- term refHints d
-      e <- term refHints d
-      pure (Case c [Alt (Builtin "False") VNil e, Alt (Builtin "True") VNil t])
-    0x09 -> Pow <$> term refHints d <*> decSint
+    0x04 | legacy -> (\b -> Con (boolC (b == 1)) []) <$> byte
+    0x05 -> Lam <$> decHint <*> term version (DS d)
+    0x06 -> App <$> sub <*> sub
+    0x07 -> Let <$> decHint <*> sub <*> term version (DS d)
+    0x08 | legacy -> do
+      c <- sub
+      t <- sub
+      e <- sub
+      pure (Case c [Alt falseC VNil e, Alt trueC VNil t])
+    0x09 -> Pow <$> sub <*> decSint
     0x0A -> Noise <$> decKind <*> decLabel <*> decVarint
-    0x0B -> Uncertain <$> decKind <*> decLabel <*> term refHints d <*> term refHints d
+    0x0B -> Uncertain <$> decKind <*> decLabel <*> sub <*> sub
     0x0C -> do
       n <- decVarint
-      Pack <$> traverse (const (term refHints d)) [1 .. n]
+      Pack <$> traverse (const sub) [1 .. n]
     0x0E -> do
       k <- decVarint
       hints <- traverse (const decHint) [1 .. k]
       case vecFromList hints of
-        SomeVec hs -> Cycle hs <$> vecTraverse (const (term refHints (depthPlus hs d))) hs
-    0x0F -> Proj <$> term refHints d <*> (fromIntegral <$> decVarint)
+        SomeVec hs -> Cycle hs <$> vecTraverse (const (term version (depthPlus hs d))) hs
+    0x0F -> Proj <$> sub <*> (fromIntegral <$> decVarint)
     0x11 -> do
-      c <- decConRef
+      con <- decConRef
       k <- decVarint
-      Con c <$> traverse (const (term refHints d)) [1 .. k]
+      c <- resolveCon con (fromIntegral k)
+      Con c <$> traverse (const sub) [1 .. k]
     0x12 -> do
-      s <- term refHints d
+      s <- sub
       n <- decVarint
       alts <- traverse (const alt) [1 .. n]
       pure (Case s alts)
      where
       alt = do
-        c <- decConRef
+        con <- decConRef
         k <- decVarint
+        c <- resolveCon con (fromIntegral k)
         hints <- traverse (const decHint) [1 .. k]
         case vecFromList hints of
-          SomeVec hs -> Alt c hs <$> term refHints (depthPlus hs d)
+          SomeVec hs -> Alt c hs <$> term version (depthPlus hs d)
     0x10 -> failDec "a placeholder cannot be stored"
     tag -> failDec ("unknown term tag " <> T.pack (show tag))
+ where
+  sub = term version d
+  legacy = version <= 3
+  -- A built-in constructor by name (storage version 3 and before) is the
+  -- built-in declaration's; a tuple's needs its number of fields.
+  resolveCon con k = case con of
+    Right c -> pure c
+    Left name
+      | legacy
+      , Just c <- legacyCon name k ->
+          pure c
+      | otherwise -> failDec ("unknown constructor " <> name)
+
+-- | A retired built-in constructor name with its number of fields.
+legacyCon :: Text -> Int -> Maybe ConRef
+legacyCon name k = case (name, k) of
+  ("False", 0) -> Just falseC
+  ("True", 0) -> Just trueC
+  ("Nil", 0) -> Just nilC
+  ("Cons", 2) -> Just consC
+  ("Tuple", _) | k >= 2 && k <= maxTupleArity -> Just (tupleC k)
+  _ -> Nothing
 
 -- Hex -------------------------------------------------------------------------------
 
@@ -332,15 +362,27 @@ hashFromHex t
   pairs (a : b : rest) = fromIntegral (a * 16 + b) : pairs rest
   pairs _ = []
 
-decConRef :: Dec ConRef
+-- | A constructor reference: a declared one, or a retired built-in one by name.
+decConRef :: Dec (Either Text ConRef)
 decConRef = do
   name <- decText
   if T.null name
-    then UserCon . Hash <$> bytes 32 <*> (fromIntegral <$> decVarint)
-    else pure (Builtin name)
+    then
+      (\h i -> Right (UserCon (Hash h) i))
+        <$> bytes 32
+        <*> (fromIntegral <$> decVarint)
+    else pure (Left name)
 
 decodeTypeDef :: ByteString -> Either Text TypeDef
-decodeTypeDef bs = do
+decodeTypeDef = decodeTypeDefV storageVersion
+
+{- | Read a declared type written by a given storage version. Up to version
+3 a field may use the retired types @Bool@, tuple and list (tags 0x20,
+0x24, 0x25), read as the built-in declared types, so the definition read
+back has a new hash where it used them.
+-}
+decodeTypeDefV :: Int -> ByteString -> Either Text TypeDef
+decodeTypeDefV version bs = do
   (def, end) <- runDec typeDef bs 0
   if end == BS.length bs
     then Right def
@@ -352,7 +394,7 @@ decodeTypeDef bs = do
     nc <- decVarint
     cons <-
       traverse
-        (const (decVarint >>= \nf -> traverse (const decType) [1 .. nf]))
+        (const (decVarint >>= \nf -> traverse (const (decType version)) [1 .. nf]))
         [1 .. nc]
     TypeDef (zip [0 ..] kinds) cons <$> decLabel
   decKindByte =
@@ -363,16 +405,17 @@ decodeTypeDef bs = do
       3 -> pure KDim
       k -> failDec ("unknown kind " <> T.pack (show k))
 
-decType :: Dec Type
-decType =
+decType :: Int -> Dec Type
+decType version =
   byte >>= \case
-    0x20 -> pure TBool
+    -- Retired tags, read from storage version 3 and before (design §6.1).
+    0x20 | legacy -> pure boolT
+    0x24 | legacy -> decVarint >>= \n -> tupleT <$> traverse (const ty) [1 .. n]
+    0x25 | legacy -> listT <$> ty
     0x21 -> TTensor <$> decShape <*> decDim
     0x22 -> TPoint <$> decShape <*> decDim
     0x23 -> TScale <$> decShape <*> decDim
-    0x24 -> decVarint >>= \n -> TTuple <$> traverse (const decType) [1 .. n]
-    0x25 -> TList <$> decType
-    0x26 -> TFun <$> decType <*> decType
+    0x26 -> TFun <$> ty <*> ty
     0x27 -> TVar . fromIntegral <$> decVarint
     0x28 -> do
       h <- bytes 32
@@ -380,9 +423,11 @@ decType =
       TData (Hash h) <$> traverse (const decArg) [1 .. n]
     tag -> failDec ("unknown type tag " <> T.pack (show tag))
  where
+  ty = decType version
+  legacy = version <= 3
   decArg =
     byte >>= \case
-      0 -> AType <$> decType
+      0 -> AType <$> ty
       1 -> ALen <$> decLen
       2 -> AShape <$> decShape
       3 -> ADim <$> decDim

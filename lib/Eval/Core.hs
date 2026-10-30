@@ -170,12 +170,9 @@ renderLabel = \case
   Owner _ -> ""
   Tag t -> " #" <> t
 
-{- | A constant. A tensor literal carries its shape and its values flat in
-row-major order; a number is the rank-zero case. The boolean alternative is
-the last special-cased constant (core.md §5).
+{- | A constant tensor: its shape and its values flat in row-major order; a
+number is the rank-zero case. Booleans are data ('Con').
 -}
-
--- | A constant tensor: shape and flat row-major values. Booleans are data ('Con').
 newtype Lit = LTensor ([Int], [Rational])
   deriving stock (Eq, Ord, Show)
 
@@ -200,8 +197,8 @@ data Term (n :: Nat) where
   App :: Term n -> Term n -> Term n
   -- | Non-recursive, generalising local binding: @Let h e b@ binds @e@ in @b@.
   Let :: Hint -> Term n -> Term (S n) -> Term n
-  {- | A saturated data constructor (design §5.1): @True@, @False@, @Tuple@ (arity
-  from the arguments), @Nil@, @Cons@.
+  {- | A saturated data constructor (design §5.1): constructor @i@ of a
+  declared type, @true@, @(a, b)@ and @x : xs@ among them.
   -}
   Con :: ConRef -> [Term n] -> Term n
   {- | Case analysis: one alternative per constructor of the scrutinee's type,
@@ -227,15 +224,13 @@ data Term (n :: Nat) where
   -- | @k@ mutually recursive bodies, each in scope of the @k@ members.
   Cycle :: Vec k Hint -> Vec k (Term (Plus k n)) -> Term n
 
-{- | A data constructor: one of the five built in, or constructor @ of a
-declared type by the type's hash (design §2.3). Names are labels.
+{- | A data constructor: constructor @i@ of a declared type, by the type's
+hash (design §2.3). Names are labels. The constructors the syntax builds,
+@true@, @(a, b)@, @x : xs@, are those of declarations the compiler holds
+("Eval.Builtin"), so there are no others.
 -}
-data ConRef = Builtin Text | UserCon Hash Int
+data ConRef = UserCon Hash Int
   deriving stock (Eq, Ord, Show)
-
--- | A string literal is a built-in constructor.
-instance IsString ConRef where
-  fromString = Builtin . T.pack
 
 -- | An alternative of a 'Case': constructor, field hints, body in scope of the fields.
 data Alt n = forall k. Alt ConRef (Vec k Hint) (Term (Plus k n))

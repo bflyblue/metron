@@ -29,6 +29,7 @@ import Data.Text qualified as T
 import Data.Vector qualified as V
 import Eval.Affine hiding (Builtin)
 import Eval.Affine qualified as A
+import Eval.Builtin
 import Eval.Core
 import Eval.Dimension (Spelling (..), arrowText, exponentText, renderUnitsIn)
 import Eval.Eval
@@ -220,10 +221,10 @@ renderValueWith printer scale prefs showMagnitude = \case
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
   -- Tuples as written; a list by walking its spine.
-  VData (Builtin "Tuple") fields -> do
+  VData (TupleC _) fields -> do
     parts <- mapM (>>= recur) fields
     pure ("(" <> T.intercalate ", " parts <> ")")
-  v@(VData c _) | c == Builtin "Cons" || c == Builtin "Nil" -> do
+  v@(VData c _) | c == ConsC || c == NilC -> do
     items <- listItems v
     parts <- mapM recur items
     pure ("{" <> T.intercalate ", " parts <> "}")
@@ -470,11 +471,11 @@ renderTermIn spelling namer = go 0
             (prec > 0)
             ("let " <> h' <> " = " <> go 0 ctx e <> " in " <> go 0 (VCons h' ctx) b)
     Con c args -> case (c, args) of
-      (Builtin "True", []) -> "true"
-      (Builtin "False", []) -> "false"
-      (Builtin "Tuple", _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
-      (Builtin "Nil", []) -> "{}"
-      (Builtin "Cons", [x, xs]) -> case listSpine xs of
+      (TrueC, []) -> "true"
+      (FalseC, []) -> "false"
+      (TupleC _, _) -> "(" <> T.intercalate ", " (map (go 0 ctx) args) <> ")"
+      (NilC, []) -> "{}"
+      (ConsC, [x, xs]) -> case listSpine xs of
         Just items -> "{" <> T.intercalate ", " (map (go 0 ctx) (x : items)) <> "}"
         Nothing -> paren (prec > 4) (go 5 ctx x <> " : " <> go 4 ctx xs)
       _ ->
@@ -482,7 +483,7 @@ renderTermIn spelling namer = go 0
           (prec > 10 && not (null args))
           (T.unwords (conText c : map (go 11 ctx) args))
     -- A case on Bool reads back as the if it came from.
-    Case sc [Alt (Builtin "False") VNil el, Alt (Builtin "True") VNil th] ->
+    Case sc [Alt FalseC VNil el, Alt TrueC VNil th] ->
       paren
         (prec > 0)
         ("if " <> go 0 ctx sc <> " then " <> go 0 ctx th <> " else " <> go 0 ctx el)
@@ -636,8 +637,8 @@ renderRough m = renderRadius (abs (midpoint m))
 -- | The elements of a list value, forcing its spine.
 listItems :: Value -> Either EvalError [Value]
 listItems = \case
-  VData (Builtin "Nil") [] -> Right []
-  VData (Builtin "Cons") [x, xs] -> do
+  VData NilC [] -> Right []
+  VData ConsC [x, xs] -> do
     x' <- x
     rest <- xs >>= listItems
     pure (x' : rest)
@@ -646,8 +647,8 @@ listItems = \case
 -- | The remaining elements of a literal list spine, if it ends in @{}@.
 listSpine :: Term n -> Maybe [Term n]
 listSpine = \case
-  Con (Builtin "Nil") [] -> Just []
-  Con (Builtin "Cons") [x, xs] -> (x :) <$> listSpine xs
+  Con NilC [] -> Just []
+  Con ConsC [x, xs] -> (x :) <$> listSpine xs
   _ -> Nothing
 
 {- | A field of a printed data value must read back as one argument: anything

@@ -1,3 +1,6 @@
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
+
 {- | A direct, environment-passing, call-by-need evaluator over Typed Core
 (design §8). Type abstractions and applications are erased. Because terms
 have been inferred and linted, the remaining type-error cases are
@@ -15,6 +18,7 @@ printing: types are checked before evaluation.
 -}
 module Eval.Eval (
   Value (..),
+  pattern VBool,
   Closure (..),
   Elem,
   Thunk,
@@ -49,6 +53,7 @@ import Data.Text qualified as T
 import Data.Vector (Vector)
 import Data.Vector qualified as V
 import Eval.Affine hiding (Builtin)
+import Eval.Builtin
 import Eval.Core
 import Eval.Dimension
 import Eval.TCore
@@ -162,10 +167,21 @@ data Value
   | -- | a point of the affine space over a tensor type: lengths, dimension, the scale it was written on, and its position as an amount from the base origin
     VPoint [Int] Dim (Maybe ScaleHint) (Vector Elem)
   | VScale ScaleHint
-  | VBool Bool
-  | -- | a constructor other than the booleans, with its fields as thunks (design §8)
+  | -- | a constructor with its fields as thunks (design §8); a boolean is one, 'VBool'
     VData ConRef [Thunk]
   | VClosure Closure
+
+-- | A boolean: @True@ or @False@ of the built-in @Bool@ ("Eval.Builtin").
+pattern VBool :: Bool -> Value
+pattern VBool b <- VData (asBool -> Just b) []
+  where
+    VBool b = VData (boolC b) []
+
+asBool :: ConRef -> Maybe Bool
+asBool = \case
+  TrueC -> Just True
+  FalseC -> Just False
+  _ -> Nothing
 
 {- | A function value: a body under one binder, closed over its environment
 and its site.
@@ -206,19 +222,15 @@ eval cfg rt = go
     TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
     TLit (LTensor (dims, rs)) -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
     -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
-    TCon (Builtin "True") _ [] -> Right (VBool True)
-    TCon (Builtin "False") _ [] -> Right (VBool False)
+    -- A boolean is data like any other: @if@ is a case on its constructor.
     TCon c _ args -> Right (VData c (zipWith (\i a -> go (child i) env a) [0 ..] args))
-    TCase sc _ alts -> do
-      v <- go (child 0) env sc
-      let (c, fields) = case v of
-            VBool True -> (Builtin "True", [])
-            VBool False -> (Builtin "False", [])
-            VData c' fs -> (c', fs)
-            _ -> (Builtin "", [])
-      case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
-        (i, TAlt _ bs body) : _ -> go (child i) (vecAppend (attach bs fields) env) body
-        [] -> Left (Internal ("case: no alternative for " <> conText c))
+    TCase sc _ alts ->
+      go (child 0) env sc >>= \case
+        VData c fields ->
+          case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
+            (i, TAlt _ bs body) : _ -> go (child i) (vecAppend (attach bs fields) env) body
+            [] -> Left (Internal ("case: no alternative for " <> conText c))
+        _ -> Left (Internal "case: the scrutinee is not data")
     TLam _ _ body -> Right (VClosure (Closure (child 0) env body))
     TApp f a -> do
       fv <- go (child 0) env f
@@ -928,7 +940,7 @@ runPrim cfg rt prim args = case (prim, args) of
     x <- ordered =<< a
     y <- ordered =<< b
     VBool . decide <$> arith (compareM cfg.sigma p x y)
-  -- Tensors of one shape (lint agrees) or two booleans: the equality
+  -- Tensors of one shape (lint agrees), data or points: the equality
   -- instances of design §4.2. Tensors are equal when every component is
   -- decided equal (design §3.2.9).
   equal a b = do
@@ -939,7 +951,6 @@ runPrim cfg rt prim args = case (prim, args) of
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
         and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
-      (VBool m, VBool n) -> Right (m == n)
       (VData c xs, VData c' ys)
         | c == c' && length xs == length ys -> and <$> zipWithM equal xs ys
         | otherwise -> Right False
@@ -949,7 +960,7 @@ runPrim cfg rt prim args = case (prim, args) of
         and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
       _ ->
         Left
-          (Internal "==: operands are not both tensors, both booleans or both points")
+          (Internal "==: operands are not both tensors, both data or both points")
   matrixRows n buf = do
     xs <- sequence (V.toList buf)
     pure (chunks n xs)
@@ -1072,7 +1083,7 @@ render = \case
     parts <- mapM (>>= render) fields
     pure
       ( case c of
-          Builtin "Tuple" -> "(" <> T.intercalate ", " parts <> ")"
+          TupleC _ -> "(" <> T.intercalate ", " parts <> ")"
           _ -> T.unwords (conText c : parts)
       )
   VClosure _ -> Right "<function>"

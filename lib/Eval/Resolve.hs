@@ -44,6 +44,7 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
+import Eval.Builtin
 import Eval.Codebase
 import Eval.Core
 import Eval.Desugar
@@ -322,7 +323,7 @@ disjointness cb new =
      in [T.intercalate "." (take k segs) | k <- [1 .. length segs - 1]]
 
 typeLookupFor :: Codebase -> TypeLookup
-typeLookupFor cb = TypeLookup (`lookupTypes` cb) (`lookupTypeDef` cb)
+typeLookupFor cb = TypeLookup (`lookupTypes` cb) (withBuiltins (`lookupTypeDef` cb))
 
 {- | The signatures of a codebase as inference sees them at a use (design
 §4.8): a reference written under a signed name that still points where
@@ -610,7 +611,7 @@ signMembers signed before members =
           (Nothing, Nothing) -> pure id
       | (i, (b, schemes)) <- zip [0 :: Int ..] members
       , let n = b.name.text
-            general = fromMaybe (Forall [] TBool) (nth i schemes)
+            general = fromMaybe (Forall [] boolT) (nth i schemes)
       ]
  where
   nth i xs = case drop i xs of
@@ -854,12 +855,6 @@ enterData scope cb decl = do
     (_ : _ : _, (n, _) : _) ->
       Left (DataError n.span "field names need a type with one constructor")
     _ -> pure ()
-  when (S.lastSegment decl.name.text `elem` builtinTypeNames)
-    $ Left
-      ( DataError
-          decl.name.span
-          ("`" <> S.lastSegment decl.name.text <> "` is a built-in type")
-      )
   -- Two passes: the first learns the parameters' kinds from where they
   -- appear, the second converts with the kinds known, so that the
   -- arguments of a recursive occurrence can be read by their kinds.
@@ -879,11 +874,20 @@ enterData scope cb decl = do
           )
       h = hashTypeDef def
       cb' = bindTypeName decl.name.text h (addTypeDef h def cb)
-      withCons =
-        foldl
-          (\acc (i, (c, _)) -> bindConName c.text h i acc)
-          cb'
-          (zip [0 ..] decl.constructors)
+  -- A built-in type's name is reserved, except that @Bool@ may name the
+  -- declaration it is (design §7.7): the library's, or an equal one.
+  when (S.lastSegment decl.name.text `elem` builtinTypeNames && h /= boolHash)
+    $ Left
+      ( DataError
+          decl.name.span
+          ("`" <> S.lastSegment decl.name.text <> "` is a built-in type")
+      )
+  let
+    withCons =
+      foldl
+        (\acc (i, (c, _)) -> bindConName c.text h i acc)
+        cb'
+        (zip [0 ..] decl.constructors)
   pure
     (foldl (\acc (n, j) -> bindFieldName n.text h 0 j acc) withCons fieldLabels)
  where
@@ -959,7 +963,7 @@ tyType :: DataEnv -> S.TyExpr -> Kinds Type
 tyType env t = case t.node of
   S.TyName n
     | Map.member n env.params -> TVar <$> useParam env t n KType
-    | n == "Bool" -> pure TBool
+    | n == "Bool" -> pure boolT
     | n == "Num" -> pure numT
     | n `elem` builtinTypeNames -> bad t ("`" <> n <> "` needs its arguments")
     | otherwise -> applied env t n []
@@ -991,8 +995,8 @@ tyType env t = case t.node of
           | n `elem` builtinTypeNames ->
               bad t ("`" <> n <> "` does not take these arguments")
         (n, _) -> applied env t n args
-  S.TyTuple ts -> TTuple <$> mapM (tyType env) ts
-  S.TyList a -> TList <$> tyType env a
+  S.TyTuple ts -> tupleT <$> mapM (tyType env) ts
+  S.TyList a -> listT <$> tyType env a
   S.TyFun a b -> TFun <$> tyType env a <*> tyType env b
   S.TyInt _ -> bad t "a number is a length, not a type"
   S.TyBracket _ -> bad t "a bracket is a shape or a dimension, not a type"

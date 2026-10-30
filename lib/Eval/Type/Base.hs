@@ -47,17 +47,12 @@ data Kind = KType | KLen | KShape | KDim
 type VarId = Int
 
 data Type
-  = TBool
-  | TTensor Shape Dim
+  = TTensor Shape Dim
   | -- | a point of the affine space over  d@ (design §3.6)
     TPoint Shape Dim
   | -- | a scale for writing and printing points (design §3.6)
     TScale Shape Dim
-  | -- | a tuple of two or more components (design §2.3)
-    TTuple [Type]
-  | -- | a list
-    TList Type
-  | -- | a declared data type applied to its parameters (design §2.3); a definition refers to itself as 'selfType'
+  | -- | a declared data type applied to its parameters (design §2.3); a definition refers to itself as 'selfType'. @Bool@, tuples and lists are declared types too, on the hashes of "Eval.Builtin".
     TData Hash [Arg]
   | TFun Type Type
   | TVar VarId
@@ -130,12 +125,9 @@ shapeOfDims = foldr (SCons . LLit) SNil
 
 applyType :: Subst -> Type -> Type
 applyType s = \case
-  TBool -> TBool
   TTensor sh d -> TTensor (applyShape s sh) (applyDim s d)
   TPoint sh d -> TPoint (applyShape s sh) (applyDim s d)
   TScale sh d -> TScale (applyShape s sh) (applyDim s d)
-  TTuple ts -> TTuple (map (applyType s) ts)
-  TList t -> TList (applyType s t)
   TData h as -> TData h (map (applyArg s) as)
   TFun a b -> TFun (applyType s a) (applyType s b)
   TVar v -> case Map.lookup v s of
@@ -199,12 +191,9 @@ substOnce :: Map VarId Arg -> Type -> Type
 substOnce m = go
  where
   go = \case
-    TBool -> TBool
     TTensor sh d -> TTensor (shape sh) (dim d)
     TPoint sh d -> TPoint (shape sh) (dim d)
     TScale sh d -> TScale (shape sh) (dim d)
-    TTuple ts -> TTuple (map go ts)
-    TList t -> TList (go t)
     TData h as -> TData h (map arg as)
     TFun a b -> TFun (go a) (go b)
     TVar v -> case Map.lookup v m of
@@ -244,12 +233,9 @@ freeVars :: Type -> [(VarId, Kind)]
 freeVars = nubBy (\a b -> fst a == fst b) . go
  where
   go = \case
-    TBool -> []
     TTensor sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
     TPoint sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
     TScale sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
-    TTuple ts -> concatMap go ts
-    TList t -> go t
     TData _ as -> concatMap argVars as
     TFun a b -> go a ++ go b
     TVar v -> [(v, KType)]

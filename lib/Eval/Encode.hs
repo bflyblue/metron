@@ -84,13 +84,12 @@ kindByte = \case
   KDim -> word8 3
 
 encType :: Type -> Builder
+-- 0x20 (Bool), 0x24 (tuple) and 0x25 (list) are retired: those types are
+-- 0x28 on the built-in hashes (design §6.1), read back from old stores only.
 encType = \case
-  TBool -> word8 0x20
   TTensor sh d -> word8 0x21 <> encShape sh <> encDim d
   TPoint sh d -> word8 0x22 <> encShape sh <> encDim d
   TScale sh d -> word8 0x23 <> encShape sh <> encDim d
-  TTuple ts -> word8 0x24 <> varint (fromIntegral (length ts)) <> foldMap encType ts
-  TList t -> word8 0x25 <> encType t
   TFun a b -> word8 0x26 <> encType a <> encType b
   TVar v -> word8 0x27 <> varint (fromIntegral v)
   TData (Hash h) as ->

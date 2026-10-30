@@ -15,6 +15,7 @@ module Eval.Type (
   TypeDef (..),
   TypeLookup (..),
   noLookup,
+  withBuiltins,
   conText,
   selfType,
   structuralLabel,
@@ -52,9 +53,12 @@ module Eval.Type (
 
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Control.Applicative ((<|>))
+import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
+import Eval.Builtin
 import Eval.Core (ConRef (..), Hash (..), showHash)
 import Eval.Dimension
 import Eval.Type.Base
@@ -148,7 +152,13 @@ renderArg = \case
 renderWithNamed ::
   (Hash -> Text) -> Spelling -> Map VarId Text -> Int -> Type -> Text
 renderWithNamed typeName spelling names prec = \case
-  TBool -> "Bool"
+  -- The built-in types print by their hash, whatever names them (design §4.1).
+  BoolT -> "Bool"
+  TupleT ts ->
+    "("
+      <> T.intercalate ", " (map (renderWithNamed typeName spelling names 0) ts)
+      <> ")"
+  ListT t -> "{" <> renderWithNamed typeName spelling names 0 t <> "}"
   -- As an argument of a declared type, a tensor with a shape or dimension is parenthesised.
   TTensor sh d
     | prec > 10
@@ -160,11 +170,6 @@ renderWithNamed typeName spelling names prec = \case
   TPoint sh d -> "Point (" <> tensor sh <> dim d <> ")"
   TScale SNil d -> "Scale" <> dim d
   TScale sh d -> "Scale (" <> tensor sh <> dim d <> ")"
-  TTuple ts ->
-    "("
-      <> T.intercalate ", " (map (renderWithNamed typeName spelling names 0) ts)
-      <> ")"
-  TList t -> "{" <> renderWithNamed typeName spelling names 0 t <> "}"
   -- A declared type prints by its short hash here; the driver replaces that
   -- with the current name (design §7.2), so inference needs no name table.
   TData h as ->
@@ -269,16 +274,14 @@ idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
 
 {- | The constructors of a data type with their field types, in canonical
 (declaration) order: the one table 'Con' and 'Case' are checked against
-(design §5.1). Declared types come from the lookup, with their parameters
-instantiated at the type's arguments.
+(design §5.1). Declared types come from the lookup, or are the built-in
+ones ("Eval.Builtin"), with their parameters instantiated at the type's
+arguments.
 -}
 dataConstructors :: (Hash -> Maybe TypeDef) -> Type -> Maybe [(ConRef, [Type])]
 dataConstructors defs = \case
-  TBool -> Just [(Builtin "False", []), (Builtin "True", [])]
-  TTuple ts -> Just [(Builtin "Tuple", ts)]
-  TList t -> Just [(Builtin "Nil", []), (Builtin "Cons", [t, TList t])]
   TData h as -> do
-    def <- defs h
+    def <- withBuiltins defs h
     let sub = Map.fromList (zip (map fst def.params) as)
     pure
       [ (UserCon h i, map (substOnce sub . unself h) fields)
@@ -293,19 +296,22 @@ dataConstructors defs = \case
     go = \case
       TData h' as' | h' == selfType -> TData h (map goArg as')
       TData h' as' -> TData h' (map goArg as')
-      TTuple ts -> TTuple (map go ts)
-      TList t -> TList (go t)
       TFun a b -> TFun (go a) (go b)
       t -> t
     goArg = \case
       AType t -> AType (go t)
       a -> a
 
+-- | A lookup of declarations that also knows the built-in ones.
+withBuiltins :: (Hash -> Maybe TypeDef) -> Hash -> Maybe TypeDef
+withBuiltins defs h = builtinDefs h <|> defs h
+
 {- | What the equality of a declared type rests on (design §4.2): the type
 arguments that must themselves have equality, or 'Nothing' when no
 arguments would do, because a field is a function or a scale, or the type
 is unknown. Equality on @T as@ is derived structurally: it holds when every
-field of every constructor, at @as@, has equality.
+field of every constructor, at @as@, has equality. @Bool@, tuples and lists
+are declared types like any other here.
 
 A recursive occurrence of the type is assumed to have equality, as the
 instance being derived (coinductively), and asks only for its own
@@ -315,10 +321,12 @@ least fixed point over the fields, so a nested type such as
 equality on @τ@ alone.
 -}
 equalityArgs :: (Hash -> Maybe TypeDef) -> Hash -> [Arg] -> Maybe [Type]
-equalityArgs defs h as = do
+equalityArgs defs0 h as = do
   def <- defs h
   need <- equalityParams defs def
   Just [t | (True, AType t) <- zip need as]
+ where
+  defs = withBuiltins defs0
 
 {- | For each parameter of a declaration, whether its equality depends on
 that parameter's: the least solution, from "none", of the fields'
@@ -335,11 +343,8 @@ equalityParams defs def = go (map (const False) def.params)
   -- parameters are assumed to need.
   needs need = \case
     TTensor _ _ -> Just []
-    TBool -> Just []
     TPoint _ _ -> Just []
     TVar v -> Just [v]
-    TTuple ts -> concat <$> mapM (needs need) ts
-    TList t -> needs need t
     TData h' as'
       | h' == selfType -> picked need as'
       | otherwise -> do
@@ -350,25 +355,27 @@ equalityParams defs def = go (map (const False) def.params)
    where
     picked which as' = concat <$> sequence [needs need t | (True, AType t) <- zip which as']
 
--- | A lookup that knows nothing: for closed terms over built-in types.
+{- | A lookup that knows nothing but the built-in declarations: for closed
+terms over built-in types.
+-}
 noLookup :: TypeLookup
-noLookup = TypeLookup (const Nothing) (const Nothing)
+noLookup = TypeLookup (const Nothing) builtinDefs
 
-{- | A constructor's name as it prints without a codebase: built-in names
-as they are, a declared one as @#hash.i@ for the driver to name.
+{- | A constructor's name as it prints without a codebase: a built-in one
+by the name its declaration gives it (@True@, @Cons@), a declared one as
+@#hash.i@ for the driver to name.
 -}
 conText :: ConRef -> Text
-conText = \case
-  Builtin c -> c
-  UserCon h i -> showHash h <> "." <> T.pack (show i)
+conText c@(UserCon h i) =
+  fromMaybe (showHash h <> "." <> T.pack (show i)) (builtinConName c)
 
 {- | A declaration as it could be written again: @data Name a = Con fields |
-…@, with the type's own hash standing for recursive occurrences (the
-driver names it) and parameters named by kind as in 'renderType'.
+…@, with the type's own name for recursive occurrences and parameters
+named by kind as in 'renderType'.
 -}
 renderTypeDef ::
-  Spelling -> Hash -> Text -> [Text] -> [[Maybe Text]] -> TypeDef -> Text
-renderTypeDef spelling h name conNames fieldNames def =
+  Spelling -> Text -> [Text] -> [[Maybe Text]] -> TypeDef -> Text
+renderTypeDef spelling name conNames fieldNames def =
   (if def.label == structuralLabel then "structural " else "")
     <> "data "
     <> T.unwords (name : map (\(v, _) -> Map.findWithDefault "?" v names) def.params)
@@ -383,6 +390,11 @@ renderTypeDef spelling h name conNames fieldNames def =
       )
  where
   names = prettyNames def.params
+  render =
+    renderWithNamed
+      (\h -> if h == selfType then name else showHash h)
+      spelling
+      names
   -- A record, when every field is named; else positional.
   constructor c labels fields = case sequence (take (length fields) (labels ++ repeat Nothing)) of
     Just ls
@@ -391,26 +403,12 @@ renderTypeDef spelling h name conNames fieldNames def =
             <> " {"
             <> T.intercalate
               ", "
-              ( zipWith
-                  (\l t -> l <> " :: " <> renderWith spelling names 0 (unself t))
-                  ls
-                  fields
-              )
+              (zipWith (\l t -> l <> " :: " <> render 0 t) ls fields)
             <> "}"
-    _ -> T.unwords (c : map (field . unself) fields)
+    _ -> T.unwords (c : map field fields)
   -- A field is an atom: a compound type goes in parentheses.
   field t =
-    let s = renderWith spelling names 11 t
+    let s = render 11 t
      in if " " `T.isInfixOf` s && not (T.isPrefixOf "(" s || T.isPrefixOf "{" s)
           then "(" <> s <> ")"
           else s
-  unself = \case
-    TData h' as | h' == selfType -> TData h (map unselfArg as)
-    TData h' as -> TData h' (map unselfArg as)
-    TTuple ts -> TTuple (map unself ts)
-    TList t -> TList (unself t)
-    TFun a b -> TFun (unself a) (unself b)
-    t -> t
-  unselfArg = \case
-    AType t -> AType (unself t)
-    a -> a
