@@ -2,11 +2,13 @@ module Main (main) where
 
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Eval.Affine hiding (Builtin, DivideByZero)
 import Eval.Affine qualified as A
@@ -30,7 +32,10 @@ import Eval.Type
 import Gen (exprDepth, genProgram, instanceOf)
 import System.Directory (
   createDirectoryIfMissing,
+  doesDirectoryExist,
+  doesFileExist,
   getTemporaryDirectory,
+  listDirectory,
   removePathForcibly,
  )
 import System.FilePath ((</>))
@@ -2543,8 +2548,164 @@ storeTests =
         case opened of
           Left err -> T.isInfixOf "is not an eval codebase of format" err @? T.unpack err
           Right _ -> assertFailure "opened a store of another format"
+    , testCase "merging two stores: both sides' definitions, one file per shared term"
+        $ withTempStore
+        $ \root -> do
+          let a = root </> "a"
+              b = root </> "b"
+          _ <- persistLines a ["let x = 7", "let shared = 42", ":add"]
+          _ <- persistLines b ["let y = 11", "let shared = 42", ":add"]
+          termsA <- Set.fromList <$> listDirectory (a </> "terms")
+          termsB <- Set.fromList <$> listDirectory (b </> "terms")
+          not (Set.null (Set.intersection termsA termsB)) @? "the stores share a term"
+          r <- mergeInto a b
+          r.termsCopied @?= Set.size (Set.difference termsB termsA)
+          r.notes @?= []
+          termsA' <- Set.fromList <$> listDirectory (a </> "terms")
+          termsA' @?= Set.union termsA termsB
+          (loaded, notes) <- reload a
+          notes @?= []
+          linesIn loaded ["x + y", "shared"] @?= Right ["18", "42"]
+    , testCase
+        "merging: a name bound on both sides takes the later definition, whichever side it is on"
+        $ withTempStore
+        $ \root -> do
+          let store name def t = do
+                let d = root </> name
+                _ <- persistLines d ["let x = " <> def, ":add"]
+                restamp d t
+                pure d
+              xAfterMerge target source = do
+                _ <- mergeInto target source
+                (loaded, _) <- reload target
+                pure (linesIn loaded ["x"])
+          -- the source's line is later
+          a1 <- store "a1" "1" 100
+          b1 <- store "b1" "2" 200
+          xAfterMerge a1 b1 >>= (@?= Right ["2"])
+          -- the target's line is later: appending alone would get this wrong
+          a2 <- store "a2" "1" 200
+          b2 <- store "b2" "2" 100
+          xAfterMerge a2 b2 >>= (@?= Right ["1"])
+          ls <- T.lines <$> TIO.readFile (a2 </> "names.log")
+          map (T.takeWhile (/= ' ')) ls @?= ["100", "200"]
+    , testCase
+        "merging: declared types and their type, con and field labels come across"
+        $ withTempStore
+        $ \root -> do
+          let a = root </> "a"
+              b = root </> "b"
+          _ <- persistLines a ["let x = 1", ":add"]
+          s <-
+            persistLines
+              b
+              [ "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+              , "data Body = Body {mass :: Num [kg]}"
+              , ":add"
+              ]
+          r <- mergeInto a b
+          r.typesCopied @?= 2
+          (loaded, notes) <- reload a
+          notes @?= []
+          loaded.codebase.typeDefs @?= s.codebase.typeDefs
+          loaded.codebase.typeNames @?= s.codebase.typeNames
+          loaded.codebase.conNames @?= s.codebase.conNames
+          loaded.codebase.fieldNames @?= s.codebase.fieldNames
+          linesIn loaded ["x", "(Body (2 kg)).mass", ":view Shape"]
+            @?= Right
+              ["1", "2 kg", "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"]
+    , testCase
+        "merging again adds nothing; the other store and both history files are left alone"
+        $ withTempStore
+        $ \root -> do
+          let a = root </> "a"
+              b = root </> "b"
+          _ <- persistLines a ["let x = 1", ":add"]
+          _ <- persistLines b ["let y = 2", "data Tag = Tag Num", ":add", ":alias z y"]
+          writeFile (a </> "history") "x\n"
+          writeFile (b </> "history") "y\n"
+          before <- snapshot b
+          r1 <- mergeInto a b
+          (r1.termsCopied > 0 && r1.typesCopied == 1 && r1.linesAdded > 0) @? show r1
+          logAfterFirst <- TIO.readFile (a </> "names.log")
+          r2 <- mergeInto a b
+          r2 @?= MergeReport 0 0 0 []
+          TIO.readFile (a </> "names.log") >>= (@?= logAfterFirst)
+          snapshot b >>= (@?= before)
+          readFile (a </> "history") >>= (@?= "x\n")
+          (loaded, _) <- reload a
+          linesIn loaded ["x + z", "Tag 3"] @?= Right ["3", "Tag 3"]
+    , testCase
+        "merging: corrupt files are not copied, a line without a time is reported"
+        $ withTempStore
+        $ \root -> do
+          let a = root </> "a"
+              b = root </> "b"
+          _ <- persistLines a ["let x = 1", ":add"]
+          _ <- persistLines b ["let y = 2", ":add"]
+          writeFile (b </> "terms" </> "not-a-hash") "junk"
+          writeFile (b </> "terms" </> replicate 64 '0') "junk"
+          appendFile (b </> "names.log") "garbage line\n"
+          r <- mergeInto a b
+          length r.notes @?= 3
+          r.linesAdded @?= 2
+          doesFileExist (a </> "terms" </> "not-a-hash") >>= (@?= False)
+          doesFileExist (a </> "terms" </> replicate 64 '0') >>= (@?= False)
+          ls <- T.lines <$> TIO.readFile (a </> "names.log")
+          take 1 ls @?= ["garbage line"]
+          (loaded, _) <- reload a
+          linesIn loaded ["x + y"] @?= Right ["3"]
+    , testCase
+        "merging from what is not a store is refused and touches nothing; old formats migrate"
+        $ withTempStore
+        $ \root -> do
+          let a = root </> "a"
+              plain = root </> "plain"
+              refused src needle = do
+                r <- mergeStores a src
+                case r of
+                  Left err -> T.isInfixOf needle err @? T.unpack err
+                  Right v -> assertFailure (show v)
+                doesDirectoryExist a >>= (@?= False)
+          createDirectoryIfMissing True plain
+          writeFile (plain </> "notes.txt") "hello"
+          refused plain "is not an eval codebase"
+          listDirectory plain >>= (@?= ["notes.txt"])
+          refused (root </> "missing") "no such directory"
+          doesDirectoryExist (root </> "missing") >>= (@?= False)
+          _ <- persistLines (root </> "future") ["let x = 1", ":add"]
+          writeFile (root </> "future" </> "format") "eval codebase 99\n"
+          refused (root </> "future") "is not an eval codebase of format"
+          -- an empty store of format 2 migrates on open, and the report says so
+          createDirectoryIfMissing True (root </> "old")
+          writeFile (root </> "old" </> "format") "eval codebase 2\n"
+          r <- mergeInto a (root </> "old")
+          map (T.isInfixOf "was migrated in place from format 2") r.notes @?= [True]
+          readFile (root </> "old" </> "format")
+            >>= (@?= "eval codebase " <> show formatVersion <> "\n")
     ]
  where
+  mergeInto :: FilePath -> FilePath -> IO MergeReport
+  mergeInto target source = either (error . T.unpack) id <$> mergeStores target source
+  -- Every line of a store's log at one time, for deterministic merges.
+  restamp :: FilePath -> Integer -> IO ()
+  restamp d t = do
+    ls <- T.lines <$> TIO.readFile (d </> "names.log")
+    TIO.writeFile
+      (d </> "names.log")
+      (T.unlines [T.pack (show t) <> T.dropWhile (/= ' ') l | l <- ls])
+  -- Every file under a directory with its content.
+  snapshot :: FilePath -> IO (Map.Map FilePath ByteString)
+  snapshot d = do
+    entries <- listDirectory d
+    Map.unions
+      <$> mapM
+        ( \e -> do
+            let p = d </> e
+            isDir <- doesDirectoryExist p
+            if isDir then snapshot p else Map.singleton p <$> BS.readFile p
+        )
+        entries
   withTempStore :: (FilePath -> IO a) -> IO a
   withTempStore k = do
     tmp <- getTemporaryDirectory

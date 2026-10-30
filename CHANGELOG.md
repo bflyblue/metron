@@ -228,3 +228,10 @@
   written type whose lowercase unknown names are variables, matched by
   unification both ways, so `:ls : {a} -> Num` finds `length` and
   `:ls : Vec 3 d -> Vec 3 d -> Vec 3 [d^2]` finds `cross`.
+- `eval [--codebase DIR] --merge OTHER` merges another store into this one
+  (design §7.4): terms and types DIR lacks are copied after a hash check,
+  OTHER's new log lines are added and the log is stably sorted by time, so
+  the last writer per name wins. OTHER is only read (an older format is
+  migrated in place and reported), merging again adds nothing, and the
+  `history` file is left alone. `Eval.Store.mergeStores` and `mergeStore`
+  expose it as a library function returning a `MergeReport`.
