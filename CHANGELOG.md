@@ -492,3 +492,26 @@
 - A `let` that takes over a unit or scale name now stays a plain quantity
   after a restart: the store logs `unflag name` when a bound name loses its
   flag. Before, the flag came back on reload.
+- Mixed dimensions as blocks (design §3.7). New primitive `crossCovariance :
+  Vec n d1 -> Vec m d2 -> Mat n m [d1 d2]`, the covariance over the
+  statistical nudges two vectors share, exact, with the display unit `*`
+  would give; `covariance` stays a primitive (no stored hash moves) and
+  shares its kernel, `Eval.Affine.crossCovarianceRows` and
+  `Eval.Eval.covarianceMatrix`, which `:covariance` uses too (new export
+  `hintProduct`). The library gains its first `data` declaration, `std.Cov2
+  n d1 d2 = Cov2 {rr, rv, vv}`, the joint covariance of a state `(r, v)` in
+  homogeneous blocks, and the Kalman filter's steps over it:
+  `jointCovariance`, `propagateCov2`, `innovationCov2`, `gain2`,
+  `updateCov2`. They live in `Eval.Prelude.stdlibAdditions`, appended to
+  `stdlibSource` but not to `preludeSource`, so the library's existing
+  hashes and the format 3 to 4 migration are unchanged; `stdlibNames` now
+  counts labels (one for a type and its constructor, one per field), which
+  is what `namespace std (N names)` counts. `:covariance (r, v)` on a pair
+  of vectors prints the blocks `rr`, `rv`, `vv` and the two bound boxes as
+  a pair; a number or a vector prints as before, and the refusal now reads
+  "covariance: a number, a vector, or a pair of vectors". `:stdlib upgrade`
+  also adds the type, constructor and field labels a codebase has never
+  had (`added data std.Cov2`), so an older codebase gets the record with
+  its fields; before, it added terms only. Design §3.7 records route
+  A, Hart's dimensioned matrices, rule by rule for when blocks stop being
+  enough; §12 gains a filter step in blocks, its outputs those of a test.

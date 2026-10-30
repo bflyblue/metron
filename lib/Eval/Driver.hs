@@ -1071,7 +1071,8 @@ upgrade n session = case lookupName n session.codebase of
 
 {- | @:stdlib upgrade@ (design §7.7), a sketch of upgrading a library from a
 newer version of it: the shipped library's labels under @std@ against the
-codebase's. A name the codebase has never had is added. A name still on
+codebase's. A name the codebase has never had is added, and so is a type
+label, constructor label or field label it has never had. A name still on
 the binding it was seeded with and whose shipped version differs is
 updated, and its dependents are upgraded as @:update@ does. "Still on the
 binding it was seeded with" is read off the history: its one entry, or,
@@ -1120,10 +1121,30 @@ stdlibUpgrade shipped moved session =
       flagged n =
         (if isUnitName n shipped then markUnit n else id)
           . (if isScaleName n shipped then markScale n else id)
+      -- A type, constructor or field label the codebase has never had comes
+      -- with the library's type; one it has, the user's or an older
+      -- library's, is left alone.
+      newLabels :: Map.Map Text a -> (Text -> Codebase -> Maybe a) -> [(Text, a)]
+      newLabels m lookupIn =
+        [ (n, x)
+        | (n, x) <- Map.toList m
+        , (stdlibNamespace <> ".") `T.isPrefixOf` n
+        , isNothing (lookupIn n cb0)
+        ]
+      addedTypes = newLabels shipped.typeNames lookupTypeName
+      withLabels =
+        foldl
+          (\acc (n, (h, i, j)) -> bindFieldName n h i j acc)
+          ( foldl
+              (\acc (n, (h, i)) -> bindConName n h i acc)
+              (foldl (\acc (n, h) -> bindTypeName n h acc) withContent addedTypes)
+              (newLabels shipped.conNames lookupConName)
+          )
+          (newLabels shipped.fieldNames lookupFieldName)
       cb1 =
         foldl
           (\acc (n, r) -> bindName n r acc)
-          (foldl (\acc (n, r) -> flagged n (bindName n r acc)) withContent added)
+          (foldl (\acc (n, r) -> flagged n (bindName n r acc)) withLabels added)
           [(n, r) | (n, _, r) <- updated]
       result = propagate (Map.fromList [(old, r) | (_, old, r) <- updated]) cb1
       cb' = result.codebase
@@ -1134,7 +1155,10 @@ stdlibUpgrade shipped moved session =
         refreshed <- refreshPreferences session{codebase = cb', staging = staging'}
         pure
           ( refreshed
-          , case ["added " <> short n | (n, _) <- added]
+          , case [ "added data " <> shortestNameOf TypeLabel session.scope cb' n
+                 | (n, _) <- addedTypes
+                 ]
+              ++ ["added " <> short n | (n, _) <- added]
               ++ [ "updated " <> short n <> " " <> showReference old <> " -> " <> showReference r
                  | (n, old, r) <- updated
                  ]

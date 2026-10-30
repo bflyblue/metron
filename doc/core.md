@@ -178,7 +178,10 @@ at every rank:
   concatenation, which inference carries as a deferred constraint (design §4.2).
   No overloading: each has exactly one type.
 - **Rank-specific**: `×` (`cross`), `norm`, `transpose`, `inverse`, `det`,
-  `indices` (`Vec n d -> Vec n`, a vector's positions as values), each with a
+  `indices` (`Vec n d -> Vec n`, a vector's positions as values),
+  `covariance` (`Vec n d -> Mat n n [d^2]`), `crossCovariance` (`Vec n d1 ->
+  Vec m d2 -> Mat n m [d1 d2]`, the statistical nudges two vectors share,
+  design §3.5; arity 2, no Core change) and `cholesky`, each with a
   fixed-rank signature.
 - **Indexed by literal positions, any rank**: `contract i j` (the trace over
   two positions of equal length), `permute [p…]` (reorder the leading

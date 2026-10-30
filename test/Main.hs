@@ -2456,6 +2456,38 @@ correlatedPair =
   , "let v = [e.1, e.0 - e.1] m/s"
   ]
 
+{- | Design §12, "A filter step in blocks": the lines whose outputs the
+document quotes. A change here goes there too.
+-}
+filterStep :: [Text]
+filterStep =
+  [ "let eye = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]"
+  , "let r0 = [7000, 0, 0] km ±σ 1 km"
+  , "let v0 = [0, 7.5, 0] km/s ±σ 1 m/s"
+  , "let r1 = r0 + v0 * (10 s)"
+  , "let p1 = jointCovariance (r1, v0)"
+  , "p1.rv"
+  , ":covariance (r1, v0)"
+  , "let dt = 60 s"
+  , "let phi = (eye, dt * eye, [0, 0, 0; 0, 0, 0; 0, 0, 0] s^-1, eye)"
+  , "let p2 = propagateCov2 phi p1"
+  , "p2 == jointCovariance (r1 + v0 * dt, v0)"
+  , "p2.rr"
+  , "p2.rv"
+  , "let h_r = [[1, 0, 0]]"
+  , "let h_v = [[0, 0, 0]] s"
+  , "let r_meas = [[(10 m)^2]]"
+  , "let s_innov = innovationCov2 h_r h_v p2 r_meas"
+  , "s_innov"
+  , "let k = gain2 h_r h_v p2 (inverse s_innov)"
+  , "k"
+  , "let p3 = updateCov2 k h_r h_v p2"
+  , "p3.rr to m^2"
+  , "p3.rv to m^2/s"
+  , "p3.vv to m^2/s^2"
+  , "transpose p2.rv - snd k @ (h_r @ p2.rr + h_v @ transpose p2.rv) == transpose p3.rv"
+  ]
+
 affineTests :: TestTree
 affineTests =
   testGroup
@@ -2863,6 +2895,24 @@ affineTests =
               ]
           evalP ":covariance ([1, 2] m, [[1]])"
             @?= Left "covariance: a number, a vector, or a pair of vectors"
+    , testCase "design §12: a filter step in blocks"
+        $ runLinesP filterStep
+          @?= Right
+            [ "[1e-5, 0, 0; 0, 1e-5, 0; 0, 0, 1e-5] km^2 s^-1"
+            , "rr [1.0001, 0, 0; 0, 1.0001, 0; 0, 0, 1.0001] km^2"
+            , "rv [1e-5, 0, 0; 0, 1e-5, 0; 0, 0, 1e-5] km^2 s^-1"
+            , "vv [1e-6, 0, 0; 0, 1e-6, 0; 0, 0, 1e-6] km^2 s^-2"
+            , "bound box ([0, 0, 0] km, [0, 0, 0] km s^-1)"
+            , "true"
+            , "[1.0049, 0, 0; 0, 1.0049, 0; 0, 0, 1.0049] km^2"
+            , "[7e-5, 0, 0; 0, 7e-5, 0; 0, 0, 7e-5] km^2 s^-1"
+            , "[[1005000]] m^2"
+            , "([0.99990049751243781094…; 0; 0], [6.9651741293532338308…e-5; 0; 0] s^-1)"
+            , "[99.990049751243781094…, 0, 0; 0, 1004900, 0; 0, 0, 1004900] m^2"
+            , "[0.0069651741293532338308…, 0, 0; 0, 70, 0; 0, 0, 70] m^2 s^-1"
+            , "[0.99512437810945273631…, 0, 0; 0, 1, 0; 0, 0, 1] m^2 s^-2"
+            , "true"
+            ]
     , testCase "points: scales, .+ and .-, printing on the written scale" $ do
         evalP "20 degC" @?= Right ["20 degC"]
         evalP "20 °C .+ 5 K" @?= Right ["25 degC"]
@@ -3193,6 +3243,32 @@ storeTests =
           ("0 use std" `elem` ls) @? "the stored use is a log line"
           all ("0 " `T.isPrefixOf`) (takeWhile ("0 " `T.isPrefixOf`) ls) @? "seed first"
           length (filter (not . ("0 " `T.isPrefixOf`)) ls) @?= 1
+    , testCase "a seeded store keeps the library's record type across a reload"
+        $ withTempStore
+        $ \dir -> do
+          _ <- persistLines dir []
+          (loaded, notes) <- reload dir
+          notes @?= []
+          linesIn
+            loaded
+            [ "let p = jointCovariance ([1, 2] m ±σ 1 m, [3, 4] s ±σ 1 s)"
+            , "p.rr"
+            , "p.rv"
+            , "p {rv = p.rv}"
+            , ":covariance ([1, 2] m ±σ 1 m, [3, 4] s ±σ 1 s)"
+            , ":ls --types"
+            ]
+            @?= Right
+              [ "[1, 0; 0, 1] m^2"
+              , "[0, 0; 0, 0] m s"
+              , "Cov2 {rr = [1, 0; 0, 1] m^2, rv = [0, 0; 0, 0] m s, vv = [1, 0; 0, 1] s^2}"
+              , "rr [1, 0; 0, 1] m^2"
+              , "rv [0, 0; 0, 0] m s"
+              , "vv [1, 0; 0, 1] s^2"
+              , "bound box ([0, 0] m, [0, 0] s)"
+              , "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
+              , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
+              ]
     , testCase "a root binding shadows the library's on reload; :unuse std persists" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let c = 3e8 m / s", ":add", ":unuse std"]
         (loaded, _) <- reload dir
@@ -3237,6 +3313,9 @@ storeTests =
               , "1 km"
               , "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2"
               ]
+          -- The seed brings the library's record type, its labels included.
+          linesIn loaded ["(jointCovariance ([1, 2] m ±σ 1 m, [3, 4] m ±σ 1 m)).rr"]
+            @?= Right ["[1, 0; 0, 1] m^2"]
           expecting (linesIn loaded [":ls std"]) $ \outs ->
             ("unit km : Num [m]" `elem` outs) @? "the library is listed"
           -- w uses the root G the old prelude had, which is now std.G's history.
@@ -5729,6 +5808,28 @@ stdlibTests =
             any ("upgraded twice " `T.isPrefixOf`) outs @? "twice upgraded"
             linesIn' s ["std.c", "std.gone", "twice", "1 std.km"]
               @?= Right ["5", "3", "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2", "1 std.km"]
+            -- A library type comes with its constructor and field labels.
+            ("added data std.Cov2" `elem` outs) @? "Cov2 added"
+            ("added std.jointCovariance" `elem` outs) @? "jointCovariance added"
+            linesIn'
+              s
+              -- A field is found through a use, as a bare name is.
+              [":use std", "(jointCovariance ([1, 2] m ±σ 1 m, [3, 4] m ±σ 1 m)).rv"]
+              @?= Right ["stored use std", "[0, 0; 0, 0] m^2"]
+        -- A type label the codebase has is left alone.
+        old2 <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            ( sessionWith
+                emptySession
+                [multiline ["namespace std", "  data Cov2 = Cov2"], ":add"]
+            )
+        case stdlibUpgrade lib [] old2 of
+          Left err -> assertFailure (T.unpack err)
+          Right (s, outs) -> do
+            ("added data std.Cov2" `notElem` outs) @? "Cov2 kept"
+            lookupTypeName "std.Cov2" s.codebase @?= lookupTypeName "std.Cov2" old2.codebase
     , testCase
         ":rename and :move re-hash a stamped definition and upgrade its dependents"
         $ do

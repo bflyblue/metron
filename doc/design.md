@@ -1055,10 +1055,10 @@ projection's position is, so unification stays first-order.
 
 Tensors are **homogeneous**: all components share one dimension. A position is
 `Vec 3 [m]`, a velocity `Vec 3 [m/s]`, a rotation `Mat 3 3 1`. A six-element state
-is the tuple `(r, v)` (roadmap), not a `Vec 6`. A state-transition matrix with
-mixed dimensions is out of scope; practitioners usually non-dimensionalise to
-canonical units anyway, and Hart's row/column dimension vectors are the roadmap
-path if that is not enough.
+is the tuple `(r, v)`, not a `Vec 6`, and its covariance and state-transition
+matrix, whose entries mix dimensions, are written as homogeneous blocks
+(§3.7, which also records the type-system route, Hart's dimensioned
+matrices, should blocks ever not be enough).
 
 Each component is an independent magnitude with its own nudge set. Because nudges
 are shared by name across components, `norm (r1 - r0)` correlates error correctly
@@ -1102,6 +1102,7 @@ m.i        : Mat (k + i + 1) n d -> Vec n d  -- row projection
 noise      : Vec n 1                         -- n is a literal; bound nudges
 gauss      : Vec n 1                         -- n is a literal; statistical nudges
 covariance : Vec n d -> Mat n n [d^2]
+crossCovariance : Vec n d1 -> Vec m d2 -> Mat n m [d1 d2]   -- the nudges two vectors share (3.5)
 cholesky   : Mat n n [d^2] -> Mat n n d
 contract i j : Tensor (l0 : … : lj : s) d -> Tensor (… without i and j : s) d
                                              -- i < j literals, li = lj; a trace (§4.2)
@@ -1315,8 +1316,8 @@ enters as its square-root factor `L` with `P = L Lᵀ`, split into homogeneous b
 
 ```
 let e = gauss 6
-let r = r0 + Lr * e           -- Lr : Mat 3 6 [m]
-let v = v0 + Lv * e           -- Lv : Mat 3 6 [m/s]
+let r = r0 + Lr @ e           -- Lr : Mat 3 6 [m]
+let v = v0 + Lv @ e           -- Lv : Mat 3 6 [m/s]
 ```
 
 For the single-vector case `v ±σ P`, with `P : Mat n n [d^2]` the covariance
@@ -1339,10 +1340,47 @@ covariance [0, 0, 0; 0, 0, 0; 0, 0, 0] km^2
 bound box [0.00071, 0.00071, 0] km
 ```
 
-For a tuple `(r, v)` the joint 6×6 has mixed units that the type system cannot
-express, so it would print the blocks `Cov(r, r) : [m^2]`, `Cov(r, v) : [m^2/s]`,
-`Cov(v, v) : [m^2/s^2]` once tuples exist. This is the strongest argument for
-mixed-dimension matrices on the roadmap.
+**Between two vectors.** `crossCovariance a b : Vec n d1 -> Vec m d2 -> Mat n
+m [d1 d2]` is the same sum over the statistical nudges the two vectors
+share: with `cᵢ` the coefficients of `aᵢ` and `c'ⱼ` those of `bⱼ`, entry
+`(i, j)` is `Σ_k cᵢₖ c'ⱼₖ`. It is exact, its dimension is the product of the
+operands', and it takes its display unit from both as `*` does (so
+`crossCovariance r v` of a `km` and a `km/s` vector prints in `km^2 s^-1`).
+`covariance v` is `crossCovariance v v` (one kernel computes both;
+`covariance` stays a primitive, so no stored term changes hash, and keeps
+printing in base units), and `crossCovariance v u` is `transpose
+(crossCovariance u v)`. Two vectors with no statistical nudge in common
+give zeros, and a shared *bound* nudge contributes nothing, since a bound
+has no covariance:
+
+```
+> let e = gauss 2
+> let r = [e.0 + 2 * e.1, 3 * e.0] m       -- coefficient rows (1, 2), (3, 0)
+> let v = [e.1, e.0 - e.1] m/s             -- coefficient rows (0, 1), (1, -1)
+> crossCovariance r v
+[2, -1; 0, 3] m^2 s^-1
+> crossCovariance ([1, 2] m ±σ 1 m) ([3, 4, 5] s ±σ 1 s)
+[0, 0, 0; 0, 0, 0] m s
+```
+
+For a pair `(r, v)` the joint 6×6 has mixed units, which no homogeneous
+matrix holds; it is the record of its three blocks (§3.7), and `:covariance`
+on a pair of vectors prints them, labelled by the record's fields, followed
+by the two bound boxes as a pair:
+
+```
+> :covariance (r, v)
+rr [5, 3; 3, 9] m^2
+rv [2, -1; 0, 3] m^2 s^-1
+vv [1, -1; -1, 2] m^2 s^-2
+bound box ([0, 0] m, [0, 0] m s^-1)
+```
+
+The blocks are `std.jointCovariance (r, v)`'s fields, computed by the same
+kernel; `:covariance` does not look the name up, so it works after `:unuse
+std` or with a root `jointCovariance` of the user's. Anything else that is
+not a number or a vector is refused with "covariance: a number, a vector, or
+a pair of vectors".
 
 `:budget` and `:covariance` are two projections of one nudge set: budget sorts
 `|cᵢ|` within each kind, covariance sums `cᵢ cᵢᵀ` over the statistical kind. A
@@ -1423,6 +1461,151 @@ rotated basis (ECI against ECEF) is a later extension: `to` between such frames
 would rotate as well as translate, which is exactly the distinction between
 points and displacements that the type already enforces, since a displacement
 only rotates.
+
+### 3.7 Mixed dimensions
+
+An orbit determination state is a position and a velocity, and the matrices
+a filter needs over it, the covariance `P`, the state transition `Φ`, the
+measurement matrix `H` and the gain `K`, have entries of several dimensions:
+`P` has `m^2` in one corner, `m^2/s^2` in the other and `m^2/s` between.
+Tensors are homogeneous (§3.3), so such a matrix is not a value. There are
+two routes. Route B is built; route A is recorded so that it can be built
+later without re-deriving it.
+
+#### 3.7.1 Route A: Hart's dimensioned matrices (the escalation path)
+
+G. W. Hart (*Multidimensional Analysis*, 1995) characterises the matrices of
+quantities that linear algebra can work with. The rules:
+
+- **Well formed.** An `m × n` matrix of quantities is well formed (Hart's
+  "multipliable") when its dimensions factor as `dim Aᵢⱼ = rᵢ · cⱼ` for a
+  *row dimension vector* `ρ = (r₀, …, r_{m-1})` and a *column dimension
+  vector* `γ = (c₀, …, c_{n-1})`. The factoring is unique up to moving a
+  constant between them (`rᵢ·k`, `cⱼ/k`), so the **canonical form** pins
+  `c₀ = 1`, which makes `rᵢ = dim Aᵢ₀`.
+- **Literals.** A literal is admitted when its dimensions factor, and refused
+  otherwise: `[[1 m, 1 s], [1 s, 1 m]]` would need `r₀c₀ = m`, `r₀c₁ = s`,
+  `r₁c₀ = s` and so `r₁c₁ = s²/m`, not `m`.
+- **Product.** `A · B` with `A = (ρ_A, γ_A)` and `B = (ρ_B, γ_B)` is defined
+  when `A`'s column vector times `B`'s row vector is one constant dimension,
+  `c_Aₖ · r_Bₖ = κ` for every `k`, so that the terms of each inner sum agree;
+  the result is `(ρ_A · κ, γ_B)`.
+- **Transpose.** `Aᵀ` swaps the vectors: `(γ, ρ)`.
+- **Inverse.** A square `A = (ρ, γ)` has `A⁻¹ = (1/γ, 1/ρ)`: entry `(i, j)`
+  has dimension `1/(cᵢ rⱼ)`, so that `A A⁻¹` has `rᵢ/rⱼ`.
+- **Determinant.** `det A` has dimension `Π rᵢ · Π cⱼ`, every term of the
+  Leibniz sum having one factor from each row and each column.
+- **Identity.** The identity that `A A⁻¹` gives is `(ρ, 1/ρ)`: dimensionless
+  only on the diagonal, and a plain dimensionless `I` only when `ρ` is
+  constant.
+- **Vectors.** `Vec n d` embeds as the `n × 1` case with all rows `d` and
+  the single column `1`; a homogeneous `Mat m n d` is `((d, …, d), (1, …, 1))`.
+
+What building it takes: a type `DMat m n ρ γ` whose `ρ` and `γ` are
+type-level lists of dimensions of lengths `m` and `n`, a new kind, unified
+element by element by Kennedy's algorithm (§4.4) with variable tails the way
+shapes are (§4.1); `encType` tags for it in `data` declarations (§6.1); a
+second typing rule for every tensor primitive (`+`, `*`, `·`, `transpose`,
+`inverse`, `det`, the literals, projection, slicing); and a printer that
+gives each entry its own unit instead of factoring one out (§3.2.10).
+Estimated at several agent-weeks, and every one of those pieces touches
+inference, lint or the hash.
+
+#### 3.7.2 Route B: blocks (built)
+
+The state is a tuple of homogeneous vectors, `(r, v)` with `r : Vec n d1`
+and `v : Vec n d2`, and every matrix over it is a record or tuple of
+homogeneous blocks. Hart's factoring says why that is always possible: group
+the rows and the columns of a well-formed matrix by equal dimension, and
+each block of the grouping is homogeneous. The claim this route rests on:
+
+> Every intermediate of a Kalman filter over a state that is a tuple of
+> homogeneous vectors, measured by a homogeneous vector, is itself
+> homogeneous, or a tuple or record of homogeneous blocks.
+
+`Cov(xₐ, x_b)` has dimension `dₐ d_b`; a block `∂x'ₐ/∂x_b` of `Φ` has
+`d'ₐ/d_b`; a block of `H` has `d_z/d_b`; `S = H P Hᵀ + R` has `d_z²`; a
+block row of `K = P Hᵀ S⁻¹` has `dₐ/d_z`; and `(I − K H) P` has `P`'s
+blocks again. Each is one dimension per block.
+
+The library (§7.7) holds the two-block case, under `std`:
+
+```
+data Cov2 n d1 d2 = Cov2 {rr :: Mat n n [d1^2], rv :: Mat n n [d1 d2], vv :: Mat n n [d2^2]}
+
+jointCovariance (r, v)    = Cov2 {rr = crossCovariance r r, rv = crossCovariance r v, vv = crossCovariance v v}
+propagateCov2 (Φ_rr, Φ_rv, Φ_vr, Φ_vv) p                       -- Φ P Φᵀ
+innovationCov2 h_r h_v p r_meas                                 -- S = H P Hᵀ + R, H = [H_r | H_v]
+gain2 h_r h_v p s_inv     = (k_r, k_v)                          -- K = P Hᵀ S⁻¹
+updateCov2 (k_r, k_v) h_r h_v p                                 -- (I − K H) P
+```
+
+The fourth block of `P` is `transpose p.rv`. With `P = [A, B; Bᵀ, C]` and
+`Φ = [F₁₁, F₁₂; F₂₁, F₂₂]`, the block formulas, each derived by multiplying
+the blocks out and each checked in the tests against the covariance read
+directly off the affine forms, are
+
+```
+rr' = F₁₁ A F₁₁ᵀ + F₁₂ Bᵀ F₁₁ᵀ + F₁₁ B F₁₂ᵀ + F₁₂ C F₁₂ᵀ
+rv' = (F₁₁ A + F₁₂ Bᵀ) F₂₁ᵀ + (F₁₁ B + F₁₂ C) F₂₂ᵀ
+vv' = (F₂₁ A + F₂₂ Bᵀ) F₂₁ᵀ + (F₂₁ B + F₂₂ C) F₂₂ᵀ
+S   = H_r A H_rᵀ + H_r B H_vᵀ + H_v Bᵀ H_rᵀ + H_v C H_vᵀ + R
+K_r = (A H_rᵀ + B H_vᵀ) S⁻¹          K_v = (Bᵀ H_rᵀ + C H_vᵀ) S⁻¹
+rr⁺ = A − K_r (H_r A + H_v Bᵀ)    rv⁺ = B − K_r (H_r B + H_v C)    vv⁺ = C − K_v (H_r B + H_v C)
+```
+
+`propagateCov2` forms the block rows of `Φ P` first, so `rr'` is computed
+as `(F₁₁ A + F₁₂ Bᵀ) F₁₁ᵀ + (F₁₁ B + F₁₂ C) F₁₂ᵀ`, the same sum.
+`updateCov2` writes `H P` as `(P Hᵀ)ᵀ`, `P` being symmetric, because
+`h_r @ p.rr` with nothing else to fix `h_r`'s rank would default it to a
+vector (§4.2), while `transpose h_r` makes it a matrix. The record keeps only
+`rv⁺`; its mirror `Bᵀ − K_v (H_r A + H_v Bᵀ)` equals `transpose rv⁺` exactly
+for the gain `gain2` computes, and the scenario test checks that too. The
+matrix products are `@` (`·`), never `*`, which is the tensor product (§3.3).
+
+`:type` prints (the variable names are inference's, so `d` and `d1` are
+not the record's `d1` and `d2`):
+
+```
+jointCovariance : (Vec n d, Vec n d1) -> Cov2 n d d1
+propagateCov2   : (Mat n m [d1 d2 d3 d^-2], Mat n m [d1 d3^2 d^-2], Mat n m d2, Mat n m d3) -> Cov2 m [d d2^-1] [d d3^-1] -> Cov2 n [d1 d3 d^-1] d
+innovationCov2  : Mat n m d -> Mat n m d1 -> Cov2 m [d1 d2 d^-1] d2 -> Mat n n [d1^2 d2^2] -> Mat n n [d1^2 d2^2]
+gain2           : Mat n m d -> Mat n m d1 -> Cov2 m [d1 d2 d^-1] d2 -> Tensor (n : s) d3 -> (Tensor (m : s) [d1^2 d2^2 d3 d^-1], Tensor (m : s) [d1 d2^2 d3])
+updateCov2      : (Mat n m d, Mat n m [d1^2 d2^-1]) -> Mat m n [d^-1] -> Mat m n [d2 d1^-2] -> Cov2 n [d d2 d1^-1] d1 -> Cov2 n [d d2 d1^-1] d1
+```
+
+All five are polymorphic in both state dimensions; none works only for
+particular `d1`, `d2`. `propagateCov2` is the most general it can be: `Φ`
+may change both dimensions and the length (input `Cov2 m D₁ D₂`, output
+`Cov2 n E₁ E₂`, with `Φ_rr : [E₁/D₁]`, `Φ_rv : [E₁/D₂]`, `Φ_vr : [E₂/D₁]`,
+`Φ_vv : [E₂/D₂]`). Read with the measurement's dimension `d_z`,
+`innovationCov2` has `h_r : [d_z/D₁]`, `h_v : [d_z/D₂]` and `S : [d_z²]`.
+`gain2` takes `s_inv` on the right of `@` only, so it accepts any tensor
+whose first axis has the measurement's length; with a matrix `S⁻¹` it gives
+`k_r : [D₁/d_z]` and `k_v : [D₂/d_z]`, the dimensions `updateCov2` asks for.
+
+A zero block needs its dimension: `Φ_vr` of the constant-velocity `Φ =
+[I, Δt I; 0, I]` is `[s^-1]`, written `[0, 0, 0; 0, 0, 0; 0, 0, 0] s^-1`,
+and a range measurement's `H_v` is `[[0, 0, 0]] s`; a bare dimensionless
+zero would force `d1 = d2`. The scenario in §12 writes its own `eye`, since
+`identity` (§3.3) has no implementation yet.
+
+Two smaller costs: the field names `rr`, `rv`, `vv` are labels in `std`
+(`std.rr`), and a field is looked up by its name alone (§2.3), so a root
+record with a field `rr` shadows the library's as any root name does
+(§7.7): after `data Foo = Foo {rr :: Num}`, `p.rr` on a `Cov2` is refused
+with "constructor Foo does not belong to Cov2 …". The library's own
+definitions are unaffected, being terms by hash. Field completion after a
+dot offers the three names too.
+
+**The escalation signal.** Route B stops being the cheaper one when a
+filter needs block formulas beyond 2×2 blocks (a state of three or more
+vectors of different dimensions, where `Cov3` and its six blocks, or a
+general n-block form, would be needed), or the inverse of a single matrix
+of mixed dimensions: a measurement vector of mixed dimension (range and
+range rate together) makes `S` itself a 2×2 block matrix, whose inverse is a
+Schur-complement formula over the blocks. When either appears in real use,
+route A is the next step, and its rules are above.
 
 ## 4. Type system
 
@@ -1692,6 +1875,7 @@ pointSub    : Point s d -> Point s d -> Tensor s d      -- `.-`
 toScale     : Point s d -> Scale s d -> Point s d       -- `p to s` when s is a scale
 p.i         : Point (n + i + 1 : s) d -> Point s d      -- a coordinate is a point
 covariance  : Vec n d -> Mat n n [d^2]                  -- Σ cᵢcᵢᵀ over the statistical nudges (3.5)
+crossCovariance : Vec n d1 -> Vec m d2 -> Mat n m [d1 d2]   -- Σ cᵢc'ⱼᵀ over the statistical nudges both share; exact; display unit as for * (3.5, 3.7)
 cholesky    : Mat n n [d^2] -> Mat n n d
 vzipWith    : (Num d1 -> Num d2 -> Num d3) -> Tensor s d1 -> Tensor s d2 -> Tensor s d3   -- per component pair, no display unit (3.3)
 indices     : Vec n d -> Vec n                          -- [0, 1, …, n-1], exact; the argument's components are not read
@@ -1784,7 +1968,8 @@ Num [m s^-2]
 - `rank` is the only type-level function, and a type cannot say that two
   unknown shapes have the same rank: a definition that needs that, such as
   `\f t u -> (timap f t, timap f u)`, is refused at generalisation (§4.2).
-- Vectors and matrices are homogeneous in dimension (§3.3).
+- Vectors and matrices are homogeneous in dimension (§3.3); a matrix of
+  mixed dimensions is written as blocks (§3.7).
 - Component access needs a literal position (§2.10). Computed indices do not exist.
   The same holds for the positions of `contract` and `permute` (§4.2): a
   function cannot take them as parameters, so `\i -> contract i 0 t` is an
@@ -2990,7 +3175,10 @@ prelude change rebind names behind the user's back. Now:
 - **Upgrading** is an open question in general (how a definition in one
   codebase takes a newer version from another). For the library there is a
   sketch, `:stdlib upgrade`: the shipped library's labels under `std`
-  against the codebase's. A name the codebase has never had is `added`; a
+  against the codebase's. A name the codebase has never had is `added`,
+  and so is a type, constructor or field label it has never had (`added
+  data std.Cov2`, its constructor and fields with it; a type label the
+  codebase already has is left as it is); a
   name whose binding is still the one it was seeded with (its history is
   that one entry, or, in a store migrated from format 3, that entry after
   the old root prelude's reference the migration recorded) and whose
@@ -3003,6 +3191,19 @@ prelude change rebind names behind the user's back. Now:
   its last-writer rule would override the user's edits.
 - **Base units stay primitives.** `m`, `kg`, `s` and the other base symbols
   are not names (§3.2.12); they need no namespace and cannot be renamed.
+- **Additions since the move.** What the library gained after it moved
+  under `std` was never at the root, so it is not in
+  `Eval.Prelude.preludeSource` (the old root prelude, from which the tests
+  check the move's hashes and the 3 to 4 migration takes its history) but
+  in `stdlibAdditions`, which `stdlibSource` appends inside the same
+  `namespace std`. So far: the record `std.Cov2` with the fields `std.rr`,
+  `std.rv`, `std.vv`, and `std.jointCovariance`, `std.propagateCov2`,
+  `std.innovationCov2`, `std.gain2` and `std.updateCov2`, the joint
+  covariance of a state `(r, v)` in blocks and the Kalman filter's steps
+  over it (§3.7). `Cov2` is the library's first `data` declaration: its
+  type and constructor are one label and two lines of `:ls std`, and its
+  fields are labels that `:ls` counts in `namespace std (N names)` but does
+  not list.
 
 Consequences: the store's format is 4 (a format-3 store is migrated by
 seeding it before its own log, §7.4); the loader no longer enters a
@@ -3142,7 +3343,9 @@ tuned, and compilation is a later milestone.
    tensors and `v ±σ P` (§3.4, §3.5): done. `contract` and `permute` with
    literal positions at any rank, and the prelude's `trace` (§3.3, §4.2):
    done. Slicing along any axis, `t._.i` and `slice k i t` (§2.10): done.
-   Remaining: mixed-dimension matrices for a joint state covariance.
+   A joint state covariance as homogeneous blocks (§3.7): done, with
+   `crossCovariance`, the library's `Cov2` and its filter steps, and
+   `:covariance (r, v)`.
    Points and scales (§3.6): done, over any shape; frames with a rotated
    basis remain.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
@@ -3162,8 +3365,8 @@ tuned, and compilation is a later milestone.
    re-expressing `Bool`, tuples and lists as prelude declarations.
 8. **Later.** Named projection positions as a scoped sugar (`.x .y .z`,
    `.pos .vel`, §2.10); precision refinement for undecidable comparisons
-   (re-evaluate at higher `p`); type annotations; mixed-dimension matrices, which
-   unlocks joint state covariance as a value; ball-plus-zonotope enclosures for
+   (re-evaluate at higher `p`); type annotations; mixed-dimension matrices
+   in the type system (§3.7.1), should blocks stop being enough; ball-plus-zonotope enclosures for
    radial bounds; non-SI and affine-offset units (°C); rewrite rules that
    fuse `star (wedge a b)` back into a hand-coded 3D cross kernel and notice
    when only part of a product is consumed (laziness already avoids the
@@ -3173,9 +3376,12 @@ tuned, and compilation is a later milestone.
 9. **Design first, then delegate.** Each of these needs a decision written
    down before any code; once it is, the implementation is routine enough to
    hand off.
-   - *Mixed-dimension matrices.* What a matrix with a dimension per row and
-     per column is, how such types unify, and what `*` and `inverse` mean on
-     them. This is what a joint position-velocity covariance needs (§3.5).
+   - *Mixed-dimension matrices.* Decided (§3.7): a joint position-velocity
+     covariance is a record of homogeneous blocks (route B, built), and
+     Hart's dimensioned matrices (route A) are written down rule by rule,
+     with what building them takes. Route A is not to be started until the
+     escalation signal of §3.7.2 appears: block formulas beyond 2×2 blocks,
+     or the inverse of a single matrix of mixed dimensions.
    - *Frames with a rotated basis.* The semantics of a scale over a tensor
      with a rotation as well as an origin (§3.6): what `to` does, how
      displacements and covariances transform.
@@ -3316,12 +3522,13 @@ Num 1 -> Mat 3 3 1
 0
 
 > let e = gauss 6
-> let r = [7000, 0, 0] km + Lr * e      -- Lr : Mat 3 6 [m], a covariance factor
-> let v = [0, 7.5, 0] km/s + Lv * e
-> :covariance (r, v)
-Cov(r, r) : [m^2]        [[…], […], […]]
-Cov(r, v) : [m^2 s^-1]   [[…], […], […]]
-Cov(v, v) : [m^2 s^-2]   [[…], […], […]]
+> let r = [7000, 0, 0] km + Lr @ e      -- Lr : Mat 3 6 [m], a covariance factor
+> let v = [0, 7.5, 0] km/s + Lv @ e
+> :covariance (r, v)                    -- the blocks of jointCovariance (3.5, 3.7)
+rr [… ; … ; …] km^2
+rv [… ; … ; …] km^2 s^-1
+vv [… ; … ; …] km^2 s^-2
+bound box ([0, 0, 0] km, [0, 0, 0] km s^-1)
 
 > let kepler_E m e = newton_E m e 50 ± 1e-12    -- a solver declaring its tolerance
 ```
@@ -3349,3 +3556,84 @@ report says so, one line per definition, and history keeps the old versions
 reachable. Had a dependent stopped checking, it would have stayed on `G#b7x2q`,
 `:view` would show that, and `:todo` would list it until its author fixed it and
 ran `:upgrade G`. Nothing changes silently in either direction.
+
+### A filter step in blocks
+
+One step of a Kalman filter on the state `(r, v)`, with the joint
+covariance as the blocks of §3.7. Unlike the session above, this one is not
+rounded for the page: the lines are the test suite's (`filterStep` in
+`test/Main.hs`, test "design §12: a filter step in blocks"), and every output
+is copied from what that test checks, so it stays true. The precision is
+the default. The `…` are the printer's mark for an exact value cut short
+(§3.2.10): everything here is exact, since `±σ` puts the uncertainty in
+the nudge coefficients and the filter is linear in them.
+
+A position known to 1 km and a velocity known to 1 m/s, both standard
+uncertainties, then the position 10 s on. `r1` and `v0` now share the
+velocity's nudges, so their cross-covariance block is not zero: `10 s ×
+(1 m/s)² = 10 m²/s` on each axis, in the unit of a position times a
+velocity. The position's variance is `(1 km)² + (10 s × 1 m/s)²`:
+
+```
+> let eye = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+> let r0 = [7000, 0, 0] km ±σ 1 km
+> let v0 = [0, 7.5, 0] km/s ±σ 1 m/s
+> let r1 = r0 + v0 * (10 s)
+> let p1 = jointCovariance (r1, v0)
+> p1.rv
+[1e-5, 0, 0; 0, 1e-5, 0; 0, 0, 1e-5] km^2 s^-1
+> :covariance (r1, v0)
+rr [1.0001, 0, 0; 0, 1.0001, 0; 0, 0, 1.0001] km^2
+rv [1e-5, 0, 0; 0, 1e-5, 0; 0, 0, 1e-5] km^2 s^-1
+vv [1e-6, 0, 0; 0, 1e-6, 0; 0, 0, 1e-6] km^2 s^-2
+bound box ([0, 0, 0] km, [0, 0, 0] km s^-1)
+```
+
+Propagation over 60 s with the constant-velocity `Φ = [I, Δt I; 0, I]`. The
+zero block has the dimension of `Φ_vr`, `s^-1`. The block result agrees
+exactly with the covariance of the propagated state read off its nudges,
+and the position's variance is now `(1 km)² + (70 s × 1 m/s)²`:
+
+```
+> let dt = 60 s
+> let phi = (eye, dt * eye, [0, 0, 0; 0, 0, 0; 0, 0, 0] s^-1, eye)
+> let p2 = propagateCov2 phi p1
+> p2 == jointCovariance (r1 + v0 * dt, v0)
+true
+> p2.rr
+[1.0049, 0, 0; 0, 1.0049, 0; 0, 0, 1.0049] km^2
+> p2.rv
+[7e-5, 0, 0; 0, 7e-5, 0; 0, 0, 7e-5] km^2 s^-1
+```
+
+A range measurement along x with a 10 m standard uncertainty: `H_r` is a
+`Mat 1 3`, `H_v` a zero `Mat 1 3 [s]`, and `R` a `Mat 1 1 [m^2]`. The
+innovation covariance, the gain (a dimensionless `K_r` and a `K_v` in
+`s^-1`), and the updated blocks:
+
+```
+> let h_r = [[1, 0, 0]]
+> let h_v = [[0, 0, 0]] s
+> let r_meas = [[(10 m)^2]]
+> let s_innov = innovationCov2 h_r h_v p2 r_meas
+> s_innov
+[[1005000]] m^2
+> let k = gain2 h_r h_v p2 (inverse s_innov)
+> k
+([0.99990049751243781094…; 0; 0], [6.9651741293532338308…e-5; 0; 0] s^-1)
+> let p3 = updateCov2 k h_r h_v p2
+> p3.rr to m^2
+[99.990049751243781094…, 0, 0; 0, 1004900, 0; 0, 0, 1004900] m^2
+> p3.rv to m^2/s
+[0.0069651741293532338308…, 0, 0; 0, 70, 0; 0, 0, 70] m^2 s^-1
+> p3.vv to m^2/s^2
+[0.99512437810945273631…, 0, 0; 0, 1, 0; 0, 0, 1] m^2 s^-2
+> transpose p2.rv - snd k @ (h_r @ p2.rr + h_v @ transpose p2.rv) == transpose p3.rv
+true
+```
+
+The x variance falls from `1004900 m²` to `1004900 · 100 / 1005000 ≈ 99.99
+m²`, the y and z blocks are untouched, and the velocity's x variance falls
+too, through the correlation the propagation built. The last line checks
+the block the record does not keep: the lower-left block of `(I − K H) P`,
+computed directly, is the transpose of `rv`, exactly.
