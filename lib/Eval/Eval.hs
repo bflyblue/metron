@@ -777,6 +777,30 @@ runPrim cfg rt prim args = case (prim, args) of
         then Right d
         else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
     Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
+  -- The positions of a vector as exact dimensionless values; the argument's
+  -- elements are not forced.
+  ("indices", [a]) -> do
+    (dims, _, _, _) <- tensor =<< a
+    case dims of
+      [k] ->
+        Right (VTensor [k] dimOne Nothing (V.generate k (Right . Exact . fromIntegral)))
+      _ -> Left (Internal "indices of a non-vector")
+  -- vmap over two tensors of one shape, with the same strictness.
+  ("vzipWith", [f, a, b]) -> do
+    fv <- f
+    (dims, d1, _, xs) <- tensor =<< a
+    (_, d2, _, ys) <- tensor =<< b
+    let element u x = Right (VTensor [] u Nothing (V.singleton x))
+        results =
+          V.zipWith
+            (\x y -> apply cfg rt fv (element d1 x) >>= \g -> apply cfg rt g (element d2 y))
+            xs
+            ys
+    outDim <-
+      if V.null results
+        then Right d1
+        else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
+    Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
   -- Conversion: the value, displayed in the unit's terms. A unit expression
   -- without a display unit of its own (a bare number) clears the hint.
   ("to", [a, u]) -> do

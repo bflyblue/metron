@@ -166,7 +166,7 @@ on every tensor. The answer is decided by whether the operation has one meaning
 at every rank:
 
 - **Elementwise, shape-polymorphic**: `+`, `-`, `⊙`, `⊘`, `neg`, `abs`, `mid`,
-  `bound`, `sd`, `vmap`, and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
+  `bound`, `sd`, `vmap`, `vzipWith`, and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
   flat buffer. Scalars are the rank-zero instance of the same path.
 - **Products that change rank**: `*` (the tensor product, `s1 ++ s2`) and `·` (the
   contracting product, `s1 ++ s2` after removing the paired index). Scalar
@@ -174,8 +174,9 @@ at every rank:
   product and matrix multiplication are `·`. Their types need shape
   concatenation, which inference carries as a deferred constraint (design §4.2).
   No overloading: each has exactly one type.
-- **Rank-specific**: `×` (`cross`), `norm`, `transpose`, `inverse`, `det`, each
-  with a fixed-rank signature.
+- **Rank-specific**: `×` (`cross`), `norm`, `transpose`, `inverse`, `det`,
+  `indices` (`Vec n d -> Vec n`, a vector's positions as values), each with a
+  fixed-rank signature.
 - **Indexed by literal positions, any rank**: `contract i j` (the trace over
   two positions of equal length) and `permute [p…]` (reorder the leading
   positions). Their scheme is computed from the literal positions, as `Pow`'s

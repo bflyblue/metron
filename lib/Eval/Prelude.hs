@@ -160,8 +160,8 @@ scales =
   ]
 
 {- | Tensor algebra: the 3D Levi-Civita tensor, the cross product as the
-Hodge dual of the wedge product, and the trace as a contraction (design
-§3.3).
+Hodge dual of the wedge product, the trace as a contraction, and @vimap@,
+a map that also sees each component's position as a value (design §3.3).
 -}
 algebra :: [(Text, Text)]
 algebra =
@@ -172,6 +172,7 @@ algebra =
   , ("levi", "ε")
   , ("cross", "\\a b -> star (a /\\ b)")
   , ("trace", "\\a -> contract 0 1 a")
+  , ("vimap", "\\f v -> vzipWith f (indices v) v")
   ]
 
 {- | Tuples and lists (design §2.3): the structural functions, recursive

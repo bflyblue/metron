@@ -506,6 +506,10 @@ is a perfectly good polymorphic function that any vector of length at least one
 can be passed to. Iteration over components is done with `vmap`, `dot`, `norm`
 and friends, never with a loop over indices; that is how both fixed geometry
 (`r.0`, `rotation.2.2`) and whole-vector computation are written in practice.
+Where a computation needs a component's position, `indices v` (and the
+prelude's `vimap`, §3.3) gives the positions as values, `[0, 1, …, n-1]`; it
+introduces no computed indexing, because no primitive takes such a value as a
+position.
 
 Positions are numbers only. Letter names for positions are a planned sugar at
 the desugaring layer, not a lexical rule: a declaration would pin names to
@@ -1005,6 +1009,10 @@ inverse    : Mat n n d -> Mat n n [d^-1]
 identity   : Mat n n 1
 det        : Mat n n d -> Num [d^n]          -- only where n is a literal, like ^
 vmap       : (Num d1 -> Num d2) -> Vec n d1 -> Vec n d2
+vzipWith   : (Num d1 -> Num d2 -> Num d3) -> Tensor s d1 -> Tensor s d2 -> Tensor s d3
+indices    : Vec n d -> Vec n                -- [0, 1, …, n-1], exact; positions as values
+vimap      : (Num -> Num d1 -> Num d2) -> Vec n d1 -> Vec n d2
+                                             -- prelude: vimap f v = vzipWith f (indices v) v
 v.i        : Vec (n + i + 1) d -> Num d      -- projection, i a literal (§2.10, §4.1)
 m.i        : Mat (k + i + 1) n d -> Vec n d  -- row projection
 noise      : Vec n 1                         -- n is a literal; bound nudges
@@ -1043,6 +1051,31 @@ Tensor (n : m : n : s) d -> Tensor (m : s) d
 > :type \t -> permute [2, 0, 1] t
 Tensor (n : m : k : s) d -> Tensor (k : n : m : s) d
 ```
+
+`vzipWith f a b` is `⊙`'s general form: it applies the two-argument `f` to
+each pair of components of two tensors of one shape (unequal lengths are a
+type error, "lengths differ: 2 and 3"), and like `vmap` gives a result with no
+display unit of its own. `indices v` is the vector
+`[0, 1, …, n-1]` of exact dimensionless numbers, as long as `v`; it reads only
+`v`'s length, not its components. The prelude's `vimap` combines the two, so
+a map can see each component's position:
+
+```
+> vzipWith (\a b -> a * b) [1, 2, 3] [4, 5, 6]
+[4, 10, 18]
+> indices ([5, 6, 7] m)
+[0, 1, 2]
+> vimap (\i x -> i * x) [10, 20, 30]
+[0, 20, 60]
+> :type vimap
+(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1
+```
+
+The position arrives as a value, a `Num`, never as a literal, so it cannot be
+used where a literal is needed: `x ^ i` is a parse error, because an exponent
+is an integer literal (§2.5), and `v.i` reads a record field named `i` ("unknown
+field `i`"), not a position (§2.10). `indices` is rank one only; a matrix
+argument is a type error.
 
 Printing factors the common unit: `[1, 2, 3] m`, `[[1, 0], [0, 1]]`. Affine
 components print with their own certain digits.
@@ -1465,6 +1498,8 @@ toScale     : Point s d -> Scale s d -> Point s d       -- `p to s` when s is a 
 p.i         : Point (n + i + 1 : s) d -> Point s d      -- a coordinate is a point
 covariance  : Vec n d -> Mat n n [d^2]                  -- Σ cᵢcᵢᵀ over the statistical nudges (3.5)
 cholesky    : Mat n n [d^2] -> Mat n n d
+vzipWith    : (Num d1 -> Num d2 -> Num d3) -> Tensor s d1 -> Tensor s d2 -> Tensor s d3   -- per component pair, no display unit (3.3)
+indices     : Vec n d -> Vec n                          -- [0, 1, …, n-1], exact; the argument's components are not read
 x ± e, x ±σ e : Tensor s d -> Num d | Tensor s d -> Tensor s d   -- per component (3.4)
 v ±σ P      : Vec n d -> Mat n n [d^2] -> Vec n d       -- a vector with covariance P (3.5)
 pi e        : Num 1

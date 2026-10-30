@@ -284,3 +284,16 @@
   rebuilds the scheme from the `TLit` arguments. The prelude's `trace a =
   contract 0 1 a` is `Mat n n d -> Num d` at rank two and the partial trace
   over the first two positions above it.
+- `indices`, `vzipWith` and the prelude's `vimap` (design §3.3).
+  `indices : Vec n d -> Vec n` is `[0, 1, …, n-1]`, exact and dimensionless,
+  as long as its argument, whose components it does not force; a matrix
+  argument is a type error. `vzipWith : (Num d -> Num d1 -> Num d2) ->
+  Tensor s d -> Tensor s d1 -> Tensor s d2` is `⊙`'s general form: it
+  applies a two-argument function to each pair of components of two tensors
+  of one shape ("lengths differ: 2 and 3" otherwise), with `vmap`'s
+  strictness and no display unit. `vimap f v = vzipWith f (indices v) v` is
+  `(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1`, a map that sees each
+  component's position. The position is a value, never a literal, so there
+  is no computed indexing (design §2.10): `x ^ i` is still a parse error and
+  `v.i` reads a record field `i` ("unknown field `i`"). Two primitives appended (arities 1 and 3); Core, the
+  encoding and stored hashes are unchanged.
