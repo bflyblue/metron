@@ -101,6 +101,7 @@ main =
         , namespaceTests
         , editTests
         , stdlibTests
+        , annotationTests
         ]
     )
 
@@ -601,6 +602,7 @@ shape e = case e.node of
   S.Slice a k i -> Sl (shape a) k i
   S.FieldOf a f -> A (shape a) (V f)
   S.Record hd fs -> foldl (\acc (n, x) -> A acc (A (V n.text) (shape x))) (shape hd) fs
+  S.Ascribe a _ -> shape a
 
 parserTests :: TestTree
 parserTests =
@@ -986,28 +988,29 @@ codebaseTests =
             Left err -> T.isInfixOf "unknown type `Nope`" err @? T.unpack err
             Right v -> assertFailure (show v)
     , testCase
-        "propagation follows a rebinding only through the name it was made under" $ do
-        -- `unit meter = m` is the library's `si.metre` term; changing meter must not
-        -- rescale km, which is written as kilo * metre.
-        let session =
-              [ "unit meter = m"
-              , ":add"
-              , "let d = 3 meter"
-              , ":add"
-              , "unit meter = 2 * m"
-              ]
-        case runLinesP
-          (session ++ [":update", "1 km to m", "d to m", ":todo", ":dependents meter"]) of
-          Left err -> assertFailure (T.unpack err)
-          Right ls -> do
-            filter ("upgraded km" `T.isPrefixOf`) ls @?= []
-            any ("upgraded d " `T.isPrefixOf`) ls @? show ls
-            drop (length ls - 4) ls @?= ["1000 m", "6 m", "nothing to do", "d"]
-        -- :upgrade is scoped the same way: a stale d moves, the library does not
-        case runLinesP
-          (session ++ [":update --no-upgrade", ":upgrade meter", "1 km to m", "d to m"]) of
-          Left err -> assertFailure (T.unpack err)
-          Right ls -> drop (length ls - 2) ls @?= ["1000 m", "6 m"]
+        "propagation follows a rebinding only through the name it was made under"
+        $ do
+          -- `unit meter = m` is the library's `si.metre` term; changing meter must not
+          -- rescale km, which is written as kilo * metre.
+          let session =
+                [ "unit meter = m"
+                , ":add"
+                , "let d = 3 meter"
+                , ":add"
+                , "unit meter = 2 * m"
+                ]
+          case runLinesP
+            (session ++ [":update", "1 km to m", "d to m", ":todo", ":dependents meter"]) of
+            Left err -> assertFailure (T.unpack err)
+            Right ls -> do
+              filter ("upgraded km" `T.isPrefixOf`) ls @?= []
+              any ("upgraded d " `T.isPrefixOf`) ls @? show ls
+              drop (length ls - 4) ls @?= ["1000 m", "6 m", "nothing to do", "d"]
+          -- :upgrade is scoped the same way: a stale d moves, the library does not
+          case runLinesP
+            (session ++ [":update --no-upgrade", ":upgrade meter", "1 km to m", "d to m"]) of
+            Left err -> assertFailure (T.unpack err)
+            Right ls -> drop (length ls - 2) ls @?= ["1000 m", "6 m"]
     , testCase "scratch definitions are usable before :add"
         $ runLines ["let x = 5", "x + 1"] @?= Right ["6"]
     , testCase "redefining a pending name replaces it with a notice"
@@ -3792,42 +3795,49 @@ storeTests =
             if isDir then snapshot p else Map.singleton p <$> BS.readFile p
         )
         entries
-  withTempStore :: (FilePath -> IO a) -> IO a
-  withTempStore k = do
-    tmp <- getTemporaryDirectory
-    stamp <- getPOSIXTime
-    let dir = tmp </> ("eval-test-" <> show (round (stamp * 1000000) :: Integer))
-    createDirectoryIfMissing True dir
-    r <- k dir
-    removePathForcibly dir
-    pure r
-  -- Feed lines one at a time, persisting after each, as Main does.
-  persistLines :: FilePath -> [Text] -> IO Session
-  persistLines dir ls = do
-    st <- either (error . T.unpack) id <$> openStore theSeed dir
-    let go s [] = pure s
-        go s (l : rest) = case feed s l of
-          Left err -> error (T.unpack err)
-          Right (s', _) -> sync st s.codebase s'.codebase >> go s' rest
-    go seeded ls
-  reload :: FilePath -> IO (Session, [Text])
-  reload dir = do
-    st <- either (error . T.unpack) id <$> openStore theSeed dir
-    (cb, notes) <- loadStore st emptyCodebase
-    pure
-      ( either
-          (error . T.unpack)
-          id
-          (refreshPreferences emptySession{codebase = cb, staging = cb})
-      , notes
-      )
-  linesIn :: Session -> [Text] -> Either Text [Text]
-  linesIn s0 = go s0 []
-   where
-    go _ acc [] = Right (concat (reverse acc))
-    go s acc (l : rest) = do
-      (s', outs) <- feed s l
-      go s' (outs : acc) rest
+
+-- | A fresh store directory for the length of a test.
+withTempStore :: (FilePath -> IO a) -> IO a
+withTempStore k = do
+  tmp <- getTemporaryDirectory
+  stamp <- getPOSIXTime
+  let dir = tmp </> ("eval-test-" <> show (round (stamp * 1000000) :: Integer))
+  createDirectoryIfMissing True dir
+  r <- k dir
+  removePathForcibly dir
+  pure r
+
+-- | Feed lines one at a time, persisting after each, as Main does.
+persistLines :: FilePath -> [Text] -> IO Session
+persistLines dir ls = do
+  st <- either (error . T.unpack) id <$> openStore theSeed dir
+  let go s [] = pure s
+      go s (l : rest) = case feed s l of
+        Left err -> error (T.unpack err)
+        Right (s', _) -> sync st s.codebase s'.codebase >> go s' rest
+  go seeded ls
+
+-- | A session on the store as Main opens it.
+reload :: FilePath -> IO (Session, [Text])
+reload dir = do
+  st <- either (error . T.unpack) id <$> openStore theSeed dir
+  (cb, notes) <- loadStore st emptyCodebase
+  pure
+    ( either
+        (error . T.unpack)
+        id
+        (refreshPreferences emptySession{codebase = cb, staging = cb})
+    , notes
+    )
+
+-- | The output of lines fed to a session in turn.
+linesIn :: Session -> [Text] -> Either Text [Text]
+linesIn s0 = go s0 []
+ where
+  go _ acc [] = Right (concat (reverse acc))
+  go s acc (l : rest) = do
+    (s', outs) <- feed s l
+    go s' (outs : acc) rest
 
 {- | The short hash a prelude or scratch name prints as, for tests that
 compare against @:hash@ output without pinning digests.
@@ -6229,3 +6239,479 @@ stdlibTests =
   sessionWith s0 = \case
     [] -> Right s0
     l : ls -> feed s0 l >>= \(s', _) -> sessionWith s' ls
+
+-- Type annotations (design §4.8) ---------------------------------------------------
+
+-- | A data type and a definition over it, for the signature tests.
+shapeSetup :: Text
+shapeSetup = "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+
+areaDef :: Text
+areaDef = "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+
+-- | The output of lines after a setup, without the setup's.
+afterSetup :: [Text] -> [Text] -> Either Text [Text]
+afterSetup setup ls = do
+  s <- sessionP setup
+  linesIn s ls
+
+-- | A session afterSetup some lines, or the test fails.
+sessionOf :: [Text] -> IO Session
+sessionOf ls = either (assertFailure . T.unpack) pure (sessionP ls)
+
+annotationTests :: TestTree
+annotationTests =
+  testGroup
+    "type annotations"
+    [ testCase "a signature before or after its definition; :type and :ls print it" $ do
+        forM_
+          [ ["double :: Num [m] -> Num [m]", "let double x = x + x"]
+          , ["let double x = x + x", "double :: Num [m] -> Num [m]"]
+          ]
+          $ \ls ->
+            runLinesP [multiline ls, ":type double", ":ls double"]
+              @?= Right ["Num [m] -> Num [m]", "double : Num [m] -> Num [m]"]
+        -- Unsigned, the definition's own type, as before.
+        runLinesP ["let double x = x + x", ":type double"]
+          @?= Right ["Tensor s d -> Tensor s d"]
+        runLinesP
+          [shapeSetup, multiline ["area :: Shape -> Num [m^2]", areaDef], ":type area"]
+          @?= Right ["Shape -> Num [m^2]"]
+        -- :ls : type matches the signature, the narrower type.
+        afterSetup
+          [ multiline ["double :: Num [m] -> Num [m]", "let double x = x + x"]
+          , "let twice x = x + x"
+          ]
+          [ ":ls double : Num [m] -> Num [m]"
+          , ":ls double : Num [s] -> Num [s]"
+          , ":ls twice : Num [s] -> Num [s]"
+          ]
+          @?= Right
+            [ "double : Num [m] -> Num [m]"
+            , "nothing matches"
+            , "twice : Tensor s d -> Tensor s d"
+            ]
+    , testCase "the scratch lists a signature; :add stores it; :forget drops it" $ do
+        let signed = multiline ["double :: Num [m] -> Num [m]", "let double x = x + x"]
+        runLinesP [signed, ":scratch", ":todo"]
+          @?= Right
+            [ "pending: double :: Num [m] -> Num [m]"
+            , "pending: double"
+            , "pending: double :: Num [m] -> Num [m] (use :add or :update)"
+            , "pending: double (use :add or :update)"
+            ]
+        runLinesP [signed, ":add", ":type double", ":scratch"]
+          @?= Right ["added double", "Num [m] -> Num [m]"]
+        -- A signature alone signs the stored definition.
+        afterSetup
+          ["let double x = x + x", ":add"]
+          ["double :: Num [m] -> Num [m]", ":add", ":type double"]
+          @?= Right ["signed double", "Num [m] -> Num [m]"]
+        -- A later signature replaces a pending one.
+        runLinesP [signed, "double :: Num [s] -> Num [s]", ":type double"]
+          @?= Right ["replaced pending signature of `double`", "Num [s] -> Num [s]"]
+        runLinesP [signed, ":forget double", ":scratch"] @?= Right ["forgot `double`"]
+    , testCase
+        "a signature narrows: uses see it, an unsigned name of the same hash does not"
+        $ do
+          let setup = [multiline ["f :: Num [m] -> Num [m]", "let f x = x"], "let g x = x"]
+          afterSetup setup [":type f", ":type g", "g (3 s)", "f (3 m)"]
+            @?= Right ["Num [m] -> Num [m]", "a -> a", "3 s", "3 m"]
+          -- One hash, two names: the signature is the label's.
+          case afterSetup setup [":hash f", ":hash g"] of
+            Right [a, b] -> a @?= b
+            other -> assertFailure (show other)
+          expectError (afterSetup setup ["f (3 s)"]) "expected Num [m], got Num [s]"
+          -- A dependent keeps its Core's type; its own signature is checked
+          -- against what its uses of f allow.
+          afterSetup setup ["let h y = f y", ":type h", "h (3 s)"]
+            @?= Right ["a -> a", "3 s"]
+          afterSetup
+            setup
+            [multiline ["h :: Num [m] -> Num [m]", "let h y = f y"], ":type h"]
+            @?= Right ["Num [m] -> Num [m]"]
+          expectError
+            (afterSetup setup [multiline ["h :: a -> a", "let h y = f y"]])
+            "`h`'s definition has type `Num [m] -> Num [m]`, not as general as its signature `a -> a`"
+          expectError
+            (afterSetup setup ["let k = f (3 s)"])
+            "expected Num [m], got Num [s]"
+    , testCase
+        "a signature more general than its definition is refused, at the signature"
+        $ do
+          case runLinesP [multiline ["f :: a -> a", "let f x = 1"]] of
+            Left err -> do
+              ( "`f`'s definition has type `a -> Num`, not as general as its signature `a -> a`"
+                  `T.isInfixOf` err
+                )
+                @? T.unpack err
+              ("  f :: a -> a\n  ^^^^^^^^^^^" `T.isInfixOf` err) @? T.unpack err
+            Right outs -> assertFailure (show outs)
+          expectError
+            (runLinesP [shapeSetup, multiline ["area :: Shape -> Num d", areaDef]])
+            "`area`'s definition has type `Shape -> Num [m^2]`, not as general as its signature `Shape -> Num d`"
+    , testCase "an unknown type, a signature without a definition, two signatures" $ do
+        expectError
+          (runLinesP [multiline ["h :: Nope -> Num", "let h x = x"]])
+          "unknown type `Nope`"
+        expectError (runLinesP ["k :: Num"]) "`k` has a signature but no definition"
+        expectError
+          (runLinesP [multiline ["k :: Num", "k :: Num [m]", "let k = 1"]])
+          "`k` has two signatures in the same group"
+    , testCase
+        "a redefinition is checked against the stored signature, unless the input gives one"
+        $ do
+          let setup = [multiline ["f :: a -> a", "let f x = x"], ":add"]
+          expectError
+            (afterSetup setup ["let f x = x + 1 m"])
+            "`f`'s definition has type `Num [m] -> Num [m]`, not as general as its signature `a -> a`"
+          afterSetup
+            setup
+            [multiline ["f :: Num [m] -> Num [m]", "let f x = x + 1 m"], ":type f"]
+            @?= Right ["Num [m] -> Num [m]"]
+          -- A redefinition the signature still holds of keeps it.
+          afterSetup setup ["let f y = (\\z -> z) y", ":type f"] @?= Right ["a -> a"]
+    , testCase
+        "an upgrade a dependent's signature would not hold of leaves it on its version"
+        $ do
+          let setup =
+                [ multiline
+                    [ "let base x = x"
+                    , "f :: a -> a"
+                    , "let f x = base x"
+                    , "let g x = (\\y -> y) (base x)"
+                    ]
+                , ":add"
+                ]
+          case afterSetup setup ["let base x = x + 1 m", ":update", ":type f", ":type g"] of
+            Right outs -> do
+              any ("left f on #" `T.isPrefixOf`) outs @? show outs
+              any ("not as general as its signature a -> a" `T.isInfixOf`) outs @? show outs
+              any ("upgraded g " `T.isPrefixOf`) outs @? show outs
+              lastN 2 outs @?= ["a -> a", "Num [m] -> Num [m]"]
+            Left err -> assertFailure (T.unpack err)
+    , testCase ":rename of a namespace re-hashes its type, and the signature follows" $ do
+        let setup =
+              [ multiline
+                  [ "namespace geo"
+                  , "  data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
+                  , "  area :: Shape -> Num [m^2]"
+                  , "  " <> areaDef
+                  ]
+              , ":add"
+              ]
+        case afterSetup
+          setup
+          [":rename geo plane", ":type plane.area", "plane.area (plane.Rect (2 m) (3 m))"] of
+          Right outs -> lastN 2 outs @?= ["plane.Shape -> Num [m^2]", "6 m^2"]
+          Left err -> assertFailure (T.unpack err)
+        s <- sessionOf (setup ++ [":rename geo plane"])
+        Map.keys s.codebase.signatures @?= ["plane.area"]
+    , testCase "signatures over tuples, lists and declared types"
+        $ runLinesP
+          [ "data Box a = Box a"
+          , multiline
+              [ "swap :: (Num [m], Num [s]) -> (Num [s], Num [m])"
+              , "let swap p = case p of (a, b) -> (b, a)"
+              , "len :: {Num [m]} -> Num"
+              , "let len xs = length xs"
+              , "unbox :: Box (Num [m]) -> Num [m]"
+              , "let unbox b = case b of Box x -> x"
+              ]
+          , ":type swap"
+          , ":type len"
+          , ":type unbox"
+          ]
+          @?= Right
+            [ "(Num [m], Num [s]) -> (Num [s], Num [m])"
+            , "{Num [m]} -> Num"
+            , "Box (Num [m]) -> Num [m]"
+            ]
+    , testCase "a cycle's member may be signed"
+        $ runLinesP
+          [ multiline
+              [ "even :: Num -> Bool"
+              , "let even n = if n == 0 then true else odd (n - 1)"
+              , "let odd n = if n == 0 then false else even (n - 1)"
+              ]
+          , ":type even"
+          , "even 4"
+          ]
+          @?= Right ["Num -> Bool", "true"]
+    , testCase
+        "a signature in a namespace block; :rename moves it, :alias does not copy it"
+        $ do
+          let setup =
+                [ multiline
+                    [ "namespace geo"
+                    , "  double :: Num [m] -> Num [m]"
+                    , "  let double x = x + x"
+                    ]
+                , ":add"
+                ]
+          s <- sessionOf (setup ++ [":rename geo.double twice"])
+          afterSetup setup [":type geo.double", ":rename geo.double twice", ":type twice"]
+            @?= Right
+              ["Num [m] -> Num [m]", "renamed `geo.double` to `twice`", "Num [m] -> Num [m]"]
+          Map.keys s.codebase.signatures @?= ["twice"]
+          aliased <- sessionOf (setup ++ [":rename geo.double twice", ":alias d2 twice"])
+          linesIn aliased [":type d2", ":type twice"]
+            @?= Right ["Tensor s d -> Tensor s d", "Num [m] -> Num [m]"]
+          unnamed <- sessionOf (setup ++ [":unname geo.double"])
+          Map.null unnamed.codebase.signatures @? "unname drops the signature"
+    , testCase
+        "variables that are units or base symbols are renamed when written back"
+        $ do
+          s <-
+            sessionOf
+              [ multiline
+                  [ "same :: Tensor sh d -> Tensor sh d"
+                  , "let same x = x + x"
+                  , "keep :: Mat n k -> Mat n k"
+                  , "let keep a = a"
+                  ]
+              , ":add"
+              ]
+          linesIn s [":type same", ":type keep"]
+            @?= Right ["Tensor s d -> Tensor s d", "Mat n m -> Mat n m"]
+          source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
+          ("keep :: Mat n k -> Mat n k\nlet keep = " `T.isInfixOf` source)
+            @? T.unpack source
+          ("same :: Tensor s1 d -> Tensor s1 d\nlet same = " `T.isInfixOf` source)
+            @? T.unpack source
+          reloaded <-
+            either
+              (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
+              pure
+              (sessionP [source, ":add"])
+          reloaded.codebase.signatures @?= s.codebase.signatures
+    , testCase ":export and :load round-trip a signature" $ do
+        s <-
+          sessionOf
+            [shapeSetup, multiline ["area :: Shape -> Num [m^2]", areaDef], ":add"]
+        source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
+        ("area :: Shape -> Num [m^2]\nlet area = " `T.isInfixOf` source)
+          @? T.unpack source
+        reloaded <-
+          either
+            (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
+            pure
+            (sessionP [source, ":add"])
+        reloaded.codebase.signatures @?= s.codebase.signatures
+        linesIn reloaded [":type area"] @?= Right ["Shape -> Num [m^2]"]
+    , testCase "a signature survives a reload; :unname writes it off" $ withTempStore $ \dir -> do
+        s <-
+          persistLines
+            dir
+            [ shapeSetup
+            , multiline
+                [ "area :: Shape -> Num [m^2]"
+                , areaDef
+                , "double :: Num [m] -> Num [m]"
+                , "let double x = x + x"
+                ]
+            , ":add"
+            ]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        loaded.codebase.signatures @?= s.codebase.signatures
+        linesIn loaded [":type area", ":type double", ":ls double"]
+          @?= Right
+            ["Shape -> Num [m^2]", "Num [m] -> Num [m]", "double : Num [m] -> Num [m]"]
+        logText <- TIO.readFile (dir </> "names.log")
+        (" sig area .Shape -> Num [m^2]" `T.isInfixOf` logText) @? T.unpack logText
+        st <- either (assertFailure . T.unpack) pure =<< openStore theSeed dir
+        case feed loaded ":unname double" of
+          Left err -> assertFailure (T.unpack err)
+          Right (s', _) -> sync st loaded.codebase s'.codebase
+        logText' <- TIO.readFile (dir </> "names.log")
+        (" unsig double" `T.isInfixOf` logText') @? T.unpack logText'
+        (reloaded2, notes') <- reload dir
+        notes' @?= []
+        Map.keys reloaded2.codebase.signatures @?= ["area"]
+    , testCase ":edit --file adds and removes a signature" $ do
+        s <- sessionOf ["let double x = x + x", ":add"]
+        file <- editFileOf s []
+        signedFile <-
+          replaceOnce "let double = " "double :: Num [m] -> Num [m]\nlet double = " file
+        (s1, outs1) <- edited EditCodebase signedFile s
+        outs1 @?= ["signed double"]
+        linesIn s1 [":type double"] @?= Right ["Num [m] -> Num [m]"]
+        file1 <- editFileOf s1 []
+        ("double :: Num [m] -> Num [m]\nlet double = " `T.isInfixOf` file1)
+          @? T.unpack file1
+        -- Unchanged, nothing changes.
+        (_, same) <- edited EditCodebase file1 s1
+        same @?= ["nothing changed"]
+        unsignedFile <- replaceOnce "double :: Num [m] -> Num [m]\n" "" file1
+        (s2, outs2) <- edited EditCodebase unsignedFile s1
+        outs2 @?= ["unsigned double"]
+        linesIn s2 [":type double"] @?= Right ["Tensor s d -> Tensor s d"]
+        -- :edit of one name pastes the signature with it.
+        linesIn s1 [":edit double"]
+          @?= Right ["double :: Num [m] -> Num [m]", "let double = \\x -> x + x"]
+    , testCase
+        "highlighting: :: plain, the type after it as a type; completion offers types"
+        $ do
+          let names = R.namesOf seeded
+          R.highlight names "area :: Shape -> Num [m^2]"
+            @?= "area :: Shape -> " <> type' "Num" <> " [" <> unit' "m" <> "^2]"
+          R.highlight names "(x :: Num d)" @?= "(x :: " <> type' "Num" <> " d)"
+          R.highlight names "(3 m :: Num [m]) + 1 m"
+            @?= "(3 "
+              <> unit' "m"
+              <> " :: "
+              <> type' "Num"
+              <> " ["
+              <> unit' "m"
+              <> "]) + 1 "
+              <> unit' "m"
+          let completed line = maybe [] (map (.replacement) . snd) (R.complete seeded (reverse line, ""))
+          completed "f :: Nu" @?= ["Num"]
+          -- After the ascription's parenthesis closes, an expression again.
+          ("length" `elem` completed "(3 m :: Num [m]) + lengt")
+            @? show (completed "(3 m :: Num [m]) + lengt")
+    , testCase
+        ":edit of a type moves the signatures that name it, as it moves their definitions"
+        $ do
+          s <-
+            sessionOf
+              [ multiline
+                  [ "data Shape = Circle (Num [m])"
+                  , "make :: Num [m] -> Shape"
+                  , "let make r = Circle r"
+                  , "same :: Shape -> Shape"
+                  , "let same s = s"
+                  ]
+              , ":add"
+              ]
+          file <- editFileOf s ["Shape"]
+          grown <-
+            replaceOnce "Circle (Num [m])" "Circle (Num [m]) | Square (Num [m])" file
+          (s1, outs) <- edited (EditName "Shape") grown s
+          filter (\l -> "signed" `T.isInfixOf` l || "left" `T.isPrefixOf` l) outs @?= []
+          linesIn
+            s1
+            [":type make", ":type same", "same (make (1 m))", "same (Square (2 m))"]
+            @?= Right ["Num [m] -> Shape", "Shape -> Shape", "Circle (1 m)", "Square (2 m)"]
+    , testCase "ascription: (e :: type) narrows the expression's type" $ do
+        runLinesP
+          [ "(1 :: Num)"
+          , "(3 m :: Num [m])"
+          , "([1, 2, 3] m :: Vec 3 [m])"
+          , ":type (1 :: Num)"
+          , ":type \\x -> (x :: Num d)"
+          , ":type \\x -> x"
+          , ":type \\v -> (v :: Vec n)"
+          ]
+          @?= Right
+            [ "1"
+            , "3 m"
+            , "[1, 2, 3] m"
+            , "Num"
+            , "Num d -> Num d"
+            , "a -> a"
+            , "Vec n -> Vec n"
+            ]
+    , testCase "ascription never widens: (1 :: a) is 1, of type Num"
+        $ runLinesP ["(1 :: a)", ":type (1 :: a)"] @?= Right ["1", "Num"]
+    , testCase "an ascription narrows the node it is written on, wherever it is" $ do
+        runLinesP
+          [ "data Box a = Box {item :: a}"
+          , ":type \\x y -> {x, (y :: Num [m])}"
+          , ":type \\x -> if true then (x :: Num [m]) else x"
+          , ":type \\x -> if true then x else (x :: Num [s])"
+          , ":type \\f y -> case true of true -> f (y :: Num [m]); false -> f y"
+          , ":type \\y -> Box {item = (y :: Num [m])}"
+          , ":type \\y -> (+ (y :: Num [m]))"
+          , ":type \\v -> (v :: Vec 3).0"
+          , "{1 m, (2 m :: Num [m])}"
+          ]
+          @?= Right
+            [ "Num [m] -> Num [m] -> {Num [m]}"
+            , "Num [m] -> Num [m]"
+            , "Num [s] -> Num [s]"
+            , "(Num [m] -> a) -> Num [m] -> a"
+            , "Num [m] -> Box (Num [m])"
+            , "Num [m] -> Num [m] -> Num [m]"
+            , "Vec 3 -> Num"
+            , "{1 m, 2 m}"
+            ]
+        expectError
+          (runLinesP ["let f x = g (3 s) where g y = (y :: Num [m])"])
+          "expected Num [m], got Num [s]"
+        -- Each fails at its own ascription.
+        forM_
+          [ ("{1, (2 :: Bool)}", "(2 :: Bool)")
+          , ("if true then (1 :: Bool) else 2", "(1 :: Bool)")
+          , ("if true then 1 else (2 :: Bool)", "(2 :: Bool)")
+          , ("case true of true -> sin (1 :: Num [m]); false -> 2", "(1 :: Num [m])")
+          ]
+          $ \(src, part) -> case runLinesP [src] of
+            Left err -> do
+              ("the ascription: " `T.isInfixOf` err) @? T.unpack err
+              let col = T.length (fst (T.breakOn part src))
+                  carets = "\n  " <> T.replicate col " " <> T.replicate (T.length part) "^" <> "\n"
+              (carets `T.isInfixOf` err) @? T.unpack err
+            Right outs -> assertFailure (show outs)
+        -- A literal position of contract may be ascribed.
+        runLinesP ["contract (0 :: Num) 1 [1, 2; 3, 4]"]
+          @?= runLinesP ["contract 0 1 [1, 2; 3, 4]"]
+    , testCase "an ascription that does not unify is refused at the ascription" $ do
+        case runLinesP ["(3 m :: Num [kg])"] of
+          Left err -> do
+            ("the ascription: expected Num [kg], got Num [m]" `T.isInfixOf` err)
+              @? T.unpack err
+            ("  (3 m :: Num [kg])\n  ^^^^^^^^^^^^^^^^^" `T.isInfixOf` err) @? T.unpack err
+          Right outs -> assertFailure (show outs)
+        expectError (runLinesP ["(1 :: Bool)"]) "the ascription: "
+        expectError (runLinesP ["(1 :: Nope)"]) "unknown type `Nope`"
+        expectError
+          (runLinesP ["let f x = x", "(f :: Num [m] -> Num [m]) (3 s)"])
+          "expected Num [m], got Num [s]"
+        expectError
+          (runLinesP ["let k = (3 m :: Num [kg])"])
+          "the ascription: expected Num [kg], got Num [m]"
+    , testCase
+        "ascriptions inside definitions check, in a cycle too; :view shows the plain expression"
+        $ do
+          runLinesP
+            [ "let f x = (x :: Num [m]) + 1 m"
+            , ":view f"
+            , "f (2 m)"
+            , "let g x = (x :: Num [m])"
+            , ":type g"
+            , ":view g"
+            ]
+            @?= Right ["f = \\x -> x + 1 * m", "3 m", "a -> a", "g = \\x -> x"]
+          expectError
+            ( runLinesP
+                [ multiline
+                    [ "let even n = if n == 0 then true else odd (n - 1)"
+                    , "let odd n = if (n :: Num [m]) == 0 then false else even (n - 1)"
+                    ]
+                ]
+            )
+            "in `odd`: expected Num [m], got Num: dimensions differ by [m]"
+          -- In a cycle member, an ascription that fails is reported at itself.
+          case runLinesP
+            [ multiline
+                [ "let even n = if n == 0 then true else odd (n - 1)"
+                , "let odd n = if n == 0 then false else (even (n - 1) :: Num)"
+                ]
+            ] of
+            Left err -> do
+              ("in `odd`: the ascription: " `T.isInfixOf` err) @? T.unpack err
+              ("error at 2:39" `T.isInfixOf` err) @? T.unpack err
+              (("\n  " <> T.replicate 38 " " <> T.replicate 21 "^" <> "\n") `T.isInfixOf` err)
+                @? T.unpack err
+            Right outs -> assertFailure (show outs)
+          runLinesP
+            [ multiline
+                [ "let even n = if n == 0 then true else odd (n - 1)"
+                , "let odd n = if (n :: Num) == 0 then false else even (n - 1)"
+                ]
+            , "even 4"
+            ]
+            @?= Right ["true"]
+    ]

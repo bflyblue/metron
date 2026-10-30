@@ -42,6 +42,9 @@ module Eval.Codebase (
   writtenAs,
   findByPrefix,
   showReference,
+  signatureOf,
+  setSignature,
+  dropSignature,
 ) where
 
 import Data.List (sortOn)
@@ -53,8 +56,8 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core
 import Eval.Syntax (Use (..))
-import Eval.TCore (TTerm)
-import Eval.Type (Scheme, TypeDef (..))
+import Eval.TCore (TTerm, signatureHolds)
+import Eval.Type (Scheme, TypeDef (..), canonicalScheme)
 
 {- | A reference to a definition: a hash, plus a member index when the hashed
 term is a 'Cycle'.
@@ -87,6 +90,11 @@ data Codebase = Codebase
   {- ^ the codebase's stored default @use@s, oldest first (design §7.7): the
   library's six from seeding. A name resolves through them after the root.
   -}
+  , signatures :: Map Text Scheme
+  {- ^ signatures by definition name (design §4.8): label-level, like units,
+  so two names of one hash may carry different ones; each is an instance of
+  its name's scheme, canonical ('canonicalScheme')
+  -}
   }
 
 emptyCodebase :: Codebase
@@ -104,6 +112,20 @@ emptyCodebase =
     Map.empty
     Map.empty
     []
+    Map.empty
+
+{- | The signature a definition name carries (design §4.8), if it carries
+one and the name is still bound.
+-}
+signatureOf :: Text -> Codebase -> Maybe Scheme
+signatureOf n cb = Map.lookup n cb.signatures
+
+-- | Give a definition name a signature, which must hold of its scheme.
+setSignature :: Text -> Scheme -> Codebase -> Codebase
+setSignature n sig cb = cb{signatures = Map.insert n (canonicalScheme sig) cb.signatures}
+
+dropSignature :: Text -> Codebase -> Codebase
+dropSignature n cb = cb{signatures = Map.delete n cb.signatures}
 
 {- | Add a stored default @use@ (design §7.7) after the others; one already
 there moves to the end, as a repeated @use@ statement does.
@@ -184,7 +206,10 @@ typeOf (Reference h idx) cb = do
     [] -> Nothing
 
 {- | Point a name at a reference, recording the previous binding in history.
-Re-binding a name to what it already points at changes nothing.
+Re-binding a name to what it already points at changes nothing. A
+signature the name carries stays only if it holds of the new definition
+(design §4.8); a group that rebinds a signed name checks that first and
+refuses, so this drop is only for what rebinds without asking.
 -}
 bindName :: Text -> Reference -> Codebase -> Codebase
 bindName n r cb
@@ -195,7 +220,12 @@ bindName n r cb
         , history = Map.insertWith (++) n [r] cb.history
         , -- Constructors and definitions share the expression namespace.
           conNames = Map.delete n cb.conNames
+        , signatures = Map.update stillHolds n cb.signatures
         }
+ where
+  stillHolds sig = case typeOf r cb of
+    Just general | signatureHolds sig general -> Just sig
+    _ -> Nothing
 
 {- | Remove a label, whatever it names (a definition, a type or a
 constructor), and with it any unit or scale declaration it carried. The
@@ -212,6 +242,7 @@ unbindName n cb
         , scales = Set.delete n cb.scales
         , typeNames = Map.delete n cb.typeNames
         , conNames = Map.delete n cb.conNames
+        , signatures = Map.delete n cb.signatures
         }
 
 lookupName :: Text -> Codebase -> Maybe Reference
@@ -274,6 +305,7 @@ bindConName n h i cb =
     , names = Map.delete n cb.names
     , units = Set.delete n cb.units
     , scales = Set.delete n cb.scales
+    , signatures = Map.delete n cb.signatures
     }
 
 lookupTypeName :: Text -> Codebase -> Maybe Hash

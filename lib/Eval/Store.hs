@@ -6,7 +6,7 @@ A store is a directory:
 format          "eval codebase 5"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
-names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias]
+names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias] | sig name type | unsig name
 @
 
 Terms are content-addressed, so they never conflict and are only ever
@@ -53,7 +53,9 @@ import Data.Text.Read qualified as TR
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Eval.Codebase
 import Eval.Core
+import Eval.Dimension (Spelling (..))
 import Eval.Hash
+import Eval.Parser (parseType)
 import Eval.Prelude (
   stdlib4Codebase,
   stdlib4Moved,
@@ -61,9 +63,10 @@ import Eval.Prelude (
   stdlibHomes,
   stdlibMoved,
  )
-import Eval.Resolve (storeTerm)
-import Eval.Syntax (Use (..), renderUse)
-import Eval.Type (TypeDef)
+import Eval.Resolve (queryScheme, renderResolveError, storeTerm, typeVariable)
+import Eval.Syntax (Use (..), renderUse, rootScope)
+import Eval.TCore (signatureHolds)
+import Eval.Type (Scheme, TypeDef, renderSignature)
 import System.Directory
 import System.FilePath
 
@@ -451,6 +454,22 @@ loadStore store base = do
     -- The codebase's stored default uses (design §7.7).
     (_ : "use" : rest) | Just u <- parseUse rest -> (addStoredUse u cb, notes)
     (_ : "unuse" : rest) | Just u <- parseUse rest -> (removeStoredUse u cb, notes)
+    -- Signatures (design §4.8).
+    (_ : "sig" : name : rest@(_ : _)) -> case replaySignature name (T.unwords rest) cb of
+      Right cb' -> (cb', notes)
+      Left why ->
+        ( cb
+        , ( "names.log:"
+              <> tshow lineNo
+              <> ": the signature of "
+              <> name
+              <> " cannot be read back ("
+              <> why
+              <> "), skipped"
+          )
+            : notes
+        )
+    [_, "unsig", name] -> (dropSignature name cb, notes)
     [] -> (cb, notes)
     _ -> (cb, ("names.log:" <> tshow lineNo <> ": unreadable line, skipped") : notes)
 
@@ -576,6 +595,19 @@ logEntries stamp old new =
       -- The stored default uses (design §7.7).
       unuses = [stamp <> " unuse " <> renderUse u | u <- old.uses, u `notElem` new.uses]
       uses = [stamp <> " use " <> renderUse u | u <- new.uses, u `notElem` old.uses]
+      -- Signatures (design §4.8), written as they read back at the root, last:
+      -- after the labels and uses they are read with.
+      sigs =
+        [ stamp <> " sig " <> name <> " " <> signatureLogText new sig
+        | (name, sig) <- Map.toList new.signatures
+        , Map.lookup name old.signatures /= Just sig
+        ]
+      -- Also for a name that lost its label, though its unname takes the
+      -- signature too: the log says what happened to it.
+      unsigs =
+        [ stamp <> " unsig " <> name
+        | name <- Map.keys (Map.difference old.signatures new.signatures)
+        ]
    in types
         ++ cons
         ++ fields
@@ -590,6 +622,33 @@ logEntries stamp old new =
         ++ unflags
         ++ unuses
         ++ uses
+        ++ unsigs
+        ++ sigs
+
+{- | A signature as its log line spells it (design §7.4, §4.8): ASCII, the
+variables named so that they read back as variables at the root, and
+declared types by their absolute paths, so that the stored @use@s cannot
+change what the text means.
+-}
+signatureLogText :: Codebase -> Scheme -> Text
+signatureLogText cb =
+  renderSignature
+    Ascii
+    (typeVariable rootScope cb)
+    (\h -> maybe (showHash h) ("." <>) (typeNameOf h cb))
+
+{- | A signature line read back: the type parsed and converted at the root,
+for a name that is bound and whose definition it holds of.
+-}
+replaySignature :: Text -> Text -> Codebase -> Either Text Codebase
+replaySignature name text cb = do
+  t <- parseType text
+  sig <- either (Left . renderResolveError) Right (queryScheme rootScope cb t)
+  case lookupName name cb >>= (`typeOf` cb) of
+    Just general
+      | signatureHolds sig general -> Right (setSignature name sig cb)
+      | otherwise -> Left "the signature does not hold of the definition"
+    Nothing -> Left "the name is not bound"
 
 -- | A stored use as its log line spells it: @std@, @orbital as o@.
 parseUse :: [Text] -> Maybe Use

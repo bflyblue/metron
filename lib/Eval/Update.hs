@@ -20,6 +20,8 @@ module Eval.Update (
   Restamped (..),
   restamp,
   restampTerm,
+  retypeType,
+  retypeScheme,
   conTypes,
 ) where
 
@@ -36,7 +38,8 @@ import Eval.Core
 import Eval.Hash (hashTerm, hashTypeDef)
 import Eval.Infer
 import Eval.Resolve (storeTerm, typeLookupFor)
-import Eval.Type (Arg (..), Type (..), TypeDef (..))
+import Eval.TCore (signatureHolds)
+import Eval.Type (Arg (..), Scheme (..), Type (..), TypeDef (..), renderScheme)
 
 type RefMap = Map Reference Reference
 
@@ -129,9 +132,23 @@ propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []
           ]
       )
 
+  -- Replaced types, old hash to new: a signature that names an old type
+  -- follows it to the new one (design §4.8).
+  typeMap = Map.fromList [(h, h') | ((h, _), (h', _)) <- Map.toList cons]
+  retyped = retypeScheme typeMap
+  -- Every other signature follows too where it holds of its name's
+  -- definition; one on a name left on the old type keeps naming it.
+  followSignatures cb
+    | Map.null typeMap = cb
+    | otherwise = cb{signatures = Map.mapWithKey follow cb.signatures}
+   where
+    follow n sig = case lookupName n cb >>= (`typeOf` cb) of
+      Just general | signatureHolds (retyped sig) general -> retyped sig
+      _ -> sig
+
   go cb _ acc [] =
     acc
-      { codebase = cb
+      { codebase = followSignatures cb
       , upgraded = reverse acc.upgraded
       , skipped = reverse acc.skipped
       }
@@ -156,13 +173,65 @@ propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []
                   { skipped = [(n, Reference h i, err.message) | (n, i) <- holders] ++ acc.skipped
                   }
                 hs
+            -- A signed name stays on its version when its signature would not
+            -- hold of the new one (design §4.8).
+            Right (schemes, _)
+              | (n, sig, general) : _ <-
+                  [ (n, sig, general)
+                  | (n, i) <- holders
+                  , Just sig <- [retyped <$> signatureOf n cb]
+                  , general : _ <- [drop (fromMaybe 0 i) schemes]
+                  , not (signatureHolds sig general)
+                  ] ->
+                  go
+                    cb
+                    refmap
+                    acc
+                      { skipped =
+                          [ ( m
+                            , Reference h i
+                            , "the new version of `"
+                                <> n
+                                <> "` has type "
+                                <> renderScheme general
+                                <> ", not as general as its signature "
+                                <> renderScheme sig
+                            )
+                          | (m, i) <- holders
+                          ]
+                            ++ acc.skipped
+                      }
+                    hs
             Right (schemes, typed) ->
               let h' = hashTerm t'
                   renamed = [(n, Reference h i, Reference h' i) | (n, i) <- holders]
                   refmap' = foldr (\(_, old, new) -> Map.insert old new) refmap renamed
-                  rebind (n, _, new) = bindName n new
+                  -- The signature, retyped, holds of the new version: set it
+                  -- first, so that the rebinding keeps it.
+                  rebind (n, _, new) acc' =
+                    bindName
+                      n
+                      new
+                      (maybe acc' (\s -> setSignature n (retyped s) acc') (signatureOf n acc'))
                   cb' = foldr rebind (addTerm h' t' schemes typed cb) renamed
                in go cb' refmap' acc{upgraded = reverse renamed ++ acc.upgraded} hs
+
+-- | A type with declared types replaced, old hash to new.
+retypeType :: Map Hash Hash -> Type -> Type
+retypeType m = \case
+  TData h as -> TData (Map.findWithDefault h h m) (map arg as)
+  TTuple ts -> TTuple (map (retypeType m) ts)
+  TList t -> TList (retypeType m t)
+  TFun a b -> TFun (retypeType m a) (retypeType m b)
+  t -> t
+ where
+  arg = \case
+    AType t -> AType (retypeType m t)
+    a -> a
+
+-- | 'retypeType' on a scheme, such as a signature (design §4.8).
+retypeScheme :: Map Hash Hash -> Scheme -> Scheme
+retypeScheme m (Forall vs t) = Forall vs (retypeType m t)
 
 {- | References in current definitions that a name once pointed at but no
 longer does, with nothing else naming them: the work `:upgrade` would do.
@@ -253,16 +322,10 @@ restamp moves cb0 = do
       { typeNames = Map.map newType cb0.typeNames
       , conNames = Map.map (first newType) cb0.conNames
       , fieldNames = Map.map (\(h, i, j) -> (newType h, i, j)) cb0.fieldNames
+      , -- A signature names re-hashed types by their new hashes (design §4.8).
+        signatures = Map.map (retypeScheme typeMap) cb0.signatures
       }
-  retype m = \case
-    TData h as -> TData (Map.findWithDefault h h m) (map (argType m) as)
-    TTuple ts -> TTuple (map (retype m) ts)
-    TList t -> TList (retype m t)
-    TFun a b -> TFun (retype m a) (retype m b)
-    t -> t
-  argType m = \case
-    AType t -> AType (retype m t)
-    a -> a
+  retype = retypeType
   constructor = \case
     UserCon h i -> UserCon (newType h) i
     c -> c

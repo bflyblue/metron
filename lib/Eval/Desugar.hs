@@ -17,6 +17,10 @@ module Eval.Desugar (
   desugarClosed,
   desugarDefinition,
   desugarMember,
+  desugarMarked,
+  ascriptionMarker,
+  ascriptionPath,
+  unmarked,
   Resolution (..),
   Resolved (..),
   ConInfo (..),
@@ -27,7 +31,7 @@ module Eval.Desugar (
 
 import Control.Monad (when, zipWithM)
 import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
-import Control.Monad.State.Strict (StateT, modify', runStateT)
+import Control.Monad.State.Strict (StateT, gets, modify', runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -46,10 +50,18 @@ type Path = [Int]
 {- | Where each Core node came from, and advice attached to some spans for the
 type error that may land there (design §4.7).
 -}
-data Provenance = Provenance {spans :: Map Path S.Span, hints :: Map S.Span Text}
+data Provenance = Provenance
+  { spans :: Map Path S.Span
+  , hints :: Map S.Span Text
+  , ascriptions :: [(Text, S.TyExpr)]
+  {- ^ the ascriptions met (design §4.8), in order, each with the name of
+  the marker that stands for it in a term desugared for checking them
+  ('desugarMarked')
+  -}
+  }
 
 emptyProvenance :: Provenance
-emptyProvenance = Provenance Map.empty Map.empty
+emptyProvenance = Provenance Map.empty Map.empty []
 
 -- | The span of a Core node, and the hint for an error there, if any.
 provenanceAt :: Path -> Provenance -> Maybe (S.Span, Maybe Text)
@@ -120,7 +132,14 @@ noResolver _ = Nothing
 declared uncertainty gets, which is the enclosing definition's name until a
 @#label@ overrides it (design §3.2.4).
 -}
-data Env = Env {resolve :: Resolver, owner :: Label}
+data Env = Env
+  { resolve :: Resolver
+  , owner :: Label
+  , marking :: Maybe Text
+  {- ^ when checking ascriptions, the prefix of their markers' tags
+  ('desugarMarked'); otherwise an ascription desugars to its expression
+  -}
+  }
 
 -- | Paths are built in reverse (innermost first) and reversed when stored.
 type M = ReaderT Env (StateT Provenance (Either DesugarError))
@@ -146,8 +165,47 @@ desugarMember ::
   Text -> Resolver -> Ctx n -> S.Expr -> Either DesugarError (Term n, Provenance)
 desugarMember name resolve ctx e =
   runStateT
-    (runReaderT (desugar [] ctx e) (Env resolve (Owner name)))
+    (runReaderT (desugar [] ctx e) (Env resolve (Owner name) Nothing))
     emptyProvenance
+
+{- | A member desugared for checking its ascriptions (design §4.8): each
+@(e :: type)@ becomes a marker, the primitive application
+@§ascribe<tag>:<k> e@, which inference reads as "unify @e@'s type with the
+ascription named so" and elaborates to @e@'s own typed term. The marker
+keeps the ascription's span and @e@ is one level down, so an error in the
+ascription points at it. The term exists only to be checked: it is never
+hashed, stored or run, and the term of 'desugarMember' is what the
+definition is. The tag tells the members of a cycle apart.
+-}
+desugarMarked ::
+  Text ->
+  Text ->
+  Resolver ->
+  Ctx n ->
+  S.Expr ->
+  Either DesugarError (Term n, Provenance)
+desugarMarked tag name resolve ctx e =
+  runStateT
+    (runReaderT (desugar [] ctx e) (Env resolve (Owner name) (Just tag)))
+    emptyProvenance
+
+-- | The name of an ascription marker starts so (design §4.8).
+ascriptionMarker :: Text
+ascriptionMarker = "§ascribe"
+
+{- | The provenance key of the @k@th ascription's span in a term desugared
+with markers: a path of one negative step, which no node has, so that an
+error in the ascription is reported at it however the paths of the nodes
+around it are laid out. In a cycle the member's index goes before it.
+-}
+ascriptionPath :: Int -> Int
+ascriptionPath k = negate (k + 1)
+
+-- | The expression under any ascription markers.
+unmarked :: Term n -> Term n
+unmarked = \case
+  PrimApp p [a] | ascriptionMarker `T.isPrefixOf` p -> unmarked a
+  t -> t
 
 failWith :: DesugarError -> M a
 failWith = lift . lift . Left
@@ -255,6 +313,20 @@ desugar :: Path -> Ctx n -> S.Expr -> M (Term n)
 desugar path ctx e = do
   record path e.span
   case e.node of
+    -- An ascription is not in Core (design §4.8): the expression is desugared
+    -- in its place. Only for checking is it a marker, which inference reads.
+    S.Ascribe inner t -> do
+      k <- lift (gets (length . (.ascriptions)))
+      tag <- asks (.marking)
+      let marker = ascriptionMarker <> fromMaybe "" tag <> ":" <> T.pack (show k)
+      lift (modify' (\p -> p{ascriptions = p.ascriptions ++ [(marker, t)]}))
+      case tag of
+        Nothing -> desugar path ctx inner
+        Just _ -> do
+          -- Where an error in the ascription is reported: its own key, a
+          -- negative path no node has ('ascriptionPath').
+          record [ascriptionPath k] e.span
+          (\inner' -> PrimApp marker [inner']) <$> desugar (0 : path) ctx inner
     S.Num r -> pure (Lit (LTensor ([], [r])))
     S.Bool b -> pure (Con (Builtin (if b then "True" else "False")) [])
     S.Tuple es ->
@@ -571,7 +643,7 @@ argument that is not a constant.
 -}
 primLiterals :: Term n -> Maybe [Maybe Lit]
 primLiterals = \case
-  PrimApp _ as -> Just [case a of Lit l -> Just l; _ -> Nothing | a <- as]
+  PrimApp _ as -> Just [case unmarked a of Lit l -> Just l; _ -> Nothing | a <- as]
   Lam _ b -> primLiterals b
   App f _ -> primLiterals f
   _ -> Nothing

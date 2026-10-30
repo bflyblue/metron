@@ -272,6 +272,7 @@ exprDepth e =
     S.Slice a _ _ -> exprDepth a
     S.FieldOf a _ -> exprDepth a
     S.Record hd fs -> maximum (exprDepth hd : map (exprDepth . snd) fs)
+    S.Ascribe a _ -> exprDepth a
 
 -- Literals and units ------------------------------------------------------------------
 

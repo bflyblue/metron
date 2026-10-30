@@ -26,9 +26,11 @@ module Eval.Driver (
   refreshPreferences,
 ) where
 
+import Control.Applicative ((<|>))
 import Control.Monad (foldM, when)
 import Data.Bifunctor (first)
 import Data.Char (isDigit)
+import Data.Containers.ListUtils (nubOrd)
 import Data.Either (fromRight)
 import Data.Graph (flattenSCC, stronglyConnComp)
 import Data.List (partition, sortOn)
@@ -210,10 +212,12 @@ so that errors surface now.
 -}
 propose :: Session -> Text -> [S.Decl] -> Either Text (Session, [Text])
 propose session src decls = do
-  let incoming = map (.name.text) decls
-      (replaced, kept) = partition (\b -> b.name.text `elem` incoming) session.scratch
+  -- A name's signature and its definition are two entries (design §4.8):
+  -- a new signature replaces a pending one, a new definition a pending one.
+  let incoming = map S.declKey decls
+      (replaced, kept) = partition (\b -> S.declKey b `elem` incoming) session.scratch
       scratch' = kept ++ decls
-      sources' = foldr (\b -> Map.insert b.name.text src) session.sources decls
+      sources' = foldr (\b -> Map.insert (S.declKey b) src) session.sources decls
   -- `it` is session-local (design §7.5): it is neither defined nor stored.
   case [b.name | S.DBind _ b <- decls, b.name.text == "it"] of
     n : _ ->
@@ -229,7 +233,14 @@ propose session src decls = do
       (Left . renderProposeError sources')
       Right
       (processGroup session.codebase scratch')
-  let notes = ["replaced pending definition of `" <> b.name.text <> "`" | b <- replaced]
+  let notes =
+        [ "replaced pending "
+            <> (if S.isSignature b then "signature" else "definition")
+            <> " of `"
+            <> b.name.text
+            <> "`"
+        | b <- replaced
+        ]
   pure
     (session{scratch = scratch', sources = sources', staging = staging'}, notes)
  where
@@ -260,6 +271,8 @@ renderResolveErrorWith sources src = \case
   Desugar (UnknownName sp n) -> S.renderSpanError (Just src) sp ("unknown name `" <> n <> "`")
   Desugar (BadSpecialForm sp msg) -> S.renderSpanError (Just src) sp msg
   DataError sp msg -> S.renderSpanError (Just src) sp msg
+  SignatureError key sp msg ->
+    S.renderSpanError (Just (Map.findWithDefault src key sources)) sp msg
   err@(LintFailure _ _) -> renderResolveError err
 
 -- | Desugar, typecheck and elaborate, lint, evaluate, print.
@@ -326,8 +339,27 @@ checkExpr scope cb src e = do
       (Left . renderResolveErrorWith Map.empty src . Desugar)
       Right
       (desugarClosed (resolverFor scope cb) e)
+  -- Uses of signed names see their signatures, and ascriptions narrow
+  -- (design §4.8): with any, the term inferred is the one desugared with
+  -- their markers, while the term hashed and kept stays the plain one.
+  (checkTerm, checkProv) <-
+    if null prov.ascriptions
+      then Right (term, prov)
+      else
+        either
+          (Left . renderResolveErrorWith Map.empty src . Desugar)
+          Right
+          (desugarMarked "" "" (resolverFor scope cb) VNil e)
+  asc <-
+    either
+      (Left . renderResolveErrorWith Map.empty src)
+      Right
+      (ascriptionsIn scope cb [] checkProv)
   (schemes, typed) <-
-    either (Left . typeErr prov) Right (I.elaborateClosed (typeLookupFor cb) term)
+    either
+      (Left . typeErr checkProv)
+      Right
+      (I.elaborateClosedWith (annotationsWith cb asc) (typeLookupFor cb) checkTerm)
   linted <-
     either
       (Left . ("internal error: elaboration produced ill-typed core: " <>))
@@ -765,6 +797,7 @@ command session src = \case
   pending = \case
     S.DBind _ b -> "pending: " <> short cb b.name.text
     S.DData _ d -> "pending: data " <> shortestNameOf TypeLabel scope cb d.name.text
+    S.DSig _ n _ -> "pending: " <> signatureLine spelling scope cb n.text
   -- A label of any kind: a definition, a type, a constructor or a field.
   labelled n =
     Map.member n session.codebase.names
@@ -872,11 +905,14 @@ relabel keepOld pairs cb = do
     Nothing -> Right ()
   pure (foldl copy base moves, length moves)
  where
+  -- A signature moves with its name, and an alias, being the hash, is
+  -- unsigned (design §4.8).
   copy acc (o, n, k) = case k of
     TermLabel
       | Just r <- lookupName o cb ->
           (if isUnitName o cb then markUnit n else id)
             . (if isScaleName o cb then markScale n else id)
+            . maybe id (setSignature n) (if keepOld then Nothing else signatureOf o cb)
             $ bindName n r acc
       | Just (h, i) <- lookupConName o cb -> bindConName n h i acc
     TypeLabel | Just h <- lookupTypeName o cb -> bindTypeName n h acc
@@ -910,9 +946,25 @@ definitionSource spelling scope cb full = case lookupName full cb of
           | isUnitName full cb = "unit "
           | isScaleName full cb = "scale "
           | otherwise = "let "
-     in (\body -> [nameTypes scope cb (keyword <> S.lastSegment full <> " = " <> body)])
+     in ( \body ->
+            map
+              (nameTypes scope cb)
+              ( signatureSource spelling scope cb full
+                  ++ [keyword <> S.lastSegment full <> " = " <> body]
+              )
+        )
           <$> viewReference spelling scope cb r
   Nothing -> map (nameTypes scope cb) <$> viewData spelling scope cb full
+
+{- | The line @name :: type@ that goes before a signed definition's @let@
+in source (design §4.8), as a block of the scope writes it; none for a
+name without a signature. Declared types print by hash, for 'nameTypes'.
+-}
+signatureSource :: Spelling -> S.Scope -> Codebase -> Text -> [Text]
+signatureSource spelling scope cb full =
+  [ S.lastSegment full <> " :: " <> signatureText spelling scope cb sig
+  | Just sig <- [signatureOf full cb]
+  ]
 
 -- | A declared type as it could be written again (design §7.2), named in a scope.
 viewData :: Spelling -> S.Scope -> Codebase -> Text -> Either Text [Text]
@@ -960,10 +1012,14 @@ add session
             , sources = Map.empty
             , staging = session.staging
             }
-        , ["added " <> shortestName session.scope session.staging n | n <- names]
+        , [ "added " <> shortestName session.scope session.staging n
+          | n <- defined
+          ]
+            ++ signedReport session
         )
  where
-  names = map (.name.text) session.scratch
+  names = nubOrd (map (.name.text) session.scratch)
+  defined = nubOrd [d.name.text | d <- session.scratch, not (S.isSignature d)]
   conflicts =
     [ n
     | n <- names
@@ -984,7 +1040,7 @@ update :: Bool -> Session -> Either Text (Session, [Text])
 update doUpgrade session
   | null session.scratch = Right (session, ["nothing to update"])
   | otherwise =
-      let names = map (.name.text) session.scratch
+      let names = nubOrd (map (.name.text) session.scratch)
           changed =
             [ (n, old, new)
             | n <- names
@@ -1021,6 +1077,7 @@ update doUpgrade session
               ++ [ "updated " <> short n <> " " <> showReference old <> " -> " <> showReference new
                  | (n, old, new) <- changed
                  ]
+              ++ signedReport session
               ++ upgradeReport short result
               ++ [ "dependents left on old versions: "
                      <> T.unwords [short n | (n, _, _) <- staleReferences result.codebase]
@@ -1036,6 +1093,26 @@ update doUpgrade session
                 }
             , report
             )
+
+{- | @signed f@ for each pending signature of a stored definition that the
+scratch does not redefine (design §4.8): what @:add@ and @:update@ store
+for it.
+-}
+signedReport :: Session -> [Text]
+signedReport session =
+  [ "signed " <> shortestName session.scope session.staging n.text
+  | S.DSig _ n _ <- session.scratch
+  , n.text `notElem` [b.name.text | S.DBind _ b <- session.scratch]
+  ]
+
+{- | @area :: Shape -> Num [m^2]@: a name and its signature as written back
+in a scope (design §4.8), the name by its shortest spelling.
+-}
+signatureLine :: Spelling -> S.Scope -> Codebase -> Text -> Text
+signatureLine spelling scope cb n =
+  shortestName scope cb n
+    <> " :: "
+    <> maybe "?" (signatureText spelling scope cb) (signatureOf n cb)
 
 -- | What propagation did, with names spelled by the given namer (design §7.6).
 upgradeReport :: (Text -> Text) -> Propagation -> [Text]
@@ -1199,6 +1276,8 @@ todo session =
   pendingText = \case
     S.DBind _ b -> short b.name.text
     S.DData _ d -> shortestNameOf TypeLabel session.scope session.staging d.name.text
+    S.DSig _ n _ ->
+      signatureLine (spellingOf session.config) session.scope session.staging n.text
 
 forget :: Text -> Session -> Either Text (Session, [Text])
 forget n session
@@ -1212,7 +1291,8 @@ forget n session
               Right
                 ( session
                     { scratch = scratch'
-                    , sources = Map.delete n session.sources
+                    , -- The name's signature goes with it (design §4.8).
+                      sources = Map.delete ("::" <> n) (Map.delete n session.sources)
                     , staging = staging'
                     }
                 , ["forgot `" <> n <> "`"]
@@ -1439,7 +1519,8 @@ listNames session args = do
         | (n, r) <- sortOn (T.toLower . fst) (Map.toList cb.names)
         , kindOk n
         , nameOk n
-        , Just sc <- [typeOf r cb]
+        , -- A signed name shows, and matches, its signature (design §4.8).
+        Just sc <- [signatureOf n cb <|> typeOf r cb]
         , typeOk sc
         ]
       types =
@@ -1659,7 +1740,7 @@ exportLabels session under = do
       header = ["use " <> S.renderUse u | not (null body), u <- stored]
       pendingNote =
         [ "-- not exported: "
-            <> T.pack (show (length session.scratch))
+            <> T.pack (show (Set.size (Set.fromList (map (.name.text) session.scratch))))
             <> " pending definitions (:add or :update them first)"
         | not (null session.scratch)
         ]
@@ -1706,7 +1787,11 @@ exportLabels session under = do
           | isScaleName n cb = "scale "
           | otherwise = "let "
      in ( \b ->
-            (namespaceOf n, [nameTypes scope cb (keyword <> S.lastSegment n <> " = " <> b)])
+            ( namespaceOf n
+            , map
+                (nameTypes scope cb)
+                (signatureSource Ascii scope cb n ++ [keyword <> S.lastSegment n <> " = " <> b])
+            )
         )
           <$> viewReference Ascii scope cb r
   -- Open and close blocks as the namespaces of consecutive items change.
@@ -1966,7 +2051,19 @@ applyEdit target text session = case reconcile of
               "`it` is the last result and cannot be defined; choose another name"
           )
       [] -> Right ()
-    staged <- first (renderResolveErrorWith Map.empty text) (processGroup cb0 decls)
+    -- A definition the file writes without its signature line loses its
+    -- signature (design §4.8), before the group is checked against it.
+    let fileSigned = [n.text | S.DSig _ n _ <- decls]
+        unsigned =
+          [ b.name.text
+          | S.DBind _ b <- decls
+          , isJust (signatureOf b.name.text cb0)
+          , b.name.text `notElem` fileSigned
+          ]
+    staged <-
+      first
+        (renderResolveErrorWith Map.empty text)
+        (processGroup (foldr dropSignature cb0 unsigned) decls)
     let defined = Set.fromList (concatMap declLabels decls)
     case target of
       EditName full
@@ -2140,6 +2237,19 @@ applyEdit target text session = case reconcile of
             ++ upgradeReport short result
             ++ typesLeft
             ++ stale
+            ++ signatureChanges
+        -- Signatures given, changed or taken away on names still defined (design §4.8).
+        signatureChanges =
+          [ (if isJust new then "signed " else "unsigned ") <> short n
+          | n <- Set.toList (Map.keysSet cb0.signatures <> Map.keysSet final.signatures)
+          , Map.member n final.names
+          , let new = signatureOf n final
+          , -- A signature that only followed a replaced type is unchanged.
+          ( retypeScheme (Map.fromList [(o, nw) | (_, o, nw) <- replaced])
+              <$> signatureOf n cb0
+          )
+            /= new
+          ]
     if null report
       then Right (session, ["nothing changed"])
       else do
@@ -2161,6 +2271,8 @@ declLabels = \case
     (TypeLabel, d.name.text)
       : [(TermLabel, c.text) | (c, _) <- d.constructors]
       ++ [(FieldLabel, n.text) | (_, fs) <- d.constructors, S.FieldDecl (Just n) _ <- fs]
+  -- A signature labels nothing: it belongs to its definition (design §4.8).
+  S.DSig{} -> []
 
 -- | Remove one label of one kind; history keeps a definition's.
 removeKind :: (LabelKind, Text) -> Codebase -> Codebase
@@ -2171,6 +2283,7 @@ removeKind (k, n) cb = case k of
       , units = Set.delete n cb.units
       , scales = Set.delete n cb.scales
       , conNames = Map.delete n cb.conNames
+      , signatures = Map.delete n cb.signatures
       }
   TypeLabel -> cb{typeNames = Map.delete n cb.typeNames}
   FieldLabel -> unbindName ("." <> n) cb

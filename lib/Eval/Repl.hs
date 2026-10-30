@@ -207,11 +207,35 @@ completions session prev word = case word of
     [c] | c `elem` [":colour", ":color"] -> plain ["on", "off"]
     _
       | null word -> []
+      -- After @::@ in the statement, a type (design §4.8).
+      | typeOpenAt (reverse (takeWhile (/= ';') prev)) ->
+          plain
+            ( sorted
+                ( ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Scale"]
+                    ++ map T.unpack (types ++ map (shortestNameOf TypeLabel session.scope cb) types)
+                )
+            )
       | otherwise -> plain (sorted (nameCandidates session ++ keywords))
  where
   cb = session.staging
+  types = Map.keys cb.typeNames
   sorted = nub . sort
   plain xs = [Completion x x True | x <- xs, word `isPrefixOf` x]
+
+{- | Whether the end of a statement's text is inside a type (design §4.8):
+after a @::@ that no parenthesis has closed since, as 'tokenLevels' reads
+it, so @(3 m :: Num [m]) + spe@ is an expression again.
+-}
+typeOpenAt :: String -> Bool
+typeOpenAt = go (0 :: Int) Nothing
+ where
+  go _ open [] = isJust open
+  go depth _ (':' : ':' : rest) = go depth (Just depth) rest
+  go depth open ('(' : rest) = go (depth + 1) open rest
+  go depth open (')' : rest) =
+    let depth' = max 0 (depth - 1)
+     in go depth' (if maybe False (> depth') open then Nothing else open) rest
+  go depth open (_ : rest) = go depth open rest
 
 {- | The names a session sees, for completion: definitions, types and
 constructors by their full paths, and also as the scope spells them, so a
@@ -529,27 +553,31 @@ lexable = T.pack . go False . T.unpack
 yellow even before the session knows it.
 -}
 colourTokens :: Level -> Names -> [(Int, Int, Token)] -> [(Int, Int, Colour)]
-colourTokens level names located = go (0 :: Int) Nothing located
+colourTokens level names located =
+  go
+    (0 :: Int)
+    Nothing
+    (zip located (tokenLevels level [tok | (_, _, tok) <- located]))
  where
   shadowed = case level of
     Expression -> binders [tok | (_, _, tok) <- located]
     TypeLevel -> Set.empty
   go _ _ [] = []
-  go depth prev ((s, e, tok) : rest) =
+  go depth prev (((s, e, tok), here) : rest) =
     let depth' = case tok of
           TLBracket -> depth + 1
           TRBracket -> max 0 (depth - 1)
           _ -> depth
         next = case rest of
-          (_, _, n) : _ -> Just n
+          ((_, _, n), _) : _ -> Just n
           [] -> Nothing
-     in [(s, e, c) | Just c <- [colourOf depth prev next tok]]
+     in [(s, e, c) | Just c <- [colourOf here depth prev next tok]]
           ++ go depth' (Just tok) rest
-  colourOf depth prev next = \case
+  colourOf here depth prev next = \case
     TKw _ -> Just Magenta
     TIdent "structural" | next == Just (TKw KData) -> Just Magenta
     THashLabel _ -> Just Grey
-    TIdent n -> case level of
+    TIdent n -> case here of
       Expression
         | n `Set.member` names.conWords -> Just Yellow
         | n `Set.member` names.unitWords, n `Set.notMember` shadowed -> Just Cyan
@@ -560,6 +588,28 @@ colourTokens level names located = go (0 :: Int) Nothing located
         | prev `elem` map Just [TKw KData, TEquals, TBar] -> Just Yellow
       _ -> Nothing
     _ -> Nothing
+
+{- | Each token's level. In an expression, what follows @::@ is a type
+(design §4.8): to the end of the statement for a signature, @area ::
+Shape -> Num [m^2]@, and to the closing parenthesis for an ascription,
+@(e :: Num [m])@. The @::@ itself is plain.
+-}
+tokenLevels :: Level -> [Token] -> [Level]
+tokenLevels = \case
+  TypeLevel -> map (const TypeLevel)
+  Expression -> go (0 :: Int) Nothing
+ where
+  go _ _ [] = []
+  go parens typeFrom (t : ts) = case t of
+    TOp "::" -> Expression : go parens (Just parens) ts
+    TSep -> Expression : go parens Nothing ts
+    TLParen -> levelOf typeFrom : go (parens + 1) typeFrom ts
+    TRParen ->
+      let parens' = max 0 (parens - 1)
+          typeFrom' = if maybe False (> parens') typeFrom then Nothing else typeFrom
+       in levelOf typeFrom' : go parens' typeFrom' ts
+    _ -> levelOf typeFrom : go parens typeFrom ts
+  levelOf = maybe Expression (const TypeLevel)
 
 {- | Names a line binds, which shadow a unit of the same name on it: those
 between @let@, @where@, @\\@, @of@ or @;@ and the next @=@ or @->@, outside

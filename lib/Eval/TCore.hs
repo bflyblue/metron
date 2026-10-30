@@ -16,12 +16,14 @@ module Eval.TCore (
   closedLens,
   appendShape,
   lintClosed,
+  isInstanceOf,
+  signatureHolds,
   renderTTerm,
   patternText,
   TAlt (..),
 ) where
 
-import Control.Monad (forM_)
+import Control.Monad (foldM, forM_)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Ratio (denominator, numerator)
@@ -612,6 +614,15 @@ lookupCtx i ctx = case (i, ctx) of
   (FZ, VCons x _) -> x
   (FS j, VCons _ xs) -> lookupCtx j xs
 
+{- | Whether a signature holds of a definition's scheme (design §4.8): the
+signature's type, its own variables held fixed as if they were constants,
+is an instance of the scheme. So @Num [m] -> Num [m]@ holds of @a -> a@,
+and @a -> a@ does not hold of @Num -> Num@: a signature narrows a
+definition's type and never widens it.
+-}
+signatureHolds :: Scheme -> Scheme -> Bool
+signatureHolds (Forall _ t) general = t `isInstanceOf` general
+
 {- | Whether a type is an instance of a scheme: one-way matching of the
 scheme's quantified variables, each at its kind. Arguments come before
 results in a scheme, so by the time a composite dimension such as
@@ -646,7 +657,20 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
     (TPoint a da, TPoint b db) -> matchShape a b m >>= matchDim da db
     (TScale a da, TScale b db) -> matchShape a b m >>= matchDim da db
+    (TTuple as, TTuple bs)
+      | length as == length bs ->
+          foldM (\acc (a, b) -> matchType a b acc) m (zip as bs)
+    (TList a, TList b) -> matchType a b m
+    (TData h as, TData h' bs)
+      | h == h' && length as == length bs ->
+          foldM (\acc (a, b) -> matchArg a b acc) m (zip as bs)
     _ -> if p == t then Just m else Nothing
+  matchArg p a m = case (p, a) of
+    (AType x, AType y) -> matchType x y m
+    (ALen x, ALen y) -> matchLen x y m
+    (AShape x, AShape y) -> matchShape x y m
+    (ADim x, ADim y) -> matchDim x y m
+    _ -> Nothing
   matchShape p sh m = case (p, sh) of
     (SVar v, _) | quantified v -> bindArg v (AShape sh) m
     (SCons l rest, SCons l' rest') -> matchLen l l' m >>= matchShape rest rest'

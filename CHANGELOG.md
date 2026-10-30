@@ -557,3 +557,39 @@
   `unit meter = m`, one term with the library's `si.metre`, can be changed
   without rescaling every `km`. References with no written name follow as
   before. `Eval.Update.propagateNamed`/`propagateScoped`, `Core.refsWritten`.
+- Signatures (design §4.8): `name :: type` on its own line, before or after
+  the definition, in the same input or alone for a stored definition, inside
+  `namespace` blocks like any statement. The type is converted as a `:ls`
+  query is, and checked after inference: it must be an instance of the
+  inferred scheme with its own variables held fixed (`TCore.signatureHolds`;
+  `isInstanceOf` now also matches through tuples, lists and declared
+  types), else "`f`'s definition has type `a -> Num`, not as general as its
+  signature `a -> a`" at the signature. A signature is a label
+  (`Codebase.signatures`): it never changes a hash, `:type`, `:ls` (and its
+  type queries), `:scratch`, `:edit` and `:export` show it, `:rename` and
+  `:move` move it, `:alias` does not copy it, `:unname` and `:forget` drop
+  it, a redefinition is checked against it unless the input gives a new
+  one, and propagation leaves a signed name whose signature would not hold
+  on its version. A signature follows a type that `:rename` re-hashes or
+  `:edit` replaces (`Update.retypeScheme`). Uses see the signature (`Infer.elaborateClosedWith` with
+  `Annotations`, `Resolve.annotationsFor`), while stored types stay those
+  of the Core alone, so a definition that uses a signed name is checked a
+  second time with the signatures and keeps its own type (§11). The store
+  writes `sig name type` and `unsig name` log lines, the type spelled to
+  read back at the root (`Type.renderSignature`, `Resolve.typeVariable`).
+  The REPL colours the type after `::` as a type and completes type names
+  there.
+- Ascription (design §4.8): `(e :: type)` anywhere an expression goes. The
+  type is converted in the expression's scope with lowercase unknowns as
+  fresh variables and unified with `e`'s type, so it narrows and never
+  widens (`(1 :: a)` is `1 : Num`); a failure is "the ascription: expected
+  Num [kg], got Num [m]: dimensions differ by [kg m^-1]" at the ascription.
+  It does not reach Core: the term hashed, stored and run is `e`'s, and
+  only when there are ascriptions is the input desugared again for checking
+  (`Desugar.desugarMarked`), each ascription a marker primitive under a
+  reserved name that inference reads and elaborates away
+  (`Infer.Annotations`, `Resolve.ascriptionsIn`). `:view` shows the plain
+  expression; inside a definition an ascription checks and the definition
+  keeps its Core's type. Design §11 now records that provenance paths and
+  inference paths disagree inside `case`, `if` and list literals, which
+  the markers sidestep.
