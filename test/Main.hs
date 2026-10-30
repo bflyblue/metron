@@ -2562,6 +2562,18 @@ affineTests =
         evalText "inverse [[1 ± 1, 2], [3, 4]]"
           @?= Left "error: cannot decide inverse of a matrix whose enclosure may be singular"
         evalText "det [[0, 0], [0, 0]]" @?= Right ["0"]
+        -- det is polymorphic in the size, with no static size check, and is
+        -- on dimensionless matrices only (design §4.3, §4.6).
+        typeOfTextP "det" @?= Right "Mat n n -> Num"
+        typeOfTextP "\\a -> det a + 1" @?= Right "Mat n n -> Num"
+        runLinesP ["let d a = det a", "d [[2, 0, 0], [0, 3, 0], [0, 0, 4]] + d [[2]]"]
+          @?= Right ["26"]
+        evalP "det ([[1 m, 0 m], [0 m, 2 m]] / (1 m))" @?= Right ["2"]
+        case evalP "det [[1 m, 0 m], [0 m, 1 m]]" of
+          Left err ->
+            T.isInfixOf "expected Mat n n, got Mat 2 2 [m]: dimensions differ by [m^-1]" err
+              @? T.unpack err
+          Right v -> assertFailure (show v)
         evalText "norm [3, 4]" @?= Right ["5"]
         evalText "norm [1, 1, 1]" @?= Right ["1.7320508075688772935…"]
     , testCase ":set precision changes the digits printed and the working precision" $ do

@@ -1033,7 +1033,7 @@ norm       : Vec n d -> Num d
 transpose  : Mat m n d -> Mat n m d
 inverse    : Mat n n d -> Mat n n [d^-1]
 identity   : Mat n n 1
-det        : Mat n n d -> Num [d^n]          -- only where n is a literal, like ^
+det        : Mat n n 1 -> Num 1              -- any n, dimensionless only (4.6)
 vmap       : (Num d1 -> Num d2) -> Vec n d1 -> Vec n d2
 vzipWith   : (Num d1 -> Num d2 -> Num d3) -> Tensor s d1 -> Tensor s d2 -> Tensor s d3
 indices    : Vec n d -> Vec n                -- [0, 1, …, n-1], exact; positions as values
@@ -1603,7 +1603,8 @@ instance of it, as it does for every fixed scheme.
 *Status.* Implemented: kinded variables for types, lengths, shapes and
 dimensions; Kennedy unification; the seven base units as primitives; the
 products of §4.2 with multiplying dimensions. `det` is on dimensionless
-matrices until the length-as-exponent relation `Num [d^n]` exists. Display
+matrices of any size until the length-as-exponent relation `Num [d^n]`
+exists (§4.6). Display
 units, the prelude and `to` with a display hint are the remaining pieces of
 roadmap item 2.
 
@@ -1645,7 +1646,7 @@ pi e        : Num 1
 e ^ n       : Num d -> Num [d^n]            -- special form, n an integer literal
 noise n     : Vec n 1                        -- special form, n a natural literal
 gauss n     : Vec n 1                        -- special form, n a natural literal
-det         : Mat n n d -> Num [d^n]        -- special form, n known statically
+det         : Mat n n 1 -> Num 1            -- a plain primitive, any n; dimensionless only (4.6)
 v.i         : Vec (n + i + 1) d -> Num d    -- special form, i a literal position
 m.i         : Mat (k + i + 1) n d -> Vec n d
 contract i j t : Tensor (l0 : … : lj : s) d -> Tensor (… without i and j : s) d   -- special form, i ≠ j literal naturals, li = lj (4.2)
@@ -1716,7 +1717,13 @@ Num [m s^-2]
 - No type annotations in v1; `:type` in the REPL is the only way to see a type.
 - `^` requires a literal exponent, because `x ^ y` with a runtime `y` has no static
   dimension. `sqrt` covers the `1/2` case; a `cbrt` can follow.
-- `det` requires a statically known size, for the same reason.
+- `det` is on dimensionless matrices only. Its natural type, `Mat n n d -> Num
+  [d^n]`, needs a length as a dimension exponent, which the type system does
+  not have. So `det : Mat n n 1 -> Num 1` (`:type det` prints `Mat n n ->
+  Num`): it is polymorphic in `n` with no static size check, so `let d a =
+  det a` generalises and works at every size. A matrix with a unit is a type
+  error ("expected Mat n n, got Mat 2 2 [m]"); divide the unit out first, as
+  in `det (a / (1 m))`, and multiply by `m^n` for the size at hand.
 - Dimension polymorphism is let-polymorphism; there is no polymorphic recursion.
 - `rank` is the only type-level function, and a type cannot say that two
   unknown shapes have the same rank: a definition that needs that, such as
@@ -1744,7 +1751,7 @@ point, before any arithmetic runs:
 | `[[1, 0], [0, 1]] * [1, 2, 3]` | no instance `Mul (Mat 2 2) (Vec 3)` | overload solver, §4.2 |
 | `if 1 then 2 else 3` | condition is `Num`, needs `Bool` | HM unification |
 | `x ^ y` with non-literal `y` | exponent must be a literal | parser |
-| `det m` with unknown size | size must be statically known | elaboration |
+| `det a` with `a : Mat 2 2 [m]` | expected `Mat n n`, got `Mat 2 2 [m]` | dimension unifier |
 | `foo + 1` with no `foo` in scope | unknown name | desugaring |
 
 Note that `1 + 4.5` is not an error: both are exact rationals of type `Num 1`.

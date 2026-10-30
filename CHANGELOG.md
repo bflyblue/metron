@@ -353,3 +353,8 @@
   to an atom with an integer literal exponent, and the result must lex to the
   same tokens. A line with nothing to re-spell, a command, a failed line and
   a loaded file are not echoed; with unicode off nothing changes.
+- Design §3.3, §4.3, §4.6 and §4.7 no longer say that `det` needs a
+  statically known size or is typed `Mat n n d -> Num [d^n]`: it is the
+  plain primitive `Mat n n 1 -> Num 1`, polymorphic in the size and on
+  dimensionless matrices only, and a matrix with a unit is a dimension
+  error. Behaviour unchanged.
