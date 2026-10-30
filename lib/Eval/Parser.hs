@@ -463,11 +463,21 @@ atom = primary >>= postfixes
       [ (\(sp, i) -> Expr (spanUnion acc.span sp) (Proj acc i))
           <$> match "projection" (\case TProj i -> Just i; _ -> Nothing)
           >>= postfixes
+      , slice acc >>= postfixes
       , (\(sp, f) -> Expr (spanUnion acc.span sp) (FieldOf acc f))
           <$> match "field" (\case TField f -> Just f; _ -> Nothing)
           >>= postfixes
       , recordBraces acc >>= postfixes
       , pure acc
+      ]
+  -- @e._.i@ (§2.10): each wildcard skips an axis, and a position must follow.
+  slice acc = do
+    wilds <- P.some (match "wildcard" (\case TWild -> Just (); _ -> Nothing))
+    P.choice
+      [ (\(sp, i) -> Expr (spanUnion acc.span sp) (Slice acc (length wilds) i))
+          <$> match "projection" (\case TProj i -> Just i; _ -> Nothing)
+      , fail
+          "a wildcard ._ skips an axis and must be followed by a position, as in m._.0 for column 0"
       ]
   -- @{f = e, …}@ after an expression: a record construction or update (§2.3).
   -- A list literal also starts with a brace, so look for @name =@ first.

@@ -77,6 +77,10 @@ data Token
     TField Text
   | -- | A projection glued to the preceding atom: @v.0@, @m.1.2@.
     TProj Int
+  | {- | A wildcard glued to the preceding atom, skipping one axis before a
+    projection: the @._@ of @m._.0@ (§2.10).
+    -}
+    TWild
   | -- | @#label@ after a @±@, @noise@ or @gauss@ (§3.2.4).
     THashLabel Text
   | -- | Statement or binding separator: a @;@, or layout. Inside brackets, a row separator.
@@ -277,6 +281,7 @@ symbol =
     , string "><" $> TOp "×"
     , char '×' $> TOp "×"
     , projection
+    , wildcard
     , field
     , char '.' $> TOp "."
     , char '<' $> TOp "<"
@@ -318,6 +323,17 @@ projection = try $ do
   _ <- char '.'
   TProj . read . T.unpack <$> takeWhile1P (Just "digit") isDigit
 
+{- | @._@: a wildcard axis, as in @m._.0@ (column 0) and @t._._.2@. The
+@_@ must not start an identifier: @x._y@ stays the composition of @x@ and
+@_y@.
+-}
+wildcard :: Lexer Token
+wildcard = try $ do
+  _ <- char '.'
+  _ <- char '_'
+  notFollowedBy (satisfy (\x -> isAlphaNum x || x == '_' || x == '\''))
+  pure TWild
+
 -- | @.name@: a record field, glued to what precedes it (§2.10).
 field :: Lexer Token
 field = try $ do
@@ -348,6 +364,7 @@ adjacency = go Nothing
             TRParen -> True
             TRBracket -> True
             TProj _ -> True
+            TWild -> True
             TField _ -> True
             TNum _ -> True
             TSup _ -> True
@@ -369,6 +386,13 @@ adjacency = go Nothing
               ( at
                   t.span
                   "a projection like .0 must be attached to a vector or matrix, as in v.0"
+              )
+      TWild
+        | not (gluedToPrev && endsAtom) ->
+            Left
+              ( at
+                  t.span
+                  "a wildcard ._ must be attached to a tensor and followed by a position, as in m._.0"
               )
       TField f
         | not (gluedToPrev && endsAtom) ->
@@ -474,6 +498,7 @@ showToken = \case
   TSqrt -> "sqrt"
   TSup n -> "^" <> T.pack (show n)
   TProj i -> "." <> T.pack (show i)
+  TWild -> "._"
   TField f -> "." <> f
   THashLabel l -> "#" <> l
   TSep -> "newline"

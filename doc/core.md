@@ -177,14 +177,17 @@ at every rank:
 - **Rank-specific**: `×` (`cross`), `norm`, `transpose`, `inverse`, `det`, each
   with a fixed-rank signature.
 - **Indexed by literal positions, any rank**: `contract i j` (the trace over
-  two positions of equal length) and `permute [p…]` (reorder the leading
-  positions). Their scheme is computed from the literal positions, as `Pow`'s
-  dimension is from its exponent (design §4.2). No Core change was needed: the
-  positions are ordinary `Lit` arguments of a `PrimApp` (`contract` has arity
+  two positions of equal length), `permute [p…]` (reorder the leading
+  positions) and `slice k i` (position `i` along axis `k`, dropping that axis;
+  the surface `t._.i` with `k` wildcards, design §2.10). Their scheme is
+  computed from the literal positions, as `Pow`'s dimension is from its
+  exponent (design §4.2). No Core change was needed: the positions are
+  ordinary `Lit` arguments of a `PrimApp` (`contract` and `slice` have arity
   3, `permute` 2), the desugarer insists that they are literals as it does for
   `noise n`, inference builds the scheme from them, and lint rebuilds it from
-  the `TLit` arguments and checks the recorded instance against it. The
-  §7 test stops at step 1.
+  the `TLit` arguments and checks the recorded instance against it. `Proj`
+  keeps its own node: `slice 0 i t` is the same tensor as `t.i` but a
+  different term. The §7 test stops at step 1.
 - **Overloaded**: `==` and `/=` only, over tensors and `Bool`, through an
   instance constraint with those two instances. Everything else in the language
   has one type.

@@ -21,7 +21,7 @@ module Eval.Pretty (
 
 import Data.Char (intToDigit, isAlphaNum)
 import Data.Map.Strict qualified as Map
-import Data.Ratio ((%))
+import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
@@ -545,6 +545,18 @@ renderTermIn spelling namer = go 0
       -- primitive applied to a constant keeps its name.
       ("neg", [a@(Lit _)]) -> paren (prec > 10) ("neg " <> go 11 ctx a)
       ("neg", [a]) -> paren (prec > 8) ("-" <> go 9 ctx a)
+      -- A slice along a later axis reads back as its wildcards, `m._.0`
+      -- (design §2.10); along axis 0 it keeps its name, since `m.0` is a
+      -- projection, another term.
+      ("slice", [Lit (LTensor ([], [rk])), Lit (LTensor ([], [ri])), t])
+        | denominator rk == 1
+        , rk >= 1
+        , denominator ri == 1
+        , ri >= 0 ->
+            go 11 ctx t
+              <> T.replicate (fromIntegral (numerator rk)) "._"
+              <> "."
+              <> tshow (numerator ri)
       (_, []) -> p
       _ -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
 

@@ -116,6 +116,10 @@ data Node
     Vec [Expr]
   | -- | @e.i@ with a literal position.
     Proj Expr Int
+  | {- | @e._.i@, @e._._.i@: a slice along axis @k@ (the number of
+    wildcards, at least one) at the literal position @i@ (§2.10).
+    -}
+    Slice Expr Int Int
   | -- | @e.name@: a record field (§2.10)
     FieldOf Expr Text
   | -- | @C {f = e, …}@ builds a record when @C@ is a constructor; @e {f = e'}@ updates one

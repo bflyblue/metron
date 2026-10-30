@@ -553,8 +553,8 @@ infer look p ctx = \case
       Nothing -> failAt p "reference to a cycle member that does not exist"
   PrimApp name args -> do
     let literals = [case a of Lit l -> Just l; _ -> Nothing | a <- args]
-    -- contract and permute (design §4.2): the scheme is computed from the
-    -- literal positions, then used like any other.
+    -- contract, permute and slice (design §4.2): the scheme is computed
+    -- from the literal positions, then used like any other.
     t <- case primSchemeFor name literals of
       Just (Right sc) -> fst <$> instantiate sc
       Just (Left msg) -> failAt p msg
@@ -576,6 +576,21 @@ infer look p ctx = \case
                       <> tshow (leading want)
                       <> ", got "
                       <> renderType ta'
+                  )
+            -- A slice past the end of a known axis, worded as for a
+            -- projection (design §2.10).
+            | name == "slice"
+            , [Just (LTensor ([], [rk])), Just (LTensor ([], [ri])), _] <- literals
+            , Just (LLit n) <- axisLen (numerator rk) sh
+            , numerator ri >= fromIntegral n ->
+                failAt
+                  p
+                  ( "position "
+                      <> tshow (numerator ri)
+                      <> " is out of range for axis "
+                      <> tshow (numerator rk)
+                      <> " of length "
+                      <> tshow n
                   )
           _ -> pure ()
       _ -> pure ()
@@ -759,6 +774,11 @@ infer look p ctx = \case
   leading = \case
     SCons _ rest -> 1 + leading rest
     _ -> 0 :: Int
+  -- The length at a position of a shape, if the shape lists that many.
+  axisLen :: Integer -> Shape -> Maybe Len
+  axisLen k = \case
+    SCons l rest -> if k == 0 then Just l else axisLen (k - 1) rest
+    _ -> Nothing
   -- An index literal as it was written: a natural or a vector of them.
   literalText (LTensor (dims, rs)) =
     let natural r = tshow (numerator r)

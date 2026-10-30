@@ -269,6 +269,7 @@ exprDepth e =
     S.SectionR a _ -> exprDepth a
     S.Vec es -> maximum (0 : map exprDepth es)
     S.Proj a _ -> exprDepth a
+    S.Slice a _ _ -> exprDepth a
     S.FieldOf a _ -> exprDepth a
     S.Record hd fs -> maximum (exprDepth hd : map (exprDepth . snd) fs)
 
@@ -739,6 +740,20 @@ tensorProds sc ls d n =
              pure (G (mk (S.Proj a.expr i)) a.pinned)
          )
        | length ls < maxRank
+       ]
+    ++ [ ( 1
+         , do
+             -- A slice along a later axis: insert its length after the first
+             -- `axis` lengths of the result.
+             axis <- choose (1, length ls)
+             k <- genLen
+             i <- choose (0, k - 1)
+             let (l1, l2) = splitAt axis ls
+             a <- gen sc (tensor (l1 ++ k : l2) d) (n - 1)
+             pure (G (mk (S.Slice a.expr axis i)) a.pinned)
+         )
+       | not (null ls)
+       , length ls < maxRank
        ]
     ++ case ls of
       [] ->

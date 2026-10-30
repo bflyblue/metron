@@ -62,6 +62,7 @@ main =
         , soundnessTests
         , productTests
         , contractionTests
+        , sliceTests
         , propertyTests
         , unitTests
         , lintRegressionTests
@@ -446,6 +447,11 @@ lexerTests =
         $ toks "f . g" @?= Right [TIdent "f", TOp ".", TIdent "g"]
     , testCase "projection must be glued to an atom"
         $ either (const True) (const False) (toks "v .0") @? "expected an error"
+    , testCase "a glued ._ is a wildcard axis; ._name is not" $ do
+        toks "m._.0 t._._.2"
+          @?= Right [TIdent "m", TWild, L.TProj 0, TIdent "t", TWild, TWild, L.TProj 2]
+        toks "x._y" @?= Right [TIdent "x", TOp ".", TIdent "_y"]
+        either (const True) (const False) (toks "m ._.0") @? "expected an error"
     , testCase "degree and primes are unit identifiers"
         $ toks "45° 30′ 15″ π"
           @?= Right
@@ -524,6 +530,7 @@ data Tree
   | Vc [Tree]
   | Lb Text Tree
   | Pj Tree Int
+  | Sl Tree Int Int
   deriving stock (Eq, Show)
 
 shape :: S.Expr -> Tree
@@ -546,6 +553,7 @@ shape e = case e.node of
   S.List es -> Vc (map shape es)
   S.CaseOf s _ -> shape s
   S.Proj a i -> Pj (shape a) i
+  S.Slice a k i -> Sl (shape a) k i
   S.FieldOf a f -> A (shape a) (V f)
   S.Record hd fs -> foldl (\acc (n, x) -> A acc (A (V n.text) (shape x))) (shape hd) fs
 
@@ -622,6 +630,13 @@ parserTests =
     , testCase "projections"
         $ parseShape "m.1.2 + v.0"
           @?= Right (O S.Add (Pj (Pj (V "m") 1) 2) (Pj (V "v") 0))
+    , testCase "slices: each wildcard skips an axis, left to right" $ do
+        parseShape "m._.0" @?= Right (Sl (V "m") 1 0)
+        parseShape "t._._.2" @?= Right (Sl (V "t") 2 2)
+        parseShape "t._.0.1" @?= Right (Pj (Sl (V "t") 1 0) 1)
+        parseShape "t.1._.0" @?= Right (Sl (Pj (V "t") 1) 1 0)
+        parseShape "f m._.0" @?= Right (A (V "f") (Sl (V "m") 1 0))
+        parseShape "r.x._.0" @?= Right (Sl (A (V "r") (V "x")) 1 0)
     , testCase "matrix literal"
         $ parseShape "[[1, 0], [0, 1]]" @?= Right (Vc [Vc [N 1, N 0], Vc [N 0, N 1]])
     , testCase "a ragged literal parses; the type checker rejects it" $ do
@@ -1429,6 +1444,92 @@ contractionTests =
           @?= Right ["f = \\a -> contract 0 1 (permute [1, 0] a)", "5"]
         runLines ["let g = permute [2, 0, 1]", ":view g"]
           @?= Right ["g = \\x -> permute [2, 0, 1] x"]
+    ]
+
+sliceTests :: TestTree
+sliceTests =
+  testGroup
+    "slicing along an axis"
+    [ testCase "m._.i is column i of a matrix" $ do
+        evalText "[1, 2; 3, 4]._.0" @?= Right ["[1, 3]"]
+        evalText "[1, 2; 3, 4]._.1" @?= Right ["[2, 4]"]
+        evalText "[1, 2, 3; 4, 5, 6]._.2" @?= Right ["[3, 6]"]
+    , testCase "a column is a row of the transpose" $ do
+        evalText "let m = [1, 2, 3; 4, 5, 6] in m._.0 == (transpose m).0"
+          @?= Right ["true"]
+        evalText "let m = [1, 2, 3; 4, 5, 6] in m._.0 == (permute [1, 0] m).0"
+          @?= Right ["true"]
+        evalText "let m = [1, 2, 3; 4, 5, 6] in m._.1 == (permute [1, 0] m).1"
+          @?= Right ["true"]
+    , testCase "a rank-3 tensor sliced on axis 1 and on axis 2" $ do
+        -- t[a][b][c] = 1 + 6a + 2b + c, shape [2, 3, 2]
+        let t = "[[[1, 2], [3, 4], [5, 6]], [[7, 8], [9, 10], [11, 12]]]"
+        evalText (t <> "._.2 == [[5, 6], [11, 12]]") @?= Right ["true"]
+        evalText (t <> "._.0 == [[1, 2], [7, 8]]") @?= Right ["true"]
+        evalText (t <> "._._.1 == [[2, 4, 6], [8, 10, 12]]") @?= Right ["true"]
+        evalText (t <> "._._.0 == [[1, 3, 5], [7, 9, 11]]") @?= Right ["true"]
+        typeOfText (t <> "._.2") @?= Right "Mat 2 2"
+        typeOfText (t <> "._._.1") @?= Right "Mat 2 3"
+    , testCase "the chain reads left to right: t._.0.1 is (slice 1 0 t).1" $ do
+        let t = "[[[1, 2], [3, 4], [5, 6]], [[7, 8], [9, 10], [11, 12]]]"
+        evalText (t <> "._.0.1") @?= Right ["[7, 8]"]
+        evalText ("let t = " <> t <> " in t._.0.1 == (slice 1 0 t).1")
+          @?= Right ["true"]
+        evalText (t <> ".1._.1") @?= Right ["[8, 10, 12]"]
+    , testCase "slice k i t written out is the same primitive" $ do
+        evalText "let m = [1, 2; 3, 4] in slice 1 1 m == m._.1" @?= Right ["true"]
+        evalText "let m = [1, 2; 3, 4] in slice 0 1 m == m.1" @?= Right ["true"]
+        evalText "let col = slice 1 0 in col [1, 2; 3, 4]" @?= Right ["[1, 3]"]
+    , testCase "a slice keeps the dimension and display unit" $ do
+        evalText "([1, 2; 3, 4] m)._.0" @?= Right ["[1, 3] m"]
+        typeOfText "([1, 2; 3, 4] m)._.0" @?= Right "Vec 2 [m]"
+    , testCase "types are computed from the axis and position" $ do
+        typeOfText "\\m -> m._.0"
+          @?= Right "Tensor (n : m + 1 : s) d -> Tensor (n : s) d"
+        typeOfText "\\t -> t._._.2"
+          @?= Right "Tensor (n : m : k + 3 : s) d -> Tensor (n : m : s) d"
+        typeOfText "\\m -> m._.0 + m._.2"
+          @?= Right "Tensor (n : m + 3 : s) d -> Tensor (n : s) d"
+    , testCase "range and rank are type errors" $ do
+        let fails src needle = case runLines [src] of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+        fails "[1, 2; 3, 4]._.2" "position 2 is out of range for axis 1 of length 2"
+        fails "[[[1, 2]]]._._.2" "position 2 is out of range for axis 2 of length 2"
+        fails "[1, 2, 3]._.0" "slice 1 0 needs a tensor of rank at least 2, got Vec 3"
+        fails "slice 5 0 [1, 2; 3, 4]" "slice 5 0 needs a tensor of rank at least 6"
+        fails "let col2 m = m._.2\ncol2 [1, 2; 3, 4]" "too short"
+    , testCase "a wildcard needs a position; slice needs literals" $ do
+        let fails src needle = case runLines [src] of
+              Left err -> T.isInfixOf needle err @? T.unpack err
+              Right v -> assertFailure (show v)
+        fails
+          "[1, 2; 3, 4]._"
+          "a wildcard ._ skips an axis and must be followed by a position"
+        fails
+          "[1, 2; 3, 4]._ + 1"
+          "a wildcard ._ skips an axis and must be followed by a position"
+        fails "[1, 2; 3, 4] ._.0" "a wildcard ._ must be attached to a tensor"
+        fails
+          "\\x -> slice x 0 [1, 2; 3, 4]"
+          "the axis and position of slice must be literal natural numbers"
+        fails
+          "slice 1 0.5 [1, 2; 3, 4]"
+          "the axis and position of slice must be literal natural numbers"
+        fails
+          "slice 1"
+          "slice takes a literal axis and a literal position and then a tensor"
+    , testCase "a slice gathers nudges without adding any" $ do
+        evalText "bound (([1, 2; 3, 4] ± 0.1)._.0)" @?= Right ["[0.1, 0.1]"]
+    , testCase ":view reads a slice back with wildcards" $ do
+        runLines ["let col m = m._.0", ":view col", "col [1, 2; 3, 4]"]
+          @?= Right ["col = \\m -> m._.0", "[1, 3]"]
+        runLines ["let f t = (t._._.1).0", ":view f"]
+          @?= Right ["f = \\t -> t._._.1.0"]
+        runLines ["let g t = slice 0 1 t", ":view g"]
+          @?= Right ["g = \\t -> slice 0 1 t"]
+        runLines ["let h t = (neg t)._.0", ":view h"]
+          @?= Right ["h = \\t -> (-t)._.0"]
     ]
 
 -- Properties ----------------------------------------------------------------------

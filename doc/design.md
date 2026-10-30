@@ -400,6 +400,7 @@ quantity   ::= number unitatom+ | vector unitatom+
 unitatom   ::= atom [ '^' [ '-' ] natural ]
 atom       ::= primary postfix*
 postfix    ::= '.' projection | '.' name                -- glued: a component, or a record field (2.10)
+             | ( '._' )+ '.' projection                -- glued: a slice along axis k = the number of '._' (2.10)
              | '{' name '=' expr ( ',' name '=' expr )* '}'    -- record construction or update (2.3)
 projection ::= natural
 primary    ::= number | name | 'true' | 'false'
@@ -476,6 +477,7 @@ in surface notation.
 | `a ± e #s7` | the same, with the unknown named `s7` (§3.2.4) |
 | `v.2` | `proj v 2` (a node with a literal position, §5.1) |
 | `m.1.2` | `proj (proj m 1) 2` |
+| `m._.0`, `t._._.2`, `t._.0.1` | `slice 1 0 m`, `slice 2 2 t`, `proj (slice 1 0 t) 1`: the primitive applied to the axis (the number of wildcards) and the position as constants (§2.10), whatever `slice` names in scope |
 | `a ± b` | `uncertain bound a b` |
 | `a ±σ b` | `uncertain stat a b` |
 | `a to u` | `to a u`, keeping `u`'s term as the display hint |
@@ -483,7 +485,7 @@ in surface notation.
 | `if c then a else b` | `if c a b` (a primitive form, lazy in both branches) |
 | `[a, b, c]` | `vec [a, b, c]`; `[[…], […]]` to `mat` |
 | `x ^ n` | `pow x n`, `n` an integer literal |
-| `contract i j t`, `permute [p…] t` | the primitive applied to its literal positions as constants and then `t` (§4.2). The desugarer checks that the positions are literal naturals, distinct for `contract` and a permutation of `0 .. k-1` for `permute`; a bare `contract` or `permute` is an error, and leaving off only `t` eta-expands as for any primitive |
+| `contract i j t`, `permute [p…] t`, `slice k i t` | the primitive applied to its literal positions as constants and then `t` (§4.2). The desugarer checks that the positions are literal naturals, distinct for `contract` and a permutation of `0 .. k-1` for `permute`; a bare `contract`, `permute` or `slice` is an error, and leaving off only `t` eta-expands as for any primitive |
 | `1_000_000`, `9.81`, `1e-3` | the exact rational |
 | free name `m` | `Ref #hash` of what `m` currently points at |
 
@@ -498,7 +500,25 @@ Vectors and matrices are indexed by **literal position only**, with a postfix do
 v.0   v.1   v.2        -- components of a vector
 m.1                    -- row 1 of a matrix, a vector
 m.1.2                  -- row 1, column 2
+m._.0                  -- column 0 of a matrix: any row, position 0 of the next axis
+t._._.2                -- position 2 of the third axis of a rank-3 tensor
 ```
+
+A projection peels the first axis. To pick a position along a later axis, write
+one wildcard `._` for each axis to skip, then the position: `m._.0` is column 0,
+the same vector as `(transpose m).0`, and `t._._.2` drops the third axis of `t`
+at position 2. Each wildcard skips exactly one axis, and the chain reads left to
+right as `m.1.2` does, so `t._.0.1` slices axis 1 at 0 and then projects the
+first axis of the result at 1: `(slice 1 0 t).1`. The wildcard form is sugar for
+the primitive `slice k i t` (§3.3), with `k` the number of wildcards; `slice`
+may also be written out, with the same literal rules as `contract`. `slice 0 i
+t` is the same tensor as `t.i`, but a different term: `t.i` stays a projection.
+A wildcard must be followed by a position: `m._` alone is a parse error ("a
+wildcard ._ skips an axis and must be followed by a position, as in m._.0 for
+column 0"). Slices apply to tensors, not to points (§3.6); a projection applies
+to both. `:view` prints a slice along axis `k ≥ 1` back with wildcards
+(`col = \m -> m._.0`) and `slice 0 i t` by name, so both re-parse to the same
+term; `:core` prints the primitive form.
 
 There is no `index v i` with a computed `i`. The position is part of the type
 (§4.1), so an out-of-range access is a compile-time error, and `let first v = v.0`
@@ -519,7 +539,11 @@ digits, or by a name for a record field (§2.3). `v .0` and `v. 0` are errors.
 `1.5` is still a number because the lexer tokenises numbers before it looks for
 projections, and a projection or field can only follow a name, a parenthesised
 expression, a literal or another projection. A dot with space on either side
-(`f . g`) is composition, as is `∘`; `f.g` is the field `g` of `f`.
+(`f . g`) is composition, as is `∘`; `f.g` is the field `g` of `f`. A wildcard
+is a dot glued to the atom (or to the projection or wildcard before it) and
+followed by `_`, where the `_` does not start an identifier; digits or another
+wildcard follow, glued: `m._.0`, `t._._.2`. `m ._.0` is an error, and `x._y`
+is still the composition of `x` and the name `_y`.
 
 ---
 
@@ -1015,6 +1039,8 @@ contract i j : Tensor (l0 : … : lj : s) d -> Tensor (… without i and j : s) 
                                              -- i < j literals, li = lj; a trace (§4.2)
 permute [p0, …, pk-1] : Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … : lpk-1 : s) d
                                              -- the p a literal permutation of 0 .. k-1
+slice k i  : Tensor (l0 : … : lk-1 : n + i + 1 : s) d -> Tensor (l0 : … : lk-1 : s) d
+                                             -- k, i literals; written t._.i with k wildcards (§2.10)
 trace      : Tensor (n : n : s) d -> Tensor s d   -- prelude: trace a = contract 0 1 a
 ```
 
@@ -1029,7 +1055,12 @@ of rank `r`. `permute [p0, …, pk-1] t` reorders the first `k` positions of `t`
 so that position `q` of the result is position `p_q` of `t`; positions from `k`
 on stay where they are, and `permute [1, 0]` is `transpose` on a matrix. Both
 are linear: they create no nudge, and `contract` sums the diagonal's affine
-forms, so nudges they share cancel as in `norm` (§3.4). For example:
+forms, so nudges they share cancel as in `norm` (§3.4). `slice k i t` keeps
+the components of `t` whose index at position `k` is `i` and drops that
+position: `slice 1 0` of a matrix is its first column, and `slice 0 i t` is
+`t.i`. It is written `t._.i` with `k` wildcards (§2.10), and like a projection
+it gathers components without touching them, so it keeps the dimension, the
+display unit and every nudge. For example:
 
 ```
 > contract 0 1 [[1, 2], [3, 4]]
@@ -1042,6 +1073,12 @@ Tensor [3, 1, 2]
 Tensor (n : m : n : s) d -> Tensor (m : s) d
 > :type \t -> permute [2, 0, 1] t
 Tensor (n : m : k : s) d -> Tensor (k : n : m : s) d
+> ([1, 2; 3, 4] m)._.0
+[1, 3] m
+> :type \m -> m._.0
+Tensor (n : m + 1 : s) d -> Tensor (n : s) d
+> :type \t -> t._._.2
+Tensor (n : m : k + 3 : s) d -> Tensor (n : m : s) d
 ```
 
 Printing factors the common unit: `[1, 2, 3] m`, `[[1, 0], [0, 1]]`. Affine
@@ -1097,7 +1134,7 @@ by which the law fails. Each builtin is therefore in one of two lists.
 | `*` with one exact side | `/` by an affine value |
 | `/` by an exact value | `sqrt sin cos tan asin acos atan atan2 sinh cosh tanh exp log` |
 | `M * v`, `M * N` with one exact side | `norm`, `det`, `inverse` |
-| `transpose`, `contract`, `permute`, `identity`, projection `.i`, `to` | `cholesky` |
+| `transpose`, `contract`, `permute`, `slice`, `identity`, projection `.i`, `to` | `cholesky` |
 | `vmap` of a function that is itself in the left column | `vmap` otherwise |
 | integer `^` of an exact value, `abs` away from zero | integer `^` of an affine value (via `*`), `abs` across zero |
 
@@ -1301,8 +1338,8 @@ the offset rule below for lengths, element-wise for shapes, Kennedy's algorithm
 for dimensions. No term ever appears in a type, which is what keeps this on the
 indexed-types side of the line (Dependent ML, GHC's `DataKinds`) and not in
 dependent-type territory: lengths come only from syntax, literal element counts,
-projection positions and the literal index positions of `contract` and
-`permute` (§4.2), so inference is Hindley-Milner plus constraint solving.
+projection positions and the literal index positions of `contract`,
+`permute` and `slice` (§4.2), so inference is Hindley-Milner plus constraint solving.
 Typed Core (§5.3) has one kinded abstraction form and one kinded application
 form for all of them.
 
@@ -1321,6 +1358,17 @@ Lengths `ν` are a literal `k`, a variable `n`, or a variable plus a literal off
 `n + k`. The offset form exists for projection (§2.10): `t.i` gives `t` the type
 `Tensor (n + i + 1 : s) d` with fresh `n` and `s`, which says "rank at least one,
 first length at least `i + 1`" and nothing more, and the result is `Tensor s d`.
+A slice along a later axis (`t._.i`, `slice k i t`, §2.10) uses the same offset
+one axis further in: `t` gets `Tensor (l0 : … : lk-1 : n + i + 1 : s) d` with
+fresh `l0 … lk-1`, `n` and `s`, and the result is `Tensor (l0 : … : lk-1 : s) d`,
+so `\m -> m._.0` is `Tensor (n : m + 1 : s) d -> Tensor (n : s) d`. When the
+length at axis `k` is already a known literal too small for `i`, the error says
+so in the projection's words, naming the axis: `[1, 2; 3, 4]._.2` is "position 2
+is out of range for axis 1 of length 2". When the rank is known and too small,
+the error is the rank message of `contract` (§4.2), not a shape mismatch:
+`[1, 2, 3]._.0` is "slice 1 0 needs a tensor of rank at least 2, got Vec 3".
+Through a polymorphic definition (`let col2 m = m._.2` applied to a 2×2 matrix)
+the offset rule reports the length as too short, as it does for `v.2`.
 Unification is still first-order:
 
 - `n + k` against a literal `j`: if `j ≥ k` then `n := j - k`, else fail. So
@@ -1412,7 +1460,13 @@ then an ordinary first-order scheme. With `a = min i j` and `b = max i j`:
 contract i j          : Num -> Num -> Tensor (l0 : … : lb : s) d -> Tensor (l0 : … : lb without positions a and b : s) d
                         where lb is the variable la: the paired lengths are one length
 permute [p0, …, pk-1] : Vec k -> Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … : lpk-1 : s) d
+slice k i             : Num -> Num -> Tensor (l0 : … : lk-1 : n + i + 1 : s) d -> Tensor (l0 : … : lk-1 : s) d
 ```
+
+`slice k i` (§2.10) follows the same rules: the axis `k` and position `i` are
+literal naturals ("the axis and position of slice must be literal natural
+numbers: slice k i t"), a bare `slice` is an error, and the sliced axis has the
+projection's offset length (§4.1).
 
 The leading `Num` and `Vec k` are the literal positions themselves. Because
 the paired positions of `contract` share one length variable, unequal lengths
@@ -1476,6 +1530,7 @@ v.i         : Vec (n + i + 1) d -> Num d    -- special form, i a literal positio
 m.i         : Mat (k + i + 1) n d -> Vec n d
 contract i j t : Tensor (l0 : … : lj : s) d -> Tensor (… without i and j : s) d   -- special form, i ≠ j literal naturals, li = lj (4.2)
 permute [p…] t : Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … : lpk-1 : s) d -- special form, a literal permutation of 0 .. k-1 (4.2)
+slice k i t : Tensor (l0 : … : lk-1 : n + i + 1 : s) d -> Tensor (l0 : … : lk-1 : s) d -- special form, k and i literal naturals; t._.i (2.10, 4.1)
 ```
 
 The circular functions take an angle and their inverses return one (§3.2.11):
@@ -2275,7 +2330,8 @@ tuned, and compilation is a later milestone.
    excludes zero), `covariance`, `cholesky`, `:covariance`, `±` and `±σ` on
    tensors and `v ±σ P` (§3.4, §3.5): done. `contract` and `permute` with
    literal positions at any rank, and the prelude's `trace` (§3.3, §4.2):
-   done. Remaining: mixed-dimension matrices for a joint state covariance.
+   done. Slicing along any axis, `t._.i` and `slice k i t` (§2.10): done.
+   Remaining: mixed-dimension matrices for a joint state covariance.
    Points and scales (§3.6): done, over any shape; frames with a rotated
    basis remain.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.

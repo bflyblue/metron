@@ -195,7 +195,9 @@ them like any argument.
 @la@ (one length variable at both positions: the paired lengths are
 equal) and the result drops positions @a@ and @b@. @permute [p0, …,
 pk-1]@ has @Vec k -> Tensor (l0 : … : lk-1 : s) d -> Tensor (lp0 : … :
-lpk-1 : s) d@.
+lpk-1 : s) d@. @slice k i@ has @Num -> Num -> Tensor (l0 : … : lk-1 : n +
+i + 1 : s) d -> Tensor (l0 : … : lk-1 : s) d@: axis @k@ is long enough for
+position @i@ and is dropped.
 -}
 primSchemeFor :: Text -> [Maybe Lit] -> Maybe (Either Text Scheme)
 primSchemeFor name lits = case name of
@@ -237,6 +239,28 @@ primSchemeFor name lits = case name of
                     )
                 )
     _ -> Left "permute needs a literal permutation of 0 .. k-1"
+  "slice" -> Just $ case lits of
+    [Just lk, Just li, _]
+      | Just k <- position lk
+      , Just i <- position li ->
+          -- The sliced axis has a length of at least i + 1, as for a
+          -- projection: n + i + 1 with n the variable lenId k.
+          let before = map lenAt [0 .. k - 1]
+           in Right
+                ( Forall
+                    (sv : dv : [(lenId q, KLen) | q <- [0 .. k]])
+                    ( TFun
+                        numT
+                        ( TFun
+                            numT
+                            ( TFun
+                                (TTensor (appendShape (before ++ [LVar (lenId k) (i + 1)]) s) d)
+                                (TTensor (appendShape before s) d)
+                            )
+                        )
+                    )
+                )
+    _ -> Left "slice needs a literal natural axis and position"
   _ -> Nothing
  where
   sv = (0, KShape)
@@ -304,7 +328,7 @@ lint look ctx = \case
             )
     case (primScheme name, primSchemeFor name literals) of
       (Just general, _) -> instanceOf general
-      -- contract and permute: the scheme the literal positions determine.
+      -- contract, permute and slice: the scheme the literal positions determine.
       (_, Just general) -> general >>= instanceOf
       _ -> lintConstrained look name ty
     let go t = \case

@@ -386,6 +386,8 @@ primArity = \case
   -- are literal index positions, and the type is computed from them.
   "contract" -> Just 3
   "permute" -> Just 2
+  -- A slice along axis k at position i (design §2.10): both literal.
+  "slice" -> Just 3
   "inverse" -> Just 1
   "det" -> Just 1
   "vmap" -> Just 2

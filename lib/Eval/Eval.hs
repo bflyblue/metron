@@ -765,6 +765,28 @@ runPrim cfg rt prim args = case (prim, args) of
                   hint
                   (V.generate (product outFront * block) element)
               )
+  -- A slice along axis k at position i (design §2.10): a strided gather of
+  -- the result's components, which are not forced.
+  ("slice", [k, i, a]) -> do
+    axis <- positions k
+    pos <- positions i
+    (dims, d, hint, buf) <- tensor =<< a
+    case (axis, pos) of
+      ([ax], [at])
+        | (before, len : after) <- splitAt ax dims
+        , at < len ->
+            let inner = product after
+                element q =
+                  let (o, r) = q `divMod` inner
+                   in buf V.! ((o * len + at) * inner + r)
+             in Right
+                  ( VTensor
+                      (before ++ after)
+                      d
+                      hint
+                      (V.generate (product before * inner) element)
+                  )
+      _ -> Left (Internal "slice: axis or position out of range")
   ("vmap", [f, a]) -> do
     fv <- f
     (dims, d, _, buf) <- tensor =<< a
@@ -888,7 +910,7 @@ sumM = foldl' addM (Exact 0)
 
 -- Index arithmetic ----------------------------------------------------------------------
 
-{- | The literal index positions of @contract@ or @permute@: a number or a
+{- | The literal index positions of @contract@, @permute@ or @slice@: a number or a
 vector of exact naturals (the desugarer admits nothing else).
 -}
 positions :: Thunk -> Either EvalError [Int]

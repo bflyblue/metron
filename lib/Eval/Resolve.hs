@@ -263,6 +263,7 @@ freeNames = go Set.empty
     S.SectionR a op -> opNames op <> go bound a
     S.Vec es -> foldMap (go bound) es
     S.Proj a _ -> go bound a
+    S.Slice a _ _ -> go bound a
     S.FieldOf a _ -> go bound a
     S.Record hd fs -> go bound hd <> foldMap (go bound . snd) fs
   opNames = \case

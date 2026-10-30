@@ -291,6 +291,11 @@ desugar path ctx e = do
       elems <- zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
       pure (foldConstant elems)
     S.Proj a i -> (`Proj` i) <$> desugar (0 : path) ctx a
+    -- A slice is the primitive applied to its literal axis and position
+    -- (design §2.10), whatever `slice` names in scope.
+    S.Slice a k i ->
+      let lit n = S.Expr e.span (S.Num (fromIntegral n))
+       in prim "slice" [lit k, lit i, a]
     -- A field is a case on the record's one constructor (design §2.3).
     S.FieldOf a f -> do
       resolved <- asks (\env -> env.resolve ("." <> f))
@@ -371,9 +376,10 @@ headApp path ctx hd x args = case lookupCtx x ctx of
                     hd.span
                     (x <> " takes one argument, a literal natural number: the count of nudges")
                 )
-      -- contract i j and permute [p…] take literal index positions (design
-      -- §4.2): like a projection's, the positions are part of the type. The
-      -- tensor argument may be left off (eta), the positions may not.
+      -- contract i j, permute [p…] and slice k i take literal index
+      -- positions (design §4.2): like a projection's, the positions are part
+      -- of the type. The tensor argument may be left off (eta), the
+      -- positions may not.
       Nothing
         | Just (positions, rule) <- indexedForm x -> do
             when (length args < positions) (failWith (BadSpecialForm hd.span rule))
@@ -426,12 +432,17 @@ indexedForm = \case
       ( 1
       , "permute takes a literal permutation and then a tensor: permute [p0, …, pk-1] t, with the p a permutation of 0 .. k-1 and k ≥ 1"
       )
+  "slice" ->
+    Just
+      ( 2
+      , "slice takes a literal axis and a literal position and then a tensor: slice k i t, with k and i natural numbers, as in slice 1 0 m (written m._.0)"
+      )
   _ -> Nothing
 
 {- | The literal arguments of the primitive application a desugared
-@contract@ or @permute@ built, under the binders of an eta expansion or the
-applications of an over-application: 'Nothing' for an argument that is not
-a constant.
+@contract@, @permute@ or @slice@ built, under the binders of an eta
+expansion or the applications of an over-application: 'Nothing' for an
+argument that is not a constant.
 -}
 primLiterals :: Term n -> Maybe [Maybe Lit]
 primLiterals = \case
@@ -440,10 +451,10 @@ primLiterals = \case
   App f _ -> primLiterals f
   _ -> Nothing
 
-{- | What is wrong with the index arguments of @contract@ or @permute@, as
-the argument position and a message; 'Nothing' when they are literal
-naturals, two distinct ones for @contract@, a permutation of @0 .. k-1@ for
-@permute@.
+{- | What is wrong with the index arguments of @contract@, @permute@ or
+@slice@, as the argument position and a message; 'Nothing' when they are
+literal naturals, two distinct ones for @contract@, a permutation of
+@0 .. k-1@ for @permute@.
 -}
 indexProblem :: Text -> [Maybe Lit] -> Maybe (Int, Text)
 indexProblem name lits = case (name, lits) of
@@ -481,10 +492,16 @@ indexProblem name lits = case (name, lits) of
         ( 0
         , "permute takes a literal vector of natural numbers, a permutation of 0 .. k-1 with k ≥ 1: permute [1, 0] t"
         )
+  ("slice", lk : li : _) -> case (natural lk, natural li) of
+    (Nothing, _) -> Just (0, sliceNotNatural)
+    (_, Nothing) -> Just (1, sliceNotNatural)
+    _ -> Nothing
   _ -> Nothing
  where
   notNatural =
     "the positions of contract must be literal natural numbers: contract i j t, as in contract 0 1 t"
+  sliceNotNatural =
+    "the axis and position of slice must be literal natural numbers: slice k i t, as in slice 1 0 t"
   natural = \case
     Just (LTensor ([], [r])) | isNatural r -> Just (numerator r)
     _ -> Nothing

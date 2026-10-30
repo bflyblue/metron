@@ -284,3 +284,20 @@
   rebuilds the scheme from the `TLit` arguments. The prelude's `trace a =
   contract 0 1 a` is `Mat n n d -> Num d` at rank two and the partial trace
   over the first two positions above it.
+- Slicing along any axis: `m._.0` is column 0 of a matrix and `t._._.2`
+  position 2 of the third axis (design §2.10, §3.3, §4.1). Each glued `._`
+  (a new `TWild` token, under the same adjacency rule as `.0`) skips one
+  axis and a position must follow (`m._` alone is a parse error); the chain
+  reads left to right, so `t._.0.1` is `(slice 1 0 t).1`. The surface node
+  `Slice e k i` desugars to the new primitive `slice k i t` (arity 3, axis
+  and position as `Lit` arguments, like `contract`), which may also be
+  written out with the same literal checks; `Proj` is unchanged and `slice 0
+  i t` stays a different term from `t.i`. `slice k i` is typed from its
+  literals as `Tensor (l0 : … : lk-1 : n + i + 1 : s) d -> Tensor (l0 : … :
+  lk-1 : s) d`, so `\m -> m._.0` is `Tensor (n : m + 1 : s) d -> Tensor (n
+  : s) d`; a known axis too short is "position 2 is out of range for axis 1
+  of length 2" and a known rank too small "slice 1 0 needs a tensor of rank
+  at least 2, got Vec 3". The kernel is a strided gather that keeps the
+  dimension, the display unit and every nudge, and `:view` prints `slice k i
+  t` with `k ≥ 1` back as `t._.i`. Core, the encoding and stored hashes are
+  unchanged; the property generator now builds slices too.
