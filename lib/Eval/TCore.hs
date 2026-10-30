@@ -726,7 +726,9 @@ lintConstrained look name ty = case (name, ty) of
     -- The contracted positions share their length and their axes.
     s2 <- case sr of
       SCons n' a' rest | (n', a') == n -> Right rest
-      _ -> Left "dot: the right operand's first length is not the left operand's last"
+      _ ->
+        Left
+          "dot: the right operand's first length and axes are not the left operand's last"
     require
       (s3 == appendShape s1 s2)
       "dot: result shape is not the contraction of its operands"
