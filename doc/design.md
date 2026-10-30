@@ -2455,7 +2455,9 @@ directory, shadows the user store, and `--codebase DIR` names one explicitly;
 `--no-codebase` runs in memory. iapetus commits its `.eval/` to git.
 
 The prelude is entered at the start of every session as an ordinary binding
-group, in memory, and the store's log is replayed on top of it. Prelude
+group, in memory, and the store's log is replayed on top of it. (This is the
+model §7.7 replaces: the library will be seeded into a new codebase once and
+live there as names.) Prelude
 *bindings* are therefore never written: a user who rebinds `c` keeps that
 binding across sessions, and a prelude that changes `G` rebinds `G` on the next
 start while the user's dependents keep pointing at the old hash, which `:todo`
@@ -2562,8 +2564,8 @@ use orbital as o             -- a shorthand prefix: o.period
 and is self-describing; in the REPL they last for the session. Neither is
 stored: `use` lines are not labels, and a definition's stored term already
 holds full references, so a reader of the codebase needs no imports to make
-sense of it. A project-local `.eval/` may later carry a default `use` list
-beside its preferences if that proves wanted.
+sense of it. The one exception is the codebase's default `use` list, `use
+std` at seeding (§7.7), kept as a log line.
 
 **The dot.** `b.mass` is a field access and `v.0` a projection, so
 `orbital.period` lexes as "field `period` of `orbital`". The desugarer
@@ -2586,6 +2588,47 @@ a name.
 codebase; whether the prelude should itself live under `prelude.*` with an
 implied `use prelude`, which would let a user shadow it wholesale and costs
 nothing until wanted.
+
+### 7.7 The standard library (design; not yet built)
+
+The prelude becomes a standard library that lives in the codebase like
+everything else. Today the prelude is entered in memory at every start and the
+store's log is replayed on top (§7.4); that two-layer model is what keeps
+`:ls` hiding 800 names, keeps `:edit`, `:rename` and `:export` from touching
+units, and makes a prelude change rebind names behind the user's back.
+Instead:
+
+- **Seeding.** A codebase that does not yet exist is created with the
+  standard library entered as an ordinary group under the namespace `std`
+  (`std.km`, `std.G`, `std.degC`, `std.map`, …), with its terms and `bind`
+  lines written like any other, and with one stored default `use std`.
+  `--no-codebase` seeds the same library in memory. Hashes are unchanged: a
+  stored unit has the hash it always had.
+- **Nothing is special afterwards.** The library is names in the database.
+  `5 km` resolves through the default `use`; `:ls` lists the user's root
+  names and `:ls std` the library; `let c = 3e8 m/s` shadows `std.c` without
+  ceremony; `:rename std.h std.hour`, `:unname std.furlong` and `:edit std`
+  all work, and `:export` writes the library out with everything else.
+- **A stored `use`.** §7.6 says `use` is never stored. The one exception is a
+  codebase's default `use` list: `use std` is written at seeding as a log
+  line (`<time> use std`, `<time> unuse std` to remove), replayed with the
+  other labels, and `:uses` lists it with the session's own. Nothing else
+  about `use` changes.
+- **Upgrading** is an open question in general (how a definition in one
+  codebase takes a newer version from another). For the library the sketch
+  is `:stdlib upgrade`: enter the shipped library as a scratch group and
+  apply `:update`'s rules against the codebase, reporting `added` for new
+  names, `updated` for names the user never touched, and `kept` for names
+  whose current binding is the user's own (the user's wins), then the
+  ordinary `:upgrade` for dependents. `--merge` is the wrong tool here: its
+  last-writer rule would override the user's edits.
+- **Base units stay primitives.** `m`, `kg`, `s` and the other base symbols
+  are not names (§3.2.12); they need no namespace and cannot be renamed.
+
+Consequences: the format-3 store does not change (a path is a name, a `use`
+line is one more label-level line); the loader no longer enters a prelude,
+so an empty store really is empty; the test suite's "session with the
+prelude" becomes "a seeded session", the same thing by another route.
 
 
 ## 8. Evaluation
@@ -2775,6 +2818,16 @@ tuned, and compilation is a later milestone.
      `callCabal2nix`.
 
 ---
+10. **Codebase as the single truth.** In order, each on the last: namespaces
+    and `:export` (§7.6, in progress); the standard library seeded under
+    `std` with a stored `use std` (§7.7); `:edit` as an editor round trip
+    (§7.3): export the codebase, a namespace or one definition to a file,
+    open `$EDITOR`, and on return enter the file as one group and reconcile
+    it against the scope, adding, updating (with propagation) and unnaming
+    as a text diff can tell, all or nothing, with the temp file kept on
+    error. Upgrading a codebase from a newer library or another codebase
+    stays open (§7.7).
+
 
 ## 11. Open questions
 
