@@ -3,6 +3,7 @@ module Main (main) where
 import Control.Monad (unless)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
@@ -10,7 +11,7 @@ import Eval.Driver
 import Eval.Repl qualified as R
 import Eval.Store
 import System.Console.Haskeline
-import System.Environment (getArgs)
+import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO
@@ -132,13 +133,15 @@ runOnce opts src = do
 
 {- | The REPL. With a terminal, haskeline gives line editing, completion
 (design §7.3) and a history file kept beside the codebase; scripted, lines
-are read plainly.
+are read plainly. Output is coloured when stdout is a terminal, @TERM@ is
+not @dumb@ and @NO_COLOR@ is unset, or as @:colour on|off@ says.
 -}
 repl :: Options -> Bool -> IO ()
 repl opts interactive = do
   hSetBuffering stdout NoBuffering
   live0 <- startSession opts
   ref <- newIORef live0
+  colourRef <- newIORef =<< colourByDefault
   let historyFile = (\st -> st.dir </> "history") <$> live0.store
       settings =
         setComplete
@@ -148,11 +151,12 @@ repl opts interactive = do
             , autoAddHistory = interactive
             }
       behaviour = if interactive then defaultBehavior else useFileHandle stdin
-  runInputTBehavior behaviour settings (loop ref)
+  runInputTBehavior behaviour settings (loop ref colourRef)
  where
-  loop :: IORef Live -> InputT IO ()
-  loop ref = do
-    line <- getInputLine (if interactive then "> " else "")
+  loop :: IORef Live -> IORef Bool -> InputT IO ()
+  loop ref colourRef = do
+    colour <- liftIO (readIORef colourRef)
+    line <- getInputLine (if interactive then prompt colour "> " else "")
     case line of
       Nothing -> pure ()
       Just raw -> do
@@ -165,6 +169,14 @@ repl opts interactive = do
             live <- liftIO (readIORef ref)
             outputStrLn (maybe "no codebase: running in memory" (.dir) live.store)
             again
+          -- A REPL-level setting: the Driver never sees it.
+          cmd : args | cmd `elem` [":colour", ":color"] -> do
+            case args of
+              [] -> outputStrLn ("colour " <> if colour then "on" else "off")
+              ["on"] -> liftIO (writeIORef colourRef True)
+              ["off"] -> liftIO (writeIORef colourRef False)
+              _ -> emit colour (Left "usage: :colour [on|off]")
+            again
           -- Multi-line definitions come from a file: the layout rule treats
           -- later lines as continuations, and a REPL line is one input.
           [":load", path] -> do
@@ -172,16 +184,42 @@ repl opts interactive = do
             run src
           _ -> run input
    where
-    again = loop ref
+    again = loop ref colourRef
     run src = do
       live <- liftIO (readIORef ref)
       result <- liftIO (step live src)
+      colour <- liftIO (readIORef colourRef)
       case result of
-        Left err -> outputStrLn (T.unpack err)
+        Left err -> emit colour (Left err)
         Right (live', outs) -> do
           liftIO (writeIORef ref live')
-          mapM_ (outputStrLn . T.unpack) outs
+          emit colour (Right outs)
       again
+
+{- | Print what 'step' returned: as is without colour, painted line by line
+with it (design §7.3).
+-}
+emit :: Bool -> Either Text [Text] -> InputT IO ()
+emit colour result
+  | colour = mapM_ (outputStrLn . T.unpack . uncurry R.paint) (R.classify result)
+  | otherwise =
+      either (outputStrLn . T.unpack) (mapM_ (outputStrLn . T.unpack)) result
+
+{- | A prompt, bold with colour. haskeline treats @\\SOH…\\STX@ as zero
+width and strips the markers, so the cursor lands where it should.
+-}
+prompt :: Bool -> String -> String
+prompt colour p
+  | colour = "\SOH\ESC[1m\STX" <> p <> "\SOH\ESC[0m\STX"
+  | otherwise = p
+
+-- | Colour by default when stdout is a terminal that can show it.
+colourByDefault :: IO Bool
+colourByDefault = do
+  terminal <- hIsTerminalDevice stdout
+  term <- lookupEnv "TERM"
+  noColour <- lookupEnv "NO_COLOR"
+  pure (terminal && term /= Just "dumb" && isNothing noColour)
 
 {- | Tab completion (design §7.3) against the session as it is when TAB is
 pressed; file names after @:load@.

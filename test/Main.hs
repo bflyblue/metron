@@ -3770,7 +3770,7 @@ sessionP = go withPrelude
   go s [] = Right s
   go s (l : ls) = feed s l >>= \(s', _) -> go s' ls
 
--- REPL: completion, unicode entry ---------------------------------------------------
+-- REPL: completion, unicode entry, colour ---------------------------------------
 
 -- | Complete at the end of a line, as haskeline asks: reversed left text.
 completeAt :: Session -> String -> Maybe (String, [R.Completion])
@@ -3811,6 +3811,9 @@ asciiSpellings =
   , ("′", "arcmin")
   ]
 
+dimmed :: Text -> Text
+dimmed t = "\ESC[2m" <> t <> "\ESC[0m"
+
 replTests :: TestTree
 replTests =
   testGroup
@@ -3821,10 +3824,11 @@ replTests =
         all (":l" `isPrefixOfS`) cs @? show cs
         replacements withPrelude "  :up" @?= [":update", ":upgrade"]
         filter (":" `isPrefixOfS`) (replacements withPrelude "x :l") @?= []
-    , testCase ":set completes its arguments" $ do
+    , testCase ":set and :colour complete their arguments" $ do
         replacements withPrelude ":set un" @?= ["unicode"]
         replacements withPrelude ":set " @?= ["precision", "sigma", "unicode"]
         replacements withPrelude ":set unicode o" @?= ["on", "off"]
+        replacements withPrelude ":colour of" @?= ["off"]
         R.completions withPrelude (reverse ":set ") "un"
           @?= [R.Completion "unicode" "unicode" True]
     , testCase "names complete from the session: units, constructors, keywords" $ do
@@ -3877,6 +3881,55 @@ replTests =
         U.lookupName "pm" @?= Just "±"
         map fst (U.matching "pm") @?= ["pm"]
         map fst (U.matching "pr") @?= ["prime"]
+    , testCase "classify: errors, notes, signatures, values" $ do
+        let block = "error at 1:5\n  3 m + 2 s\n      ^^^\n  cannot add a length to a time"
+        map fst (R.classify (Left block)) @?= [R.Problem, R.Source, R.Caret, R.Problem]
+        R.classify (Left "unknown name `x`") @?= [(R.Problem, "unknown name `x`")]
+        R.classify (Right ["pending: data Shape", "added area"])
+          @?= [(R.Note, "pending: data Shape"), (R.Note, "added area")]
+        map
+          fst
+          ( R.classify
+              (Right ["(812 prelude names hidden; :ls --all or a filter shows them)"])
+          )
+          @?= [R.Note]
+        map
+          fst
+          (R.classify (Right ["area : Shape -> Num [m^2]", "unit furlong : Num [m]"]))
+          @?= [R.Signature, R.Signature]
+        map
+          fst
+          ( R.classify
+              (Right ["12.566… m^2", "(1 m, 2 s)", "f = \\xs -> case xs of x : rest -> x"])
+          )
+          @?= [R.Value, R.Value, R.Value]
+        -- A real error block keeps its text, line for line.
+        case evalP "3 m + true" of
+          Left err -> T.intercalate "\n" (map snd (R.classify (Left err))) @?= err
+          Right v -> assertFailure (show v)
+    , testCase "paint: the unit suffix, the type, the error" $ do
+        R.paint R.Value "12.566… m^2" @?= "12.566… " <> dimmed "m^2"
+        R.paint R.Value "[1, 2, 3] km s⁻¹" @?= "[1, 2, 3] " <> dimmed "km s⁻¹"
+        R.paint R.Value "9.81 m/s^2" @?= "9.81 " <> dimmed "m/s^2"
+        R.paint R.Value "293.15 K (point)" @?= "293.15 " <> dimmed "K (point)"
+        R.paint R.Signature "area : Shape -> Num [m^2]"
+          @?= "area : " <> dimmed "Shape -> Num [m^2]"
+        R.paint R.Note "pending: data Shape" @?= dimmed "pending: data Shape"
+        R.paint R.Problem "error at 1:5" @?= "\ESC[31merror at 1:5\ESC[0m"
+        R.paint R.Caret "      ^^^" @?= "\ESC[1;31m      ^^^\ESC[0m"
+        R.paint R.Source "  3 m + 2 s" @?= "  3 m + 2 s"
+        R.paint R.Note "" @?= ""
+        -- Not a unit: types, booleans, constructors, bare numbers.
+        mapM_
+          (\t -> R.paint R.Value t @?= t)
+          [ "Num [m] -> Shape"
+          , "true"
+          , "Rect (1 m) (2 m)"
+          , "42"
+          , "Just 1"
+          , "precision 15"
+          , "a -> Maybe a -> a"
+          ]
     ]
  where
   isPrefixOfS p x = take (length p) x == p

@@ -2180,6 +2180,7 @@ Session
 :budget e          error budget (3.2.6)
 :covariance e      covariance (or variance) of the statistical nudges, and the bound box (3.5)
 :load file         enter a file into the scratch as one binding group
+:colour [on|off]   colour the REPL's output; alone, say whether it is on (a REPL-level setting, below)
 :quit
 ```
 
@@ -2212,7 +2213,7 @@ changes what an input means or the text it prints.
 **Completion.** TAB completes the word before the cursor:
 
 - at the start of a line, a `:` command;
-- after `:set`, the setting; after `:set unicode`, `on` or `off`;
+- after `:set`, the setting; after `:set unicode` and `:colour`, `on` or `off`;
 - after `:load`, a file name;
 - after a `.` glued to a value, a record field name (`b.ma` gives `b.mass`);
 - elsewhere, a name the session sees (definitions, units, types and
@@ -2249,6 +2250,21 @@ checks all of this against the lexer.
 A word that starts with `\` completes from this table only, never from
 names. Nobody presses TAB in a lambda such as `\x -> x`, so the two uses
 never meet; TAB after `\x` would offer `\xi`.
+
+**Colour.** The REPL colours its output when stdout is a terminal, `TERM`
+is not `dumb` and `NO_COLOR` is not set:
+
+- In an error, the `error at` line and the message are red and the carets
+  bold red. The source excerpt stays plain.
+- Notes are dim: `pending:`, `added`, `updated`, `left`, `nothing to …`,
+  the hidden-prelude line of `:ls` and the like.
+- In a `name : type` line of `:ls`, the type is dim.
+- In a value, the trailing unit is dim (`12.566… m^2`, `[1, 2, 3] km s⁻¹`).
+- The prompt is bold.
+
+`:colour on` and `:colour off` override the default. This is a setting of
+the REPL, not of the session: `:set` does not list it, and the one-shot and
+file modes never colour. The text is the same with colour or without.
 
 **History.** The line history is the file `history` in the codebase
 directory (§7.4). With `--no-codebase` there is no history file.
