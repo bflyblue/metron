@@ -112,7 +112,18 @@ feed :: Session -> Text -> Either Text (Session, [Text])
 feed session src = case feed' session src of
   -- Declared types print by hash below here; the session names them (design §7.2).
   Left err -> Left (nameTypes session.staging err)
-  Right (session', outs) -> Right (session', map (nameTypes session'.staging) outs)
+  Right (session', outs) -> Right (session', echo ++ map (nameTypes session'.staging) outs)
+ where
+  -- With unicode on, a statement line is echoed in its unicode spelling
+  -- (design §7.3). A file is not: it is many lines.
+  line = T.strip src
+  echo =
+    [ "  ≡ " <> spelled
+    | session.config.unicode
+    , not (":" `T.isPrefixOf` line)
+    , not (T.any (== '\n') line)
+    , Just spelled <- [respell line]
+    ]
 
 feed' :: Session -> Text -> Either Text (Session, [Text])
 feed' session src

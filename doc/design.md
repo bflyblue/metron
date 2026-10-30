@@ -453,7 +453,8 @@ are unit atoms, so `45° + 30′` works.
 
 The printer emits ASCII by default. `:set unicode on` (§7.3) switches the
 exponents, `->`, `\` and `<= >= /= ||` to their unicode spellings; the
-list there is the exact set.
+list there is the exact set for output. It also echoes each statement line in
+its unicode spelling, a re-spelling of the tokens as typed (§7.3).
 
 ### 2.9 Sugar and desugaring
 
@@ -2181,7 +2182,7 @@ Session
 
 With `:set unicode on`, printed values, `:type`, `:view`, `:edit`, `:exact`,
 `:budget`, `:covariance` and the `:prefer` message use these spellings from
-the table in §2.8, and nothing else changes:
+the table in §2.8, and nothing else changes except the echo described below:
 
 | ASCII | Unicode | Where |
 |---|---|---|
@@ -2199,6 +2200,20 @@ its caret, since a superscript must be glued to an atom. Every unicode form
 lexes to the same tokens as its ASCII form, a superscript standing for its
 caret, so output reads back either way. Error messages, `:core` and `:lint`
 stay in ASCII.
+
+**The echo.** With `:set unicode on`, a statement line (not a `:` command)
+that has a unicode spelling is first echoed in it, on a note line of its own
+that starts `  ≡ `: `2 +-s 0.1` prints `  ≡ 2 ±σ 0.1`, then its value. The
+echo re-spells the tokens as they were typed, at their spans, and keeps every
+other character, spacing and comments included. `+-s` `+-` `->` `\` `<=`
+`>=` `/=` `||` `@` `><` `/\` `.*` `./` and the composition `.` become `±σ`
+`±` `→` `λ` `≤` `≥` `≠` `∨` `·` `×` `∧` `⊙` `⊘` `∘`, and a caret power with
+an integer literal exponent, glued to an atom, becomes a superscript (`x^-1`
+is `x⁻¹`; `x ^ 2` keeps its caret). Names keep their spelling (`sqrt`, `pi`,
+`deg`), and so do `*`, `/` and `&&`, for the reasons above. The echo lexes
+to the same tokens as the line. A line with nothing to re-spell, a line that
+fails, and a file read by `:load` are not echoed. The echo is a note to the
+reader, not output, and the REPL may print it dim.
 
 **The last result.** After an expression statement evaluates, `it` names that
 expression for later expressions and for the inspection commands: `1 + 2`

@@ -334,14 +334,22 @@
   prelude's `vimap` is unchanged. One primitive appended (arity 2); the type
   encoding gains length tag 2 for `rank s + k`, appended, so Core, stored
   terms and hashes are unchanged.
-- `it`, the last result (design §7.3, §7.5). After an expression statement
-  evaluates, `it` names that expression for later expressions and for
-  `:type`, `:view` (`it = 1 + 2`), `:exact`, `:budget`, `:covariance`,
-  `:core`, `:hash` and `:lint`; each expression on a line is `it` for the
-  next, and an input that fails leaves the previous one. It is bound in a
-  codebase built for each expression on top of the staging one, which keeps
-  the terms `it` was checked against, so it survives a replaced or forgotten
-  pending definition. It is never stored: `:ls` does not list it, `:add` and
+- `it`, the last result, and the unicode echo (design §7.3, §7.5). After an
+  expression statement evaluates, `it` names that expression for later
+  expressions and for `:type`, `:view` (`it = 1 + 2`), `:exact`, `:budget`,
+  `:covariance`, `:core`, `:hash` and `:lint`; each expression on a line is
+  `it` for the next, and an input that fails leaves the previous one. It is
+  bound in a codebase built for each expression on top of the staging one,
+  which keeps the terms `it` was checked against, so it survives a replaced
+  or forgotten pending definition. It is never stored: `:ls` does not list it, `:add` and
   `:update` do not see it, and a definition that mentions it is refused
   ("`it` is the last result and cannot be stored; paste its definition (:view
-  it) instead"), as is a definition named `it`.
+  it) instead"), as is a definition named `it`. With `:set unicode on`, a
+  statement line is first echoed in its unicode spelling on a note line
+  starting `  ≡ `: `2 +-s 0.1 * 3 km/h` as `2 ±σ 0.1 * 3 km/h`, `\x -> x^2
+  <= 4` as `λx → x² ≤ 4`. `Pretty.respell` re-spells the lexed tokens at
+  their spans and keeps every other character; names, `*`, `/` and `&&`
+  keep their spelling, a caret power becomes a superscript only when glued
+  to an atom with an integer literal exponent, and the result must lex to the
+  same tokens. A line with nothing to re-spell, a command, a failed line and
+  a loaded file are not echoed; with unicode off nothing changes.

@@ -72,6 +72,7 @@ main =
         , storeTests
         , dataTests
         , itTests
+        , respellTests
         ]
     )
 
@@ -2338,7 +2339,9 @@ displayTests =
               , "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m s⁻¹]}"
               ]
         runLinesP (defs ++ inputs) @?= Right ascii
-        runLinesP (defs ++ ":set unicode on" : inputs) @?= Right unicode
+        -- The one input with a unicode spelling is echoed in it first.
+        runLinesP (defs ++ ":set unicode on" : inputs)
+          @?= Right ("  ≡ 9.81 m/s²" : unicode)
         -- Both spellings lex to the same tokens, a superscript power standing
         -- for its caret form.
         let caret = concatMap $ \case
@@ -3855,4 +3858,54 @@ itTests =
             other -> assertFailure (show other)
         expecting (runLinesP (setup ++ [":view z"])) $ \outs ->
           lastN 1 outs @?= ["z = w + 1"]
+    ]
+
+-- The unicode echo ------------------------------------------------------------------
+
+respellTests :: TestTree
+respellTests =
+  testGroup
+    "unicode echo"
+    [ testCase "an input line in its unicode spelling" $ do
+        respell "2 +-s 0.1 * 3 km/h" @?= Just "2 ±σ 0.1 * 3 km/h"
+        respell "\\x -> x^2 <= 4" @?= Just "λx → x² ≤ 4"
+        respell "1 +- 0.1" @?= Just "1 ± 0.1"
+        respell "u >< v @ w" @?= Just "u × v · w"
+        respell "a /\\ b .* c ./ d" @?= Just "a ∧ b ⊙ c ⊘ d"
+        respell "f . g" @?= Just "f ∘ g"
+        respell "a /= b || c" @?= Just "a ≠ b ∨ c"
+    , testCase "nothing to respell gives nothing" $ do
+        respell "1 + 2" @?= Nothing
+        -- names, `*`, `/` and `&&` keep their spelling
+        respell "sqrt (2 * pi) / 3 deg && true" @?= Nothing
+        -- already unicode
+        respell "λx → x² ≤ 4" @?= Nothing
+        respell "a ⋅ b" @?= Nothing
+        -- input that does not lex
+        respell "1 \" 2 -> 3" @?= Nothing
+    , testCase "superscripts for glued integer powers" $ do
+        respell "x^2 + y^-1" @?= Just "x² + y⁻¹"
+        respell "(a + b)^3 * [1, 2]^10" @?= Just "(a + b)³ * [1, 2]¹⁰"
+        respell "9.81 m s^-2" @?= Just "9.81 m s⁻²"
+        -- a spaced caret, or one not after an atom, stays
+        respell "x ^ 2" @?= Nothing
+        respell "x^ 2" @?= Nothing
+    , testCase "spans are kept when lengths differ" $ do
+        respell "a <= b && c >= d" @?= Just "a ≤ b && c ≥ d"
+        respell "\\x y -> x^-2 <= y +-s 1 -> 2" @?= Just "λx y → x⁻² ≤ y ±σ 1 → 2"
+        respell "(\\x -> x)   >=   y -- a comment -> here"
+          @?= Just "(λx → x)   ≥   y -- a comment -> here"
+        -- a tab counts as the lexer counts it
+        respell "x\t<= 1 ->\t2" @?= Just "x\t≤ 1 →\t2"
+        -- `f\x` must not become the identifier `fλx`
+        respell "f\\x -> x" @?= Just "f\\x → x"
+    , testCase ":set unicode on echoes statement lines" $ do
+        runLinesP [":set unicode on", "2 +-s 0.1"]
+          @?= Right ["  ≡ 2 ±σ 0.1", "2.0 ±σ 0.1"]
+        runLinesP [":set unicode on", "let f x = x^2", "f 3"]
+          @?= Right ["  ≡ let f x = x²", "9"]
+        -- nothing to respell, a command, or unicode off: no echo
+        runLinesP [":set unicode on", "1 + 2"] @?= Right ["3"]
+        runLinesP [":set unicode on", ":type \\x -> x"] @?= Right ["a → a"]
+        runLinesP ["2 +-s 0.1"] @?= Right ["2.0 ±σ 0.1"]
     ]

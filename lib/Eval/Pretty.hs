@@ -17,6 +17,7 @@ module Eval.Pretty (
   FieldNamer,
   Printer (..),
   plainPrinter,
+  respell,
 ) where
 
 import Data.Char (intToDigit, isAlphaNum)
@@ -30,6 +31,8 @@ import Eval.Affine qualified as A
 import Eval.Core
 import Eval.Dimension (Spelling (..), arrowText, exponentText, renderUnitsIn)
 import Eval.Eval
+import Eval.Lexer qualified as L
+import Eval.Syntax qualified as S
 import Eval.TCore (patternText)
 import Eval.Type (conText)
 
@@ -677,3 +680,119 @@ selfDelimited s = case (T.uncons s, T.unsnoc s) of
       | c `elem` ("([{" :: String) -> closesAtEnd (depth + 1) rest
       | c `elem` (")]}" :: String) -> depth > 1 && closesAtEnd (depth - 1) rest
       | otherwise -> closesAtEnd depth rest
+
+-- Re-spelling input ---------------------------------------------------------------
+
+{- | An input line in its unicode spelling (design §2.8, §7.3), for the echo
+under @:set unicode on@: the tokens as written, each one with a unicode form
+re-spelled at its span, every other character kept. @2 +-s 0.1@ becomes
+@2 ±σ 0.1@ and @\\x -> x^2 <= 4@ becomes @λx → x² ≤ 4@. Names keep their
+spelling, @sqrt@ included, since @√@ is a prefix operator that would bind
+differently, and so do @*@, @/@ and @&&@. A caret power becomes a
+superscript only when it is glued to an atom and its exponent is an integer
+literal. 'Nothing' when the input does not lex, nothing changes, or the
+result would not lex to the same tokens.
+-}
+respell :: Text -> Maybe Text
+respell src = do
+  let text = L.prepare src
+  toks <- either (const Nothing) Just (L.tokenize text)
+  let edits = respellEdits text toks
+      out = applyEdits text edits
+  toks' <- either (const Nothing) Just (L.tokenize out)
+  -- A superscript stands for its caret form; nothing else may differ.
+  let caret = concatMap $ \case
+        L.TSup n -> [L.TOp "^"] ++ [L.TOp "-" | n < 0] ++ [L.TNum (fromInteger (abs n))]
+        t -> [t]
+  if not (null edits) && caret (map (.value) toks') == caret (map (.value) toks)
+    then Just out
+    else Nothing
+
+-- | Replacements as character offsets @[from, to)@ into the text, in order.
+respellEdits :: Text -> [L.Located L.Token] -> [(Int, Int, Text)]
+respellEdits text = go Nothing
+ where
+  go :: Maybe (L.Located L.Token) -> [L.Located L.Token] -> [(Int, Int, Text)]
+  go _ [] = []
+  go prev (t : ts)
+    -- A caret power with an integer literal exponent, glued throughout.
+    | L.TOp "^" <- t.value
+    , Just p <- prev
+    , p.span.to == t.span.from
+    , endsAtom p.value
+    , (neg, rest) <- case ts of
+        m : more | m.value == L.TOp "-", m.span.from == t.span.to -> (Just m, more)
+        _ -> (Nothing, ts)
+    , n : rest' <- rest
+    , L.TNum r <- n.value
+    , denominator r == 1
+    , n.span.from == maybe t.span.to (\m -> m.span.to) neg
+    , T.all (`elem` ("0123456789" :: String)) (slice n.span) =
+        let k = numerator r * maybe 1 (const (-1)) neg
+         in (offset t.span.from, offset n.span.to, exponentText Unicode k)
+              : go (Just n) rest'
+    | Just (ascii, uni) <- spelled t.value
+    , slice t.span == ascii
+    , not (gluedLambda t) =
+        (offset t.span.from, offset t.span.to, uni) : go (Just t) ts
+    | otherwise = go (Just t) ts
+
+  -- `f\x` must not become the one identifier `fλx`.
+  gluedLambda t =
+    t.value == L.TLambda
+      && maybe False (isIdentChar . snd) (T.unsnoc (T.take (offset t.span.from) text))
+  isIdentChar c = isAlphaNum c || c == '_' || c == '\''
+
+  slice sp = T.take (offset sp.to - offset sp.from) (T.drop (offset sp.from) text)
+
+  -- Megaparsec's columns: a tab advances to the next multiple of eight.
+  lineStarts = scanl (\acc l -> acc + T.length l + 1) 0 (T.splitOn "\n" text)
+  offset (S.Pos l c) =
+    let start = lineStarts !! (l - 1)
+        walk col i s
+          | col >= c = i
+          | otherwise = case T.uncons s of
+              Nothing -> i
+              Just ('\t', s') -> walk (col + 8 - ((col - 1) `rem` 8)) (i + 1) s'
+              Just (_, s') -> walk (col + 1) (i + 1) s'
+     in start + walk (1 :: Int) 0 (T.takeWhile (/= '\n') (T.drop start text))
+
+  -- The atoms a superscript may be glued to, as the lexer allows.
+  endsAtom = \case
+    L.TIdent _ -> True
+    L.TRParen -> True
+    L.TRBracket -> True
+    L.TProj _ -> True
+    L.TWild -> True
+    L.TField _ -> True
+    L.TNum _ -> True
+    L.TSup _ -> True
+    L.TKw L.KTrue -> True
+    L.TKw L.KFalse -> True
+    _ -> False
+
+  -- Tokens with a unicode form (design §2.8): the ASCII text and its replacement.
+  spelled :: L.Token -> Maybe (Text, Text)
+  spelled = \case
+    L.TPlusMinus Stat -> Just ("+-s", "±σ")
+    L.TPlusMinus Bound -> Just ("+-", "±")
+    L.TArrow -> Just ("->", "→")
+    L.TLambda -> Just ("\\", "λ")
+    L.TOp "<=" -> Just ("<=", "≤")
+    L.TOp ">=" -> Just (">=", "≥")
+    L.TOp "/=" -> Just ("/=", "≠")
+    L.TOp "||" -> Just ("||", "∨")
+    L.TOp "@" -> Just ("@", "·")
+    L.TOp "×" -> Just ("><", "×")
+    L.TOp "/\\" -> Just ("/\\", "∧")
+    L.TOp ".*" -> Just (".*", "⊙")
+    L.TOp "./" -> Just ("./", "⊘")
+    L.TOp "." -> Just (".", "∘")
+    _ -> Nothing
+
+-- | Splice replacements, given in order as offsets @[from, to)@, into a text.
+applyEdits :: Text -> [(Int, Int, Text)] -> Text
+applyEdits text = go 0
+ where
+  go at [] = T.drop at text
+  go at ((from, to, new) : rest) = T.take (from - at) (T.drop at text) <> new <> go to rest
