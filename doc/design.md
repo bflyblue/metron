@@ -447,6 +447,10 @@ A superscript is only a power when it follows an atom without a space; `x ²` is
 error. `°` and the arc marks attach to the preceding number without a space and
 are unit atoms, so `45° + 30′` works.
 
+The printer emits ASCII by default. `:set unicode on` (§7.3) switches the
+exponents, `->`, `\` and `<= >= /= ||` to their unicode spellings; the
+list there is the exact set.
+
 ### 2.9 Sugar and desugaring
 
 Everything in this table is removed before Core. The right column is Core written
@@ -1876,13 +1880,35 @@ Session
 :set sigma k       confidence multiplier for comparisons on statistical values (3.2.9)
 :prefer [unit]     print values of the unit's dimension in it (3.2.12); alone, list preferences
 :unprefer unit     remove that preference
-:set unicode on    pretty-print with unicode spellings (2.8); off for ASCII
+:set unicode on    pretty-print with unicode spellings (2.8); off (the default) for ASCII
+:set               list the settings: precision, sigma, unicode
 :exact e           raw rational, or midpoint and nudge list
 :budget e          error budget (3.2.6)
 :covariance e      covariance (or variance) of the statistical nudges, and the bound box (3.5)
 :load file         enter a file into the scratch as one binding group
 :quit
 ```
+
+With `:set unicode on`, printed values, `:type`, `:view`, `:edit`, `:exact`,
+`:budget`, `:covariance` and the `:prefer` message use these spellings from
+the table in §2.8, and nothing else changes:
+
+| ASCII | Unicode | Where |
+|---|---|---|
+| `^2` `^-1` | `²` `⁻¹` | unit exponents (`9.81 m s⁻²`, `5 km h⁻¹`), dimension brackets in types (`Num [m s⁻²]`), powers in `:view` (`x²`) |
+| `->` | `→` | function types, lambdas and case alternatives |
+| `\` | `λ` | lambdas: `λx → x² + 1` |
+| `<=` `>=` `/=` `\|\|` | `≤` `≥` `≠` `∨` | operators in `:view` |
+
+`*` stays `*`, because `×` is the cross product; `/`, `&&`, `sqrt` and names
+such as `pi` and `deg` keep their ASCII spelling. `√` would change the
+binding (it is a prefix operator, `sqrt` an application), and `π` and `°`
+are names, not syntax. `·`, `∧`, `⊙`, `⊘`, `±` and `±σ` print in unicode
+in both modes, as before. A power whose base does not end in an atom keeps
+its caret, since a superscript must be glued to an atom. Every unicode form
+lexes to the same tokens as its ASCII form, a superscript standing for its
+caret, so output reads back either way. Error messages, `:core` and `:lint`
+stay in ASCII.
 
 ### 7.4 CLI and persistence
 
@@ -2128,7 +2154,8 @@ tuned, and compilation is a later milestone.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),
    haskeline with a history file beside the store, `:store`, `:prefer`,
-   `:covariance`. Remaining: `:set unicode`, a merge tool for two stores' logs.
+   `:covariance`, `:set unicode` (§7.3): done. Remaining: a merge tool for
+   two stores' logs.
 7. **Tuples**, then **lists** with a `case` construct in the core. Status: done.
    `Con` and `Case` replaced `If` and the boolean literal (core.md §5). User
    data types (§2.3): done, as the same mechanism with declared constructors,

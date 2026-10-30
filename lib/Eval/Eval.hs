@@ -53,18 +53,20 @@ import Eval.Dimension
 import Eval.TCore
 import Eval.Type (conText)
 
-{- | Evaluation parameters: the number of significant digits printed, and the
+{- | Evaluation parameters: the number of significant digits printed, the
 number of standard deviations a comparison must clear to be decided (design
-§3.2.9).
+§3.2.9), and whether output uses the unicode spellings.
 -}
 data Config = Config
   { precision :: Int
   , sigma :: Int
+  , unicode :: Bool
+  -- ^ print with the unicode spellings of design §2.8 (@:set unicode on@, §7.3)
   }
   deriving stock (Show)
 
 defaultConfig :: Config
-defaultConfig = Config{precision = 20, sigma = 3}
+defaultConfig = Config{precision = 20, sigma = 3, unicode = False}
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
 precisionOf :: Config -> Precision

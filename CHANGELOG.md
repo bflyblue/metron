@@ -228,3 +228,11 @@
   references and a field namer); the driver fills it from the codebase, and
   `plainPrinter` knows no field names. A constructor with an unnamed field
   still prints positionally.
+- `:set unicode on|off` (design §7.3, §2.8), listed by `:set`, off by
+  default. When on, output uses superscript exponents (`9.81 m s⁻²`, `Num
+  [m s⁻²]`, `x²` in `:view`), `→` for `->`, `λ` for `\`, and `≤ ≥ ≠ ∨` for
+  `<= >= /= ||`; `*` stays `*`, since `×` is the cross product. Every form
+  lexes to the same tokens as its ASCII one. A `Spelling` (`Ascii` or
+  `Unicode`) reaches the unit, type and term printers through `renderUnitsIn`,
+  `renderTypeIn`, `renderTermIn` and the value `Printer`; the default
+  rendering is unchanged.

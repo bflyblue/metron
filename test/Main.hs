@@ -13,7 +13,7 @@ import Eval.Affine qualified as A
 import Eval.Codebase (Codebase (..), lookupTypeName)
 import Eval.Core
 import Eval.Desugar
-import Eval.Dimension (DimAtom (..), dimAtoms, isDimOne)
+import Eval.Dimension (DimAtom (..), Spelling (..), dimAtoms, isDimOne)
 import Eval.Driver
 import Eval.Eval
 import Eval.Hash
@@ -1418,6 +1418,17 @@ pipelineProperties src =
                   >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
                   Left err -> counterexample (T.unpack err) False
                   Right (t', _) -> counterexample (fromMaybe "" (firstDifference t t')) (alphaEq t t')
+  , -- The same in the unicode spelling of `:set unicode on` (design §7.3).
+    testProperty "printed Core in unicode re-parses to an alpha-equivalent term"
+      $ forProgram src
+      $ \e ->
+        withElaborated src e $ \t _ ->
+          let printed = renderTermIn Unicode (\_ _ _ -> "#") VNil t
+           in counterexample (T.unpack printed)
+                $ case parseExpr printed
+                  >>= either (Left . renderDesugarError) Right . desugarClosed noResolver of
+                  Left err -> counterexample (T.unpack err) False
+                  Right (t', _) -> counterexample (fromMaybe "" (firstDifference t t')) (alphaEq t t')
   , testProperty "hashes ignore hints"
       $ forProgram src
       $ \e ->
@@ -1834,7 +1845,86 @@ displayTests :: TestTree
 displayTests =
   testGroup
     "display units"
-    [ testCase "a quantity prints in the unit it was written in" $ do
+    [ testCase ":set unicode prints the unicode spellings, which read back" $ do
+        runLinesP [":set"] @?= Right ["precision 20", "sigma 3", "unicode off"]
+        runLinesP [":set unicode on", ":set", ":set unicode off", ":set"]
+          @?= Right
+            [ "precision 20"
+            , "sigma 3"
+            , "unicode on"
+            , "precision 20"
+            , "sigma 3"
+            , "unicode off"
+            ]
+        case runLinesP [":set unicode maybe"] of
+          Left err -> T.isInfixOf "unicode is on or off" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        let defs =
+              [ "let f x = x^2 + 1"
+              , "let g x y = if x <= y then x^-1 else y"
+              , "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m/s]}"
+              ]
+            inputs =
+              [ "9.81 m/s^2"
+              , "5 km / h"
+              , "Body {mass = 5 kg, vel = [0, 0, 1] m/s}"
+              , ":type (\\x -> x, 9.81 m/s^2)"
+              , ":view f"
+              , ":view g"
+              , ":view Body"
+              ]
+            ascii =
+              [ "9.81 m s^-2"
+              , "5 km h^-1"
+              , "Body {mass = 5 kg, vel = [0, 0, 1] m s^-1}"
+              , "(a -> a, Num [m s^-2])"
+              , "f = \\x -> x^2 + 1"
+              , "g = \\x -> \\y -> if x <= y then x^-1 else y"
+              , "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m s^-1]}"
+              ]
+            unicode =
+              [ "9.81 m s⁻²"
+              , "5 km h⁻¹"
+              , "Body {mass = 5 kg, vel = [0, 0, 1] m s⁻¹}"
+              , "(a → a, Num [m s⁻²])"
+              , "f = λx → x² + 1"
+              , "g = λx → λy → if x ≤ y then x⁻¹ else y"
+              , "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m s⁻¹]}"
+              ]
+        runLinesP (defs ++ inputs) @?= Right ascii
+        runLinesP (defs ++ ":set unicode on" : inputs) @?= Right unicode
+        -- Both spellings lex to the same tokens, a superscript power standing
+        -- for its caret form.
+        let caret = concatMap $ \case
+              TSup n -> [TOp "^"] ++ [TOp "-" | n < 0] ++ [L.TNum (fromInteger (abs n))]
+              t -> [t]
+        mapM_
+          (\(a, u) -> (caret <$> toks u) @?= toks a)
+          (zip ascii unicode)
+        -- A superscript is glued only to an atom: after a stale `x#hash`
+        -- (a hash label to the lexer) the power keeps its caret.
+        let power namer k =
+              renderTermIn
+                Unicode
+                (\_ _ _ -> namer)
+                VNil
+                (Pow (Ref selfType Nothing (Hint "x")) k)
+        power "x" (-2) @?= "x⁻²"
+        power "x#a3f9k" 2 @?= "x#a3f9k^2"
+        -- and read back as the same values and definitions
+        runLinesP
+          [ "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m s⁻¹]}"
+          , "9.81 m s⁻²"
+          , "Body {mass = 5 kg, vel = [0, 0, 1] m s⁻¹}"
+          , "let f = λx → x² + 1"
+          , ":view f"
+          ]
+          @?= Right
+            [ "9.81 m s^-2"
+            , "Body {mass = 5 kg, vel = [0, 0, 1] m s^-1}"
+            , "f = \\x -> x^2 + 1"
+            ]
+    , testCase "a quantity prints in the unit it was written in" $ do
         evalP "5 km / h" @?= Right ["5 km h^-1"]
         evalP "(2 km)^2" @?= Right ["4 km^2"]
         evalP "[1, 2] km" @?= Right ["[1, 2] km"]

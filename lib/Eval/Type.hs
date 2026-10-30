@@ -39,6 +39,8 @@ module Eval.Type (
   shapeOfDims,
   renderType,
   renderScheme,
+  renderTypeIn,
+  renderSchemeIn,
   renderTypeIds,
   renderSchemeIds,
   renderArg,
@@ -263,16 +265,23 @@ dimensions (design §4.5). Rank zero, one and two tensors print as @Num@,
 @Vec@ and @Mat@; a dimension follows in brackets unless it is @1@.
 -}
 renderType :: Type -> Text
-renderType t = renderWith (prettyNames (freeVars t)) 0 t
+renderType = renderTypeIn Ascii
 
 renderScheme :: Scheme -> Text
 renderScheme (Forall _ t) = renderType t
+
+-- | 'renderType' in a chosen spelling: @Num [m s⁻²] → Num [m]@ in unicode.
+renderTypeIn :: Spelling -> Type -> Text
+renderTypeIn spelling t = renderWith spelling (prettyNames (freeVars t)) 0 t
+
+renderSchemeIn :: Spelling -> Scheme -> Text
+renderSchemeIn spelling (Forall _ t) = renderTypeIn spelling t
 
 {- | Print naming variables by their ids (@t0@, @n1@, @s2@, @d3@), so that
 binders and uses in Typed Core line up (design §5.3).
 -}
 renderTypeIds :: Type -> Text
-renderTypeIds t = renderWith (idNames (freeVars t)) 0 t
+renderTypeIds t = renderWith Ascii (idNames (freeVars t)) 0 t
 
 renderSchemeIds :: Scheme -> Text
 renderSchemeIds (Forall _ t) = renderTypeIds t
@@ -290,8 +299,8 @@ renderArg = \case
     SCons _ rest -> shapeVars rest
     SVar v -> [(v, KShape)]
 
-renderWith :: Map VarId Text -> Int -> Type -> Text
-renderWith names prec = \case
+renderWith :: Spelling -> Map VarId Text -> Int -> Type -> Text
+renderWith spelling names prec = \case
   TBool -> "Bool"
   -- As an argument of a declared type, a tensor with a shape or dimension is parenthesised.
   TTensor sh d
@@ -304,15 +313,21 @@ renderWith names prec = \case
   TPoint sh d -> "Point (" <> tensor sh <> dim d <> ")"
   TScale SNil d -> "Scale" <> dim d
   TScale sh d -> "Scale (" <> tensor sh <> dim d <> ")"
-  TTuple ts -> "(" <> T.intercalate ", " (map (renderWith names 0) ts) <> ")"
-  TList t -> "{" <> renderWith names 0 t <> "}"
+  TTuple ts -> "(" <> T.intercalate ", " (map (renderWith spelling names 0) ts) <> ")"
+  TList t -> "{" <> renderWith spelling names 0 t <> "}"
   -- A declared type prints by its short hash here; the driver replaces that
   -- with the current name (design §7.2), so inference needs no name table.
   TData h as ->
     paren
       (prec > 10 && not (null as))
       (T.unwords (showHash h : map (argWith names) as))
-  TFun a b -> paren (prec > 0) (renderWith names 1 a <> " -> " <> renderWith names 0 b)
+  TFun a b ->
+    paren
+      (prec > 0)
+      ( renderWith spelling names 1 a
+          <> arrowText spelling
+          <> renderWith spelling names 0 b
+      )
   TVar v -> Map.findWithDefault ("t" <> T.pack (show v)) v names
  where
   paren b s = if b then "(" <> s <> ")" else s
@@ -326,15 +341,15 @@ renderWith names prec = \case
   dim d
     | isDimOne d = ""
     | [(DVar v, 1)] <- dimAtoms d = " " <> dimName v
-    | otherwise = " " <> renderDimWith dimName d
+    | otherwise = " " <> renderDimIn spelling dimName d
   dimName v = Map.findWithDefault ("d" <> T.pack (show v)) v names
   argWith ns = \case
-    AType t -> renderWith ns 11 t
+    AType t -> renderWith spelling ns 11 t
     ALen l -> renderLen ns l
     AShape sh -> renderShapeList ns sh
     ADim d
       | [(DVar v, 1)] <- dimAtoms d -> dimName v
-      | otherwise -> renderDimWith dimName d
+      | otherwise -> renderDimIn spelling dimName d
 
 -- | A length on its own: an offset form is parenthesised, @Vec (n + 1)@.
 renderLen :: Map VarId Text -> Len -> Text
@@ -477,8 +492,9 @@ structuralLabel = Tag ""
 …@, with the type's own hash standing for recursive occurrences (the
 driver names it) and parameters named by kind as in 'renderType'.
 -}
-renderTypeDef :: Hash -> Text -> [Text] -> [[Maybe Text]] -> TypeDef -> Text
-renderTypeDef h name conNames fieldNames def =
+renderTypeDef ::
+  Spelling -> Hash -> Text -> [Text] -> [[Maybe Text]] -> TypeDef -> Text
+renderTypeDef spelling h name conNames fieldNames def =
   (if def.label == structuralLabel then "structural " else "")
     <> "data "
     <> T.unwords (name : map (\(v, _) -> Map.findWithDefault "?" v names) def.params)
@@ -501,12 +517,16 @@ renderTypeDef h name conNames fieldNames def =
             <> " {"
             <> T.intercalate
               ", "
-              (zipWith (\l t -> l <> " :: " <> renderWith names 0 (unself t)) ls fields)
+              ( zipWith
+                  (\l t -> l <> " :: " <> renderWith spelling names 0 (unself t))
+                  ls
+                  fields
+              )
             <> "}"
     _ -> T.unwords (c : map (field . unself) fields)
   -- A field is an atom: a compound type goes in parentheses.
   field t =
-    let s = renderWith names 11 t
+    let s = renderWith spelling names 11 t
      in if " " `T.isInfixOf` s && not (T.isPrefixOf "(" s || T.isPrefixOf "{" s)
           then "(" <> s <> ")"
           else s
