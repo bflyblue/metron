@@ -267,3 +267,5 @@
   `Unicode`) reaches the unit, type and term printers through `renderUnitsIn`,
   `renderTypeIn`, `renderTermIn` and the value `Printer`; the default
   rendering is unchanged.
+- A constructor's braces are record syntax only when `{name ::` follows, so
+  `data H = G {Num}` declares a constructor with one list-typed field.

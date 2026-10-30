@@ -223,8 +223,11 @@ dataStatement = do
     )
  where
   constructor = (,) <$> name <*> (recordFields P.<|> P.many (FieldDecl Nothing <$> typeAtom))
-  -- @C {f :: type, g :: type}@: named fields (§2.3).
-  recordFields = tok TLBrace *> P.sepBy1 fieldDecl (tok TComma) <* tok TRBrace
+  -- @C {f :: type, g :: type}@: named fields (§2.3). The cue is @{name ::@,
+  -- so @G {Num}@ is a constructor with one list-typed field.
+  recordFields = do
+    _ <- P.try (tok TLBrace <* P.lookAhead (name *> tok (TOp "::")))
+    P.sepBy1 fieldDecl (tok TComma) <* tok TRBrace
   fieldDecl = do
     n <- name
     _ <- tok (TOp "::")

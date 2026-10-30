@@ -639,8 +639,29 @@ after an argument would raise the whole application to the power.
 -}
 fieldText :: Value -> Text -> Text
 fieldText v s
+  | selfDelimited s = s
   | VData _ (_ : _) <- v = paren
   | T.isPrefixOf "-" s || T.any (== ' ') s = paren
   | otherwise = s
  where
   paren = "(" <> s <> ")"
+
+{- | A bracketed group that closes at its last character, @ or @(a, b)@,
+needs no parentheses; @[1, 2] km@ does.
+-}
+selfDelimited :: Text -> Bool
+selfDelimited s = case (T.uncons s, T.unsnoc s) of
+  (Just (open, _), Just (_, close))
+    | Just close' <- lookup open [('(', ')'), ('[', ']'), ('{', '}')]
+    , close == close' ->
+        closesAtEnd 0 (T.unpack s)
+  _ -> False
+ where
+  closesAtEnd :: Int -> String -> Bool
+  closesAtEnd depth = \case
+    [] -> False
+    [c] -> depth == 1 && c `elem` (")]}" :: String)
+    c : rest
+      | c `elem` ("([{" :: String) -> closesAtEnd (depth + 1) rest
+      | c `elem` (")]}" :: String) -> depth > 1 && closesAtEnd (depth - 1) rest
+      | otherwise -> closesAtEnd depth rest
