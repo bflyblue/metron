@@ -779,7 +779,7 @@ listNames session args = do
         ]
   pure
     ( case definitions ++ types of
-        [] -> ["nothing matches"] ++ footer
+        [] -> "nothing matches" : footer
         ls -> ls ++ footer
     )
  where
