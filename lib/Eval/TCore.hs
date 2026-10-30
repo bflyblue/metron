@@ -848,11 +848,15 @@ renderTTerm namer = go 0
         )
     TPack ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
     TProj b i -> go 11 ctx b <> "." <> T.pack (show i)
+    -- Axis variables are not printed in stage 1 of design §3.9, here as
+    -- in types: their abstractions and applications print as nothing.
+    TTyLam _ KAxis b -> go prec ctx b
+    TTyApp b (AAxis _) -> go prec ctx b
     TTyLam v k b -> paren (prec > 0) ("Λ" <> varName v k <> ". " <> go 0 ctx b)
     TTyApp b arg -> paren (prec > 10) (go 10 ctx b <> " @" <> renderArg arg)
     TCycle vars members bodies ->
       let ctx' = vecAppend (vecMap (\(Hint h, _) -> h) members) ctx
-          binders = T.concat ["Λ" <> varName v k <> ". " | (v, k) <- vars]
+          binders = T.concat ["Λ" <> varName v k <> ". " | (v, k) <- vars, k /= KAxis]
        in binders
             <> T.intercalate
               "; "

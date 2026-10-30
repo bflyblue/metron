@@ -67,6 +67,10 @@ data Constraint
 data St = St
   { subst :: Subst
   , next :: Int
+  , nextAxis :: Int
+  {- ^ axis variables are numbered apart, from 'axisBase', so that adding
+  them (design §3.9) moves no other variable's id
+  -}
   , pending :: [(Path, Constraint)]
   -- ^ reversed paths, as 'failAt' takes them
   , typeDefs :: Hash -> Maybe TypeDef
@@ -104,7 +108,8 @@ elaborateClosed = elaborateClosedWith noAnnotations
 elaborateClosedWith ::
   Annotations -> TypeLookup -> Term Z -> Either TypeError ([Scheme], TTerm Z)
 elaborateClosedWith annots look term = do
-  ((schemes, tt), st) <- runStateT go (St emptySubst 0 [] look.typeDefOf annots)
+  ((schemes, tt), st) <-
+    runStateT go (St emptySubst 0 axisBase [] look.typeDefOf annots)
   pure (map (applyScheme st.subst) schemes, zonk st.subst tt)
  where
   go = case term of
@@ -139,15 +144,32 @@ abstractOver :: [(VarId, Kind)] -> TTerm n -> TTerm n
 abstractOver vs t = foldr (uncurry TTyLam) t vs
 
 fresh :: Kind -> Infer Arg
-fresh k = do
-  st <- get
-  put st{next = st.next + 1}
-  pure $ case k of
-    KType -> AType (TVar st.next)
-    KLen -> ALen (LVar st.next 0)
-    KShape -> AShape (SVar st.next)
-    KDim -> ADim (dimVar st.next)
-    KAxis -> AAxis (AVar st.next)
+fresh = \case
+  KType -> AType . TVar <$> freshId
+  KLen -> ALen . (`LVar` 0) <$> freshId
+  KShape -> AShape . SVar <$> freshId
+  KDim -> ADim . dimVar <$> freshId
+  KAxis -> do
+    st <- get
+    put st{nextAxis = st.nextAxis + 1}
+    pure (AAxis (AVar st.nextAxis))
+ where
+  freshId = do
+    st <- get
+    put st{next = st.next + 1}
+    pure st.next
+
+{- | Where axis variables are numbered from: far above any other variable
+an inference run makes, so the two never meet.
+-}
+axisBase :: Int
+axisBase = 1000000000
+
+freshAxis :: Infer Axis
+freshAxis =
+  fresh KAxis >>= \case
+    AAxis a -> pure a
+    _ -> error "fresh KAxis"
 
 freshDim :: Infer Dim
 freshDim =
@@ -383,8 +405,8 @@ unifyLen p x y = do
   -- rank v + k = j: v is a shape of j - k lengths, each still unknown.
   rankIs v k j
     | j >= k = do
-        ls <- mapM (const (freshLen 0)) [1 .. j - k]
-        bindVar p v (AShape (foldr (`SCons` AAnon) SNil ls))
+        ls <- mapM (const freshPosition) [1 .. j - k]
+        bindVar p v (AShape (foldr (uncurry SCons) SNil ls))
     | otherwise =
         failAt
           p
@@ -400,12 +422,14 @@ unifyLen p x y = do
   grow v n
     | n == 0 = pure v
     | otherwise = do
-        ls <- mapM (const (freshLen 0)) [1 .. n]
+        ls <- mapM (const freshPosition) [1 .. n]
         tl <- freshShape
-        bindVar p v (AShape (foldr (`SCons` AAnon) tl ls))
+        bindVar p v (AShape (foldr (uncurry SCons) tl ls))
         case tl of
           SVar v' -> pure v'
           _ -> error "freshShape"
+  -- A position of a shape, length and axes still unknown.
+  freshPosition = (,) <$> freshLen 0 <*> freshAxis
 
 {- | Kennedy's algorithm (design §4.4): to unify two dimensions, solve
 @d1 · d2⁻¹ = 1@. Pick the variable with the smallest exponent; if it
@@ -924,7 +948,8 @@ infer look p ctx = \case
         atLeast <- freshLen (i + 1)
         rest <- freshShape
         d <- freshDim
-        unify (0 : p) tt (TTensor (SCons atLeast AAnon rest) d)
+        axes <- freshAxis
+        unify (0 : p) tt (TTensor (SCons atLeast axes rest) d)
         pure (TTensor rest d)
     pure (ty, TProj t' i)
   Cycle{} -> failAt p "a cycle cannot appear inside an expression"
@@ -981,12 +1006,15 @@ primType p name argc = do
       s3 <- freshShape
       d1 <- freshDim
       d2 <- freshDim
-      defer p (Append s1 (SCons n AAnon SNil) left)
+      -- The contracted positions share one length and one axis set (design
+      -- §3.9): the left's last and the right's first.
+      a <- freshAxis
+      defer p (Append s1 (SCons n a SNil) left)
       defer p (Append s1 s2 s3)
       pure
         ( TFun
             (TTensor left d1)
-            (TFun (TTensor (SCons n AAnon s2) d2) (TTensor s3 (dimMul d1 d2)))
+            (TFun (TTensor (SCons n a s2) d2) (TTensor s3 (dimMul d1 d2)))
         )
     _ | name == "eq" || name == "ne" -> do
       a <- freshType
@@ -1196,7 +1224,7 @@ with fresh variables and the two are unified, so @a -> a@ matches a query
 @Num -> Num@ and @Num [m] -> Num [m]@ matches a query @a -> a@.
 -}
 matchesQuery :: Scheme -> Scheme -> Bool
-matchesQuery query sc = case runStateT go (St emptySubst 0 [] (const Nothing) noAnnotations) of
+matchesQuery query sc = case runStateT go (St emptySubst 0 axisBase [] (const Nothing) noAnnotations) of
   Right _ -> True
   Left _ -> False
  where
