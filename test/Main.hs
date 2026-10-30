@@ -21,6 +21,7 @@ import Eval.Codebase (
   emptyCodebase,
   isScaleName,
   isUnitName,
+  lookupConName,
   lookupName,
   lookupTypeName,
   showReference,
@@ -966,15 +967,22 @@ codebaseTests =
           ls "--units furl" @?= Right ["unit furlong : Num [m]"]
           ls "--scales degC" @?= Right ["scale degC : Scale [K]"]
           ls "--types"
-            @?= Right
-              [ -- The library's one type, the joint covariance in blocks.
+            @?= withBuiltinTypes
+              [ -- The library's types: the joint covariance in blocks, then Bool,
+                -- lists and pairs.
                 "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
               , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
               , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
               , "Circle : Num [m] -> Shape"
               , "Rect : Num [m] -> Num [m] -> Shape"
               ]
-          ls ": Shape -> a" @?= Right ["area : Shape -> Num [m^2]"]
+          -- The library's polymorphic constructors match too.
+          ls ": Shape -> a"
+            @?= Right
+              [ "area : Shape -> Num [m^2]"
+              , "Cons : a -> {a} -> {a}"
+              , "Pair : a -> b -> (a, b)"
+              ]
           ls ": {a} -> Num" @?= Right ["length : {a} -> Num"]
           -- unification both ways: the query's d is one variable, cross has two
           ls ": Vec 3 d -> Vec 3 d -> Vec 3 [d^2]"
@@ -3356,7 +3364,7 @@ storeTests =
             , ":covariance ([1, 2] m ±σ 1 m, [3, 4] s ±σ 1 s)"
             , ":ls --types"
             ]
-            @?= Right
+            @?= withBuiltinTypes
               [ "[1, 0; 0, 1] m^2"
               , "[0, 0; 0, 0] m s"
               , "Cov2 {rr = [1, 0; 0, 1] m^2, rv = [0, 0; 0, 0] m s, vv = [1, 0; 0, 1] s^2}"
@@ -6040,6 +6048,91 @@ stdlibTests =
               g @?= "#e1bms"
               (astroG /= g) @? "astro.G differs from the root G"
             other -> assertFailure (show other)
+    , testCase "std names Bool, Pair and List, the declarations the compiler holds" $ do
+        let cb = seeded.codebase
+        lookupTypeName "std.Bool" cb @?= Just boolHash
+        lookupTypeName "std.Pair" cb @?= Just pairHash
+        lookupTypeName "std.List" cb @?= Just listHash
+        Map.lookup boolHash cb.typeDefs @?= Just boolDef
+        Map.lookup pairHash cb.typeDefs @?= Just pairDef
+        Map.lookup listHash cb.typeDefs @?= Just listDef
+        map
+          (`lookupConName` cb)
+          ["std.False", "std.True", "std.Pair", "std.Nil", "std.Cons"]
+          @?= map
+            (Just . (\(UserCon t i) -> (t, i)))
+            [falseC, trueC, pairC, nilC, consC]
+        runLinesP
+          [ ":view std.Bool"
+          , ":view std.Pair"
+          , ":view std.List"
+          , "true"
+          , "True"
+          , "std.False"
+          , "Pair 1 2"
+          , "Cons 1 (Cons 2 Nil)"
+          , "if True then (1, {}) else (2, Cons 3 Nil)"
+          , ":type Cons"
+          , "case (1, true) of Pair a b -> if b then a else 0"
+          ]
+          @?= Right
+            [ "structural data Bool = False | True"
+            , "structural data Pair a b = Pair a b"
+            , "structural data List a = Nil | Cons a (List a)"
+            , "true"
+            , "true"
+            , "false"
+            , "(1, 2)"
+            , "{1, 2}"
+            , "(1, {})"
+            , "a -> {a} -> {a}"
+            , "1"
+            ]
+    , testCase "the built-in types print by hash, whatever names them" $ do
+        -- Renamed or unnamed, Bool is still Bool, and true still true.
+        runLinesP
+          [ ":rename std.Bool std.Truth"
+          , ":rename std.True std.Yes"
+          , "Yes"
+          , ":type Yes"
+          , ":unname std.List"
+          , ":type {1}"
+          , "(1, 2, 3, 4)"
+          , ":type (1, true, {}, (2, 3))"
+          ]
+          @?= Right
+            [ "renamed `std.Bool` to `std.Truth`"
+            , "renamed `std.True` to `std.Yes`"
+            , "true"
+            , "Bool"
+            , "removed the label `std.List`"
+            , "{Num}"
+            , "(1, 2, 3, 4)"
+            , "(Num, Bool, {a}, (Num, Num))"
+            ]
+        -- The same declarations entered by a user are the same types.
+        let mine =
+              [ multiline
+                  [ "namespace mine"
+                  , "  structural data Bool = False | True"
+                  , "  structural data Couple a b = Couple a b"
+                  ]
+              , ":add"
+              ]
+        s <- either (assertFailure . T.unpack) pure (sessionP mine)
+        lookupTypeName "mine.Bool" s.codebase @?= Just boolHash
+        lookupTypeName "mine.Couple" s.codebase @?= Just pairHash
+        expecting
+          ( runLinesP
+              ( mine
+                  ++ ["mine.True", "mine.Couple 1 true", "(1, true) == mine.Couple 1 mine.True"]
+              )
+          )
+          $ \outs -> lastN 3 outs @?= ["true", "(1, true)", "true"]
+        expectError (runLinesP ["data Bool = Yes | No"]) "`Bool` is a built-in type"
+        expectError
+          (evalP ("(" <> T.intercalate ", " (replicate 33 "1") <> ")"))
+          "a tuple has at most 32 components"
     , testCase "units resolve through the stored uses and print bare" $ do
         evalP "5 km" @?= Right ["5 km"]
         runLinesP ["5 si.km", "1 km to m", "3 degC", "2 time.h"]
@@ -6057,12 +6150,13 @@ stdlibTests =
         expecting (runLinesP [":ls temperature"]) $ \outs ->
           ("scale degC : Scale [K]" `elem` outs) @? "degC"
         -- :ls lists a type and its constructor on two lines and no fields:
-        -- linalg.Cov2 is one label and two lines, its three fields none.
+        -- linalg.Cov2 and std.Pair are one label and two lines each, Cov2's
+        -- three fields none.
         expecting (runLinesP [":ls linalg"]) $ \outs ->
           length outs @?= librarySize "linalg" + 1 - 3
         expecting (runLinesP [":ls --all"]) $ \outs -> do
           ("unit si.km : Num [m]" `elem` outs) @? "full paths with --all"
-          length outs @?= length stdlibNames + 1 - 3
+          length outs @?= length stdlibNames + 2 - 3
         runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
     , testCase "a root name shadows the library's: c and physics.c" $ do
         runLinesP
@@ -6761,3 +6855,20 @@ annotationTests =
             ]
             @?= Right ["true"]
     ]
+
+-- | What @:ls --types@ lists of the library's declarations of the built-in types.
+builtinTypeListing :: [Text]
+builtinTypeListing =
+  [ "structural data Bool = False | True"
+  , "False : Bool"
+  , "True : Bool"
+  , "structural data List a = Nil | Cons a (List a)"
+  , "Nil : {a}"
+  , "Cons : a -> {a} -> {a}"
+  , "structural data Pair a b = Pair a b"
+  , "Pair : a -> b -> (a, b)"
+  ]
+
+-- | A listing of types, then the library's declarations of the built-in ones.
+withBuiltinTypes :: [Text] -> Either Text [Text]
+withBuiltinTypes = Right . (++ builtinTypeListing)

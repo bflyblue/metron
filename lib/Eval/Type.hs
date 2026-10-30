@@ -51,9 +51,9 @@ module Eval.Type (
   renderArg,
 ) where
 
+import Control.Applicative ((<|>))
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Control.Applicative ((<|>))
 import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)

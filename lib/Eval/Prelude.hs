@@ -392,10 +392,22 @@ data Statement
   | Scale Text Text
   | -- | a @use@ inside the block, for names of a sibling namespace
     UseNs Text
-  | {- | a @data@ declaration, and its labels: the type (which is also its
-    constructor), then its fields
+  | {- | a @data@ declaration, and its labels: the type, its constructors
+    where they are not the type's name, then its fields
     -}
     Data Text [Text]
+
+{- | @Bool@, tuples and lists (design §2.3, §7.7): the declarations the
+compiler holds ("Eval.Builtin"), written exactly so, so that entering
+them gives the same hashes. Naming them changes only how they print:
+@true@, @(1, 2)@ and @{1, 2}@ print so whatever names them.
+-}
+builtinData :: [Statement]
+builtinData =
+  [ Data "structural data Bool = False | True" ["Bool", "False", "True"]
+  , Data "structural data Pair a b = Pair a b" ["Pair"]
+  , Data "structural data List a = Nil | Cons a (List a)" ["List", "Nil", "Cons"]
+  ]
 
 {- | The library as namespace blocks, in the order the source has them
 (design §7.7). Inside a block a name resolves in that block first, then
@@ -405,7 +417,7 @@ stored @use@ exists.
 -}
 stdlibLayout :: [(Text, [Statement])]
 stdlibLayout =
-  [ ("std", [Let n e | (n, e) <- structural])
+  [ ("std", builtinData ++ [Let n e | (n, e) <- structural])
   ,
     ( "linalg"
     , [Let n e | (n, e) <- algebra]
