@@ -618,38 +618,14 @@ enterComponent checking group signed cb0 = \case
     let minted = mintedBy [b.name.text] written
         cb = mintAxes minted cb0
     -- The readings the types choose are written in before it is hashed
-    -- (design §3.10, U4, U6), its signature and its ascriptions taking part:
-    -- those are read on the term desugared with their markers, whose
-    -- reading markers are named as the plain term's are.
-    let sig = [signedAs signed cb0 b.name.text]
+    -- (design §3.10, U4, U6), its signature taking part. Not its
+    -- ascriptions: they are not in the term, so its printed source would
+    -- not read back, where a signature is written back with it.
     term <-
-      if not (hasReadingMarkers written)
-        then pure written
-        else
-          if not checking || null prov.ascriptions
-            then
-              either
-                (Left . typeErrorIn b prov)
-                Right
-                (withReadings cb Map.empty sig written written)
-            else do
-              (marked, markedProv) <-
-                either
-                  (Left . Desugar)
-                  Right
-                  ( desugarMarked
-                      ""
-                      b.name.text
-                      (groupResolver group Set.empty scope cb)
-                      VNil
-                      (asLambda b)
-                  )
-              (checkTerm, asc) <-
-                scopedAscriptions scope cb signed 0 [] "" b.name.text marked markedProv
-              either
-                (Left . typeErrorIn b markedProv)
-                Right
-                (withReadings cb asc sig checkTerm written)
+      either
+        (Left . typeErrorIn b prov)
+        Right
+        (withReadings cb [signedAs signed cb0 b.name.text] written)
     (schemes, typed) <-
       either
         (Left . typeErrorIn b prov)
@@ -759,28 +735,18 @@ by something its spelling does not make a unit or a chart is @scale@ or
 inferred with each member's signature as an ascription of its body, and
 with the signatures of the names it uses, so that @per u = 3 u@ under
 @per :: forall d. Unit d -> Num d@ reads @scale@; the term written in
-then stands alone, as a stored term must, its types its Core's. The
-readings are found on a term to read, which is the term itself or the
-term desugared with the markers of its ascriptions, given with them, and
-written into the term. A term with no such quantity or @to@ is returned
-as it is.
+then stands alone, as a stored term must, its types its Core's, and its
+printed source reads back with the signature written beside it. A term
+with no such quantity or @to@ is returned as it is.
 -}
 withReadings ::
-  Codebase ->
-  Map.Map Text (Scheme, D.Path) ->
-  [Maybe Scheme] ->
-  Term Z ->
-  Term Z ->
-  Either TypeError (Term Z)
-withReadings cb asc sigs toRead term
+  Codebase -> [Maybe Scheme] -> Term Z -> Either TypeError (Term Z)
+withReadings cb sigs term
   | not (hasReadingMarkers term) = Right term
   | otherwise = do
       chosen <-
         readingsOf
-          ( Annotations
-              (annotationsWith cb Map.empty).signatureFor
-              (Map.union asc ascriptions)
-          )
+          (Annotations (annotationsWith cb Map.empty).signatureFor ascriptions)
           (typeLookupFor cb)
           signedTerm
       Right (rewriteReadings chosen term)
@@ -796,13 +762,13 @@ withReadings cb asc sigs toRead term
   wrapMembers i = \case
     VNil -> VNil
     VCons b rest -> VCons (wrap i b) (wrapMembers (i + 1) rest)
-  (signedTerm, ascriptions) = case toRead of
+  (signedTerm, ascriptions) = case term of
     Cycle hs bodies ->
       ( Cycle hs (wrapMembers 0 bodies)
       , Map.fromList [(marker i, (sc, [i])) | (i, Just sc) <- zip [0 ..] sigs]
       )
     _ ->
-      (wrap 0 toRead, Map.fromList [(marker 0, (sc, [])) | Just sc <- take 1 sigs])
+      (wrap 0 term, Map.fromList [(marker 0, (sc, [])) | Just sc <- take 1 sigs])
 
 -- | The signature a name is to have: the group's for it, else the one it has.
 signedAs :: Map.Map Text Signed -> Codebase -> Text -> Maybe Scheme
@@ -905,13 +871,7 @@ enterCycle checking group signed cb sbs = do
         either
           (Left . cycleTypeError sorted provs)
           Right
-          ( withReadings
-              cbm
-              Map.empty
-              [signedAs signed cb b.name.text | b <- sorted]
-              written
-              written
-          )
+          (withReadings cbm [signedAs signed cb b.name.text | b <- sorted] written)
       let h = hashTerm cycleTerm
       (schemes, typed) <-
         either

@@ -737,6 +737,7 @@ decide p = \case
           (1 : p)
           ( maybe "this" (\w -> "`" <> w <> "`") written
               <> " is "
+              <> (case other of TFun _ _ -> "a function, "; _ -> "a ")
               <> renderType other
               <> ", not a unit or a chart: write the `*`"
           )

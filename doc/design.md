@@ -406,7 +406,7 @@ unitatom ::= atom [ '^' [ '-' ] natural ]
 
 What the literal is followed by is read by its type. A unit (`Unit δ`,
 §3.10) makes the amount `scale lit u : Tensor σ δ`; a chart makes the point
-`pointOn c lit` (§3.6); anything else is refused, "`pi` is Num, not a unit or
+`pointOn c lit` (§3.6); anything else is refused, "`pi` is a Num, not a unit or
 a chart: write the `*`". Juxtaposed atoms multiply, `9.81 m s^-2` being
 `9.81 (m*s^-2)`. Two literals side by side, `5 4 3` or `2 [1, 2]`, are a
 parse error. The rule exists for units, not arithmetic: `5 * 4 * 3` and `5
@@ -2270,10 +2270,10 @@ hands, meet:
   declared origin velocity, as the spin is declared, would add.
 - *A declared spin is not checked* against the rotation it goes with (it
   would need the derivative of `expm B(t)`).
-- *A chart value bound by `let`* (`let c = ecef t0`) is a chart for the
+- *A chart value bound by `let`* (`let c = ecef t0`) was a chart for the
   library functions (`velocityIn c st`, `rotationOf c`) but not for `to`
-  or the quantity rule, which pick a chart by its declared name: write `p
-  to ecef t0`, or the primitives `toScale p c` and `pointOn c x`.
+  or the quantity rule, which picked a chart by its declared name. Closed
+  by §3.10's part U: they read the type, so `3 c` and `p to c` work.
 - Whether `eci` is a library definition or a primitive root (none is
   shipped yet: a user's `chart eci = m at [0, 0, 0] m` is a root like any
   chart without a parent).
@@ -2785,14 +2785,19 @@ open. Until part F lands, the chart readings are today's: U4's builds
   `§quantity:k:def` or `§to:k:def`, named by its definition so that a
   cycle's members never share one. Before a definition is hashed its
   markers are resolved by inference with its signature as an ascription
-  of its body, its own ascriptions (desugared with their markers, whose
-  reading markers are named alike) and the signatures of the names it
-  uses, and the reading is written in: `per u = 3 u` under `per :: forall
-  d. Unit d -> Num d` stores `scale 3 u`, which then infers alone, as a
-  stored term must (§4.6). A cycle's members are read with their
-  signatures only. An expression at the prompt is read with its
-  ascriptions. No stored term holds a marker; the library seeds in one
-  pass, since its quantities are all spelled.
+  of its body (each member's, in a cycle) and the signatures of the names
+  it uses, and the reading is written in: `per u = 3 u` under `per ::
+  forall d. Unit d -> Num d` stores `scale 3 u`, which then infers alone,
+  as a stored term must (§4.6), and whose source, `per = \u -> 3 u` with
+  the signature written back beside it, reads back. A definition's own
+  ascriptions do not take part: they are not in its term, so its printed
+  source would not read back, and `let f u = 3 (u :: Unit m)` is refused
+  as ambiguous. An expression at the prompt, which is not stored, is read
+  with its ascriptions too. No stored term holds a marker; the library
+  seeds in one pass, since its quantities are all spelled.
+- **A `let`-bound chart works with `to` and the quantity rule**, which now
+  read its type: `let c = degF` then `3 c` and `20 degC to c` (the known gap
+  of §3.8 closed).
 - **Arithmetic's reading is static only**, as decided, and not written
   in: a function of units made by arithmetic alone, `sq u = u * u`, takes
   the amounts' reading, so `sq :: forall d. Unit d -> Unit (d^2)` is
@@ -2847,12 +2852,14 @@ open. Until part F lands, the chart readings are today's: U4's builds
 - **Messages.** An amount and a unit under `*` or `/`: "an amount and a
   unit together: / takes two amounts or two units", with the hint "`s` is
   a unit; write `1 s`" when one side is a unit's name; a unit where an
-  amount goes, with that hint on the unit's name; "units do not add: this
-  is Unit m, and + and - take amounts"; a quantity of something else:
-  "`pi` is Num, not a unit or a chart: write the `*`" (the name when it is a
-  reference or a primitive, "this" for a local); the hint "`u` is not a
-  declared unit, so the quantity ends before it; if it is a unit, write
-  9.81 (m/u)"; and the two ambiguities.
+  amount goes, with "`h` is a unit; where an amount is meant, write `1 h`"
+  on the unit's name (and, after `to`, "the unit after `to` has the
+  dimension of the value before it"); "units do not add: this is Unit m,
+  and + and - take amounts"; a quantity of something else: "`pi` is a Num,
+  not a unit or a chart: write the `*`" ("a function, …" for a function;
+  the name when it is a reference or a primitive, "this" for a local or a
+  constructor); the hint "`u` is not a declared unit, so the quantity ends
+  before it; if it is a unit, write 9.81 (m/u)"; and the two ambiguities.
 - **The library**, respelled beyond U7's examples: `Hz` and `Bq` as
   `s^-1`, `g` as `1 kg / 1000`, `L` as `(1 m / 10)^3`, `t` as `1000 kg`,
   every prefixed unit as `kilo * 1 metre`, `oz` as `1 lb / 16`, `eV` as
@@ -3529,10 +3536,10 @@ Num (m/s^2)
   definition that needs its own signature to check does not check. The one
   exception is a reading (§3.10): a quantity or a `to` whose reading the
   types choose is first inferred with the definition's signature as an
-  ascription of its body, and with its own ascriptions, and the reading
-  found is written into the term, which is then inferred alone as before
-  (`per u = 3 u` under `per :: forall d. Unit d -> Num d` stores `scale 3
-  u`).
+  ascription of its body, and the reading found is written into the term,
+  which is then inferred alone as before (`per u = 3 u` under `per ::
+  forall d. Unit d -> Num d` stores `scale 3 u`). The definition's own
+  ascriptions do not take part, since they are not in its term.
 - Arithmetic's reading is not written into the term, since both are one
   operation at run time (§3.10, U2): inferred alone, `*`, `/` and `^` on
   parameters take the amounts' reading, so a function of units built by
@@ -3909,8 +3916,10 @@ Rules:
 - `App` therefore only ever applies a user function (a lambda, a `Ref`, a
   variable), never a primitive.
 - The quantity rule and the `let f x = …` sugar are gone; `3 m` is
-  `PrimApp "mul" [Lit 3, Ref #m]` after name resolution of `m` to the prelude
-  definition, and `let f x = e` is `Lam "x" e`.
+  `PrimApp "scale" [Lit 3, PrimApp "m" []]`, `3 km` the same over `Ref #km`,
+  and `20 degC` `PrimApp "pointOn" [Ref #degC, Lit 20]`; where the spelling
+  does not decide, inference does and the reading is written in before the
+  term is hashed (§3.10). `let f x = e` is `Lam "x" e`.
 - Free names are resolved to `Ref`s pointing at the hash the name has *at the
   time of definition* (§7).
 - Within a `Cycle`, member `j` is referenced from inside body `i` as a variable

@@ -1567,12 +1567,12 @@ productTests =
         -- What follows a literal is refused by its type (design §3.10, U4).
         case runLinesP ["let a = [1, 2; 3, 4]", "5 a"] of
           Left err ->
-            T.isInfixOf "`a` is Mat 2 2, not a unit or a chart: write the `*`" err
+            T.isInfixOf "`a` is a Mat 2 2, not a unit or a chart: write the `*`" err
               @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP "2 pi" of
           Left err ->
-            T.isInfixOf "`pi` is Num, not a unit or a chart: write the `*`" err
+            T.isInfixOf "`pi` is a Num, not a unit or a chart: write the `*`" err
               @? T.unpack err
           Right v -> assertFailure (show v)
         -- A parameter could be either, so a signature must say.
@@ -3319,10 +3319,10 @@ readingTests =
     , testCase "a quantity after anything else is refused by its type" $ do
         expectLeft
           (readings (PrimApp (q 0) [num 2, PrimApp "pi" []]))
-          "`pi` is Num, not a unit or a chart: write the `*`"
+          "`pi` is a Num, not a unit or a chart: write the `*`"
         expectLeft
           (readings (PrimApp (q 0) [num 2, ref len]))
-          "is Num m, not a unit or a chart: write the `*`"
+          "is a Num m, not a unit or a chart: write the `*`"
     , testCase
         "a quantity unknown at generalisation is ambiguous; a signature reads it"
         $ do
@@ -3433,6 +3433,32 @@ partUTests =
         notes @?= []
         linesIn loaded ["per km", ":type per"]
           @?= Right ["3 km", "forall d. Unit d -> Num d"]
+    , testCase "U1: its source, written back with its signature, reads back" $ do
+        s <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            ( sessionP
+                [multiline ["per :: forall d. Unit d -> Num d", "let per u = 3 u"], ":add"]
+            )
+        file <- editFileOf s ["per"]
+        (_, outs) <- edited (EditName "per") file s
+        outs @?= ["nothing changed"]
+    , testCase "U1: so is one in a cycle, read by a member's signature" $ withTempStore $ \dir -> do
+        _ <-
+          persistLines
+            dir
+            [ multiline
+                [ "per :: forall d. Unit d -> Num d"
+                , "let per u = if true then 3 u else per2 u"
+                , "let per2 u = per u"
+                ]
+            , ":add"
+            ]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        linesIn loaded ["per km", "per2 (km/h)", ":type per2"]
+          @?= Right ["3 km", "3 km h^-1", "forall d. Unit d -> Num d"]
     , testCase "U2: two units give a unit, two amounts an amount, never one of each" $ do
         runLinesP
           [ "km/h"
@@ -3472,8 +3498,12 @@ partUTests =
         expectError
           (runLinesP ["let x = 6 m", "x / s"])
           "an amount and a unit together: / takes two amounts or two units\n  hint: `s` is a unit; write `1 s`"
-        expectError (runLinesP ["5 m + km"]) "hint: `km` is a unit; write `1 km`"
-        expectError (runLinesP ["sin rad"]) "hint: `rad` is a unit; write `1 rad`"
+        expectError
+          (runLinesP ["5 m + km"])
+          "hint: `km` is a unit; where an amount is meant, write `1 km`"
+        expectError
+          (runLinesP ["sin rad"])
+          "hint: `rad` is a unit; where an amount is meant, write `1 rad`"
         -- A quantity binds like an application.
         runLinesP ["let x = 6 m", "x / 1 s", "x * 1 km"]
           @?= Right ["6 m s^-1", "6 m km"]
@@ -3483,10 +3513,10 @@ partUTests =
           @?= Right ["3 km", "3 km h^-1", "[1, 2] km h^-1", "20 degC"]
         expectError
           (runLinesP ["2 pi"])
-          "`pi` is Num, not a unit or a chart: write the `*`"
+          "`pi` is a Num, not a unit or a chart: write the `*`"
         expectError
           (runLinesP ["let a = [1, 2; 3, 4]", "5 a"])
-          "`a` is Mat 2 2, not a unit or a chart: write the `*`"
+          "`a` is a Mat 2 2, not a unit or a chart: write the `*`"
         -- What follows may be any atom: a parameter, read by a signature.
         expectError
           (runLinesP ["let per u = 3 u"])
@@ -3501,9 +3531,13 @@ partUTests =
           @?= Right ["3 degC", "3 degF", "pt = \\c -> 3 c"]
         -- Used where it is made, a parameter's type is known: no signature.
         runLinesP ["(\\u -> 3 u) km", "(\\c -> 3 c) degC"] @?= Right ["3 km", "3 degC"]
-        -- An ascription in the definition reads it too.
-        runLinesP ["let f u = 3 (u :: Unit m)", "f km", ":view f"]
-          @?= Right ["3 km", "f = \\u -> 3 u"]
+        -- A definition needs the signature, written back with it: an
+        -- ascription is not in its term, so its source would not read back.
+        expectError
+          (runLinesP ["let f u = 3 (u :: Unit m)"])
+          "ambiguous: what follows this literal could be a unit or a chart"
+        -- At the prompt an ascription reads it, as nothing is stored.
+        runLinesP [":type \\u -> 3 (u :: Unit m)"] @?= Right ["Unit m -> Num m"]
     , testCase "U5: unit operators bind before numbers" $ do
         runLinesP
           ["9.81 m/s^2", "5 km/h", "9.81 m s^-2", "6 m / 2 s", "let x = 2", "6 m / x"]
@@ -3553,6 +3587,14 @@ partUTests =
         expectError
           (runLinesP ["let cv p c = p to c"])
           "ambiguous: `to` here could take a unit or a chart; give the definition a signature"
+        -- A unit of another dimension after to is not to be written as an
+        -- amount.
+        expectError
+          (runLinesP ["5 km to h"])
+          "dimensions differ by m/s\n  hint: the unit after `to` has the dimension of the value before it"
+        -- A let-bound chart is a chart to `to` and to the quantity rule.
+        runLinesP ["let c = degF", "3 c", "20 degC to c"]
+          @?= Right ["3 degF", "68 degF"]
     , testCase "U7: a unit is declared from an amount or a unit" $ do
         runLinesP
           [ "unit min2 = 60 s"
@@ -4449,14 +4491,14 @@ affineTests =
           [d, e] -> (d /= e) @? "a unit and an amount share a hash"
           other -> assertFailure (show other)
         case runLinesP ["let x = 1", "5 x"] of
-          Left err -> T.isInfixOf "`x` is Num, not a unit or a chart" err @? T.unpack err
+          Left err -> T.isInfixOf "`x` is a Num, not a unit or a chart" err @? T.unpack err
           Right v -> assertFailure (show v)
         -- Bq and Hz are one definition and two units; each prints as written.
         runLinesP ["5 Bq", "5 Hz", "1 Bq == 1 Hz"] @?= Right ["5 Bq", "5 Hz", "true"]
     , testCase "a let that rebinds a unit name makes it a quantity"
         $ runLinesP ["let g = 9.81 m / s^2", "g * (2 s)^2", "2 g"]
           @?= Left
-            "error at 1:3\n  2 g\n    ^\n  `g` is Num (m/s^2), not a unit or a chart: write the `*`"
+            "error at 1:3\n  2 g\n    ^\n  `g` is a Num (m/s^2), not a unit or a chart: write the `*`"
     , testCase
         "an alias of a unit is a unit, and a renamed unit prints under its new name"
         $ runLinesP
@@ -5438,7 +5480,7 @@ storeTests =
         linesIn loaded ["dozen * 3", "dozen + 1"] @?= Right ["39", "14"]
         -- and it is no longer a unit the quantity rule accepts
         case linesIn loaded ["3 dozen"] of
-          Left err -> T.isInfixOf "`dozen` is Num, not a unit or a chart" err @? T.unpack err
+          Left err -> T.isInfixOf "`dozen` is a Num, not a unit or a chart" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "a type indexed by rank survives a reload" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["data Idx s = Idx (Vec (rank s))", ":add"]
@@ -6255,7 +6297,9 @@ dataTests =
             ]
             @?= Right ["1 T", "T (300 K)", "Num K -> Temp", "3"]
           case runLinesP ["data Temp = T (Num K)", "1 T"] of
-            Left err -> T.isInfixOf "is Num K -> Temp, not a unit or a chart" err @? T.unpack err
+            Left err ->
+              T.isInfixOf "is a function, Num K -> Temp, not a unit or a chart" err
+                @? T.unpack err
             Right v -> assertFailure (show v)
     , testCase "the type grammar" $ do
         let ok src = case parseType src of
@@ -7635,7 +7679,7 @@ editTests =
         outs2 @?= [movedLine "updated" s s2 "furlong"]
         expectError
           (snd <$> feed s2 "2 furlong")
-          "`furlong` is Num m, not a unit or a chart"
+          "`furlong` is a Num m, not a unit or a chart"
     , testCase "(e) a definition moved between blocks is removed and added" $ do
         s <- editSession
         file <-

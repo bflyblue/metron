@@ -400,7 +400,12 @@ desugar path ctx e = do
       -- A unit's name is the unit (design §3.10, U3): where an amount was
       -- meant, one of it is written so.
       unit <- unitName ctx e
-      when unit (hintIfNone e.span ("`" <> x <> "` is a unit; write `1 " <> x <> "`"))
+      when
+        unit
+        ( hintIfNone
+            e.span
+            ("`" <> x <> "` is a unit; where an amount is meant, write `1 " <> x <> "`")
+        )
       headApp path ctx e x []
     S.App f a -> do
       let (hd0, args) = spine e
@@ -455,6 +460,12 @@ desugar path ctx e = do
             refuseMoving ctx b
             scaleName <- isScaleName ctx b
             unit <- staticUnit ctx b
+            -- A unit's name here is meant as a unit; one of the wrong
+            -- dimension is not to be written as an amount.
+            named <- unitName ctx b
+            when
+              named
+              (hintAt b.span "the unit after `to` has the dimension of the value before it")
             if scaleName
               then prim "toScale" [a, b]
               else

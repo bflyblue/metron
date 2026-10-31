@@ -843,7 +843,7 @@
   unit's name is the unit everywhere: `x / 1 s`, not `x / s`. The quantity
   rule is type-directed, `scale lit u` after a unit and `pointOn c lit`
   after a chart; `2 pi` is refused by its type, and a parameter after a
-  literal is read by the definition's signature or ascriptions
+  literal is read by the definition's signature
   (`per :: forall d. Unit d -> Num d` with `per u = 3 u`), the reading
   written into the stored term. After a literal the quantity takes the
   whole unit expression, `9.81 m/s^2` being `9.81 (m/s^2)` and `x / 1 km/h`
