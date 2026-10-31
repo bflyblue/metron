@@ -97,14 +97,15 @@ renderTypeIds t = renderWith Ascii (idNames (freeVars t)) 0 t
 renderSchemeIds :: Scheme -> Text
 renderSchemeIds (Forall _ t) = renderTypeIds t
 
-{- | A scheme as @:type@, @:ls@ and @:view@ print it and a signature is
-written back (design §4.8, §3.9 decision 6): headed by @forall@ and its
-variables in the order they first appear, when it has any, so that the
-text reads back as the same scheme. Declared types are named by the given
-function. Variables are named by kind as 'renderType' names them, but a
-bound variable shadows a unit of its name within its type, so a name the
-type prints otherwise is skipped: the base symbols of its dimensions
-(@forall s1 d. Tensor s1 d -> Tensor s1 [d s]@). An axis variable prints
+{- | A scheme as @:type@ and @:ls@ print it and a signature is written
+back (@:edit@, @:export@, the @sig@ log line; design §4.8, §3.9 decision
+6): headed by @forall@ and its variables in the order they are named, when
+it has any, so that the text reads back as the same scheme. Declared types
+are named by the given function. Variables are named by kind as
+'renderType' names them, each name used once, but a bound variable shadows
+a unit of its name within its type, so a name the type prints otherwise
+is skipped: the base symbols of its dimensions
+(@forall s1 d. Tensor s1 d -> Tensor s1 [s d]@). An axis variable prints
 as nothing (§3.9, stage 1) and is not bound.
 -}
 renderForallWith :: (Hash -> Text) -> Spelling -> Scheme -> Text
