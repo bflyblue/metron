@@ -46,6 +46,7 @@ import Eval.Core
 import Eval.Desugar (
   Path,
   ascriptionMarker,
+  isFromMarker,
   isQuantityMarker,
   isToMarker,
   unmarked,
@@ -72,15 +73,15 @@ data Constraint
     OrdInstance Type
   | -- | @rank s ~ l@, pending only while both sides are ranks of different shape variables (design §4.2)
     Rank Shape Len
-  | {- | a root chart of a shape, its root, the axes it minted (design §3.9):
-    every position along those axes and the root too, or a scalar chart
-    with an anonymous root; pending while the shape is unknown
+  | {- | @Diff c ~ τ@, or @Coords c ~ τ@ (design §3.10, F4): pending while
+    neither the frame's space's shape nor the tensor's is known
     -}
-    Charted Shape Axis Hash
-  | {- | a chart's shape, its root, and the shape of a point on it: the
-    chart's lengths along the root's axes (design §3.9, stage 2b)
+    OverIs Frame (Maybe Dim) Type
+  | {- | a point converted with no @from@ is on a frame whose chart takes no
+    parameters (design §3.10, F7): checked once the frame is known, and
+    at run time when it never is
     -}
-    Rootward Shape Axis Shape
+    Fixed Frame
   | {- | a primitive with two readings, chosen by the types it is used at
     once one of them is known (design §3.10, U2, U4, U6, U7)
     -}
@@ -109,9 +110,15 @@ data Reading
     Quantity Text (Maybe Text) Type Type Type
   | {- | a @to@ whose reading the desugarer left to the types, by its
     marker: the value, the target, and the result; the display unit's
-    @to@ for a unit, @toScale@ for a chart (U6)
+    @to@ for a unit, @toScale@ for a point and a chart (U6), @toAxes@ for
+    an amount and a chart (F10)
     -}
     Convert Text Type Type Type
+  | {- | a @from … to@ (design §3.10, F7, F10), by its marker: the value,
+    the source chart, the target, and the result; @fromTo@ for a point,
+    @axesFromTo@ for an amount
+    -}
+    ConvertFrom Text Type Type Type Type
   | -- | a unit declaration's body, an amount or a unit, and the unit (U7)
     UnitOf Type Type
 
@@ -227,6 +234,8 @@ fresh = \case
     st <- get
     put st{nextAxis = st.nextAxis + 1}
     pure (AAxis (AVar st.nextAxis))
+  KFrame -> AFrame . FrVar <$> freshId
+  KSpace -> ASpace . SpVar <$> freshId
  where
   freshId = do
     st <- get
@@ -304,10 +313,16 @@ unify p expected actual = do
             )
     (TData h1 as, TData h2 bs)
       | h1 == h2 && length as == length bs -> zipWithM_ unifyArg as bs
-    (TPoint s1 d1, TPoint s2 d2) -> shapeAndDims s1 d1 s2 d2
-    (TScale s1 r1 d1, TScale s2 r2 d2) -> do
-      shapeAndDims s1 d1 s2 d2
-      unifyAxis p r1 r2
+    (TPoint f1, TPoint f2) -> unifyFrame p "points" f1 f2
+    (TScale f1, TScale f2) -> unifyFrame p "charts" f1 f2
+    -- A synonym still residual (design §3.10, F4): its space's shape is not
+    -- known, so it unifies through the space, or waits.
+    (TOver f1 m1, TOver f2 m2) -> do
+      unifyAxis p f1.axes f2.axes
+      unifyShape p f1.space.shape f2.space.shape
+      unifyDim p (fromMaybe f1.space.dim m1) (fromMaybe f2.space.dim m2)
+    (TOver f md, TTensor sh d) -> overTensor p f md sh d
+    (TTensor sh d, TOver f md) -> overTensor p f md sh d
     (TTensor s1 d1, TTensor s2 d2) -> do
       st <- get
       case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
@@ -316,7 +331,7 @@ unify p expected actual = do
           failAt
             p
             ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
-    (TPoint _ _, TTensor _ _) ->
+    (TPoint _, TTensor _ _) ->
       failAt
         p
         ( "expected "
@@ -325,7 +340,7 @@ unify p expected actual = do
             <> renderType a
             <> ": a point and an amount; a point has no sum, multiple or unit; use .+ and .-, or to with a chart (design §3.6)"
         )
-    (TTensor _ _, TPoint _ _) ->
+    (TTensor _ _, TPoint _) ->
       failAt
         p
         ( "expected "
@@ -371,18 +386,89 @@ unify p expected actual = do
     (AShape s1, AShape s2) -> unifyShape p s1 s2
     (ADim d1, ADim d2) -> unifyDim p d1 d2
     (AAxis a1, AAxis a2) -> unifyAxis p a1 a2
+    (AFrame f1, AFrame f2) -> unifyFrameSlot p "frames" f1 f2
+    (ASpace s1, ASpace s2) -> unifySpaceSlot p s1 s2
     _ ->
       failAt p ("expected " <> renderType expected <> ", got " <> renderType actual)
-  shapeAndDims s1 d1 s2 d2 = do
-    st <- get
-    case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
-      Right ((), st') -> put st'
-      Left (TypeError _ detail) -> do
-        e <- resolve expected
-        a <- resolve actual
-        failAt
-          p
-          ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
+
+{- | Two frames (design §3.10, F4, F5): one identity, then one axis set and
+one space. Two named frames that differ are two types, reported as what
+the caller unifies: "points on degC and degF: convert one with `to`".
+-}
+unifyFrame :: Path -> Text -> Frame -> Frame -> Infer ()
+unifyFrame p what f1 f2 = do
+  unifyFrameSlot p what f1.slot f2.slot
+  unifySpace p f1.space f2.space
+  unifyAxis p f1.axes f2.axes
+
+unifyFrameSlot :: Path -> Text -> FrameSlot -> FrameSlot -> Infer ()
+unifyFrameSlot p what x y = do
+  s <- gets (.subst)
+  case (slot s x, slot s y) of
+    (a, b) | a == b -> pure ()
+    (FrVar v, b) -> bindVar p v (AFrame b)
+    (a, FrVar v) -> bindVar p v (AFrame a)
+    (FrNamed h1, FrNamed h2) ->
+      failAt
+        p
+        ( what
+            <> " on "
+            <> showHash h1
+            <> " and "
+            <> showHash h2
+            <> (if what == "points" then ": convert one with `to`" else "")
+        )
+ where
+  slot s = \case
+    FrVar v | Just (AFrame b) <- Map.lookup v s -> slot s b
+    b -> b
+
+{- | Two spaces: one identity, then their companions. Two named spaces that
+differ are frames of two spaces, which no conversion joins (design §3.10,
+F2: a kind error).
+-}
+unifySpace :: Path -> Space -> Space -> Infer ()
+unifySpace p s1 s2 = do
+  unifySpaceSlot p s1.slot s2.slot
+  unifyShape p s1.shape s2.shape
+  unifyDim p s1.dim s2.dim
+  unifyAxis p s1.base s2.base
+
+unifySpaceSlot :: Path -> SpaceSlot -> SpaceSlot -> Infer ()
+unifySpaceSlot p x y = do
+  s <- gets (.subst)
+  case (slot s x, slot s y) of
+    (a, b) | a == b -> pure ()
+    (SpVar v, b) -> bindVar p v (ASpace b)
+    (a, SpVar v) -> bindVar p v (ASpace a)
+    (SpNamed h1, SpNamed h2) ->
+      failAt
+        p
+        ( "frames of two spaces, "
+            <> showHash h1
+            <> " and "
+            <> showHash h2
+            <> ": a point converts only to a frame of its own space"
+        )
+ where
+  slot s = \case
+    SpVar v | Just (ASpace b) <- Map.lookup v s -> slot s b
+    b -> b
+
+{- | @Diff c@ (or @Coords c@) residual against a tensor (design §3.10, F4):
+the tensor's dimension is the space's, and its shape, once known, is the
+space's shape along the frame's axes, which fixes the space's shape. A
+tensor whose shape is not known yet waits, as a pending constraint.
+-}
+overTensor :: Path -> Frame -> Maybe Dim -> Shape -> Dim -> Infer ()
+overTensor p f md sh d = do
+  unifyDim p (fromMaybe f.space.dim md) d
+  sh' <- resolveShape sh
+  case closedLens sh' of
+    Just ls -> do
+      unifyShape p f.space.shape (foldr (\(l, _) -> SCons l AAnon) SNil ls)
+      mapM_ (\(_, a) -> unifyAxis p a f.axes) ls
+    Nothing -> defer p (OverIs f md (TTensor sh' d))
 
 bindVar :: Path -> VarId -> Arg -> Infer ()
 bindVar p v arg = do
@@ -393,12 +479,16 @@ bindVar p v arg = do
         ADim d -> v `elem` dimVars d
         -- A slot holds no variable but itself.
         AAxis _ -> False
+        AFrame _ -> False
+        ASpace _ -> False
       trivial = case arg of
         AType (TVar w) -> w == v
         AShape (SVar w) -> w == v
         ALen (LVar w 0) -> w == v
         ADim d -> d == dimVar v
         AAxis (AVar w) -> w == v
+        AFrame (FrVar w) -> w == v
+        ASpace (SpVar w) -> w == v
         _ -> False
   unless trivial
     $ if occurs
@@ -452,7 +542,7 @@ unifyAxis p x y = do
   -- An anonymous value meets a frame (design §3.9, decision 5).
   hint a b
     | AAnon `elem` [a, b] =
-        "; give it a frame with `withAxes c v`, or `along c v` if it is along the root"
+        "; give it a frame with `withAxes c v`, or `v to c` if it is along its space's base axes"
     | otherwise = ""
   describe = \case
     AAnon -> "anonymous axes"
@@ -626,7 +716,8 @@ solveOne p = \case
     t' <- resolve t
     case t' of
       TTensor _ _ -> pure True
-      TPoint _ _ -> pure True
+      TPoint _ -> pure True
+      TOver _ _ -> pure True
       -- A declared type compares when its fields do (design §4.2): Bool,
       -- tuples and lists among them.
       TData h as -> do
@@ -641,8 +732,8 @@ solveOne p = \case
     case t' of
       TTensor SNil _ -> pure True
       TTensor (SVar _) _ -> pure False
-      TPoint SNil _ -> pure True
-      TPoint (SVar _) _ -> pure False
+      TPoint f | f.space.shape == SNil -> pure True
+      TPoint f | SVar _ <- f.space.shape -> pure False
       TVar _ -> pure False
       _ ->
         failAt
@@ -653,34 +744,28 @@ solveOne p = \case
     case (rankLen (applyShape s sh), applyLen s l) of
       (LRank v _, LRank w _) | v /= w -> pure False
       (a, b) -> unifyLen p a b >> pure True
-  Charted sh r h -> do
+  OverIs f md t -> do
     s <- gets (.subst)
-    case closedLens (applyShape s sh) of
-      Just [] -> unifyAxis p r AAnon >> pure True
-      Just ls -> do
-        mapM_ (\(_, a) -> unifyAxis p a (ANamed h)) ls
-        unifyAxis p r (ANamed h)
-        pure True
-      Nothing -> pure False
-  Rootward sh r pt -> do
+    case (overType (applyFrame s f) (applyDim s <$> md), applyType s t) of
+      (TOver _ _, TTensor sh _) | Nothing <- closedLens sh -> pure False
+      (TOver _ _, TVar _) -> pure False
+      (o, t') -> unify p o t' >> pure True
+  Fixed f -> do
     s <- gets (.subst)
-    let sh' = applyShape s sh
-        pt' = applyShape s pt
-    case (closedLens sh', closedLens pt') of
-      (Just _, _) -> rooted (unifyShape p pt' (rootward sh' (applyAxis s r)))
-      (_, Just ls) -> do
-        positions <- mapM (\(l, _) -> (l,) <$> freshAxis) ls
-        unifyShape p sh' (appendShape positions SNil)
-        rooted (unifyShape p pt' (rootward (appendShape positions SNil) r))
-      _ -> pure False
-   where
-    -- The unifier's own message names the axes that differ.
-    rooted act = do
-      st <- get
-      case runStateT act st of
-        Right ((), st') -> put st' >> pure True
-        Left (TypeError _ detail) ->
-          failAt p ("a point is along its chart's root: " <> detail)
+    case (applyFrame s f).slot of
+      FrNamed h -> do
+        defs <- gets (.typeDefs)
+        case defs h >>= frameDefMoving of
+          Just True ->
+            failAt
+              p
+              ( showHash h
+                  <> " takes arguments: write «0» from ("
+                  <> showHash h
+                  <> " …) to «1»"
+              )
+          _ -> pure True
+      FrVar _ -> pure False
   Dispatch r -> decide p r
 
 {- | Choose a reading once the types say which (design §3.10). A unit on any
@@ -721,16 +806,10 @@ decide p = \case
     atom' <- resolve atom
     res' <- resolve res
     case (atom', res') of
-      (TUnit d, _) -> scaleReading d
-      (TScale sh r d, _) -> chartReading sh r d
-      (TVar _, TTensor _ _) -> do
-        d <- freshDim
-        unify (1 : p) (TUnit d) atom
-        scaleReading d
-      (TVar _, TPoint _ _) -> do
-        (sh, r, d) <- freshChart
-        unify (1 : p) (TScale sh r d) atom
-        chartReading sh r d
+      (TUnit _, _) -> scaleReading
+      (TScale _, _) -> chartReading
+      (TVar _, TTensor _ _) -> scaleReading
+      (TVar _, TPoint _) -> chartReading
       (TVar _, _) -> pure False
       (other, _) ->
         failAt
@@ -742,33 +821,26 @@ decide p = \case
               <> ", not a unit or a chart: write the `*`"
           )
    where
-    scaleReading d = do
-      s <- freshShape
-      unify (0 : p) (TTensor s dimOne) lit
-      unify p (TTensor s d) res
+    scaleReading = do
+      asPrim p "scale" [(0, lit), (1, atom)] res
       choose marker "scale"
-    chartReading sh r d = do
-      t <- freshShape
-      unify (0 : p) (TTensor sh dimOne) lit
-      unify p (TPoint t d) res
-      defer p (Rootward sh r t)
+    -- A point (design §3.10, F8): its chart first, then its coordinates.
+    chartReading = do
+      asPrim p "pointOn" [(1, atom), (0, lit)] res
       choose marker "pointOn"
   Convert marker val tgt res -> do
     tgt' <- resolve tgt
     val' <- resolve val
     res' <- resolve res
     case (tgt', val', res') of
-      (TUnit d, _, _) -> unitTo d
-      (TScale sh r d, _, _) -> chartTo sh r d
+      (TUnit _, _, _) -> unitTo
+      (TScale _, v, w)
+        | any isPoint [v, w] -> chartTo
+        | any isAmount [v, w] -> axesTo
+        | otherwise -> pure False
       (TVar _, v, w)
-        | any isAmount [v, w] -> do
-            d <- freshDim
-            unify (1 : p) (TUnit d) tgt
-            unitTo d
-        | any isPoint [v, w] -> do
-            (sh, r, d) <- freshChart
-            unify (1 : p) (TScale sh r d) tgt
-            chartTo sh r d
+        | any isAmount [v, w] -> unitTo
+        | any isPoint [v, w] -> chartTo
         | otherwise -> pure False
       (TTensor _ _, _, _) ->
         failAt
@@ -777,17 +849,27 @@ decide p = \case
       (other, _, _) ->
         failAt (1 : p) ("`to` takes a unit or a chart, not " <> renderType other)
    where
-    unitTo d = do
-      s <- freshShape
-      unify (0 : p) (TTensor s d) val
-      unify p (TTensor s d) res
-      choose marker "to"
-    chartTo sh r d = do
-      t <- freshShape
-      unify (0 : p) (TPoint t d) val
-      unify p (TPoint t d) res
-      defer p (Rootward sh r t)
+    unitTo = asPrim p "to" [(0, val), (1, tgt)] res >> choose marker "to"
+    chartTo = do
+      asPrim p "toScale" [(0, val), (1, tgt)] res
+      fixed p val
       choose marker "toScale"
+    axesTo = asPrim p "toAxes" [(0, val), (1, tgt)] res >> choose marker "toAxes"
+  ConvertFrom marker val src tgt res -> do
+    val' <- resolve val
+    res' <- resolve res
+    let reading prim = do
+          asPrim p prim [(0, val), (1, src), (2, tgt)] res
+          choose marker prim
+    case (val', res') of
+      (v, w)
+        | any isPoint [v, w] -> reading "fromTo"
+        | any isAmount [v, w] -> reading "axesFromTo"
+        | all isTypeVar [v, w] -> pure False
+        | otherwise ->
+            failAt
+              (0 : p)
+              ("`from … to` converts a point or an amount, not " <> renderType v)
   UnitOf a r -> do
     a' <- resolve a
     case a' of
@@ -797,11 +879,11 @@ decide p = \case
  where
   isAmount = \case
     TTensor _ _ -> True
+    TOver _ _ -> True
     _ -> False
   isPoint = \case
-    TPoint _ _ -> True
+    TPoint _ -> True
     _ -> False
-  freshChart = (,,) <$> freshShape <*> freshAxis <*> freshDim
   choose marker prim = do
     modify' (\st -> st{chosen = Map.insert marker prim st.chosen})
     pure True
@@ -809,6 +891,30 @@ decide p = \case
     "an amount and a unit together: "
       <> (if name == "div" then "/" else "*")
       <> " takes two amounts or two units"
+
+{- | A reading taken (design §3.10): the primitive's scheme, instantiated,
+at the marker's operands, each by its path, and its result.
+-}
+asPrim :: Path -> Text -> [(Int, Type)] -> Type -> Infer ()
+asPrim p name args res = case primScheme name of
+  Nothing -> failAt p ("unknown primitive " <> name)
+  Just sc -> do
+    (t, _) <- instantiate sc
+    let go ty = \case
+          [] -> unify p ty res
+          (i, a) : rest -> case ty of
+            TFun param r -> unify (i : p) param a >> go r rest
+            _ -> failAt p ("primitive " <> name <> " applied to too many arguments")
+    go t args
+
+{- | A point converted with no @from@ (design §3.10, F7): its frame's chart
+takes no parameters, checked once the frame is known.
+-}
+fixed :: Path -> Type -> Infer ()
+fixed p t =
+  resolve t >>= \case
+    TPoint f -> defer p (Fixed f)
+    _ -> pure ()
 
 {- | The reading of amounts, which arithmetic and a unit's declaration take
 when the types have not chosen by generalisation (design §3.10, U2): the
@@ -846,6 +952,7 @@ amountReading p = \case
   -- Not reached: these are refused as ambiguous instead.
   Quantity{} -> pure ()
   Convert{} -> pure ()
+  ConvertFrom{} -> pure ()
 
 isTypeVar :: Type -> Bool
 isTypeVar = \case
@@ -887,12 +994,15 @@ settle here ctx = do
     -- A rank equation has no default; it waits for the others, which may
     -- fix one of its shapes.
     Rank _ _ -> modify' (\st' -> st'{pending = (p, c) : st'.pending})
-    -- A chart's shape still unknown is taken to be scalar, as a product's
-    -- operand of unknown rank is: no type says "the root's axes at every
-    -- position" of a shape variable, and taking the chart's own would
-    -- label a point's base-form numbers with the chart's axes.
-    Charted sh _ _ -> unifyShape p sh SNil >> defer p c
-    Rootward sh _ _ -> unifyShape p sh SNil >> defer p c
+    -- An amount on a frame of a space nothing fixes (design §3.10, F4): no
+    -- type says what @Diff c@ is of a space variable's shape, and no
+    -- default would be right.
+    OverIs{} ->
+      failAt
+        p
+        "the amount between points on a frame of a space not known here: give a signature naming the space, as in forall (c : Inertial)"
+    -- A frame still unknown: the run-time conversion checks it.
+    Fixed _ -> pure ()
     -- Settled already ('settleReadings').
     Dispatch _ -> modify' (\st' -> st'{pending = (p, c) : st'.pending})
   solvePending
@@ -943,6 +1053,10 @@ settleReadings here ctx = do
       failAt
         p
         "ambiguous: `to` here could take a unit or a chart; give the definition a signature that says which"
+    Dispatch ConvertFrom{} ->
+      failAt
+        p
+        "ambiguous: `from … to` here could convert a point or an amount; give the definition a signature that says which"
     _ -> pure ()
   put st{pending = rest}
   forM_ inOrder $ \(p, c) -> case c of
@@ -956,13 +1070,14 @@ applyC s = \case
   EqInstance t -> EqInstance (applyType s t)
   OrdInstance t -> OrdInstance (applyType s t)
   Rank sh l -> Rank (applyShape s sh) (applyLen s l)
-  Charted sh r h -> Charted (applyShape s sh) (applyAxis s r) h
-  Rootward sh r pt -> Rootward (applyShape s sh) (applyAxis s r) (applyShape s pt)
+  OverIs f md t -> OverIs (applyFrame s f) (applyDim s <$> md) (applyType s t)
+  Fixed f -> Fixed (applyFrame s f)
   Dispatch r -> Dispatch $ case r of
     Arith n a b c parts -> Arith n (ty a) (ty b) (ty c) parts
     Power k d b c -> Power k d (ty b) (ty c)
     Quantity m w a b c -> Quantity m w (ty a) (ty b) (ty c)
     Convert m a b c -> Convert m (ty a) (ty b) (ty c)
+    ConvertFrom m a b c res -> ConvertFrom m (ty a) (ty b) (ty c) (ty res)
     UnitOf a b -> UnitOf (ty a) (ty b)
  where
   ty = applyType s
@@ -974,6 +1089,7 @@ readingTypes = \case
   Power _ _ b c -> [b, c]
   Quantity _ _ a b c -> [a, b, c]
   Convert _ a b c -> [a, b, c]
+  ConvertFrom _ a b c r -> [a, b, c, r]
   UnitOf a b -> [a, b]
 
 constraintVars :: Constraint -> [VarId]
@@ -982,8 +1098,8 @@ constraintVars = \case
   EqInstance t -> map fst (freeVars t)
   OrdInstance t -> map fst (freeVars t)
   Rank sh l -> map fst (freeVars (TTensor (SCons l AAnon sh) dimOne))
-  Charted sh r _ -> map fst (freeVars (TScale sh r dimOne))
-  Rootward sh r pt -> map fst (freeVars (TFun (TScale sh r dimOne) (TPoint pt dimOne)))
+  OverIs f md t -> map fst (freeVars (TFun (TOver f md) t))
+  Fixed f -> map fst (freeVars (TPoint f))
   Dispatch r -> concatMap (map fst . freeVars) (readingTypes r)
 
 -- Generalisation and instantiation ---------------------------------------------------
@@ -1064,17 +1180,20 @@ negativeOnly quantified ts =
  where
   exponents v = \case
     TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
-    TPoint _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TPoint f -> frameExps f
+    TOver f md -> frameExps f ++ maybe [] dimExps md
     TUnit d -> [k | (DVar w, k) <- dimAtoms d, w == v]
-    TScale _ _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TScale f -> frameExps f
     TData _ args -> concatMap argExponents args
     TFun a b -> exponents v a ++ exponents v b
     TVar _ -> []
    where
     argExponents = \case
       AType t -> exponents v t
-      ADim d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+      ADim d -> dimExps d
       _ -> []
+    dimExps d = [k | (DVar w, k) <- dimAtoms d, w == v]
+    frameExps f = dimExps f.space.dim
 
 {- | Replace the quantified variables by fresh ones and return the arguments
 used, for the explicit type applications. This is a one-shot renaming, not
@@ -1143,20 +1262,35 @@ infer look p ctx = \case
       Nothing -> failAt p "reference to a cycle member that does not exist"
   PrimApp name args -> do
     let literals = [case unmarked a of Lit l -> Just l; _ -> Nothing | a <- args]
-        statics =
-          [ case unmarked a of
-              Lit l -> Just (LitArg l)
-              Con c [] -> Just (ConArg c)
-              _ -> Nothing
-          | a <- args
-          ]
+        static :: Term m -> Maybe StaticArg
+        static a = case unmarked a of
+          Lit l -> Just (LitArg l)
+          Con NilC [] -> Just (ListArg [])
+          Con ConsC [x, rest] -> case static rest of
+            Just (ListArg xs) -> Just (ListArg (static x : xs))
+            _ -> Nothing
+          Con c [] -> Just (ConArg c)
+          _ -> Nothing
+        statics = map static args
         positional = name `elem` ["contract", "permute", "slice"]
+    defs <- gets (.typeDefs)
     -- contract, permute and slice (design §4.2): the scheme is computed
-    -- from the literal positions, then used like any other; a chart that
-    -- introduces axes reads them off its first argument (design §3.9).
-    t <- case primSchemeFor name statics of
+    -- from the literal positions, then used like any other; a chart's
+    -- declaration reads its frame, axes and space off its tags (design
+    -- §3.10, F3).
+    t <- case primSchemeFor defs name statics of
       Just (Right sc) -> fst <$> instantiate sc
       Just (Left msg) -> failAt p msg
+      -- A `from … to` (design §3.10, F7): a point or an amount, by type.
+      Nothing
+        | [_, _, _] <- args
+        , isFromMarker name -> do
+            a <- freshType
+            b <- freshType
+            c <- freshType
+            r <- freshType
+            defer p (Dispatch (ConvertFrom name a b c r))
+            pure (TFun a (TFun b (TFun c r)))
       -- A quantity or a `to` whose reading the types choose (design §3.10,
       -- U4, U6): its marker is resolved by the types it meets.
       Nothing
@@ -1175,7 +1309,10 @@ infer look p ctx = \case
               )
             pure (TFun a (TFun b r))
       Nothing -> primType p name (length args)
-    chartConstraints p name t statics
+    -- A point converted with no `from` (design §3.10, F7).
+    case t of
+      TFun (TPoint f) _ | name == "toScale" -> defer p (Fixed f)
+      _ -> pure ()
     typed <- zipWithM (\i a -> infer look (i : p) ctx a) [0 ..] args
     -- A tensor of known rank too small for the positions is reported as
     -- such, not as the shape mismatch the unifier would find.
@@ -1224,6 +1361,18 @@ infer look p ctx = \case
                 _
                   | name `elem` ["sin", "cos", "tan"] ->
                       unifyMsg (i : p) param a (name <> " takes an angle: write 1 rad or 45 deg")
+                -- A chart turned or spinning is on a space of vectors
+                -- (design §3.10, F10).
+                _
+                  | name == "mkChart"
+                  , i == 2
+                  , TScale f <- param
+                  , SCons{} <- f.space.shape ->
+                      unifyMsg
+                        (i : p)
+                        param
+                        a
+                        "a chart on a space of numbers has no axes to turn: `by` and `spinning` are for a space of vectors"
                 -- Units do not add (design §3.10, U2).
                 TUnit _
                   | name `elem` ["add", "sub"] ->
@@ -1374,22 +1523,27 @@ infer look p ctx = \case
         unifyLen p l atLeast
         pure (TTensor rest d)
       TTensor SNil _ -> failAt p ("cannot project ." <> tshow i <> " from a number")
-      -- A component of a point is a point (design §3.6).
-      TPoint (SCons (LLit n) _ rest) d
-        | i < n -> pure (TPoint rest d)
-        | otherwise ->
-            failAt
-              p
-              ( "position "
-                  <> tshow i
-                  <> " is out of range for a point over a vector of length "
-                  <> tshow n
-              )
-      TPoint (SCons l _ rest) d -> do
-        atLeast <- freshLen (i + 1)
-        unifyLen p l atLeast
-        pure (TPoint rest d)
-      TPoint SNil _ -> failAt p ("cannot project ." <> tshow i <> " from a scalar point")
+      -- A coordinate of a point (design §3.10, F5): an amount along one of
+      -- its frame's axes, the step applied, in its space's dimension.
+      TPoint f -> case f.space.shape of
+        SNil ->
+          failAt
+            p
+            ("cannot project ." <> tshow i <> " from a point on a space of numbers")
+        SCons (LLit n) _ SNil
+          | i >= n ->
+              failAt
+                p
+                ( "position "
+                    <> tshow i
+                    <> " is out of range for a point on a space of "
+                    <> tshow n
+                    <> " axes"
+                )
+        _ -> do
+          atLeast <- freshLen (i + 1)
+          unifyShape (0 : p) f.space.shape (SCons atLeast AAnon SNil)
+          pure (numD f.space.dim)
       -- Rank unknown so far: it must be at least one.
       _ -> do
         atLeast <- freshLen (i + 1)
@@ -1429,37 +1583,6 @@ infer look p ctx = \case
      in case dims of
           [] -> T.concat (map natural rs)
           _ -> "[" <> T.intercalate ", " (map natural rs) <> "]"
-
-{- | What the chart primitives' schemes cannot say over a shape variable
-(design §3.9), deferred as constraints at the type a primitive is used
-at ('chartRelation' is lint's side): a root chart's axes and root, and
-that a point lies along its chart's root. A chart that mints axes takes
-the constructor of a minted axis type.
--}
-chartConstraints :: Path -> Text -> Type -> [Maybe StaticArg] -> Infer ()
-chartConstraints p name t statics = case (name, t, statics) of
-  ( "mkScale"
-    , TFun _ (TFun _ (TFun (TTensor sh _) (TScale _ r _)))
-    , Just (ConArg (UserCon h _)) : _
-    ) -> do
-      minted h
-      defer p (Charted sh r h)
-  (_, _, Just (ConArg (UserCon h _)) : _)
-    | name `elem` ["mkChart4", "mkChart5"] -> minted h
-  ("pointOn", TFun (TScale sh r _) (TFun _ (TPoint pt _)), _) -> defer p (Rootward sh r pt)
-  ("toScale", TFun (TPoint pt _) (TFun (TScale sh r _) _), _) -> defer p (Rootward sh r pt)
-  _ -> pure ()
- where
-  minted h = do
-    defs <- gets (.typeDefs)
-    case defs h of
-      Just def | isAxesDef def -> pure ()
-      _ ->
-        failAt
-          p
-          ( name
-              <> " takes the axes a chart declaration mints first: declare the chart with chart"
-          )
 
 {- | The type a primitive is used at: a fresh instance of its scheme, or for
 the relational primitives (design §4.2) fresh shapes with a pending
@@ -1594,6 +1717,8 @@ rewriteReadings chosen = go
           if prim == "pointOn"
             then PrimApp prim [go b, go a]
             else PrimApp prim [go a, go b]
+    PrimApp p as
+      | Just prim <- Map.lookup p chosen -> PrimApp prim (map go as)
     PrimApp p as -> PrimApp p (map go as)
     Var i -> Var i
     Ref h i hint -> Ref h i hint
@@ -1613,7 +1738,8 @@ rewriteReadings chosen = go
 -- | Whether a term has a quantity or @to@ whose reading is still to choose.
 hasReadingMarkers :: Term n -> Bool
 hasReadingMarkers = \case
-  PrimApp p as -> isQuantityMarker p || isToMarker p || any hasReadingMarkers as
+  PrimApp p as ->
+    isQuantityMarker p || isToMarker p || isFromMarker p || any hasReadingMarkers as
   Var _ -> False
   Ref{} -> False
   Lit _ -> False
@@ -1699,6 +1825,8 @@ constructorType look p c k = case c of
     KShape -> AShape <$> freshShape
     KDim -> ADim <$> freshDim
     KAxis -> fresh KAxis
+    KFrame -> fresh KFrame
+    KSpace -> fresh KSpace
 
 {- | One alternative: the constructor's fields enter scope at their types and
 the body must have the case's result type.

@@ -8,6 +8,12 @@ module Eval.Type.Base (
   Kind (..),
   VarId,
   Type (..),
+  Frame (..),
+  FrameSlot (..),
+  Space (..),
+  SpaceSlot (..),
+  overType,
+  spaceLens,
   TypeDef (..),
   TypeLookup (..),
   selfType,
@@ -26,6 +32,8 @@ module Eval.Type.Base (
   applyShape,
   applyDim,
   applyAxis,
+  applyFrame,
+  applySpace,
   applyArg,
   applyScheme,
   substOnce,
@@ -41,13 +49,18 @@ import Data.ByteString qualified as BS
 import Data.List (nubBy)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Eval.Core (Hash (..), Label (..))
 import Eval.Dimension
 
 {- | The kinds of variables. 'KAxis' is the kind of the name slot of a
-shape position (design §3.9, §4.1): an axis variable.
+shape position (design §3.9, §4.1): an axis variable. 'KFrame' and
+'KSpace' are the kinds of the slots of a frame and of a space (design
+§3.10, F1): a frame variable stands for a frame's identity, a space
+variable for a space's, each beside companions of the other kinds that
+stand for what the identity determines ('Frame', 'Space').
 -}
-data Kind = KType | KLen | KShape | KDim | KAxis
+data Kind = KType | KLen | KShape | KDim | KAxis | KFrame | KSpace
   deriving stock (Eq, Ord, Show)
 
 type VarId = Int
@@ -59,21 +72,65 @@ data Type
     that a unit and an amount never mix
     -}
     TUnit Dim
-  | -- | a point of the affine space over  d@ (design §3.6)
-    TPoint Shape Dim
-  | {- | a chart for writing and printing points (design §3.6, §3.8): its
-    shape, along its own axes, and dimension, and the name slot of its
-    root's axes (design §3.9), along which its points lie and its
-    rotation's rows are: named for a chart a declaration made, anonymous
-    for a scalar chart and a written one without a root, printed after a
-    vector chart's type, @Chart (Vec lvlh m) eci@
+  | -- | a point on a frame (design §3.10, F4): @Point c@
+    TPoint Frame
+  | -- | a chart whose frame is @c@ (design §3.10, F4): @Chart c@
+    TScale Frame
+  | {- | an amount along a frame's axes in its space (design §3.10, F4):
+    @Diff c@, in the space's dimension, or, with a dimension, @Coords c@,
+    the coordinates a point is written with (dimensionless). A synonym:
+    it is a tensor as soon as the space's shape is known ('overType'),
+    and stays residual only while it is not
     -}
-    TScale Shape Axis Dim
+    TOver Frame (Maybe Dim)
   | -- | a declared data type applied to its parameters (design §2.3); a definition refers to itself as 'selfType'. @Bool@, tuples and lists are declared types too, on the hashes of "Eval.Builtin".
     TData Hash [Arg]
   | TFun Type Type
   | TVar VarId
   deriving stock (Eq, Ord, Show)
+
+{- | A frame as a type (design §3.10, F1, F3): its identity, a minted
+frame's hash or a frame variable, beside its axes (@Axes c@: its own, its
+parent's or its space's base axes, anonymous for a scalar space) and its
+space. A frame variable's axes and space are companions, variables
+themselves until the frame is known; a named frame carries them as the
+declaration fixed them, so that every relation on a frame is unification
+and no lookup.
+-}
+data Frame = Frame {slot :: FrameSlot, axes :: Axis, space :: Space}
+  deriving stock (Eq, Ord, Show)
+
+data FrameSlot = FrNamed Hash | FrVar VarId
+  deriving stock (Eq, Ord, Show)
+
+{- | A space as a type (design §3.10, F2): its identity, a declared space's
+hash or a space variable, beside its amounts' shape (lengths only, with
+anonymous axes), their dimension, and its base axes (anonymous for a
+scalar space). A space variable's are companions, as a frame's are.
+-}
+data Space = Space {slot :: SpaceSlot, shape :: Shape, dim :: Dim, base :: Axis}
+  deriving stock (Eq, Ord, Show)
+
+data SpaceSlot = SpNamed Hash | SpVar VarId
+  deriving stock (Eq, Ord, Show)
+
+{- | @Diff c@ (or, with a dimension, @Coords c@) reduced (design §3.10,
+F4): the space's shape along the frame's axes, in the space's dimension
+or the one given, once the space's shape is known; residual before.
+-}
+overType :: Frame -> Maybe Dim -> Type
+overType f md = case spaceLens f.space of
+  Just ls -> TTensor (foldr (`SCons` f.axes) SNil ls) (fromMaybe f.space.dim md)
+  Nothing -> TOver f md
+
+-- | The lengths of a space's shape, when it is known to its end.
+spaceLens :: Space -> Maybe [Len]
+spaceLens sp = go sp.shape
+ where
+  go = \case
+    SNil -> Just []
+    SCons l _ rest -> (l :) <$> go rest
+    SVar _ -> Nothing
 
 {- | A literal length, or a length variable plus a literal offset: @n + k@
 means "at least @k@ long" (design §4.1); or the rank of a shape variable
@@ -127,6 +184,8 @@ data Arg
   | AShape Shape
   | ADim Dim
   | AAxis Axis
+  | AFrame FrameSlot
+  | ASpace SpaceSlot
   deriving stock (Eq, Ord, Show)
 
 -- | A variable of a kind, as an argument.
@@ -137,6 +196,8 @@ varArg k v = case k of
   KShape -> AShape (SVar v)
   KDim -> ADim (dimVar v)
   KAxis -> AAxis (AVar v)
+  KFrame -> AFrame (FrVar v)
+  KSpace -> ASpace (SpVar v)
 
 -- | @forall (v : kind)…. type@.
 data Scheme = Forall [(VarId, Kind)] Type
@@ -170,13 +231,30 @@ applyType :: Subst -> Type -> Type
 applyType s = \case
   TTensor sh d -> TTensor (applyShape s sh) (applyDim s d)
   TUnit d -> TUnit (applyDim s d)
-  TPoint sh d -> TPoint (applyShape s sh) (applyDim s d)
-  TScale sh r d -> TScale (applyShape s sh) (applyAxis s r) (applyDim s d)
+  TPoint f -> TPoint (applyFrame s f)
+  TScale f -> TScale (applyFrame s f)
+  -- A synonym reduces once its space's shape is known.
+  TOver f md -> overType (applyFrame s f) (applyDim s <$> md)
   TData h as -> TData h (map (applyArg s) as)
   TFun a b -> TFun (applyType s a) (applyType s b)
   TVar v -> case Map.lookup v s of
     Just (AType t) -> applyType s t
     _ -> TVar v
+
+applyFrame :: Subst -> Frame -> Frame
+applyFrame s (Frame sl a sp) = Frame (slot sl) (applyAxis s a) (applySpace s sp)
+ where
+  slot = \case
+    FrVar v | Just (AFrame x) <- Map.lookup v s -> slot x
+    x -> x
+
+applySpace :: Subst -> Space -> Space
+applySpace s (Space sl sh d b) =
+  Space (slot sl) (applyShape s sh) (applyDim s d) (applyAxis s b)
+ where
+  slot = \case
+    SpVar v | Just (ASpace x) <- Map.lookup v s -> slot x
+    x -> x
 
 applyLen :: Subst -> Len -> Len
 applyLen s = \case
@@ -223,6 +301,12 @@ applyArg s = \case
   AShape sh -> AShape (applyShape s sh)
   ADim d -> ADim (applyDim s d)
   AAxis a -> AAxis (applyAxis s a)
+  AFrame f -> case f of
+    FrVar v | Just a@(AFrame _) <- Map.lookup v s -> applyArg s a
+    _ -> AFrame f
+  ASpace sp -> case sp of
+    SpVar v | Just a@(ASpace _) <- Map.lookup v s -> applyArg s a
+    _ -> ASpace sp
 
 {- | Apply to the body of a scheme; quantified variables are never in the
 substitution's domain.
@@ -243,13 +327,31 @@ substOnce m = go
   go = \case
     TTensor sh d -> TTensor (shape sh) (dim d)
     TUnit d -> TUnit (dim d)
-    TPoint sh d -> TPoint (shape sh) (dim d)
-    TScale sh r d -> TScale (shape sh) (axis r) (dim d)
+    TPoint f -> TPoint (frame f)
+    TScale f -> TScale (frame f)
+    TOver f md -> overType (frame f) (dim <$> md)
     TData h as -> TData h (map arg as)
     TFun a b -> TFun (go a) (go b)
     TVar v -> case Map.lookup v m of
       Just (AType t) -> t
       _ -> TVar v
+  frame (Frame sl a sp) =
+    Frame
+      ( case sl of
+          FrVar v | Just (AFrame x) <- Map.lookup v m -> x
+          x -> x
+      )
+      (axis a)
+      (space sp)
+  space (Space sl sh d b) =
+    Space
+      ( case sl of
+          SpVar v | Just (ASpace x) <- Map.lookup v m -> x
+          x -> x
+      )
+      (shape sh)
+      (dim d)
+      (axis b)
   shape = \case
     SNil -> SNil
     SCons l a sh -> SCons (len l) (axis a) (shape sh)
@@ -273,6 +375,10 @@ substOnce m = go
     AShape sh -> AShape (shape sh)
     ADim d -> ADim (dim d)
     AAxis a -> AAxis (axis a)
+    AFrame (FrVar v) | Just x@(AFrame _) <- Map.lookup v m -> x
+    AFrame f -> AFrame f
+    ASpace (SpVar v) | Just x@(ASpace _) <- Map.lookup v m -> x
+    ASpace sp -> ASpace sp
   dim d =
     foldr
       dimMul
@@ -283,18 +389,29 @@ substOnce m = go
       | (a, k) <- dimAtoms d
       ]
 
--- | Free variables with their kinds, in order of first appearance.
+{- | Free variables with their kinds, in order of first appearance. A
+frame's slot comes before its companions, its axes and its space, and a
+space's slot before its shape, dimension and base.
+-}
 freeVars :: Type -> [(VarId, Kind)]
 freeVars = nubBy (\a b -> fst a == fst b) . go
  where
   go = \case
     TTensor sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
     TUnit d -> [(v, KDim) | v <- dimVars d]
-    TPoint sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
-    TScale sh r d -> shape sh ++ axis r ++ [(v, KDim) | v <- dimVars d]
+    TPoint f -> frame f
+    TScale f -> frame f
+    TOver f md -> frame f ++ maybe [] (\d -> [(v, KDim) | v <- dimVars d]) md
     TData _ as -> concatMap argVars as
     TFun a b -> go a ++ go b
     TVar v -> [(v, KType)]
+  frame (Frame sl a sp) =
+    (case sl of FrVar v -> [(v, KFrame)]; _ -> []) ++ axis a ++ space sp
+  space (Space sl sh d b) =
+    (case sl of SpVar v -> [(v, KSpace)]; _ -> [])
+      ++ shape sh
+      ++ [(v, KDim) | v <- dimVars d]
+      ++ axis b
   shape = \case
     SNil -> []
     SCons l a sh -> len l ++ axis a ++ shape sh
@@ -312,6 +429,10 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
     AShape sh -> shape sh
     ADim d -> [(v, KDim) | v <- dimVars d]
     AAxis a -> axis a
+    AFrame (FrVar v) -> [(v, KFrame)]
+    AFrame _ -> []
+    ASpace (SpVar v) -> [(v, KSpace)]
+    ASpace _ -> []
 
 {- | A declared data type (design §2.3): its parameters by kind (variables
 0 .. k-1 in the field types), its constructors' field types in declaration

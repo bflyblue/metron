@@ -32,6 +32,15 @@ module Eval.Builtin (
   axesHash,
   axesTag,
   isAxesDef,
+  spaceDef,
+  spaceHash,
+  isSpaceDef,
+  spaceOf,
+  frameDef,
+  frameHash,
+  frameTag,
+  frameDefMoving,
+  mintedPath,
 
   -- * Their hashes and types
   boolHash,
@@ -70,6 +79,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core (ConRef (..), Hash, Label (..))
+import Eval.Dimension (Dim)
 import Eval.Encode (hashTypeDef)
 import Eval.Type.Base
 
@@ -127,6 +137,79 @@ isAxesDef :: TypeDef -> Bool
 isAxesDef def = case def.label of
   Axes _ -> True
   _ -> False
+
+{- | The nominal type a space declaration mints (design §3.10, F2): no
+parameters, stamped with the space's full path. Its first constructor,
+with no fields, is the tag a chart on the space takes; the second holds
+the space's amounts, @Num K@ or @Vec 3 m@ along the base axes minted with
+it, so that two spaces declared alike at one path differently are two
+types, and what a space is can be read off its hash.
+-}
+spaceDef :: Text -> [Int] -> Dim -> TypeDef
+spaceDef path lens d =
+  TypeDef
+    []
+    [[], [TTensor (foldr (\k -> SCons (LLit k) baseAxes) SNil lens) d]]
+    (SpaceLabel path)
+ where
+  baseAxes = if null lens then AAnon else ANamed (axesHash path)
+
+spaceHash :: Text -> [Int] -> Dim -> Hash
+spaceHash path lens d = hashTypeDef (spaceDef path lens d)
+
+-- | Whether a declaration is a space's.
+isSpaceDef :: TypeDef -> Bool
+isSpaceDef def = case def.label of
+  SpaceLabel _ -> True
+  _ -> False
+
+{- | A space as a type (design §3.10, F2), from its hash and declaration:
+its shape's lengths, its dimension and its base axes.
+-}
+spaceOf :: Hash -> TypeDef -> Maybe Space
+spaceOf h def = case (def.label, def.constructors) of
+  (SpaceLabel _, [[], [TTensor sh d]]) ->
+    let ls = lengths sh
+     in Just
+          ( Space
+              (SpNamed h)
+              (foldr (`SCons` AAnon) SNil ls)
+              d
+              (case sh of SCons _ a _ -> a; _ -> AAnon)
+          )
+  _ -> Nothing
+ where
+  lengths = \case
+    SCons l _ rest -> l : lengths rest
+    _ -> []
+
+{- | The nominal type a chart declaration mints for its frame (design
+§3.10, F3), stamped with the chart's full path and whether it takes
+parameters (F7). Its constructor is the tag the chart primitive takes.
+-}
+frameDef :: Text -> Bool -> TypeDef
+frameDef path moving = TypeDef [] [[]] (FrameLabel path moving)
+
+frameHash :: Text -> Bool -> Hash
+frameHash path moving = hashTypeDef (frameDef path moving)
+
+-- | The constructor a chart primitive takes, the frame a chart mints.
+frameTag :: Text -> Bool -> ConRef
+frameTag path moving = UserCon (frameHash path moving) 0
+
+-- | Whether a declaration is a frame's, and whether its chart takes parameters.
+frameDefMoving :: TypeDef -> Maybe Bool
+frameDefMoving def = case def.label of
+  FrameLabel _ moving -> Just moving
+  _ -> Nothing
+
+-- | The full path a minted type is stamped with: axes, a space or a frame.
+mintedPath :: TypeDef -> Maybe Text
+mintedPath def = case def.label of
+  Axes p -> Just p
+  SpaceLabel p -> Just p
+  FrameLabel p _ -> Just p
+  _ -> Nothing
 
 -- | The built-in declarations by hash: what every type lookup knows.
 builtinDefs :: Hash -> Maybe TypeDef

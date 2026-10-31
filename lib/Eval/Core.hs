@@ -161,21 +161,25 @@ identity instead: every @±@ with that label and midpoint is one unknown,
 wherever it appears. Only a tag is printed; the owner stamp is implied by
 the binding.
 
-The third kind stamps the axis type a chart declaration mints (design
-§3.9, decision 1) with the chart's full path: no source @data@ and no
-uncertainty carries it, so a user's @data Eci = Eci@ never equals it.
+The third kind stamps the axis type a chart or a space declaration mints
+(design §3.9, decision 1; §3.10, F2) with its full path: no source @data@
+and no uncertainty carries it, so a user's @data Eci = Eci@ never equals
+it. The last two stamp the nominal types a space and a chart declaration
+mint (design §3.10, F2, F3): a space, and a frame, with whether its chart
+takes parameters (F7).
 -}
 data Label
   = Owner Text
   | Tag Text
   | Axes Text
+  | SpaceLabel Text
+  | FrameLabel Text Bool
   deriving stock (Eq, Ord, Show)
 
 renderLabel :: Label -> Text
 renderLabel = \case
-  Owner _ -> ""
   Tag t -> " #" <> t
-  Axes _ -> ""
+  _ -> ""
 
 {- | A constant tensor: its shape and its values flat in row-major order; a
 number is the rank-zero case. Booleans are data ('Con').
@@ -431,18 +435,21 @@ primArity = \case
   "mol" -> Just 0
   "cd" -> Just 0
   "rad" -> Just 0
-  -- A root chart, a turned one and a spinning one take the constructor of
-  -- their minted axis type first (design §3.9); a translated one does not.
-  "mkScale" -> Just 3
-  "mkChart3" -> Just 3
-  "mkChart4" -> Just 5
-  -- A spinning chart (design §3.8): turned by a list of generators, perhaps
-  -- empty, with its angular velocity along its own axes.
-  "mkChart5" -> Just 6
+  -- A chart (design §3.10, F3, F10): on a space or on a parent chart, with
+  -- the frame and the axes it mints, if any, and its clauses, each a list
+  -- of none or one (the generators a list of any number).
+  "mkRoot" -> Just 7
+  "mkChart" -> Just 7
   "pointOn" -> Just 2
   "pointAdd" -> Just 2
   "pointSub" -> Just 2
+  -- Conversions (design §3.10, F5, F7, F10): a point to a chart, a point
+  -- from a configuration of its frame to a chart, and an amount along a
+  -- chart's axes, from the space's base axes or from a configuration.
   "toScale" -> Just 2
+  "fromTo" -> Just 3
+  "toAxes" -> Just 2
+  "axesFromTo" -> Just 3
   -- Units (design §3.10): the quantity rule after a unit, and a unit's
   -- declaration. Both names are keywords, so no source names them.
   "scale" -> Just 2
@@ -461,9 +468,11 @@ primArity = \case
   "rotationOf" -> Just 1
   "withAxes" -> Just 2
   -- A chart's kinematics (design §3.8): its absolute angular velocity and
-  -- the velocity of its origin, both along the base axes.
+  -- the velocity of its origin, both along the base axes, and its origin
+  -- from the space's base origin (design §3.10, part F, as built).
   "spinOf" -> Just 1
   "originVelocityOf" -> Just 1
+  "originOf" -> Just 1
   _ -> Nothing
 
 -- Renaming and weakening ------------------------------------------------------

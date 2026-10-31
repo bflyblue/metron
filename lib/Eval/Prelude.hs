@@ -88,9 +88,9 @@ vector, angle and all: every entry is then exactly the negation of its
 partner, even when the vector is an enclosure, and @B + Bᵀ@ is exactly
 zero. @euler313@ is the composed matrix, for @\@@ and @transformBy@; a
 chart is turned by the sequence itself, @by rotz Ω then rotx i then rotz
-ω@ (design §3.8). @inChart c v@ reads a vector @v@ given along the axes
-of chart @c@ along its root's, @R v@, and @along c v@ is the inverse,
-@Rᵀ v@ (design §3.9): the frame of each is in its type. @rotateVec r v@
+ω@ (design §3.8). A vector along a chart's axes is read along another's
+with @v from c to c1@, and one along its space's base axes along a
+chart's with @v to c@ (design §3.10, F10). @rotateVec r v@
 and @rotateCov r p@ are a rotation applied to a vector, @r v@, and to a
 covariance, @r p rᵀ@, typed by the axes of @r@'s rows and columns;
 @transformBy@, along every axis at once, is for anonymous axes only.
@@ -128,19 +128,18 @@ algebra =
     ( "euler313"
     , "\\raan inc argp -> expm (rotz raan) @ expm (rotx inc) @ expm (rotz argp)"
     )
-  , ("inChart", "\\c v -> rotationOf c @ v")
-  , ("along", "\\c v -> transpose (rotationOf c) @ v")
   , -- r v, written so that r is known to be a matrix
     ("rotateVec", "\\r v -> transpose (transpose r) @ v")
   , -- r p rᵀ, written so that both operands are known to be matrices
     ("rotateCov", "\\r p -> r @ transpose (r @ transpose p)")
   ]
 
-{- | A body's state (design §3.8, §3.9): its epoch, its position as an absolute
-point, and its velocity along the base axes, which is the velocity
-relative to the base charts, the inertial frame. @velocityIn c s@ is that
-velocity relative to chart @c@, along @c@'s axes, with the transport
-terms of a moving chart:
+{- | A body's state (design §3.8, §3.10): its epoch, a point on a time
+frame, and its position and velocity as amounts along a space's base
+axes, the position from the base origin: the velocity relative to the
+space's base, the inertial frame. @velocityIn c s@ is that velocity
+relative to chart @c@, along @c@'s axes, with the transport terms of a
+moving chart:
 
 @
 v_c = R_abs⁻¹ (v − v_o − ω_abs × (p − o_abs))
@@ -148,39 +147,32 @@ v_c = R_abs⁻¹ (v − v_o − ω_abs × (p − o_abs))
 
 with @R_abs@ the chart's rotation, @o_abs@ its origin, @v_o@ the velocity
 of its origin and @ω_abs@ its angular velocity, all from the base
-(@rotationOf@, @originVelocityOf@, @spinOf@). @stateFrom c t pc vc@ is the
-inverse: a position @pc@ and a velocity @vc@ along @c@'s axes, relative to
-@c@, to a state, @p = o_abs + R_abs pc@ and @v = R_abs vc + v_o + ω_abs ×
-(p − o_abs)@. A moving chart is passed at the state's instant, @velocityIn
-(ecef s.epoch) s@. @R_abs⁻¹@ is the transpose of the rotation: @R@ is
-orthogonal, so the transpose of an enclosure of it encloses its inverse.
-A state is typed by its root's axes, @State eci@: its position and
-velocity are along them, and a chart of another root does not read it.
+(@rotationOf@, @originOf@, @originVelocityOf@, @spinOf@), @R_abs⁻¹@ being
+@to c@. @stateFrom c t pc vc@ is the inverse: a position @pc@ and a
+velocity @vc@ along @c@'s axes, relative to @c@, to a state, @p = o_abs +
+R_abs pc@ and @v = R_abs vc + v_o + ω_abs × (p − o_abs)@. A chart with
+parameters is passed at the state's instant, @velocityIn (ecef s.epoch)
+s@. Neither is signed: a position in metres ties the chart's space to
+metres, which no written type can say of a space variable.
 -}
 stateStatements :: [Statement]
 stateStatements =
   [ Data
-      "data State r = State {epoch :: Point (Num s), pos :: Point (Vec r m), vel :: Vec r (m/s)}"
+      "data State t r = State {epoch :: Point t, pos :: Vec r m, vel :: Vec r (m/s)}"
       ["State", "epoch", "pos", "vel"]
-  , Sig
-      "velocityIn"
-      "forall (a : 3) (r : 3). Chart (Vec a m) r -> State r -> Vec a (m/s)"
   , Let
       "velocityIn"
       ( T.unwords
-          [ "\\c st -> linalg.along c"
-          , "(st.vel - originVelocityOf c - linalg.cross (spinOf c) (st.pos .- pointOn c [0, 0, 0]))"
+          [ "\\c st ->"
+          , "(st.vel - originVelocityOf c - linalg.cross (spinOf c) (st.pos - originOf c)) to c"
           ]
       )
-  , Sig
-      "stateFrom"
-      "forall (a : 3) (r : 3). Chart (Vec a m) r -> Point (Num s) -> Vec a m -> Vec a (m/s) -> State r"
   , Let
       "stateFrom"
       ( T.unwords
-          [ "\\c t pc vc -> let r = linalg.inChart c pc in"
-          , "State {epoch = t, pos = pointOn c [0, 0, 0] .+ r,"
-          , "vel = linalg.inChart c vc + originVelocityOf c + linalg.cross (spinOf c) r}"
+          [ "\\c t pc vc -> let r = rotationOf c @ pc in"
+          , "State {epoch = t, pos = originOf c + r,"
+          , "vel = rotationOf c @ vc + originVelocityOf c + linalg.cross (spinOf c) r}"
           ]
       )
   ]
@@ -297,6 +289,8 @@ data Statement
     Sig Text Text
   | Unit Text Text
   | Chart Text Text
+  | -- | a space (design §3.10, F2): its name and its amounts' type
+    SpaceDecl Text Text
   | -- | a @use@ inside the block, for names of a sibling namespace
     UseNs Text
   | {- | a @data@ declaration, and its labels: the type, its constructors
@@ -344,10 +338,11 @@ stdlibLayout =
       , Unit "day" "86400 s"
       , Unit "week" "7 day"
       , Unit "year" "365.25 day"
-      , Chart "JD" "day at 0 day"
-      , Chart "MJD" "day at 2400000.5 day"
-      , Chart "J2000" "day at 2451545 day"
-      , Chart "unix" "s at 2440587.5 day"
+      , SpaceDecl "Time" "Num s"
+      , Chart "JD" "on Time step day"
+      , Chart "MJD" "on Time at 2400000.5 day step day"
+      , Chart "J2000" "on Time at 2451545 day step day"
+      , Chart "unix" "on Time at 2440587.5 day"
       ]
     )
   ,
@@ -365,11 +360,13 @@ stdlibLayout =
     ,
       [ Unit "deltaC" "K"
       , Unit "deltaF" "5/9 * 1 K"
-      , Chart "degC" "K at 273.15 K"
-      , Chart "degF" "deltaF at 459.67 deltaF"
-      , Chart "degR" "deltaF at 0 deltaF"
+      , SpaceDecl "Temperature" "Num K"
+      , Chart "degC" "on Temperature at 273.15 K"
+      , Chart "degF" "on Temperature at 459.67 deltaF step deltaF"
+      , -- Rankine is a rescaling of kelvin: one frame (design §3.10, F3).
+        Chart "degR" "on kelvin step deltaF"
       , -- The absolute scale: K's spelled-out name is this scale, not a unit.
-        Chart "kelvin" "K at 0 K"
+        Chart "kelvin" "on Temperature"
       ]
     )
   ,
@@ -514,7 +511,9 @@ siStatements =
   [Unit n b | (b, n) <- baseNames]
     ++ [Let n ("10^" <> T.pack (show k)) | (n, k) <- prefixValues]
     ++ [Unit u e | (u, _, e) <- coherent]
-    ++ [Chart "gauge" "Pa at 101325 Pa"]
+    ++ [ SpaceDecl "Pressure" "Num (kg/(m*s^2))"
+       , Chart "gauge" "on Pressure at 101325 Pa step Pa"
+       ]
     ++ [ Unit (p <> u) (n <> " * 1 " <> fromMaybe u (lookup u baseNames))
        | (p, n) <- prefixNames
        , u <- siPrefixable
@@ -592,7 +591,8 @@ stdlibSource =
     Let n e -> "let " <> n <> " = " <> e
     Sig n t -> n <> " :: " <> t
     Unit n e -> "unit " <> n <> " = " <> e
-    Chart n e -> "chart " <> n <> " = " <> e
+    Chart n e -> "chart " <> n <> " " <> e
+    SpaceDecl n t -> "space " <> n <> " = " <> t
     UseNs p -> "use " <> p
     Data src _ -> src
 
@@ -611,6 +611,7 @@ stdlibNames =
       Sig _ _ -> []
       Unit n _ -> [n]
       Chart n _ -> [n]
+      SpaceDecl n _ -> [n]
       UseNs _ -> []
       Data _ ls -> ls
   ]

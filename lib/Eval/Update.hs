@@ -42,8 +42,12 @@ import Eval.TCore (signatureHolds)
 import Eval.Type (
   Arg (..),
   Axis (..),
+  Frame (..),
+  FrameSlot (..),
   Scheme (..),
   Shape (..),
+  Space (..),
+  SpaceSlot (..),
   Type (..),
   TypeDef (..),
   renderScheme,
@@ -232,8 +236,9 @@ retypeType m = \case
   -- A chart's axes are a declared type's (design §3.9): a named slot
   -- follows it too.
   TTensor sh d -> TTensor (shape sh) d
-  TPoint sh d -> TPoint (shape sh) d
-  TScale sh r d -> TScale (shape sh) (axis r) d
+  TPoint f -> TPoint (frame f)
+  TScale f -> TScale (frame f)
+  TOver f md -> TOver (frame f) md
   t -> t
  where
   new h = Map.findWithDefault h h m
@@ -241,7 +246,21 @@ retypeType m = \case
     AType t -> AType (retypeType m t)
     AShape sh -> AShape (shape sh)
     AAxis a -> AAxis (axis a)
+    AFrame (FrNamed h) -> AFrame (FrNamed (new h))
+    ASpace (SpNamed h) -> ASpace (SpNamed (new h))
     a -> a
+  -- A frame and a space are declared types too (design §3.10).
+  frame f =
+    Frame
+      (case f.slot of FrNamed h -> FrNamed (new h); s -> s)
+      (axis f.axes)
+      (space f.space)
+  space sp =
+    Space
+      (case sp.slot of SpNamed h -> SpNamed (new h); s -> s)
+      (shape sp.shape)
+      sp.dim
+      (axis sp.base)
   shape = \case
     SCons l a rest -> SCons l (axis a) (shape rest)
     sh -> sh
@@ -315,6 +334,9 @@ restamp moves cb0 = do
     Owner o | Just n <- Map.lookup o owners -> Owner n
     -- A chart's minted axis type follows its chart (design §3.9).
     Axes o | Just n <- Map.lookup o owners -> Axes n
+    -- So do its frame, and a space its base axes (design §3.10).
+    FrameLabel o moving | Just n <- Map.lookup o owners -> FrameLabel n moving
+    SpaceLabel o | Just n <- Map.lookup o owners -> SpaceLabel n
     l -> l
 
   -- Types: re-stamped, and their users rewritten, until nothing changes.
