@@ -10,6 +10,12 @@ module Eval.Type (
   Kind (..),
   VarId,
   Type (..),
+  Frame (..),
+  FrameSlot (..),
+  Space (..),
+  SpaceSlot (..),
+  overType,
+  spaceLens,
   dataConstructors,
   equalityArgs,
   TypeDef (..),
@@ -34,6 +40,8 @@ module Eval.Type (
   applyShape,
   applyDim,
   applyAxis,
+  applyFrame,
+  applySpace,
   applyArg,
   applyScheme,
   substOnce,
@@ -54,10 +62,12 @@ module Eval.Type (
   renderForallIn,
   canonicalScheme,
   defaultAxes,
+  writtenParams,
   renderArg,
 ) where
 
 import Control.Applicative ((<|>))
+import Data.List (nubBy)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -65,7 +75,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Builtin
-import Eval.Core (ConRef (..), Hash (..), showHash)
+import Eval.Core (ConRef (..), Hash (..), Label (..), showHash)
 import Eval.Dimension
 import Eval.Type.Base
 
@@ -123,26 +133,176 @@ its own and prints by its name.
 renderForallWith :: (Hash -> Text) -> Spelling -> Scheme -> Text
 renderForallWith typeName spelling (Forall _ t) =
   let (absorbed, sized) = axisRoles t
-      -- A scalar chart's root is not printed, so binds nothing.
-      printed = Set.fromList [x | AVar x <- map snd (positionsOf t) ++ rootsOf t]
+      owners = ownersOf t
+      printed = Set.fromList [x | AVar x <- map snd (positionsOf t)]
+      standing = Set.fromList (map fst (standingVars t))
+      printedLens =
+        Set.fromList
+          [ v
+          | (l, a) <- positionsOf t
+          , case a of
+              ANamed _ -> False
+              AVar x -> Map.notMember x owners.axisOwner
+              AAnon -> True
+          , v <- case l of
+              LVar v _ -> [v]
+              _ -> []
+          ]
+      -- A space prints when it is two frames', stands on its own, or its
+      -- base axes are written, @Mat s c@.
+      spacePrinted =
+        printedSpaces owners standing
+          <> Set.fromList
+            [ s
+            | AVar b <- map snd (positionsOf t)
+            , Just s <- [Map.lookup b owners.axisOwner]
+            , Map.member s owners.spaceFrames
+            ]
       vs =
-        [ (v, k)
-        | (v, k) <- freeVars t
-        , k /= KAxis || (Map.notMember v absorbed && Set.member v printed)
-        ]
+        orderSpaces
+          owners
+          [ (v, k)
+          | (v, k) <- freeVars t
+          , case k of
+              KAxis ->
+                Set.member v standing
+                  && Map.notMember v absorbed
+                  && Set.member v printed
+                  && Map.notMember v owners.axisOwner
+              KSpace -> Set.member v spacePrinted
+              -- A length prints unless its axes print by a name instead.
+              KLen -> Set.member v standing && Set.member v printedLens
+              _ -> Set.member v standing
+          ]
       names = forallNames (baseSymbolsOf t) vs
       axes =
-        AxisNames
+        ownedNames
+          owners
+          names
           (Map.restrictKeys names (Set.fromList [v | (v, KAxis) <- vs]))
           absorbed
       body = renderWithNamed typeName spelling axes names 0 t
-      binder v = case Map.lookup v sized of
-        Just k -> "(" <> name v <> " : " <> T.pack (show k) <> ")"
-        Nothing -> name v
+      binder v k = case (k, Map.lookup v sized) of
+        (_, Just n) -> "(" <> name v <> " : " <> T.pack (show n) <> ")"
+        (KFrame, _) -> case Map.lookup v owners.frameSpace of
+          Just (SpNamed h) -> "(" <> name v <> " : " <> typeName h <> ")"
+          Just (SpVar s)
+            | Set.member s spacePrinted -> "(" <> name v <> " : " <> name s <> ")"
+          _ -> name v
+        _ -> name v
       name v = Map.findWithDefault "?" v names
    in if null vs
         then body
-        else "forall " <> T.unwords [binder v | (v, _) <- vs] <> ". " <> body
+        else "forall " <> T.unwords [binder v k | (v, k) <- vs] <> ". " <> body
+
+{- | The frames and spaces of a type (design §3.10, F1): each frame
+variable's space, the frames on each space variable, and the axis
+variables that are companions, each with the variable it prints as: a
+frame's axes as the frame, and a space's base axes as the space.
+-}
+data Owners = Owners
+  { frameSpace :: Map VarId SpaceSlot
+  , axisOwner :: Map VarId VarId
+  , spaceFrames :: Map VarId (Set.Set FrameSlot)
+  }
+
+ownersOf :: Type -> Owners
+ownersOf t0 = foldl add (Owners Map.empty Map.empty Map.empty) (framesOf t0)
+ where
+  first _ old = old
+  add o (Frame sl a sp) =
+    Owners
+      { frameSpace = case sl of
+          FrVar c -> Map.insertWith first c sp.slot o.frameSpace
+          _ -> o.frameSpace
+      , axisOwner =
+          let byFrame = case (sl, a) of
+                (FrVar c, AVar x) -> Map.insertWith first x c o.axisOwner
+                _ -> o.axisOwner
+           in case (sp.slot, sp.base) of
+                (SpVar s, AVar b) -> Map.insertWith first b s byFrame
+                _ -> byFrame
+      , spaceFrames = case sp.slot of
+          SpVar s -> Map.insertWith Set.union s (Set.singleton sl) o.spaceFrames
+          _ -> o.spaceFrames
+      }
+
+-- | Every frame a type mentions, in order.
+framesOf :: Type -> [Frame]
+framesOf = \case
+  TPoint f -> [f]
+  TScale f -> [f]
+  TOver f _ -> [f]
+  TData _ as -> concat [framesOf t | AType t <- as]
+  TFun a b -> framesOf a ++ framesOf b
+  _ -> []
+
+{- | The space variables printed as binders: the space of two frames, or
+one that stands on its own, as a declared type's argument.
+-}
+printedSpaces :: Owners -> Set.Set VarId -> Set.Set VarId
+printedSpaces owners standing =
+  Set.fromList
+    [ s
+    | (s, frames) <- Map.toList owners.spaceFrames
+    , Set.size frames > 1 || Set.member s standing
+    ]
+
+-- | The binders, each printed space before the first frame on it.
+orderSpaces :: Owners -> [(VarId, Kind)] -> [(VarId, Kind)]
+orderSpaces owners vs = go Set.empty vs
+ where
+  spaces = Set.fromList [v | (v, KSpace) <- vs]
+  go _ [] = []
+  go seen ((v, k) : rest) = case k of
+    KSpace
+      | Set.member v seen -> go seen rest
+      | otherwise -> (v, k) : go (Set.insert v seen) rest
+    KFrame
+      | Just (SpVar s) <- Map.lookup v owners.frameSpace
+      , Set.member s spaces
+      , Set.notMember s seen ->
+          (s, KSpace) : (v, k) : go (Set.insert s seen) rest
+    _ -> (v, k) : go seen rest
+
+{- | The variables of a type outside the companions of its frames and
+spaces (design §3.10): a frame stands for its slot alone and a space for
+nothing, so that a companion that also stands elsewhere is still bound.
+-}
+standingVars :: Type -> [(VarId, Kind)]
+standingVars = nubBy (\a b -> fst a == fst b) . go
+ where
+  go = \case
+    TPoint f -> frame f
+    TScale f -> frame f
+    TOver f md -> frame f ++ maybe [] dims md
+    -- A declared type's companion arguments do not print, but a length's
+    -- axes print with it.
+    TData _ as ->
+      concat
+        [ arg a ++ maybe [] (\x -> freeVars (TData selfType [AAxis x])) ax
+        | (a, ax) <- withCompanions as
+        ]
+    TFun a b -> go a ++ go b
+    t -> freeVars t
+  frame f = case f.slot of
+    FrVar v -> [(v, KFrame)]
+    FrNamed _ -> []
+  dims d = [(v, KDim) | v <- dimVars d]
+  arg = \case
+    AType t -> go t
+    a -> freeVars (TData selfType [a])
+
+{- | The axis variables that print as their owner's name, a frame's or a
+space's (design §3.10, F4: a frame's name in an axis position means its
+axes), added to those that print by a name of their own.
+-}
+ownedNames ::
+  Owners -> Map VarId Text -> Map VarId Text -> Map VarId VarId -> AxisNames
+ownedNames owners names own absorbed =
+  AxisNames
+    (Map.union own (Map.mapMaybe (`Map.lookup` names) owners.axisOwner))
+    (Map.withoutKeys absorbed (Map.keysSet owners.axisOwner))
 
 {- | The part each axis variable of a type plays in its printing (design
 §3.9, decision 6), from the first position it appears at: one binder with
@@ -172,12 +332,9 @@ axisRoles t =
 positionsOf :: Type -> [(Len, Axis)]
 positionsOf = \case
   TTensor sh _ -> shape sh
-  TPoint sh _ -> shape sh
-  TScale sh _ _ -> shape sh
   TData _ as -> concatMap arg as ++ [(l, x) | (ALen l, Just x) <- withCompanions as]
   TFun a b -> positionsOf a ++ positionsOf b
-  TUnit _ -> []
-  TVar _ -> []
+  _ -> []
  where
   shape = \case
     SCons l a rest -> (l, a) : shape rest
@@ -187,25 +344,43 @@ positionsOf = \case
     AShape sh -> shape sh
     _ -> []
 
--- | The roots of the charts over a vector space in a type: those printed.
-rootsOf :: Type -> [Axis]
-rootsOf = \case
-  TScale SNil _ _ -> []
-  TScale _ r _ -> [r]
-  TData _ as -> concat [rootsOf t | AType t <- as]
-  TFun a b -> rootsOf a ++ rootsOf b
-  _ -> []
-
-{- | A declared type's arguments as written, the axis arguments left out,
-each length with its companion's axes (design §3.9): the @j@-th axis
-argument goes with the @j@-th length.
+{- | A declared type's arguments as written, the companion arguments left
+out, each length with its companion's axes (design §3.9): a declaration's
+companion parameters follow its written ones, an axis set for each length
+and then, for each frame, its axes and its space's slot, shape, dimension
+and base axes (design §3.10), so the @j@-th axis argument goes with the
+@j@-th length.
 -}
 withCompanions :: [Arg] -> [(Arg, Maybe Axis)]
-withCompanions as = go [a | a <- as, not (isAxisArg a)] [x | AAxis x <- as]
+withCompanions as =
+  let lens = length [() | ALen _ <- as]
+      frames = length [() | AFrame _ <- as]
+      written = take (length as - lens - companionsPerFrame * frames) as
+      companions = drop (length written) as
+   in go written [x | AAxis x <- take lens companions]
  where
   go (ALen l : rest) (x : xs) = (ALen l, Just x) : go rest xs
   go (a : rest) xs = (a, Nothing) : go rest xs
   go [] _ = []
+
+{- | How many companion parameters a declared type's frame parameter has
+(design §3.10): its axes, and its space's slot, shape, dimension and base.
+-}
+companionsPerFrame :: Int
+companionsPerFrame = 5
+
+{- | A declaration's written parameters, its companions left out (design
+§3.9, §3.10): they follow the written ones, an axis set for each length
+and the companions of each frame.
+-}
+writtenParams :: [(VarId, Kind)] -> [(VarId, Kind)]
+writtenParams ps =
+  take
+    ( length ps
+        - length [() | (_, KLen) <- ps]
+        - companionsPerFrame * length [() | (_, KFrame) <- ps]
+    )
+    ps
 
 {- | How the name slots of positions print (design §3.9): the axis
 variables that print by a name of their own, and those that are one
@@ -248,15 +423,18 @@ forallNames taken vs = snd (foldl pick (taken, Map.empty) vs)
     KShape -> "s" : numbered "s"
     KDim -> "d" : numbered "d"
     KAxis -> ["a", "b", "c", "e", "f", "g", "h"] ++ numbered "a"
+    KFrame -> "c" : numbered "c"
+    KSpace -> "s" : numbered "s"
   numbered p = [p <> T.pack (show i) | i <- [1 :: Int ..]]
 
 -- | The base symbols a type's dimensions print with.
 baseSymbolsOf :: Type -> Set.Set Text
 baseSymbolsOf = \case
   TTensor _ d -> dim d
-  TPoint _ d -> dim d
+  TPoint _ -> Set.empty
+  TScale _ -> Set.empty
+  TOver _ md -> foldMap dim md
   TUnit d -> dim d
-  TScale _ _ d -> dim d
   TData _ as -> foldMap arg as
   TFun a b -> baseSymbolsOf a <> baseSymbolsOf b
   TVar _ -> Set.empty
@@ -296,7 +474,14 @@ canonicalScheme (Forall _ t) =
    in Forall [(i, k) | (i, (_, k)) <- zip [0 ..] vs] (substOnce renaming t)
 
 renderWith :: Spelling -> Map VarId Text -> Int -> Type -> Text
-renderWith spelling = renderWithNamed showHash spelling noAxisNames
+renderWith spelling names prec t =
+  renderWithNamed
+    showHash
+    spelling
+    (ownedNames (ownersOf t) names Map.empty Map.empty)
+    names
+    prec
+    t
 
 renderArg :: Arg -> Text
 renderArg = \case
@@ -306,6 +491,10 @@ renderArg = \case
   ADim d -> renderDimArgIn Ascii (\v -> "d" <> T.pack (show v)) d
   -- A type application's name slot prints as nothing (design §3.9).
   AAxis _ -> ""
+  AFrame (FrNamed h) -> showHash h
+  AFrame (FrVar v) -> "f" <> T.pack (show v)
+  ASpace (SpNamed h) -> showHash h
+  ASpace (SpVar v) -> "sp" <> T.pack (show v)
  where
   shapeVars = \case
     SNil -> []
@@ -332,17 +521,17 @@ renderWithNamed typeName spelling axes names prec = \case
     , not (T.null (dim d)) || sh /= SNil ->
         "(" <> tensor sh <> dim d <> ")"
   TTensor sh d -> tensor sh <> dim d
-  -- A point or chart takes a type (design §4.1): `Point (Num K)`, `Point
-  -- (Vec 3 m)`, and `Point Num` when dimensionless. A chart over a vector
-  -- space names its root's axes after it (design §3.9), when they are
-  -- named or a variable that prints; a scalar chart has no axes to name.
-  TPoint sh d -> paren (prec > 10) ("Point " <> over sh d)
+  -- A point and a chart take a frame (design §3.10, F4): `Point degC`,
+  -- `Chart lvlh`, `Point c`; so do the amounts between its points, `Diff
+  -- c`, and the coordinates they are written with, `Coords c`, while
+  -- the frame's space is not known.
+  TPoint f -> paren (prec > 10) ("Point " <> frameName f)
+  TScale f -> paren (prec > 10) ("Chart " <> frameName f)
+  TOver f Nothing -> paren (prec > 10) ("Diff " <> frameName f)
+  TOver f (Just _) -> paren (prec > 10) ("Coords " <> frameName f)
   -- A unit (design §3.10, U1) takes its dimension as `Num` does: `Unit m`,
   -- `Unit (m/s)`, and `Unit` alone when dimensionless.
   TUnit d -> paren (prec > 10 && not (isDimOne d)) ("Unit" <> dim d)
-  TScale SNil _ d -> paren (prec > 10) ("Chart " <> over SNil d)
-  TScale sh r d ->
-    paren (prec > 10) ("Chart " <> over sh d <> maybe "" (" " <>) (rootText r))
   -- A declared type prints by its short hash here; the driver replaces that
   -- with the current name (design §7.2), so inference needs no name table.
   -- An axis argument, a length's companion, prints with its length (design
@@ -371,20 +560,14 @@ renderWithNamed typeName spelling axes names prec = \case
       , Just n <- Map.lookup x axes.own ->
           n
     _ -> (if bare then renderLenBare else renderLen) names l
-  rootText = \case
-    ANamed h -> Just (typeName h)
-    AVar x
-      | Just v <- Map.lookup x axes.absorbed -> Just (renderLenBare names (LVar v 0))
-      | otherwise -> Map.lookup x axes.own
-    AAnon -> Nothing
+  frameName f = case f.slot of
+    FrNamed h -> typeName h
+    FrVar v -> Map.findWithDefault ("f" <> T.pack (show v)) v names
   tensor = \case
     SNil -> "Num"
     SCons n a SNil -> "Vec " <> position False (n, a)
     SCons m a (SCons n b SNil) -> "Mat " <> position False (m, a) <> " " <> position False (n, b)
     sh -> "Tensor " <> renderShapeWith (position True) names sh
-  -- What a point or chart is over: a type, parenthesised unless it is a
-  -- lone `Num`.
-  over sh d = paren (sh /= SNil || not (isDimOne d)) (tensor sh <> dim d)
   -- A dimension is a type argument (design §4.1): one name to the first
   -- power bare (@Num m@, @Num d@), anything else parenthesised (@Num
   -- (m/s^2)@, @Num (d·d1)@).
@@ -399,12 +582,10 @@ renderWithNamed typeName spelling axes names prec = \case
     (AShape sh, _) -> renderShapeWith (position True) names sh
     (ADim d, _) -> renderDimArgIn spelling dimName d
     (AAxis _, _) -> ""
-
--- | An argument that fills an axis parameter, a length's companion.
-isAxisArg :: Arg -> Bool
-isAxisArg = \case
-  AAxis _ -> True
-  _ -> False
+    (AFrame (FrNamed h), _) -> typeName h
+    (AFrame (FrVar v), _) -> Map.findWithDefault ("f" <> T.pack (show v)) v names
+    (ASpace (SpNamed h), _) -> typeName h
+    (ASpace (SpVar v), _) -> Map.findWithDefault ("sp" <> T.pack (show v)) v names
 
 {- | A length on its own: an offset form or a rank is parenthesised, @Vec (n +
 1)@, @Vec (rank s)@.
@@ -465,6 +646,10 @@ prettyNames vs =
         ("s" : ["s" <> T.pack (show i) | i <- [1 :: Int ..]])
       ++ zip [v | (v, KDim) <- vs] ("d" : ["d" <> T.pack (show i) | i <- [1 :: Int ..]])
       ++ zip [v | (v, KAxis) <- vs] ["x" <> T.pack (show i) | i <- [1 :: Int ..]]
+      ++ zip
+        [v | (v, KFrame) <- vs]
+        ("c" : ["c" <> T.pack (show i) | i <- [1 :: Int ..]])
+      ++ zip [v | (v, KSpace) <- vs] ["sp" <> T.pack (show i) | i <- [1 :: Int ..]]
 
 idNames :: [(VarId, Kind)] -> Map VarId Text
 idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
@@ -475,6 +660,8 @@ idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
     KShape -> "s"
     KDim -> "d"
     KAxis -> "x"
+    KFrame -> "f"
+    KSpace -> "sp"
 
 -- Data ----------------------------------------------------------------------------
 
@@ -549,7 +736,8 @@ equalityParams defs def = go (map (const False) def.params)
   -- parameters are assumed to need.
   needs need = \case
     TTensor _ _ -> Just []
-    TPoint _ _ -> Just []
+    TPoint _ -> Just []
+    TOver _ _ -> Just []
     TVar v -> Just [v]
     TData h' as'
       | h' == selfType -> picked need as'
@@ -585,12 +773,32 @@ renderTypeDef _ name _ _ def
   -- A chart's minted axis type (design §3.9) is no declaration: its chart
   -- is, and lists as the axes of that chart.
   | isAxesDef def = "axes " <> name
+  -- A chart's frame (design §3.10, F3) lists as the frame of that chart.
+  | Just _ <- frameDefMoving def = "frame " <> name
+-- A space (design §3.10, F2) reads back as its declaration.
+renderTypeDef spelling name _ _ def
+  | SpaceLabel _ <- def.label
+  , [[], [TTensor sh d]] <- def.constructors =
+      "space "
+        <> name
+        <> " = "
+        <> renderWithNamed
+          showHash
+          spelling
+          noAxisNames
+          Map.empty
+          0
+          (TTensor (anonymous sh) d)
+ where
+  anonymous = \case
+    SCons l _ rest -> SCons l AAnon (anonymous rest)
+    sh -> sh
 renderTypeDef spelling name conNames fieldNames def =
   (if def.label == structuralLabel then "structural " else "")
     <> "data "
     -- An axis parameter, a length's companion, is not written (design §3.9).
     <> T.unwords
-      (name : [Map.findWithDefault "?" v names | (v, k) <- def.params, k /= KAxis])
+      (name : [Map.findWithDefault "?" v names | (v, _) <- writtenParams def.params])
     <> " = "
     <> T.intercalate
       " | "

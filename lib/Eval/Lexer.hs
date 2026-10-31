@@ -50,6 +50,12 @@ data Keyword
   | KUse
   | -- | @forall@ (or @∀@) at the head of a signature or an ascription (design §4.8)
     KForall
+  | -- | @space@: a space's declaration (design §3.10, F2)
+    KSpace
+  | -- | @on@: a chart's parent, and subtraction in a frame (design §3.10, F10)
+    KOn
+  | -- | @from@: a conversion from a configuration (design §3.10, F7)
+    KFrom
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 data Token
@@ -239,6 +245,9 @@ identifierOrKeyword = do
     -- The old spelling of @chart@ (design §3.6), accepted for a release.
     "scale" -> TKw KChart
     "at" -> TKw KAt
+    "space" -> TKw KSpace
+    "on" -> TKw KOn
+    "from" -> TKw KFrom
     "case" -> TKw KCase
     "of" -> TKw KOf
     "in" -> TKw KIn

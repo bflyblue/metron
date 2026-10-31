@@ -331,6 +331,7 @@ runtimeOf cfg cb = rt
       { typedOf = (`lookupTyped` cb)
       , unitName = \h i written -> unitNameFor (Reference h i) written cb
       , scaleName = \h i written -> scaleNameFor (Reference h i) written cb
+      , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
       }
   values = LazyMap.mapWithKey (\h (_, t) -> evalAt cfg rt h t) cb.derived
@@ -395,8 +396,12 @@ checkExpr scope cb src e = do
   pure (read' term, typed, listToMaybe schemes, linted)
  where
   typeErr prov err = case provenanceAt err.path prov of
-    Just (sp, hint) -> S.renderSpanError (Just src) sp (withHint hint err.message)
-    Nothing -> S.renderSpanError (Just src) e.span err.message
+    Just (sp, hint) ->
+      S.renderSpanError
+        (Just src)
+        sp
+        (withHint hint (fillOperands err.path prov err.message))
+    Nothing -> S.renderSpanError (Just src) e.span (fillOperands err.path prov err.message)
 
 -- Commands ----------------------------------------------------------------------
 
@@ -835,6 +840,7 @@ command session src = \case
     S.DBind _ b -> "pending: " <> short cb b.name.text
     S.DData _ d -> "pending: data " <> shortestNameOf TypeLabel scope cb d.name.text
     S.DSig _ n _ -> "pending: " <> signatureLine spelling scope cb n.text
+    S.DSpace _ n _ -> "pending: space " <> shortestNameOf TypeLabel scope cb n.text
   -- A label of any kind: a definition, a type, a constructor or a field.
   labelled n =
     Map.member n session.codebase.names
@@ -1309,6 +1315,7 @@ todo session =
     S.DData _ d -> shortestNameOf TypeLabel session.scope session.staging d.name.text
     S.DSig _ n _ ->
       signatureLine (spellingOf session.config) session.scope session.staging n.text
+    S.DSpace _ n _ -> shortestNameOf TypeLabel session.scope session.staging n.text
 
 forget :: Text -> Session -> Either Text (Session, [Text])
 forget n session
@@ -1360,7 +1367,7 @@ definitionLine ::
 definitionLine spelling scope cb keyword shown r = case (keyword, r.index, lookupTerm r.hash cb) of
   ("chart ", Nothing, Just t) ->
     let (ps, body) = renderParamsUnits spelling (refNamer scope cb) (unitRef cb) t
-     in Right (keyword <> T.unwords (shown : ps) <> " = " <> body)
+     in Right (keyword <> T.unwords (shown : ps ++ [body]))
   _ ->
     (\body -> keyword <> shown <> " = " <> body)
       <$> viewReference spelling scope cb r
@@ -1591,6 +1598,8 @@ listNames session args = do
         , "--charts" `notElem` flags
         , (n, h) <- sortOn (T.toLower . fst) (Map.toList cb.typeNames)
         , Just def <- [lookupTypeDef h cb]
+        , -- A chart's frame lists with --types only (design §3.10, F3).
+        "--types" `elem` flags || isNothing (frameDefMoving def)
         , line <-
             [ declaration shownType shown h n def
             | nameOk n
@@ -1807,12 +1816,18 @@ exportLabels session under = do
   stored = session.codebase.uses
   cb = session.codebase{uses = []}
   terms = [(n, r) | (n, r) <- Map.toList cb.names, under n]
-  -- A chart's axes are minted again by its declaration (design §3.9).
+  -- A chart's frame and axes are minted again by its declaration (design
+  -- §3.10, F3).
   types =
     [ (n, h)
     | (n, h) <- Map.toList cb.typeNames
     , under n
-    , not (maybe False isAxesDef (lookupTypeDef h cb))
+    , not
+        ( maybe
+            False
+            (\d -> isAxesDef d || isJust (frameDefMoving d))
+            (lookupTypeDef h cb)
+        )
     ]
   namespaceOf n = init (T.splitOn "." n)
   -- Types after the types their fields use.
@@ -2326,7 +2341,7 @@ applyEdit target text session = case reconcile of
 -- | The labels a declaration defines, by kind and full path.
 declLabels :: S.Decl -> [(LabelKind, Text)]
 declLabels = \case
-  -- A chart labels its axes too (design §3.9).
+  -- A chart labels its frame too (design §3.10, F3).
   S.DBind _ b ->
     (TermLabel, b.name.text) : [(TypeLabel, b.name.text) | b.kind == S.ChartDecl]
   S.DData _ d ->
@@ -2335,6 +2350,8 @@ declLabels = \case
       ++ [(FieldLabel, n.text) | (_, fs) <- d.constructors, S.FieldDecl (Just n) _ <- fs]
   -- A signature labels nothing: it belongs to its definition (design §4.8).
   S.DSig{} -> []
+  -- A space labels its type (design §3.10, F2).
+  S.DSpace _ n _ -> [(TypeLabel, n.text)]
 
 -- | Remove one label of one kind; history keeps a definition's.
 removeKind :: (LabelKind, Text) -> Codebase -> Codebase

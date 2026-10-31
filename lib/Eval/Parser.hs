@@ -133,6 +133,7 @@ statement =
   letStatement
     P.<|> unitStatement
     P.<|> chartStatement
+    P.<|> spaceStatement
     P.<|> dataStatement
     P.<|> namespaceStatement
     P.<|> useStatement
@@ -217,88 +218,119 @@ unitStatement = do
   e <- expr
   pure (SLet (Binding (spanUnion s e.span) n [] e Unit))
 
-{- | @chart name params = step at origin [parent] [by generator] [spinning
-ω]@ (design §3.6, §3.8; @scale@ is the old spelling): a definition whose
-value is a chart, marked as one. The parent is a chart name juxtaposed
-after the origin, which only the desugarer can tell from a unit, so it
-stays in the origin here. Parameters make a moving chart, a function to a
-chart, exactly as they make a function of a @let@.
+{- | @chart name params… on parent [at origin] [step unit] [by B [then B
+…]] [spinning ω]@ (design §3.10, F10; @scale@ is the old spelling): a
+definition whose value is a chart, marked as one. @on@ ends the
+parameters and names the parent, a space or a chart; the other clauses
+come in any order, each running to the next clause word, so no
+expression in them needs parentheses. @step@, @by@ and @spinning@ are
+words in this statement only, like @then@ between generators, so they
+stay names everywhere else. Parameters make a chart with parameters, a
+function to a chart, as they make a function of a @let@. The generators
+become a list literal, a single one a list of one; an @if@ inside one
+takes its own @then@.
 -}
 chartStatement :: Parser Statement
 chartStatement = do
   s <- kw KChart
   n <- name
   ps <- P.many name
-  _ <- tok TEquals
-  step <- expr
-  _ <- kw KAt
-  (origin, gen, spin) <- originGeneratorSpin
-  let sp = spanUnion s (maybe origin.span (.span) (spin P.<|> gen))
-  pure
-    (SLet (Binding sp n ps (Expr sp (ChartForm step origin gen spin)) ChartDecl))
-
-{- | A chart's origin, its @by@ part and its @spinning@ part. @spinning@ is a
-keyword in this statement only, like @by@, and comes last: the
-statement's tokens are cut at the first @spinning@ outside brackets, the
-origin and the generators are read from the tokens before it, and the
-angular velocity, one expression, from the tokens after it.
--}
-originGeneratorSpin :: Parser (Expr, Maybe Expr, Maybe Expr)
-originGeneratorSpin = do
+  o <- P.getOffset
+  equals <- P.optional (tok TEquals)
+  case equals of
+    Just _ ->
+      P.setOffset o
+        >> fail
+          "a chart is declared with no `=`: its parent after `on`, then its clauses, as in chart degC on Temperature at 273.15 K"
+    Nothing -> pure ()
+  _ <-
+    kw KOn
+      P.<|> fail
+        "name its space: `chart … on Temperature`, or the chart it is on, after its parameters"
   input <- P.getInput
-  case cutAt "spinning" input.toks of
-    Nothing -> (\(o, g) -> (o, g, Nothing)) <$> originAndGenerator
-    Just i -> do
-      let (before, after) = splitAt i input.toks
-      P.setInput input{toks = before}
-      (origin, gen) <- originAndGenerator <* P.eof
-      P.setInput input{toks = after}
-      _ <- match "spinning" (\case TIdent "spinning" -> Just (); _ -> Nothing)
-      w <- expr
-      pure (origin, gen, Just w)
-
-{- | The position of the first identifier @word@ outside brackets in the
-current statement, if there is one: what a contextual keyword of the
-chart statement is cut at.
--}
-cutAt :: Text -> [Located Token] -> Maybe Int
-cutAt word = go (0 :: Int) 0
+  let (stmt, rest) = splitAt (statementEnd input.toks) input.toks
+  clauses <- mapM (clause input) (clauseSegments stmt)
+  P.setInput input{toks = rest}
+  let words' = [w | (Just w, _) <- clauses]
+  case [w | (i, w) <- zip [0 :: Int ..] words', w `elem` drop (i + 1) words'] of
+    w : _ -> fail ("a chart has one `" <> T.unpack w <> "` clause")
+    [] -> pure ()
+  parent <- case clauses of
+    (Nothing, p) : _ -> pure p
+    _ -> fail "a chart names its parent after `on`"
+  let find w = lookup (Just w) clauses
+      body =
+        ChartClauses
+          parent
+          (find "at")
+          (find "step")
+          (find "by")
+          (find "spinning")
+          (not (null ps))
+      sp = spanUnion s (foldr (spanUnion . (.span) . snd) parent.span clauses)
+  pure (SLet (Binding sp n ps (Expr sp (ChartForm body)) ChartDecl))
  where
-  go _ _ [] = Nothing
+  -- One clause, from its tokens: the parent, or a clause word and its expression.
+  clause input (word, toks) = do
+    P.setInput input{toks = toks}
+    case word of
+      Nothing -> (Nothing,) <$> expr <* P.eof
+      Just "by" -> do
+        _ <- P.anySingle
+        g <- expr
+        gs <- P.many (kw KThen *> expr)
+        P.eof
+        let sp = foldr (spanUnion . (.span)) g.span gs
+        pure (Just "by", Expr sp (List (g : gs)))
+      Just w -> do
+        _ <- P.anySingle
+        (Just w,) <$> expr <* P.eof
+
+{- | The index at which the current statement ends: the first separator or
+block end outside brackets.
+-}
+statementEnd :: [Located Token] -> Int
+statementEnd = go (0 :: Int) 0
+ where
+  go _ i [] = i
   go depth i (t : ts) = case t.value of
-    TIdent w | w == word, depth == 0 -> Just i
-    TSep | depth == 0 -> Nothing
-    TBlockEnd | depth == 0 -> Nothing
+    TSep | depth == 0 -> i
+    TBlockEnd | depth == 0 -> i
     v
       | v `elem` [TLParen, TLBracket, TLBrace] -> go (depth + 1) (i + 1) ts
       | v `elem` [TRParen, TRBracket, TRBrace] -> go (depth - 1) (i + 1) ts
       | otherwise -> go depth (i + 1) ts
 
-{- | A chart's origin and its @by@ part. @by@ is a keyword in this statement
-only, so that it stays a name everywhere else: the statement's tokens are
-cut at the first @by@ outside brackets, the origin is parsed from the
-tokens before it, and the generators from the tokens after it. Cutting the
-tokens rather than the parsed tree keeps @by a + b@ whole. The generators
-are one expression, or several separated by @then@ (@by rotz Ω then rotx
-i then rotz ω@), applied in that order (design §3.8). They become a list
-literal, which is what @mkChart4@ takes, so a single generator is a list
-of one. An @if@ inside a generator takes its own @then@.
+{- | A chart statement's tokens after @on@, cut at its clause words outside
+brackets: the parent's, then each clause's, its word first.
 -}
-originAndGenerator :: Parser (Expr, Maybe Expr)
-originAndGenerator = do
-  input <- P.getInput
-  case cutAt "by" input.toks of
-    Nothing -> (,Nothing) <$> expr
-    Just i -> do
-      let (before, after) = splitAt i input.toks
-      P.setInput input{toks = before}
-      origin <- expr <* P.eof
-      P.setInput input{toks = after}
-      _ <- match "by" (\case TIdent "by" -> Just (); _ -> Nothing)
-      g <- expr
-      gs <- P.many (kw KThen *> expr)
-      let sp = foldr (spanUnion . (.span)) g.span gs
-      pure (origin, Just (Expr sp (List (g : gs))))
+clauseSegments :: [Located Token] -> [(Maybe Text, [Located Token])]
+clauseSegments = go (0 :: Int) Nothing []
+ where
+  go _ word acc [] = [(word, reverse acc)]
+  go depth word acc (t : ts)
+    | depth == 0
+    , Just w <- clauseWord t.value =
+        (word, reverse acc) : go depth (Just w) [t] ts
+    | t.value `elem` [TLParen, TLBracket, TLBrace] =
+        go (depth + 1) word (t : acc) ts
+    | t.value `elem` [TRParen, TRBracket, TRBrace] =
+        go (depth - 1) word (t : acc) ts
+    | otherwise = go depth word (t : acc) ts
+  clauseWord = \case
+    TKw KAt -> Just "at"
+    TIdent w | w `elem` ["step", "by", "spinning"] -> Just w
+    _ -> Nothing
+
+{- | @space Name = type@ (design §3.10, F2): a nominal space, of the amounts
+of a tensor type, @Num K@ or @Vec 3 m@.
+-}
+spaceStatement :: Parser Statement
+spaceStatement = do
+  _ <- kw KSpace
+  n <- name
+  _ <- tok TEquals
+  SSpace n <$> typeExpr
 
 {- | @let b@ as a definition (optionally with @where@), or @let b in e@ as an
 expression statement. Both start the same way, so they share a prefix.
@@ -392,17 +424,23 @@ sigType = do
  where
   binder =
     P.choice
-      [ (`TyBinder` Nothing) <$> name
+      [ (\n -> TyBinder n Nothing Nothing) <$> name
       , do
           _ <- tok TLParen
           n <- name
           _ <- tok (TOp ":")
-          (_, k) <-
-            match
-              "length"
-              (\case TNum r | denominator r == 1 && r >= 0 -> Just (numerator r); _ -> Nothing)
+          -- A length, @(a : 3)@, or a space, @(c : Temperature)@ (design
+          -- §3.10, F1).
+          b <-
+            P.choice
+              [ (\(_, k) -> TyBinder n (Just k) Nothing)
+                  <$> match
+                    "length"
+                    (\case TNum r | denominator r == 1 && r >= 0 -> Just (numerator r); _ -> Nothing)
+              , TyBinder n Nothing . Just <$> qualifiedName
+              ]
           _ <- tok TRParen
-          pure (TyBinder n (Just k))
+          pure b
       ]
 
 -- | A type: an application, optionally followed by @->@ and another type.
@@ -567,9 +605,26 @@ ifExpr = do
   e <- expr
   pure (Expr (spanUnion s e.span) (If c t e))
 
+{- | The operators, and last a conversion (design §3.10, F7, F10): @x to
+c@, @x from c to c1@, or a subtraction in a frame, @b .- a on c@, none of
+which chain.
+-}
 opExpr :: Parser Expr
-opExpr = makeExprParser term table
+opExpr = do
+  x <- inner
+  P.option x
+    $ P.choice
+      [ binop To x <$> (kw KTo *> inner)
+      , binop On x <$> (kw KOn *> inner)
+      , do
+          _ <- kw KFrom
+          c <- inner
+          _ <- kw KTo
+          c1 <- inner
+          pure (Expr (spanUnion x.span c1.span) (FromTo x c c1))
+      ]
  where
+  inner = makeExprParser term table
   table =
     [ [InfixR (binop Compose <$ opTok "."), InfixL backtick]
     , [Prefix (foldr1 (.) <$> P.some (negP P.<|> sqrtP))]
@@ -601,7 +656,6 @@ opExpr = makeExprParser term table
       ]
     , [InfixR (binop And <$ opTok "&&")]
     , [InfixR (binop Or <$ opTok "||")]
-    , [InfixN (binop To <$ kw KTo)]
     ]
   negP = do
     s <- tok (TOp "-")

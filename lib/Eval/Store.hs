@@ -3,7 +3,7 @@
 A store is a directory:
 
 @
-format          "eval codebase 8"
+format          "eval codebase 9"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
 names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias] | sig name type | unsig name
@@ -79,12 +79,15 @@ types; format 7 writes the signatures of its @sig@ lines, which are text,
 with dimensions as type arguments, @Num (m/s)@ and not @Num [m s^-1]@
 (design §4.1); format 8 holds units as a type (design §3.10, part U): a
 quantity is @scale@, a unit's declaration wraps its body, and the library
-is respelled, so every term over a unit is another. A store opens only
+is respelled, so every term over a unit is another; format 9 holds spaces
+and frames (design §3.10, part F): a point is typed by its frame, a
+chart's Core names the frame and the space it is on, and the library's
+charts are respelled. A store opens only
 at this format: until the language is released, an older store is
 refused, not migrated (core.md §6).
 -}
 formatVersion :: Int
-formatVersion = 8
+formatVersion = 9
 
 {- | The store to use: the directory given, else a @.eval@ directory found by
 walking up from the working directory, else the user store under
@@ -146,7 +149,7 @@ openStore seeding d = do
               <> tshow v
               <> "; it predates format "
               <> tshow formatVersion
-              <> " and cannot be opened: recreate it (with the previous eval, `:export` it, respell its quantities for units as a type, 60 * s as 60 s and x / s as x / 1 s, and the dimensions in its types, Num [m s^-1] as Num (m/s), and `:load` the file into a new codebase)"
+              <> " and cannot be opened: recreate it (with the previous eval, `:export` it, respell its quantities for units as a type, 60 * s as 60 s and x / s as x / 1 s, the dimensions in its types, Num [m s^-1] as Num (m/s), and its charts on spaces, chart degC on Temperature at 273.15 K, and `:load` the file into a new codebase)"
           _ ->
             T.pack d
               <> " is not an eval codebase of format "

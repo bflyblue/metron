@@ -134,6 +134,9 @@ keywords =
   , "namespace"
   , "use"
   , "forall"
+  , "space"
+  , "on"
+  , "from"
   ]
 
 {- | Whether the cursor is at a file name: the argument of @:load@ or of

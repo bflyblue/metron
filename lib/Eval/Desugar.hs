@@ -23,6 +23,9 @@ module Eval.Desugar (
   ascriptionPath,
   isQuantityMarker,
   isToMarker,
+  isFromMarker,
+  spaceQuery,
+  fillOperands,
   readingMarkerName,
   unmarked,
   Resolution (..),
@@ -33,6 +36,7 @@ module Eval.Desugar (
   renderDesugarError,
 ) where
 
+import Control.Applicative ((<|>))
 import Control.Monad (foldM, when, zipWithM)
 import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (StateT, gets, modify', runStateT)
@@ -67,10 +71,14 @@ data Provenance = Provenance
   {- ^ the quantities and @to@s whose reading is left to the types
   (design §3.10, U4, U6) met so far, which number their markers
   -}
+  , operands :: Map Path [Text]
+  {- ^ the operands of each conversion as written, by its path, for an
+  error that quotes them (design §3.10, F7): @«0»@ and @«1»@ in a message
+  -}
   }
 
 emptyProvenance :: Provenance
-emptyProvenance = Provenance Map.empty Map.empty [] 0
+emptyProvenance = Provenance Map.empty Map.empty [] 0 Map.empty
 
 {- | The marker of a quantity whose reading the types choose (design §3.10,
 U4): @scale lit u@ after a unit, @pointOn c lit@ after a chart. Numbered,
@@ -83,6 +91,10 @@ isQuantityMarker = T.isPrefixOf "§quantity:"
 -- | The marker of a @to@ whose reading the types choose (design §3.10, U6).
 isToMarker :: Text -> Bool
 isToMarker = T.isPrefixOf "§to:"
+
+-- | The marker of a @from … to@ whose reading the types choose (design §3.10, F7).
+isFromMarker :: Text -> Bool
+isFromMarker = T.isPrefixOf "§from:"
 
 -- | The @k@th marker of a kind, @quantity@ or @to@.
 readingMarkerName :: Text -> Int -> Text
@@ -149,6 +161,8 @@ data Resolved
     ALocal Text
   | -- | A name two @use@d namespaces both offer, as their full paths.
     AAmbiguous [Text]
+  | -- | A space's declaration, by its hash, for a @%space:@ query (design §3.10, F2).
+    ASpaceDecl Hash
 
 {- | A name as written, looked up: @x@ through the scope, @.f@ the field @f@
 through the scope, and @§p@ the absolute path @p@, written @.p@ (design
@@ -453,12 +467,12 @@ desugar path ctx e = do
             asks (Uncertain k . (.owner))
               <*> desugar (0 : path) ctx a
               <*> desugar (1 : path) ctx b
-          -- A point moves to another chart, an amount to a display unit; which,
-          -- the target's type says when its spelling does not (design §3.10,
-          -- U6). A moving chart must be applied at a time first (design §3.8).
+          -- An amount to a display unit, a point to another chart, or an
+          -- amount along a chart's axes; which, the types say when the
+          -- spelling does not (design §3.10, U6, F10). A chart with
+          -- parameters must be applied first (F7).
           S.To -> do
-            refuseMoving ctx b
-            scaleName <- isScaleName ctx b
+            refuseMoving ctx asTarget b
             unit <- staticUnit ctx b
             -- A unit's name here is meant as a unit; one of the wrong
             -- dimension is not to be written as an amount.
@@ -466,12 +480,35 @@ desugar path ctx e = do
             when
               named
               (hintAt b.span "the unit after `to` has the dimension of the value before it")
-            if scaleName
-              then prim "toScale" [a, b]
-              else
-                if unit
-                  then prim "to" [a, b]
-                  else readingMarker "to" >>= \m -> prim m [a, b]
+            operands [a, b]
+            if unit
+              then prim "to" [a, b]
+              else readingMarker "to" >>= \m -> prim m [a, b]
+          -- Subtracting in a frame (design §3.10, F10): both points
+          -- converted to one chart value, then subtracted.
+          S.On -> case a.node of
+            S.BinOp S.PSub q r -> do
+              let x = fresh "on" 0
+                  var = S.Expr b.span (S.Var x)
+                  to p = S.Expr p.span (S.BinOp S.To p var)
+              desugar
+                path
+                ctx
+                ( S.Expr
+                    e.span
+                    ( S.Let
+                        (S.Name b.span x)
+                        []
+                        b
+                        (S.Expr a.span (S.BinOp S.PSub (to q) (to r)))
+                    )
+                )
+            _ ->
+              failWith
+                ( BadSpecialForm
+                    a.span
+                    "`on` subtracts two points in a frame: write b .- a on c"
+                )
           S.PAdd -> prim "pointAdd" [a, b]
           S.Cons ->
             (\x r -> Con consC [x, r])
@@ -509,7 +546,7 @@ desugar path ctx e = do
           S.Scale -> do
             let (lit, atoms) = scaleChain e
                 unitE = foldl1 (binop S.Outer) atoms
-            mapM_ (refuseMoving ctx) atoms
+            mapM_ (refuseMoving ctx asPoint) atoms
             chart <- case atoms of
               [c] -> isScaleName ctx c
               _ -> pure False
@@ -604,42 +641,70 @@ desugar path ctx e = do
     S.Record hd0 fields -> do
       hd <- qualifiedChain ctx hd0
       recordExpr path ctx e hd fields
-    -- A chart (design §3.6, §3.8): a chart name juxtaposed after the origin
-    -- is its parent. Without one, and without a generator, the two-part
-    -- form keeps the Core, and so the hash, every chart had before. A
-    -- spinning chart is turned by a list of generators, perhaps empty.
-    -- A root chart and a turned one introduce axes of their own (design
-    -- §3.9, decision 1): their primitive takes the constructor of the axis
-    -- type the declaration mints first; a translated chart shares its
-    -- parent's.
-    S.ChartForm step written gen spin -> do
-      parted <- parentOf ctx written
-      case (parted, gen, spin) of
-        (Nothing, Nothing, Nothing) -> minted "mkScale" [step, written]
-        (Just (o, par), Nothing, Nothing) -> prim "mkChart3" [step, o, par]
-        (Just (o, par), Just g, Nothing) -> minted "mkChart4" [step, o, par, g]
-        (Just (o, par), _, Just w) ->
-          minted
-            "mkChart5"
-            [step, o, par, fromMaybe (S.Expr written.span (S.List [])) gen, w]
-        (Nothing, Just _, _) ->
-          failWith
-            ( BadSpecialForm
-                written.span
-                "a turned chart names the chart its axes are turned from, after the origin: chart lvlh = m at r0 eci by B"
+    -- A conversion from a configuration (design §3.10, F7): a point or an
+    -- amount, which the types say.
+    S.FromTo v c c1 -> do
+      refuseMoving ctx asTarget c
+      refuseMoving ctx asTarget c1
+      readingMarker "from" >>= \m -> prim m [v, c, c1]
+    -- A chart (design §3.10, F3, F10): on a space, a root, or on a parent
+    -- chart. A root, an origin, axes turned or a spin mint a frame, whose
+    -- type the chart primitive takes first, stamped with the chart's path;
+    -- turned axes or a spin mint axes too; a step alone is a rescaling,
+    -- which shares its parent's frame. Each clause is a list of none or one,
+    -- so that an omitted one is inherited.
+    S.ChartForm cl -> do
+      space <- spaceNamed ctx cl.parent
+      def <- asks (.definition)
+      let turns = isJust cl.generators || isJust cl.spin
+          mints = isJust space || isJust cl.origin || turns
+          frameT = Con (frameTag def cl.parameterised) []
+          axesT = Con (axesTag def) []
+          nil = Con nilC []
+          one x = Con consC [x, nil]
+          optional i = \case
+            Nothing -> pure nil
+            Just x -> do
+              record (i : path) x.span
+              one <$> desugar (0 : i : path) ctx x
+          gens =
+            maybe
+              (pure nil)
+              (desugar (5 : path) ctx)
+              (cl.generators <|> (S.Expr cl.parent.span (S.List []) <$ cl.spin))
+      rest <-
+        sequence
+          [ optional (3 :: Int) cl.step
+          , optional 4 cl.origin
+          , gens
+          , optional 6 cl.spin
+          ]
+      case space of
+        Just h ->
+          pure
+            ( PrimApp
+                "mkRoot"
+                ([frameT, if turns then one axesT else nil, Con (UserCon h 0) []] ++ rest)
             )
-        (Nothing, Nothing, Just _) ->
-          failWith
-            ( BadSpecialForm
-                written.span
-                "a spinning chart names the chart it spins relative to, after the origin: chart ecef t = m at [0, 0, 0] m eci by rotz (gmst t) spinning w"
+        Nothing -> do
+          refuseMoving ctx asParent cl.parent
+          parent <- desugar (2 : path) ctx cl.parent
+          pure
+            ( PrimApp
+                "mkChart"
+                ( [if mints then one frameT else nil, if turns then one axesT else nil, parent]
+                    ++ rest
+                )
             )
  where
   prim p args = PrimApp p <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
-  minted p args = do
-    tag <- asks (\env -> Con (axesTag env.definition) [])
-    PrimApp p . (tag :) <$> zipWithM (\i a -> desugar (i : path) ctx a) [1 ..] args
   synthLam sp x body = S.Expr sp (S.Lam [S.Name sp x] body)
+  -- The operands of a conversion as written, for its error (design §3.10, F7).
+  operands xs =
+    lift
+      ( modify'
+          (\p -> p{operands = Map.insert (reverse path) (map operandText xs) p.operands})
+      )
 
 -- | @[Lit, Lit, …]@ of one shape becomes one 'Lit' of the stacked shape.
 foldConstant :: [Term n] -> Term n
@@ -681,6 +746,7 @@ headApp path ctx hd x args = case lookupCtx x ctx of
         Nothing -> failWith (UnknownName hd.span x)
       Just (AAmbiguous fulls) -> ambiguous hd.span x fulls
       Just (AQualified _ _) -> failWith (UnknownName hd.span x)
+      Just (ASpaceDecl _) -> failWith (UnknownName hd.span x)
       -- A declared constructor applies like a primitive: saturated, eta-expanded or over-applied.
       Just (AConstructor info)
         | length args == info.arity -> saturated path ctx (Con info.con) args
@@ -927,6 +993,7 @@ opPrim = \case
   S.And -> "and"
   S.Or -> "or"
   S.To -> "to"
+  S.On -> "on"
   S.PAdd -> "pointAdd"
   S.PSub -> "pointSub"
   S.Cons -> "cons"
@@ -1143,23 +1210,58 @@ surfaceText x = case x.node of
            in (if r < 0 then "-" else "") <> whole <> "." <> frac
         [] -> T.pack (show (numerator r)) <> "/" <> T.pack (show (denominator r))
 
-{- | A chart's origin as written, split into the origin and its parent when
-the last atom juxtaposed to it is a chart name (design §3.8): @[2, 0, 1] m
-site@ is a quantity rule chain ending in @site@, @r0 eci@ an application.
-An origin that ended in a chart name was a point, never an amount, so a
-chart written before reads the same, except an origin that applied a
-function to a chart (@m at f eci@), which now reads @eci@ as the parent.
+{- | A chart's parent when it names a space (design §3.10, F2): a free
+name, perhaps qualified, that the type scope resolves to a space's
+declaration, by its hash. Anything else is a chart.
 -}
-parentOf :: Ctx n -> S.Expr -> M (Maybe (S.Expr, S.Expr))
-parentOf ctx written = case written.node of
-  S.BinOp S.Scale o par -> split o par
-  S.App o par -> split o par
+spaceNamed :: Ctx n -> S.Expr -> M (Maybe Hash)
+spaceNamed ctx e = case written e of
+  Just x
+    | Nothing <- lookupCtx x ctx ->
+        asks (\env -> env.resolve (spaceQuery <> x)) >>= \case
+          Just (ASpaceDecl h) -> pure (Just h)
+          _ -> pure Nothing
   _ -> pure Nothing
  where
-  split o par = do
-    refuseMoving ctx par
-    chart <- isScaleName ctx par
-    pure (if chart then Just (o, par) else Nothing)
+  written x = case x.node of
+    S.Var n -> Just n
+    S.FieldOf a f -> (<> ("." <> f)) <$> written a
+    _ -> Nothing
+
+-- | The query a resolver answers with a space, @%space:name@.
+spaceQuery :: Text
+spaceQuery = "%space:"
+
+{- | An operand of a conversion as written, for an error that quotes it
+(design §3.10, F7): a name, an application of names, or else @p@.
+-}
+operandText :: S.Expr -> Text
+operandText x = fromMaybe "p" (go x)
+ where
+  go y = case y.node of
+    S.Var n -> Just n
+    S.Num _ -> surfaceText y
+    S.App f a -> (\f' a' -> f' <> " " <> a') <$> go f <*> atom a
+    S.FieldOf a f -> (<> ("." <> f)) <$> go a
+    S.Vec es -> (\ts -> "[" <> T.intercalate ", " ts <> "]") <$> mapM go es
+    S.BinOp S.Scale a b -> (\a' b' -> a' <> " " <> b') <$> go a <*> atom b
+    _ -> Nothing
+  atom y = case y.node of
+    S.App _ _ -> (\t -> "(" <> t <> ")") <$> go y
+    _ -> go y
+
+{- | A message with the operands of the conversion it is about (design
+§3.10, F7): @«0»@ and @«1»@ replaced by the source of the node's first and
+second operands, as the desugarer recorded them.
+-}
+fillOperands :: Path -> Provenance -> Text -> Text
+fillOperands path prov msg = case Map.lookup path prov.operands of
+  Just texts ->
+    foldl
+      (\m (i, t) -> T.replace ("«" <> T.pack (show i) <> "»") t m)
+      msg
+      (zip [0 :: Int ..] texts)
+  Nothing -> T.replace "«0»" "p" (T.replace "«1»" "c" msg)
 
 {- | Whether an expression is a free name declared with @chart@ (design
 §3.6), or a moving chart applied at a time, @ecef t0@ (§3.8).
@@ -1173,17 +1275,19 @@ isScaleName ctx e = case e.node of
 the chart is a function of time, and a point or a parent needs the chart
 at an instant.
 -}
-refuseMoving :: Ctx n -> S.Expr -> M ()
-refuseMoving ctx e = do
+refuseMoving :: Ctx n -> (Text -> Text) -> S.Expr -> M ()
+refuseMoving ctx how e = do
   moving <- movingChart ctx e
   case moving of
     Just x ->
-      failWith
-        ( BadSpecialForm
-            e.span
-            ("`" <> x <> "` moves: apply it at a time, as in p to " <> x <> " t0")
-        )
+      failWith (BadSpecialForm e.span ("`" <> x <> "` takes arguments: " <> how x))
     Nothing -> pure ()
+
+-- | How a chart with parameters is applied where a chart is wanted (design §3.10, F7).
+asPoint, asTarget, asParent :: Text -> Text
+asPoint x = "a point is written on an applied chart, as in [1, 2, 3] (" <> x <> " t0)"
+asTarget x = "apply it, as in p to (" <> x <> " t0)"
+asParent x = "apply it, as in chart arm t on (" <> x <> " t) at [1, 0, 0] m"
 
 -- | The name, as written, of a moving chart, when the expression is one.
 movingChart :: Ctx n -> S.Expr -> M (Maybe Text)

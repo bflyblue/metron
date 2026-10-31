@@ -314,11 +314,20 @@ lookupTypeName n cb = Map.lookup n cb.typeNames
 lookupConName :: Text -> Codebase -> Maybe (Hash, Int)
 lookupConName n cb = Map.lookup n cb.conNames
 
--- | The current names of a type and of one of its constructors.
+{- | The current names of a type and of one of its constructors. Minted
+axes are named as what minted them, a turned chart's frame or a space
+(design §3.10, F4: a frame's or a space's name in an axis position means
+its axes), when that is a type's name.
+-}
 typeNameOf :: Hash -> Codebase -> Maybe Text
 typeNameOf h cb = case [n | (n, h') <- Map.toList cb.typeNames, h' == h] of
   n : _ -> Just n
-  [] -> Nothing
+  []
+    | Just def <- Map.lookup h cb.typeDefs
+    , Axes path <- def.label
+    , Map.member path cb.typeNames ->
+        Just path
+    | otherwise -> Nothing
 
 conNameOf :: Hash -> Int -> Codebase -> Maybe Text
 conNameOf h i cb = case [n | (n, (h', i')) <- Map.toList cb.conNames, h' == h, i' == i] of

@@ -40,7 +40,7 @@ import Data.Foldable (foldlM)
 import Data.Graph (SCC (..), stronglyConnComp)
 import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -234,6 +234,14 @@ binders.
 -}
 groupResolver :: Set Text -> Set Text -> S.Scope -> Codebase -> Resolver
 groupResolver group members scope cb query
+  -- A chart's parent may be a space, a type (design §3.10, F2).
+  | Just x <- T.stripPrefix D.spaceQuery query = case qualifyName TypeLabel scope cb x of
+      Found full
+        | Just h <- lookupTypeName full cb
+        , Just def <- lookupTypeDef h cb
+        , isSpaceDef def ->
+            Just (ASpaceDecl h)
+      _ -> Nothing
   -- A field is looked up under its dot, the one way it is written (design §2.3).
   | Just f <- T.stripPrefix "." query = case qualifyName FieldLabel scope cb f of
       Found full -> fieldAt cb full
@@ -415,8 +423,10 @@ typeVariable scope cb n =
     && n `notElem` [baseSymbol b | b <- [minBound .. maxBound]]
     && not isUnit
  where
+  -- A chart's name is a unit's kin: a rescaling, whose frame is its
+  -- parent's, is refused as such where a frame goes (design §3.10, F3).
   isUnit = case qualifyName TermLabel scope cb n of
-    Found u -> isUnitName u cb
+    Found u -> isUnitName u cb || isScaleName u cb
     _ -> False
 
 {- | A signature as it is written back (design §4.8): headed by its
@@ -504,7 +514,9 @@ processGroup cb0 decls
       n : ns
         | Set.member n seen -> go seen ns
         | otherwise -> go (Set.insert n seen) (depsOf n ++ ns)
-  part = [d | d@(S.DBind _ b) <- decls, Set.member b.name.text closure]
+  part =
+    [d | d@S.DSpace{} <- decls]
+      ++ [d | d@(S.DBind _ b) <- decls, Set.member b.name.text closure]
 
 -- | 'processGroup' in one pass, checking annotations or not.
 enterGroup :: Bool -> Codebase -> [S.Decl] -> Either ResolveError Codebase
@@ -515,9 +527,15 @@ enterGroup checking cb0 decls = do
   case disjointness cb0 (concatMap newLabels decls) of
     Just (sp, msg) -> Left (DataError sp msg)
     Nothing -> pure ()
-  -- Data declarations first, in order: the definitions may use their constructors.
+  -- Spaces first, then data declarations, in order: the definitions may
+  -- use their constructors, and a chart its space (design §3.10, F2).
+  cbSpaces <-
+    foldlM
+      (\cb (s, n, t) -> enterSpace s cb n t)
+      cb0
+      [(s, n, t) | S.DSpace s n t <- decls]
   cb1 <-
-    foldlM (\cb (s, d) -> enterData s cb d) cb0 [(s, d) | S.DData s d <- decls]
+    foldlM (\cb (s, d) -> enterData s cb d) cbSpaces [(s, d) | S.DData s d <- decls]
   signed <-
     Map.fromList
       <$> sequence
@@ -567,6 +585,7 @@ enterGroup checking cb0 decls = do
            | (_, fs) <- d.constructors
            , S.FieldDecl (Just n) _ <- fs
            ]
+    S.DSpace _ n _ -> [(n.text, "type", n.span)]
     S.DSig{} -> []
 
 checkDuplicates :: [S.Decl] -> Either ResolveError ()
@@ -616,7 +635,7 @@ enterComponent checking group signed cb0 = \case
     -- The axis type a chart mints is stored before the chart is checked,
     -- since its constructor's type is looked up (design §3.9, decision 1).
     let minted = mintedBy [b.name.text] written
-        cb = mintAxes minted cb0
+        cb = mintTypes minted cb0
     -- The readings the types choose are written in before it is hashed
     -- (design §3.10, U4, U6), its signature taking part. Not its
     -- ascriptions: they are not in the term, so its printed source would
@@ -660,10 +679,11 @@ enterComponent checking group signed cb0 = \case
         ref = Reference h Nothing
         stored = preferLint schemes linted
     cb' <-
-      labelAxes
+      labelFrames
         minted
-        [(b, sc) | sc <- take 1 stored]
+        [b]
         (bindName b.name.text ref (addTerm h term stored typed cb))
+
     signed' <-
       if checking
         then signMembers signed cb [(b, fromMaybe stored checked)]
@@ -719,7 +739,7 @@ scopedSignature member = \case
             base = scopedBase + member * scopedStride
             moved = Map.fromList [(v, varArg k (base + v)) | (v, k) <- vs]
             bound =
-              Map.map (\bv -> bv{var = base + bv.var, axis = (base +) <$> bv.axis}) sig.bound
+              Map.map (renumberBound (base +)) sig.bound
          in Just (bound, substOnce moved ty)
   _ -> Nothing
  where
@@ -829,7 +849,11 @@ preferLint :: [Scheme] -> [Scheme] -> [Scheme]
 preferLint _ linted = linted
 
 typeErrorIn :: S.Binding -> Provenance -> TypeError -> ResolveError
-typeErrorIn b prov err = located b.name (provenanceAt err.path prov) err.message
+typeErrorIn b prov err =
+  located
+    b.name
+    (provenanceAt err.path prov)
+    (fillOperands err.path prov err.message)
 
 -- | A type error at a located node, with the node's hint under the message.
 located :: S.Name -> Maybe (S.Span, Maybe Text) -> Text -> ResolveError
@@ -864,7 +888,7 @@ enterCycle checking group signed cb sbs = do
           written = Cycle (vecMap (Hint . (.name.text) . snd) members) bodies
           -- The axis types the members' charts mint (design §3.9).
           minted = mintedBy (map (.name.text) sorted) written
-          cbm = mintAxes minted cb
+          cbm = mintTypes minted cb
       -- The readings the types choose, written in before the cycle is
       -- hashed (design §3.10, U4, U6), the members' signatures taking part.
       cycleTerm <-
@@ -944,10 +968,8 @@ enterCycle checking group signed cb sbs = do
           then signMembers signed cbm [(b, fromMaybe stored checked) | b <- sorted]
           else pure id
       labelled <-
-        labelAxes
-          minted
-          (zip sorted stored)
-          (foldl bindMember cb' (zip [0 ..] sorted))
+        labelFrames minted sorted (foldl bindMember cb' (zip [0 ..] sorted))
+
       pure (signed' labelled)
  where
   -- The members are local binders by their full paths, found through each
@@ -993,7 +1015,7 @@ enterCycle checking group signed cb sbs = do
     i : rest
       | Just b <- nth i sorted
       , Just prov <- nth i provs ->
-          located b.name (provenanceAt rest prov) err.message
+          located b.name (provenanceAt rest prov) (fillOperands rest prov err.message)
     _ -> TypeErrorIn (headName sorted) Nothing err.message
   nth i xs = case drop i xs of
     x : _ | i >= 0 -> Just x
@@ -1046,57 +1068,78 @@ freeNames = go Set.empty
     S.FieldOf a _ -> go bound a
     S.Record hd fs -> go bound hd <> foldMap (go bound . snd) fs
     S.Ascribe a _ -> go bound a
-    S.ChartForm s o g w -> go bound s <> go bound o <> foldMap (go bound) g <> foldMap (go bound) w
+    S.ChartForm cl ->
+      go bound cl.parent
+        <> foldMap (go bound) cl.origin
+        <> foldMap (go bound) cl.step
+        <> foldMap (go bound) cl.generators
+        <> foldMap (go bound) cl.spin
+    S.FromTo v c c1 -> go bound v <> go bound c <> go bound c1
     S.UnitBody a -> go bound a
   opNames = \case
     S.Infix n -> Set.singleton n
     _ -> Set.empty
 
-{- | The members, by full path, whose charts mint an axis type (design
-§3.9, decision 1): a root, turned or spinning chart, whose Core takes the
-constructor of the axis type stamped with its path. A translated chart
-shares its parent's axes and mints none.
+{- | The types the members' charts mint (design §3.10, F3; §3.9, decision
+1), by the member's full path: a frame, for a root, a chart with an origin
+or one turned or spinning, and axes for one turned or spinning, each found
+as a constructor in the chart's Core stamped with its path. A rescaling
+mints neither.
 -}
-mintedBy :: [Text] -> Term n -> [Text]
-mintedBy names term = [n | n <- names, Set.member (axesHash n) (conTypes term)]
+mintedBy :: [Text] -> Term n -> [(Text, [(Hash, TypeDef)])]
+mintedBy names term =
+  [ (n, found)
+  | n <- names
+  , let found =
+          [ (h, def)
+          | def <- [frameDef n False, frameDef n True, axesDef n]
+          , let h = hashTypeDef def
+          , Set.member h (conTypes term)
+          ]
+  , not (null found)
+  ]
 
--- | Store the axis types of charts at these paths, as declared types are.
-mintAxes :: [Text] -> Codebase -> Codebase
-mintAxes ns cb = foldl (\acc n -> addTypeDef (axesHash n) (axesDef n) acc) cb ns
+-- | Store the types charts mint, as declared types are.
+mintTypes :: [(Text, [(Hash, TypeDef)])] -> Codebase -> Codebase
+mintTypes minted cb = foldl (\acc (h, def) -> addTypeDef h def acc) cb (concatMap snd minted)
 
-{- | Name the axis type of each chart over a vector space, a type label
-under the chart's own full path (types and terms are separate namespaces,
-so the chart @lvlh@ and its axes @lvlh@ coexist), for written types to
-name (@Vec lvlh m@) and for printing. A scalar chart's axes have no
-positions to name, so its type stays unnamed. A chart cannot take the
-name of a declared type.
+{- | Name the frame each chart mints as the chart (design §3.10, F3), a
+type label under the chart's own full path, so that a type names it,
+@Point degC@: types and terms are separate namespaces. A chart that mints
+no frame, a rescaling, takes the label away from the frame it once
+minted. A chart cannot take the name of a declared type or a space.
 -}
-labelAxes ::
-  [Text] -> [(S.Binding, Scheme)] -> Codebase -> Either ResolveError Codebase
-labelAxes minted members cb0 = foldlM label cb0 members
+labelFrames ::
+  [(Text, [(Hash, TypeDef)])] ->
+  [S.Binding] ->
+  Codebase ->
+  Either ResolveError Codebase
+labelFrames minted members cb0 = foldlM label cb0 members
  where
-  label cb (b, Forall _ t) = case lookupTypeName n cb >>= (`lookupTypeDef` cb) of
+  label cb b = case lookupTypeName n cb >>= (`lookupTypeDef` cb) of
     Just def
-      | isAxesDef def && not names ->
-          -- Redefined as a chart with no axes of its own to name, or as
-          -- no chart: the old axes' label goes.
-          Right cb{typeNames = Map.delete n cb.typeNames}
-      | not (isAxesDef def) && names ->
+      | isNothing (frameDefMoving def) && isJust frame ->
           Left
             ( DataError
                 b.name.span
-                ("`" <> n <> "` names a type; a chart's axes are named as the chart")
+                ("`" <> n <> "` names a type; a chart's frame is named as the chart")
             )
-    _
-      | names -> Right (bindTypeName n (axesHash n) cb)
-      | otherwise -> Right cb
+    Just def
+      | Nothing <- frame
+      , isJust (frameDefMoving def) ->
+          Right cb{typeNames = Map.delete n cb.typeNames}
+    _ -> Right (maybe cb (\h -> bindTypeName n h cb) frame)
    where
     n = b.name.text
-    names = n `elem` minted && vectorChart t
-  vectorChart = \case
-    TFun _ r -> vectorChart r
-    TScale (SCons{}) _ _ -> True
-    _ -> False
+    frame =
+      case [ h
+           | (m, found) <- minted
+           , m == n
+           , (h, def) <- found
+           , isJust (frameDefMoving def)
+           ] of
+        h : _ -> Just h
+        [] -> Nothing
 
 {- | Enter a Core term that already has its hash, as when loading a store
 (design §7.4): infer, lint and add. The term must only reference hashes the
@@ -1155,15 +1198,35 @@ enterData scope cb decl = do
   -- Two passes: the first learns the parameters' kinds from where they
   -- appear, the second converts with the kinds known, so that the
   -- arguments of a recursive occurrence can be read by their kinds, and
-  -- each length parameter with its companion axis parameter (design §3.9).
-  (_, kinds1) <- runStateT (convertAll env) Map.empty
-  let axes =
-        companionAxes [(p, Map.findWithDefault KType p kinds1) | p <- env.paramNames]
+  -- each length parameter with its companion axis parameter (design §3.9),
+  -- each frame parameter with its axes and space (design §3.10).
+  let preset =
+        Map.fromList
+          [ (p, KFrame)
+          | p <- concatMap (framesNamed . (.ty)) (concatMap snd decl.constructors)
+          , p `elem` env.paramNames
+          ]
+  (_, kinds1) <- runStateT (convertAll env) preset
+  case [p | p <- decl.params, Map.member (vectorKey p.text) kinds1] of
+    p : _ ->
+      Left
+        ( DataError
+            p.span
+            ( "the axes of the frame parameter `"
+                <> p.text
+                <> "` cannot be written in a declaration: no type says how many it has"
+            )
+        )
+    [] -> pure ()
+  let written = [(p, Map.findWithDefault KType p kinds1) | p <- env.paramNames]
+      comps = companionsOf (length written) written Map.empty Set.empty env.params
   (fieldss, kinds) <-
-    runStateT (convertAll env{axisOf = Map.fromList axes}) kinds1
+    runStateT
+      (convertAll (env :: DataEnv){axisOf = comps.compAxes, frames = comps.compFrames})
+      kinds1
   let params =
         [(i, Map.findWithDefault KType p.text kinds) | (i, p) <- zip [0 ..] decl.params]
-          ++ [(v, KAxis) | (_, v) <- axes]
+          ++ comps.compVars
       def =
         TypeDef
           params
@@ -1193,16 +1256,7 @@ enterData scope cb decl = do
   pure
     (foldl (\acc (n, j) -> bindFieldName n.text h 0 j acc) withCons fieldLabels)
  where
-  env =
-    DataEnv
-      { codebase = cb
-      , scope = scope
-      , self = decl.name
-      , params = Map.fromList (zip (map (.text) decl.params) [0 ..])
-      , paramNames = map (.text) decl.params
-      , axisOf = Map.empty
-      , sized = Map.empty
-      }
+  env = emptyEnv cb scope decl.name (map (.text) decl.params)
   convertAll e = mapM (mapM (tyType e . (.ty)) . snd) decl.constructors
   fieldLabels =
     [ (n, j)
@@ -1217,9 +1271,45 @@ enterData scope cb decl = do
           Left (DataError n.span (what <> " `" <> n.text <> "` appears twice"))
       | otherwise = go (Set.insert n.text seen) ns
 
+{- | Enter a space's declaration (design §3.10, F2): a nominal space of the
+amounts of a type, a number or a vector of literal length, minted as a
+type stamped with its full path, beside its base axes for a vector space,
+and named as declared.
+-}
+enterSpace ::
+  S.Scope -> Codebase -> S.Name -> S.TyExpr -> Either ResolveError Codebase
+enterSpace scope cb n t = do
+  ty <- fst <$> runStateT (tyType (emptyEnv cb scope n []) t) Map.empty
+  (lens, d) <- case ty of
+    TTensor SNil d -> Right ([], d)
+    TTensor (SCons (LLit k) AAnon SNil) d -> Right ([k], d)
+    _ ->
+      Left
+        (DataError t.span "a space is of numbers or of vectors, as in Num K or Vec 3 m")
+  when (S.lastSegment n.text `elem` builtinTypeNames)
+    $ Left (DataError n.span ("`" <> S.lastSegment n.text <> "` is a built-in type"))
+  let def = spaceDef n.text lens d
+      h = hashTypeDef def
+      withBase =
+        if null lens
+          then id
+          else addTypeDef (axesHash n.text) (axesDef n.text)
+  pure (bindTypeName n.text h (withBase (addTypeDef h def cb)))
+
 builtinTypeNames :: [Text]
 builtinTypeNames =
-  ["Bool", "Num", "Unit", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale"]
+  [ "Bool"
+  , "Num"
+  , "Unit"
+  , "Vec"
+  , "Mat"
+  , "Tensor"
+  , "Point"
+  , "Chart"
+  , "Scale"
+  , "Diff"
+  , "Coords"
+  ]
 
 data DataEnv = DataEnv
   { codebase :: Codebase
@@ -1233,20 +1323,101 @@ data DataEnv = DataEnv
   -- ^ each length parameter's companion axis parameter (design §3.9)
   , sized :: Map.Map Text Int
   -- ^ the length of each sized @forall@ binder, @(a : 3)@ (design §3.9)
+  , frames :: Map.Map Text Frame
+  -- ^ each frame variable's frame, with its companions (design §3.10, F1)
+  , spaces :: Map.Map Text Space
+  -- ^ each space variable's space, with its companions
   }
 
-{- | The companion axis parameters of written parameters with their kinds
-(design §3.9). A lowercase name in a length position stands for a whole
-axis set, a length and its axes, so each length parameter gains an axis
-parameter: in the order of the length parameters, numbered on from the
-written ones, so that a declaration's written parameters keep their ids
-and the @j@-th axis parameter goes with the @j@-th length parameter.
+-- | An environment for a type with the given parameters, numbered in order.
+emptyEnv :: Codebase -> S.Scope -> S.Name -> [Text] -> DataEnv
+emptyEnv cb scope self ps =
+  DataEnv
+    { codebase = cb
+    , scope = scope
+    , self = self
+    , params = Map.fromList (zip ps [0 ..])
+    , paramNames = ps
+    , axisOf = Map.empty
+    , sized = Map.empty
+    , frames = Map.empty
+    , spaces = Map.empty
+    }
+
+{- | The companions of written variables with their kinds (design §3.9,
+§3.10), numbered on from the given id: an axis set for each length; for
+each space its shape, dimension and base axes; and for each frame its
+axes and its space, the one its binder names (a declared one, or a space
+variable) or one of its own. A frame or space whose axes are written as a
+length has a space of one axis set, of a length of its own.
 -}
-companionAxes :: [(Text, Kind)] -> [(Text, VarId)]
-companionAxes written = zip [p | (p, KLen) <- written] [length written ..]
+data Companions = Companions
+  { compAxes :: Map.Map Text VarId
+  , compFrames :: Map.Map Text Frame
+  , compSpaces :: Map.Map Text Space
+  , compVars :: [(VarId, Kind)]
+  }
+
+companionsOf ::
+  Int ->
+  [(Text, Kind)] ->
+  Map.Map Text (Either Space Text) ->
+  Set Text ->
+  Map.Map Text VarId ->
+  Companions
+companionsOf next written annotated vector ids = Companions axes frameMap spaceMap (reverse vs3)
+ where
+  idOf n = Map.findWithDefault 0 n ids
+  -- Lengths' axes first, in order, then spaces', then frames'.
+  (axes, k1, vs1) =
+    foldl
+      (\(m, k, vs) n -> (Map.insert n k m, k + 1, (k, KAxis) : vs))
+      (Map.empty, next, [])
+      [n | (n, KLen) <- written]
+  (spaceMap, k2, vs2) =
+    foldl
+      ( \(m, k, vs) n ->
+          let (sp, k', new) = freshSpace (SpVar (idOf n)) (Set.member n vector) k
+           in (Map.insert n sp m, k', reverse new ++ vs)
+      )
+      (Map.empty, k1, vs1)
+      [n | (n, KSpace) <- written]
+  (frameMap, _, vs3) =
+    foldl
+      ( \(m, k, vs) n ->
+          let (sp, k', new) = case Map.lookup n annotated of
+                Just (Left named) -> (named, k + 1, [])
+                Just (Right s) | Just sp' <- Map.lookup s spaceMap -> (sp', k + 1, [])
+                _ -> freshSpace (SpVar (k + 1)) (Set.member n vector) (k + 2)
+              spVars = case Map.lookup n annotated of
+                Just _ -> []
+                Nothing -> [(k + 1, KSpace)]
+           in ( Map.insert n (Frame (FrVar (idOf n)) (AVar k) sp) m
+              , k'
+              , reverse new ++ reverse spVars ++ (k, KAxis) : vs
+              )
+      )
+      (Map.empty, k2, vs2)
+      [n | (n, KFrame) <- written]
+  -- A space of its own: its shape (one axis set of a length of its own, if
+  -- its axes are written), dimension and base axes.
+  freshSpace slot isVector k =
+    let (shape, shapeVar, k')
+          | isVector = (SCons (LVar k 0) AAnon SNil, (k, KLen), k + 1)
+          | otherwise = (SVar k, (k, KShape), k + 1)
+     in ( Space slot shape (dimVar k') (AVar (k' + 1))
+        , k' + 2
+        , [shapeVar, (k', KDim), (k' + 1, KAxis)]
+        )
 
 -- | Conversion of written types, learning the parameters' kinds.
 type Kinds = StateT (Map.Map Text Kind) (Either ResolveError)
+
+{- | Where a variable's axes are written as a length (design §3.10, F4):
+recorded beside the kinds, so that its space is one of one axis set.
+-}
+vectorKey :: Text -> Text
+vectorKey = ("§vec:" <>)
 
 bad :: S.TyExpr -> Text -> Kinds a
 bad t msg = lift (Left (DataError t.span msg))
@@ -1258,6 +1429,8 @@ kindNoun = \case
   KShape -> "a shape"
   KDim -> "a dimension"
   KAxis -> "an axis set"
+  KFrame -> "a frame"
+  KSpace -> "a space"
 
 -- | A parameter used at a kind: record it, or report the clash.
 useParam :: DataEnv -> S.TyExpr -> Text -> Kind -> Kinds VarId
@@ -1278,6 +1451,22 @@ useParam env t p k = do
     _ -> do
       modify (Map.insert p k)
       pure (Map.findWithDefault 0 p env.params)
+
+{- | The names a written type uses where a frame goes (design §3.10, F4):
+after @Point@, @Chart@, @Diff@ and @Coords@.
+-}
+framesNamed :: S.TyExpr -> [Text]
+framesNamed e = case e.node of
+  S.TyApp hd [a]
+    | hd.text `elem` ["Point", "Chart", "Diff", "Coords"]
+    , S.TyName n <- a.node ->
+        [n]
+  S.TyApp _ args -> concatMap framesNamed args
+  S.TyTuple ts -> concatMap framesNamed ts
+  S.TyList a -> framesNamed a
+  S.TyFun a b -> framesNamed a ++ framesNamed b
+  S.TyForall _ a -> framesNamed a
+  _ -> []
 
 tyType :: DataEnv -> S.TyExpr -> Kinds Type
 tyType env t = case t.node of
@@ -1312,14 +1501,14 @@ tyType env t = case t.node of
             <*> tyDim env d
         ("Tensor", [sh]) -> (`TTensor` dimOne) <$> tyShape env sh
         ("Tensor", [sh, d]) -> TTensor <$> tyShape env sh <*> tyDim env d
-        ("Point", [a]) -> affine TPoint a
-        ("Chart", [a]) -> affine chart a
-        -- A chart's root after its type (design §3.9).
-        ("Chart", [a, r]) -> do
-          root <- tyRoot env r
-          affine (`TScale` root) a
+        -- A point and a chart take a frame (design §3.10, F4), and so do
+        -- the amounts between its points and its coordinates.
+        ("Point", [a]) -> TPoint <$> tyFrame env a
+        ("Chart", [a]) -> TScale <$> tyFrame env a
         -- The old spelling of @Chart@ (design §3.6).
-        ("Scale", [a]) -> affine chart a
+        ("Scale", [a]) -> TScale <$> tyFrame env a
+        ("Diff", [a]) -> (`overType` Nothing) <$> tyFrame env a
+        ("Coords", [a]) -> (`overType` Just dimOne) <$> tyFrame env a
         (n, _)
           | n `elem` builtinTypeNames ->
               bad t ("`" <> n <> "` does not take these arguments")
@@ -1331,21 +1520,94 @@ tyType env t = case t.node of
   S.TyShape _ -> bad t "a bracket is a shape, not a type"
   S.TyDim _ -> bad t "a dimension is not a type: a quantity of it is Num (m/s)"
   S.TyForall _ _ -> bad t "forall goes only at the head of a signature or an ascription"
- where
-  -- A written chart's root slot is anonymous (design §3.9, stage 1).
-  chart sh = TScale sh AAnon
-  -- A point or chart takes a type (design §4.1): `Point (Num K)` is a
-  -- scalar point, `Point (Vec 3 m)` a point over that space.
-  affine mk a = case a.node of
-    S.TyName n
-      | Map.notMember n env.params
-      , isJust (unitDim env n) ->
-          bad a ("a point or chart is over a type: write (Num " <> n <> ")")
-    S.TyDim _ -> bad a "a point or chart is over a type: write (Num (…))"
-    _ ->
-      tyType env a >>= \case
-        TTensor sh d -> pure (mk sh d)
-        _ -> bad a "a point or chart is over a tensor type, like Num K or Vec 3 m"
+
+{- | A frame (design §3.10, F4): a frame variable, with its companions, or
+a chart's name, which names the frame it minted, read off the chart's
+type. A space, a rescaling's name or a type are refused with what to write.
+-}
+tyFrame :: DataEnv -> S.TyExpr -> Kinds Frame
+tyFrame env a = case a.node of
+  S.TyName p | Map.member p env.params -> do
+    v <- useParam env a p KFrame
+    pure
+      ( fromMaybe
+          (Frame (FrVar v) AAnon (Space (SpVar v) SNil dimOne AAnon))
+          (Map.lookup p env.frames)
+      )
+  S.TyName n -> case namedType env n of
+    Found full
+      | Just (h, def) <- typeAt env full
+      , Just _ <- frameDefMoving def ->
+          maybe
+            (bad a ("the frame `" <> n <> "` has no chart to read it from"))
+            pure
+            (chartFrameOf env.codebase h def)
+      | Just (_, def) <- typeAt env full
+      , isSpaceDef def ->
+          bad
+            a
+            ("`" <> n <> "` is a space; a point is on a frame of it, as in Point degC")
+      | otherwise -> bad a ("`" <> n <> "` is a type, not a frame")
+    Ambiguous fulls -> ambiguousType a n fulls
+    NotFound -> case qualifyName TermLabel env.scope env.codebase n of
+      Found c
+        | isScaleName c env.codebase
+        , Just r <- lookupName c env.codebase
+        , Just (Forall _ t) <- typeOf r env.codebase
+        , Just (FrNamed h) <- (.slot) <$> chartTypeFrame t ->
+            bad
+              a
+              ( "`"
+                  <> n
+                  <> "` is a rescaling and shares the frame of its parent: write Point "
+                  <> maybe
+                    (showHash h)
+                    (shortestNameOf TypeLabel env.scope env.codebase)
+                    (typeNameOf h env.codebase)
+              )
+      _ -> bad a ("unknown frame `" <> n <> "` in a type")
+  _ ->
+    bad
+      a
+      "a point and a chart are typed by a frame, a chart's name or a variable, as in Point degC"
+
+-- | The frame of a chart's type, after any parameters.
+chartTypeFrame :: Type -> Maybe Frame
+chartTypeFrame = \case
+  TFun _ r -> chartTypeFrame r
+  TScale f -> Just f
+  _ -> Nothing
+
+{- | A minted frame as a type (design §3.10, F3), read off the type of the
+chart at its path.
+-}
+chartFrameOf :: Codebase -> Hash -> TypeDef -> Maybe Frame
+chartFrameOf cb h def = do
+  path <- mintedPath def
+  r <- lookupName path cb
+  Forall _ t <- typeOf r cb
+  f <- chartTypeFrame t
+  if f.slot == FrNamed h then Just f else Nothing
+
+-- | A type name through the scope.
+namedType :: DataEnv -> Text -> Qualified
+namedType env = qualifyWith env.codebase.uses (isLabel TypeLabel env.codebase) env.scope
+
+typeAt :: DataEnv -> Text -> Maybe (Hash, TypeDef)
+typeAt env full = do
+  h <- lookupTypeName full env.codebase
+  (h,) <$> lookupTypeDef h env.codebase
+
+ambiguousType :: S.TyExpr -> Text -> [Text] -> Kinds a
+ambiguousType a n fulls =
+  bad
+    a
+    ( "`"
+        <> n
+        <> "` is both "
+        <> T.intercalate " and " (map (\f -> "`" <> f <> "`") fulls)
+        <> "; write one of them"
+    )
 
 -- | A declared type, or the one being declared, applied to its arguments.
 applied :: DataEnv -> S.TyExpr -> Text -> [S.TyExpr] -> Kinds Type
@@ -1353,33 +1615,26 @@ applied env t n args
   | resolved == Found env.self.text = do
       arity (length env.paramNames)
       kinds <- mapM (gets . Map.findWithDefault KType) env.paramNames
-      TData selfType <$> argsAt env (kinds ++ [KAxis | KLen <- kinds]) args
+      TData selfType <$> argsAt env kinds args
   | Found full <- resolved
-  , Just h <- lookupTypeName full env.codebase
-  , Just def <- lookupTypeDef h env.codebase
-  , isAxesDef def =
+  , Just (_, def) <- typeAt env full
+  , isSpaceDef def || isJust (frameDefMoving def) =
       bad
         t
         ( "`"
             <> n
-            <> "` is a chart's axes, written where a length goes: Vec "
+            <> "` is "
+            <> (if isSpaceDef def then "a space" else "a frame")
+            <> ", not a type: a point on a frame is Point c, an amount along its axes Vec "
             <> n
             <> " m"
         )
   | Found full <- resolved
-  , Just h <- lookupTypeName full env.codebase
-  , Just def <- lookupTypeDef h env.codebase = do
-      arity (length [k | (_, k) <- def.params, k /= KAxis])
-      TData h <$> argsAt env (map snd def.params) args
-  | Ambiguous fulls <- resolved =
-      bad
-        t
-        ( "`"
-            <> n
-            <> "` is both "
-            <> T.intercalate " and " (map (\f -> "`" <> f <> "`") fulls)
-            <> "; write one of them"
-        )
+  , Just (h, def) <- typeAt env full = do
+      let written = writtenParams def.params
+      arity (length written)
+      TData h <$> argsAt env (map snd written) args
+  | Ambiguous fulls <- resolved = ambiguousType t n fulls
   | otherwise = bad t ("unknown type `" <> n <> "`")
  where
   -- The type's own name exists before it is entered.
@@ -1402,29 +1657,41 @@ applied env t n args
             <> T.pack (show (length args))
         )
 
-{- | The arguments of a declared type at its parameters' kinds: the written
-arguments in order, and at each axis parameter the axes of the length
-argument it is the companion of (design §3.9).
+{- | The arguments of a declared type at its written parameters' kinds:
+the written arguments in order, then the companions (design §3.9,
+§3.10): the axes of each length argument, then each frame argument's
+axes and space.
 -}
 argsAt :: DataEnv -> [Kind] -> [S.TyExpr] -> Kinds [Arg]
 argsAt env kinds args = do
-  converted <- zipWithM (argOf env) [k | k <- kinds, k /= KAxis] args
-  pure (fill kinds (map fst converted) [ax | (_, Just ax) <- converted])
- where
-  fill ks ws axs = case (ks, ws, axs) of
-    (KAxis : ks', _, ax : axs') -> AAxis ax : fill ks' ws axs'
-    (KAxis : ks', _, []) -> AAxis AAnon : fill ks' ws []
-    (_ : ks', w : ws', _) -> w : fill ks' ws' axs
-    _ -> []
+  converted <- zipWithM (argOf env) kinds args
+  pure
+    ( map fst converted
+        ++ [AAxis ax | (_, LenAxes ax) <- converted]
+        ++ concat
+          [ [ AAxis f.axes
+            , ASpace f.space.slot
+            , AShape f.space.shape
+            , ADim f.space.dim
+            , AAxis f.space.base
+            ]
+          | (_, FrameOf f) <- converted
+          ]
+    )
 
--- | An argument at a written parameter's kind; a length's with its axes.
-argOf :: DataEnv -> Kind -> S.TyExpr -> Kinds (Arg, Maybe Axis)
+-- | What an argument brings with it: a length its axes, a frame itself.
+data Companion = NoCompanion | LenAxes Axis | FrameOf Frame
+
+-- | An argument at a written parameter's kind, with its companions.
+argOf :: DataEnv -> Kind -> S.TyExpr -> Kinds (Arg, Companion)
 argOf env k a = case k of
-  KType -> (,Nothing) . AType <$> tyType env a
-  KLen -> bimap ALen Just <$> tyLen env a
-  KShape -> (,Nothing) . AShape <$> tyShape env a
-  KDim -> (,Nothing) . ADim <$> tyDim env a
+  KType -> (,NoCompanion) . AType <$> tyType env a
+  KLen -> bimap ALen LenAxes <$> tyLen env a
+  KShape -> (,NoCompanion) . AShape <$> tyShape env a
+  KDim -> (,NoCompanion) . ADim <$> tyDim env a
+  KFrame -> (\f -> (AFrame f.slot, FrameOf f)) <$> tyFrame env a
   KAxis -> bad a "an axis set cannot be written"
+  KSpace -> bad a "a space is written as a frame's: (c : Temperature)"
 
 -- | A position of a shape: a length and its axes.
 position :: (Len, Axis) -> Shape -> Shape
@@ -1433,82 +1700,79 @@ position = uncurry SCons
 {- | A written length and the axes it means (design §3.9): a literal is
 that many anonymous axes, a parameter a whole axis set (its length and
 its companion axis parameter), and @rank s@ anonymous, as an index's
-positions are numbers.
+positions are numbers. A frame variable means its axes, and a space
+variable its base axes, as many as its space has (design §3.10, F4).
 -}
 tyLen :: DataEnv -> S.TyExpr -> Kinds (Len, Axis)
 tyLen env a = case a.node of
   S.TyInt k | k >= 0 -> pure (LLit (fromInteger k), AAnon)
   S.TyName p | Map.member p env.params -> do
-    v <- useParam env a p KLen
-    -- A sized binder is its literal length beside its own axes.
-    let len = maybe (LVar v 0) LLit (Map.lookup p env.sized)
-    pure (len, maybe AAnon AVar (Map.lookup p env.axisOf))
+    known <- gets (Map.lookup p)
+    case known of
+      Just KFrame -> do
+        modify (Map.insert (vectorKey p) KLen)
+        pure $ case Map.lookup p env.frames of
+          Just f -> (spaceLength f.space, f.axes)
+          Nothing -> (LLit 0, AAnon)
+      Just KSpace -> do
+        modify (Map.insert (vectorKey p) KLen)
+        pure $ case Map.lookup p env.spaces of
+          Just sp -> (spaceLength sp, sp.base)
+          Nothing -> (LLit 0, AAnon)
+      _ -> do
+        v <- useParam env a p KLen
+        -- A sized binder is its literal length beside its own axes.
+        let len = maybe (LVar v 0) LLit (Map.lookup p env.sized)
+        pure (len, maybe AAnon AVar (Map.lookup p env.axisOf))
   -- The one type-level function (design §4.1): the rank of a shape.
   S.TyApp hd [sh] | hd.text == "rank" -> (,AAnon) . rankLen <$> tyShape env sh
   S.TyName "rank" -> bad a "rank takes a shape: rank s"
   S.TyApp hd _ | hd.text == "rank" -> bad a "rank takes one shape: rank s"
-  S.TyName n -> chartAxes env a n
-  _ -> bad a "a length is a number, a parameter, a chart's axes, or rank s"
+  S.TyName n -> namedAxes env a n
+  _ ->
+    bad
+      a
+      "a length is a number, a parameter, a frame's or a space's axes, or rank s"
 
-{- | A name in a length position: a chart's axes (design §3.9, decision
-6), resolved through the type scope to the axis type the chart minted.
-It means as many positions as the chart has, along that type: @Vec lvlh
-m@ is a three-vector along lvlh's axes. The number is the chart's own,
-read off its type (@card lvlh = 3@, decision 2), so that a signature
-naming the axes holds of a definition of three positions.
--}
-chartAxes :: DataEnv -> S.TyExpr -> Text -> Kinds (Len, Axis)
-chartAxes env a n =
-  case qualifyWith env.codebase.uses (isLabel TypeLabel env.codebase) env.scope n of
-    Found full
-      | Just h <- lookupTypeName full env.codebase
-      , Just def <- lookupTypeDef h env.codebase
-      , Axes path <- def.label ->
-          case lookupName path env.codebase >>= (`typeOf` env.codebase) of
-            Just (Forall _ t) | Just k <- card t -> pure (LLit k, ANamed h)
-            _ ->
-              bad
-                a
-                ( "the axes of `"
-                    <> n
-                    <> "` have no number of positions: its chart is not over a vector"
-                )
-      | otherwise -> bad a ("`" <> n <> "` is a type, not a length or a chart's axes")
-    Ambiguous fulls ->
-      bad
-        a
-        ( "`"
-            <> n
-            <> "` is both "
-            <> T.intercalate " and " (map (\f -> "`" <> f <> "`") fulls)
-            <> "; write one of them"
-        )
-    _
-      | isJust (unitDim env n) ->
-          bad
-            a
-            ( "`"
-                <> n
-                <> "` is a unit, not a length: a vector's length comes first, Vec 3 "
-                <> n
-            )
-      | otherwise -> bad a ("unknown name `" <> n <> "` in a type")
- where
-  card = \case
-    TFun _ r -> card r
-    TScale (SCons (LLit k) _ SNil) _ _ -> Just k
-    _ -> Nothing
+-- | The length of a space of one axis set.
+spaceLength :: Space -> Len
+spaceLength sp = case sp.shape of
+  SCons l _ _ -> l
+  _ -> LLit 0
 
-{- | A chart's root, written after its type (design §3.9): a chart's axes
-by name, or a variable, whose axes it is; @Chart (Vec lvlh m) eci@.
+{- | A name in a length position (design §3.10, F4): a frame's axes, as
+many as its space has, or a space's base axes. @Vec lvlh m@ is a
+three-vector along lvlh's axes, @Vec Inertial m@ along Inertial's base.
 -}
-tyRoot :: DataEnv -> S.TyExpr -> Kinds Axis
-tyRoot env r = case r.node of
-  S.TyName p | Map.member p env.params -> do
-    _ <- useParam env r p KLen
-    pure (maybe AAnon AVar (Map.lookup p env.axisOf))
-  S.TyName n -> snd <$> chartAxes env r n
-  _ -> bad r "a chart's root is a chart's axes, by name, or a variable"
+namedAxes :: DataEnv -> S.TyExpr -> Text -> Kinds (Len, Axis)
+namedAxes env a n = case namedType env n of
+  Found full
+    | Just (h, def) <- typeAt env full
+    , Just _ <- frameDefMoving def ->
+        case chartFrameOf env.codebase h def of
+          Just f
+            | SCons l _ SNil <- f.space.shape -> pure (l, f.axes)
+          _ ->
+            bad
+              a
+              ("the frame `" <> n <> "` has no axes: its space is not of vectors")
+    | Just (h, def) <- typeAt env full
+    , Just sp <- spaceOf h def ->
+        case sp.shape of
+          SCons l _ SNil -> pure (l, sp.base)
+          _ -> bad a ("the space `" <> n <> "` has no axes: it is a space of numbers")
+    | otherwise -> bad a ("`" <> n <> "` is a type, not a length or a frame's axes")
+  Ambiguous fulls -> ambiguousType a n fulls
+  NotFound
+    | isJust (unitDim env n) ->
+        bad
+          a
+          ( "`"
+              <> n
+              <> "` is a unit, not a length: a vector's length comes first, Vec 3 "
+              <> n
+          )
+    | otherwise -> bad a ("unknown name `" <> n <> "` in a type")
 
 tyShape :: DataEnv -> S.TyExpr -> Kinds Shape
 tyShape env a = case a.node of
@@ -1570,25 +1834,34 @@ queryScheme scope cb t = case t.node of
   S.TyForall _ _ -> fst <$> signatureScheme scope cb t
   _ -> do
     let vars = Set.toList (Set.filter isVar (Set.fromList (map (.text) (tyNames t))))
-        env =
-          DataEnv
-            { codebase = cb
-            , scope = scope
-            , self = S.Name t.span ""
-            , params = Map.fromList (zip vars [0 ..])
-            , paramNames = vars
-            , axisOf = Map.empty
-            , sized = Map.empty
-            }
-    -- As for a declaration: kinds first, then each length variable with its
-    -- companion axis variable (design §3.9).
-    (_, kinds1) <- runStateT (tyType env t) Map.empty
-    let axes = companionAxes [(v, Map.findWithDefault KType v kinds1) | v <- vars]
-    (ty, kinds) <- runStateT (tyType env{axisOf = Map.fromList axes} t) kinds1
+        env = emptyEnv cb scope (S.Name t.span "") vars
+        preset = Map.fromList [(v, KFrame) | v <- framesNamed t, v `elem` vars]
+    -- As for a declaration: kinds first, then each variable with its
+    -- companions (design §3.9, §3.10).
+    (_, kinds1) <- runStateT (tyType env t) preset
+    let written = [(v, Map.findWithDefault KType v kinds1) | v <- vars]
+        comps =
+          companionsOf
+            (length vars)
+            written
+            Map.empty
+            (Set.fromList [v | v <- vars, Map.member (vectorKey v) kinds1])
+            env.params
+    (ty, kinds) <-
+      runStateT
+        ( tyType
+            env
+              { axisOf = comps.compAxes
+              , frames = comps.compFrames
+              , spaces = comps.compSpaces
+              }
+            t
+        )
+        kinds1
     pure
       ( Forall
           ( [(i, Map.findWithDefault KType v kinds) | (i, v) <- zip [0 ..] vars]
-              ++ [(i, KAxis) | (_, i) <- axes]
+              ++ comps.compVars
           )
           ty
       )
@@ -1607,15 +1880,44 @@ tyNames e = case e.node of
   S.TyFun a b -> tyNames a ++ tyNames b
   S.TyShape items -> concatMap tyNames items
   S.TyDim factors -> concatMap (tyNames . fst) factors
-  S.TyForall bs a -> map (.name) bs ++ tyNames a
+  S.TyForall bs a -> map (.name) bs ++ [s | b <- bs, Just s <- [b.space]] ++ tyNames a
 
 {- | The variables a @forall@ binds, by name (design §4.8): each with its
-id and kind in the scheme, and, for a length, its companion axis variable
-(design §3.9) and the literal it is when the binder is sized.
+id and kind in the scheme, and its companions: for a length, its axis
+variable (design §3.9) and the literal it is when the binder is sized; for
+a frame its frame and for a space its space, companions and all (design
+§3.10).
 -}
 type Bound = Map.Map Text BoundVar
 
-data BoundVar = BoundVar {var :: VarId, kind :: Kind, axis :: Maybe VarId, size :: Maybe Int}
+data BoundVar = BoundVar
+  { var :: VarId
+  , kind :: Kind
+  , axis :: Maybe VarId
+  , size :: Maybe Int
+  , frame :: Maybe Frame
+  , space :: Maybe Space
+  }
+
+-- | A bound variable with every id it holds renumbered.
+renumberBound :: (VarId -> VarId) -> BoundVar -> BoundVar
+renumberBound f bv =
+  BoundVar
+    { var = f bv.var
+    , kind = bv.kind
+    , axis = f <$> bv.axis
+    , size = bv.size
+    , frame = movedFrame <$> bv.frame
+    , space = movedSpace <$> bv.space
+    }
+ where
+  moved t = substOnce (Map.fromList [(v, varArg k (f v)) | (v, k) <- freeVars t]) t
+  movedFrame fr = case moved (TPoint fr) of
+    TPoint fr' -> fr'
+    _ -> fr
+  movedSpace sp = case moved (TPoint (Frame (FrNamed selfType) AAnon sp)) of
+    TPoint fr' -> fr'.space
+    _ -> sp
 
 {- | A signature's type (design §4.8, §3.9 decision 6), with the variables
 its @forall@ binds. The variables are numbered in the order they first
@@ -1632,7 +1934,7 @@ signatureScheme scope cb t = do
       at v = Map.findWithDefault v v renumber
   pure
     ( Forall [(i, k) | ((_, k), i) <- zip vs [0 ..]] (substOnce moved ty)
-    , Map.map (\bv -> bv{var = at bv.var, axis = at <$> bv.axis}) bound
+    , Map.map (renumberBound at) bound
     )
 
 {- | A type whose variables are bound explicitly (design §4.8, §3.9
@@ -1644,7 +1946,9 @@ ascription, shadows a unit, a base unit or a declared type of its name
 throughout the type, dimensions included. Kinds
 are learned from where the variables are used; a length variable stands
 for a whole axis set, its length and a companion axis variable, and a
-sized binder, @(a : 3)@, for that many axes of its own.
+sized binder, @(a : 3)@, for that many axes of its own. A variable where a
+frame goes is a frame, of the space its binder names, @(c : Temperature)@
+or @(c : s)@, or of a space of its own (design §3.10, F1).
 -}
 explicitScheme ::
   S.Scope -> Codebase -> Bound -> S.TyExpr -> Either ResolveError (Scheme, Bound)
@@ -1657,13 +1961,23 @@ explicitScheme scope cb outer t0 = do
       -- Outer variables keep their ids; the type's own are numbered above them.
       base =
         1
-          + maximum (-1 : concat [bv.var : maybe [] pure bv.axis | bv <- Map.elems outer])
+          + maximum
+            ( -1
+                : concat
+                  [ bv.var
+                      : maybe [] pure bv.axis
+                      ++ maybe [] frameIds bv.frame
+                      ++ maybe [] spaceIds bv.space
+                  | bv <- Map.elems outer
+                  ]
+            )
       ownIds = Map.fromList (zip own [base ..])
       visible = Map.withoutKeys outer (Set.fromList own)
       params = ownIds <> Map.map (.var) visible
       sizes =
         Map.fromList [(b.name.text, fromInteger k) | b <- binders, Just k <- [b.size]]
           <> Map.mapMaybe (.size) visible
+      annotatedWith = [(b.name.text, s) | b <- binders, Just s <- [b.space]]
   case [ n | n <- tyNames body, Map.notMember n.text params, typeVariable scope cb n.text
        ] of
     n : _ ->
@@ -1676,36 +1990,83 @@ explicitScheme scope cb outer t0 = do
             )
         )
     [] -> pure ()
+  -- A binder's space: a declared one, or a space variable bound here.
+  annotations <-
+    Map.fromList
+      <$> sequence
+        [ (n,) <$> annotation s
+        | (n, s) <- annotatedWith
+        ]
   let env =
-        DataEnv
-          { codebase = cb
-          , scope = scope
-          , self = S.Name t0.span ""
-          , params = params
-          , paramNames = Map.keys params
+        (emptyEnv cb scope (S.Name t0.span "") (Map.keys params))
+          { params = params
           , axisOf = Map.mapMaybe (.axis) visible
           , sized = sizes
+          , frames = Map.mapMaybe (.frame) visible
+          , spaces = Map.mapMaybe (.space) visible
           }
       known =
         Map.map (.kind) visible
           <> Map.fromList [(n, KLen) | n <- Map.keys sizes]
-  -- Kinds first, then each length variable with its companion axis variable.
+          <> Map.fromList [(n, KFrame) | (n, _) <- annotatedWith]
+          <> Map.fromList [(s, KSpace) | Right s <- Map.elems annotations]
+          <> Map.fromList [(n, KFrame) | n <- framesNamed body, n `elem` own]
+  -- Kinds first, then each variable with its companions.
   (_, kinds) <- runStateT (tyType env body) known
-  let used = [(n, k) | n <- own, Just k <- [Map.lookup n kinds]]
-      axes = zip [n | (n, KLen) <- used] [base + length own ..]
-  (ty, _) <-
-    runStateT (tyType env{axisOf = Map.fromList axes <> env.axisOf} body) known
+  let used =
+        [ (n, k)
+        | n <- own
+        , Just k <- [Map.lookup n kinds]
+        ]
+      vector = Set.fromList [n | n <- own, Map.member (vectorKey n) kinds]
+      comps = companionsOf (base + length own) used annotations vector ownIds
+      env' =
+        env
+          { axisOf = comps.compAxes <> env.axisOf
+          , frames = comps.compFrames <> env.frames
+          , spaces = comps.compSpaces <> env.spaces
+          }
+  (ty, _) <- runStateT (tyType env' body) kinds
   let idOf n = Map.findWithDefault 0 n ownIds
   pure
     ( Forall
-        ( [(idOf n, k) | (n, k) <- used, Map.notMember n sizes]
-            ++ [(i, KAxis) | (_, i) <- axes]
-        )
+        ([(idOf n, k) | (n, k) <- used, Map.notMember n sizes] ++ comps.compVars)
         ty
     , Map.fromList
-        [(n, BoundVar (idOf n) k (lookup n axes) (Map.lookup n sizes)) | (n, k) <- used]
+        [ ( n
+          , BoundVar
+              (idOf n)
+              k
+              (Map.lookup n comps.compAxes)
+              (Map.lookup n sizes)
+              (Map.lookup n comps.compFrames)
+              (Map.lookup n comps.compSpaces)
+          )
+        | (n, k) <- used
+        ]
     )
  where
+  annotation s
+    | Just bv <- Map.lookup s.text outer
+    , Just sp <- bv.space =
+        Right (Left sp)
+    | maybe False (isLower . fst) (T.uncons s.text) = Right (Right s.text)
+    | otherwise = case qualifyWith cb.uses (isLabel TypeLabel cb) scope s.text of
+        Found full
+          | Just h <- lookupTypeName full cb
+          , Just sp <- lookupTypeDef h cb >>= spaceOf h ->
+              Right (Left sp)
+        _ ->
+          Left
+            ( DataError
+                s.span
+                ( "`"
+                    <> s.text
+                    <> "` is not a space: a frame's binder names one, as in (c : Temperature)"
+                )
+            )
+  frameIds f = map fst (freeVars (TPoint f))
+  spaceIds sp = map fst (freeVars (TPoint (Frame (FrNamed selfType) AAnon sp)))
   checkBinders _ [] = Right ()
   checkBinders seen (n : ns)
     | not (maybe False (isLower . fst) (T.uncons n.text)) || n.text == "rank" =

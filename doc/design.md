@@ -143,7 +143,7 @@ f 3 4                           -- a bare expression: evaluate and print
 A `let` without `in` at the top level *proposes* a definition: it goes into the
 scratch (§7.5), where it is checked, hashed and usable by later expressions but
 not stored. `unit name = e` is the same with the name additionally marked as a
-display unit (§3.2.12), and `chart name = step at origin [parent] [by B [then B …]]` a chart
+display unit (§3.2.12), `chart name params… on parent [at origin] [step unit] [by B [then B …]] [spinning ω]` a chart
 (§3.6, §3.8). A `data`
 declaration (§2.3) proposes a type the same way. `:add` and `:update` move
 scratch definitions into the codebase (§7).
@@ -255,14 +255,14 @@ data Shape = Circle (Num m) | Rect (Num m) (Num m)
 data Maybe a = Nothing | Just a
 data Tree a = Leaf | Node (Tree a) a (Tree a)           -- recursion through the type itself
 data State n = State (Vec n m) (Vec n (m/s))            -- n is a length, from its use
-data Reading d = Reading (Num d) (Point (Num K))        -- d is a dimension
+data Reading d = Reading (Num d) (Point degC)           -- d is a dimension; a point on a frame (3.10)
 structural data Pair a b = Pair a b
 ```
 
 A field is a type atom: a name (`Bool`, `Num`, a parameter, a declared type
 of no parameters) or a compound type in parentheses, written as `:type` prints
-it: `Num m`, `Vec 3 (m/s^2)`, `Mat 3 3`, `Tensor [2, 3] d`, `Point (Num K)`,
-`Point (Vec 3 m)`, `(a, b)`, `{a}`, `a -> b`, `Maybe (Num m)`. A length may
+it: `Num m`, `Vec 3 (m/s^2)`, `Mat 3 3`, `Tensor [2, 3] d`, `Point degC`,
+`Chart lvlh`, `Diff lvlh`, `(a, b)`, `{a}`, `a -> b`, `Maybe (Num m)`. A length may
 also be `rank s` for a shape parameter `s` (§4.1): `data Idx s = Idx (Vec (rank
 s))`. `rank` is the one type-level function and cannot name a parameter. A
 dimension is a type argument (§4.1): one name bare (`Num m`, `Num N`, `Num
@@ -381,7 +381,7 @@ From tightest to loosest:
 | 4 | `==` `/=` `<` `<=` `>` `>=` | none | ordering on Num only |
 | 3 | `&&` | right | |
 | 2 | `\|\|` | right | |
-| 1 | `to` | none | unit conversion, lowest so `5 km / h to m/s` reads naturally |
+| 1 | `to`, `from … to`, `on` | none | conversion (a unit, a point to a chart, an amount along a chart's axes; `from` names a configuration) and subtraction in a frame, `b .- a on c` (§3.10, F7, F10); lowest so `5 km / h to m/s` reads naturally |
 
 `#label` is not an operator but a postfix on a `±`, `noise` or `gauss`
 expression (§3.2.4). It is parsed after level 5 and before level 4, so it
@@ -459,23 +459,23 @@ program    ::= statement ( sep statement )*
 sep        ::= newline-at-column-0 | ';'
 statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | 'unit' name '=' expr                      -- a display unit (3.2.12)
-             | 'chart' name param* '=' expr 'at' origin [ 'by' expr ( 'then' expr )* ] [ 'spinning' expr ]
-                                                          -- a chart (3.6, 3.8); with parameters a moving chart; 'scale' is the old spelling
+             | 'chart' name param* 'on' expr clause*       -- a chart (3.6, 3.8, 3.10 F10); with parameters a moving chart; 'scale' is the old spelling
+             | 'space' name '=' type                      -- a space: Num δ or Vec n δ (3.10 F2)
              | ['structural'] 'data' name param* '=' con ( '|' con )*   -- a data type (2.3)
              | 'namespace' path statements                -- an indented block (7.6)
              | 'use' [ '.' ] path [ 'as' name ]            -- 'as' is a name, not a keyword (7.6)
              | name '::' sigtype                          -- a signature (4.8)
              | expr
-origin     ::= expr                                   -- a chart name juxtaposed last is the parent (3.8);
-                                                       -- 'by' is a keyword here only, cut at the first one outside brackets;
-                                                       -- 'then' after it separates generators applied in order, an 'if' keeping its own;
-                                                       -- 'spinning' is a keyword here only, last, cut at the first one outside brackets
+clause     ::= 'at' expr | 'step' expr | 'by' expr ( 'then' expr )* | 'spinning' expr
+                                                       -- in any order, each once, each running to the next clause word outside brackets;
+                                                       -- 'step', 'by' and 'spinning' are words here only; 'then' separates generators
+                                                       -- applied in order, an 'if' keeping its own
 path       ::= name ( '.' name )*                       -- glued dots
 statements ::= statement ( sep statement )*            -- indented block, opened as after 'where'
 qname      ::= [ '.' ] name ( '.' name )*              -- a qualified or absolute name (7.6)
 con        ::= name tyatom* | name '{' name '::' type ( ',' name '::' type )* '}'   -- a record (2.3)
 sigtype    ::= [ 'forall' binder+ '.' ] type               -- a signature's or an ascription's type (4.8): its variables
-binder     ::= name | '(' name ':' natural ')'          -- a variable, or one sized: that many axes of its own (3.9)
+binder     ::= name | '(' name ':' natural ')' | '(' name ':' qname ')'   -- a variable, one sized: that many axes of its own (3.9), or a frame of a space (3.10 F1)
 type       ::= tyapp [ '->' type ]
 tyapp      ::= qname tyatom* | tyatom
 tyatom     ::= qname | natural | '(' type ( ',' type )* ')' | '(' dim ')' | '{' type '}' | '[' shape ']'
@@ -1203,10 +1203,10 @@ dual       : Tensor (3 : s) d -> Tensor (3 : 3 : s) d   -- linalg: dual v = ε @
 axisAngle  : Vec 3 d -> Num rad -> Mat 3 3 -- linalg: the bivector of a turn about any axis
 rotation   : Vec 3 d -> Vec 3 d1 -> Mat 3 3  -- linalg: the bivector taking a's direction to b's
 euler313   : Num rad -> Num rad -> Num rad -> Mat 3 3   -- linalg: the 3-1-3 matrix
-rotationOf : Chart (Vec a d) r -> Mat r a   -- a chart's absolute rotation, rows along its root, columns along it; I when not turned (3.8, 3.9)
-inChart    : Chart (Vec a d) r -> Vec a d1 -> Vec r d1   -- linalg: from the chart's axes to its root's, R v (3.8, 3.9)
-along      : Chart (Vec a d) r -> Vec r d1 -> Vec a d1   -- linalg: from the root's axes to the chart's, Rᵀ v (3.9)
-withAxes   : Chart (Vec a d) r -> Vec n d1 -> Vec a d1   -- an anonymous vector read as along the chart's axes; no arithmetic (3.9)
+rotationOf : Chart c -> Mat s c              -- a chart's absolute rotation, rows along its space's base, columns along its frame's axes; I when not turned (3.8, 3.10)
+v to c     : Vec s d1 -> Chart c -> Vec c d1    -- along the space's base axes to the chart's, Rᵀ v (once linalg.along; 3.10 F10)
+v from c to c1 : Vec c d1 -> Chart c -> Chart c1 -> Vec c1 d1   -- along one chart's axes to another's, R1ᵀ R v (once linalg.inChart; 3.10 F10)
+withAxes   : Chart c -> Vec n d1 -> Vec c d1   -- an anonymous vector read as along the chart's axes; no arithmetic (3.9)
 rotateVec  : Mat b a -> Vec a d -> Vec b d   -- linalg: r v, typed by r's rows and columns (3.9)
 rotateCov  : Mat b a -> Mat a a d -> Mat b b d   -- linalg: r p rᵀ, a covariance turned (3.9)
 ```
@@ -1599,59 +1599,64 @@ amount between them, and an amount can be added to a point, giving another
 point; but two points have no sum and a point has no double. Everything in
 §3.2 to §3.5 is about amounts, which form the vector space `Num δ`. Points
 form an *affine space* over it, and the language gives them their own type,
-`Point δ`, and their own two operators, so that the arithmetic of points can
-never be confused with the arithmetic of amounts, in the same way that the
-products of §3.3 each have one symbol and one type.
+`Point c`, typed by the *frame* `c` they are written on (§3.10, part F), and
+their own two operators, so that the arithmetic of points can never be
+confused with the arithmetic of amounts, in the same way that the products
+of §3.3 each have one symbol and one type.
 
 | written | type | meaning |
 |---|---|---|
-| `p .- q` | `Point δ → Point δ → Num δ` | the amount from `q` to `p` |
-| `p .+ v` | `Point δ → Num δ → Point δ` | the point `v` beyond `p` |
-| `p == q`, `p < q` | `Bool` | points of one dimension compare |
+| `p .- q` | `Point c → Point c → Diff c` | the amount from `q` to `p` |
+| `p .+ v` | `Point c → Diff c → Point c` | the point `v` beyond `p` |
+| `p == q`, `p < q` | `Bool` | points of one frame compare |
 | `p + q`, `k * p`, `p + v` | type errors | points have no sum, no multiple; use `.+` |
 
 `.-` reads "from", and `.+` and `.-` sit at the precedence of `+` and `-`.
 `p .+ -v` is the point `v` before `p`. The one legitimate "sum of points",
-the weighted mean, is `q .+ (p .- q) / 2`.
+the weighted mean, is `q .+ (p .- q) / 2`. `Diff c` is the amount type of
+the frame's space, `Num K` for a temperature (§3.10, F4).
 
-**Charts.** A point is written and printed on a *chart*: a step unit and an
-origin. The step is an ordinary unit of the amount space, the origin a point
-given as an amount from the base origin:
+**Spaces and charts.** A point lies in a *space*, declared with the type of
+its amounts, and is written and printed on a *chart* of it: a step unit and
+an origin, given against the space's base (origin zero, the base unit as
+step) or against a parent chart (§3.10, F2, F10):
 
 ```
+space Temperature = Num K               -- in the library's temperature
 unit  deltaC = K                        -- the Celsius step is the kelvin
 unit  deltaF = 5/9 * 1 K                -- the Fahrenheit step
-chart degC  = K  at 273.15 K             -- 0 °C is 273.15 K from absolute zero
-chart degF  = deltaF at 459.67 deltaF    -- 0 °F is 459.67 Fahrenheit steps from it
-chart J2000 = day at 2451545 day         -- an epoch: a point on the time line
-chart gauge = Pa at 101325 Pa            -- gauge pressure
+chart kelvin on Temperature             -- the absolute scale
+chart degC   on Temperature at 273.15 K               -- 0 °C is 273.15 K from absolute zero
+chart degF   on Temperature at 459.67 deltaF step deltaF
+chart degR   on kelvin step deltaF      -- Rankine: kelvin rescaled
+chart J2000  on Time at 2451545 day step day           -- an epoch on the time line
+chart gauge  on Pressure at 101325 Pa step Pa          -- gauge pressure
 ```
 
-`chart name = step at origin` declares a definition whose value is a chart
-(`mkScale axes step origin : Chart δ`, `axes` the constructor of the axis
-type the declaration mints, §3.9) and marks the name, like `unit`, so that the
-quantity rule accepts it: `20 degC` is `pointOn degC 20 : Point (Num K)`, the point
-twenty steps up the chart from its origin, stored as `293.15 K`. `°C` and `°F`
-are the unicode spellings of `degC` and `degF`. A difference carries the step
-unit of the chart its operands were written on, so `77 degF .- 68 degF` is
-`9 deltaF`; `20 degC .+ 5 K` and `20 degC .+ 9 deltaF` are both `25 degC`. `p to degF`
-re-expresses a point on another chart of the same dimension; the point does not
-change. A chart's step and origin may themselves be approximate, in which case a
-point written on it carries their nudges like any other value.
+A chart declaration names a chart value and, when it is on a space or
+gives an origin, a *frame*, a type (§3.10, F3); a chart with a step alone is
+a rescaling and shares its parent's frame. The quantity rule accepts a
+chart after a literal: `20 degC` is `pointOn degC 20 : Point degC`, the
+point twenty steps up the chart from its origin, held as `20 K` above
+degC's origin. `°C` and `°F` are the unicode spellings of `degC` and
+`degF`. A difference carries the step unit of the chart its operands were
+written on, so `77 degF .- 68 degF` is `9 deltaF`; `20 degC .+ 5 K` and `20
+degC .+ 9 deltaF` are both `25 degC`. Points on two frames do not mix:
+`20 degC .- 68 degF` is refused, "points on degC and degF: convert one with
+`to`", and `p to degF` re-expresses a point on another chart of its space;
+Rankine and kelvin are one frame, so `491.67 degR .- 0 kelvin` is `273.15 K`
+with no `to`. A chart's step and origin may themselves be approximate, in
+which case a point written on it carries their nudges like any other value.
 
-`scale` is the old spelling of `chart`, from before a chart could name a parent
-and an orientation (§3.8). For a release the lexer reads it as the same
-keyword, the type `Scale δ` as `Chart δ` and `:ls --scales` as `:ls --charts`;
-the store's log line for the flag stays `scale name` (§7.4), so a chart is a
-scale in the store and nothing stored changes. Temperature and time charts are
-still called scales in prose; the construct is the chart.
+`scale` is the old spelling of `chart`, read as the same keyword; the store's
+log line for the flag stays `scale name` (§7.4). Temperature and time
+charts are still called scales in prose; the construct is the chart.
 
-**Printing.** A point prints as `(p − origin) / step` followed by the chart's
-name: `25 degC`, `2451545 J2000`... that is, a point prints on the chart it
-was written on, and a point whose chart has been lost prints as an amount from
-the base origin in base units. Points are the one place a display offset is
-needed, and the only place one is allowed: a *unit* is always a factor
-(§3.2.12), which is why Celsius could never be a unit.
+**Printing.** A point prints as its coordinates on the chart it was written
+on, the step divided out, followed by the chart's name: `25 degC`, `2451545
+J2000`. Points are the one place a display offset is needed, and the only
+place one is allowed: a *unit* is always a factor (§3.2.12), which is why
+Celsius could never be a unit.
 
 **Why a type and not a cleverer unit.** `20 °C + 5 °C` reads as 25 °C if the
 second is a rise and as nothing if it is a temperature; written with a
@@ -1660,19 +1665,15 @@ distinction is the information the arithmetic needs, and it is the same
 distinction as instant/duration, position/displacement, potential/potential
 difference and absolute/gauge pressure. One type covers them all.
 
-**Points over tensors.** `Point` is indexed by a shape as well as a dimension:
-a position is a `Point (Vec 3 m)`, a point of the affine space over
-`Vec 3 m`, and its chart is a *frame*: a step unit and an origin vector,
-`chart site = m at [100, 200, 0] m`. `[1, 2, 3] site` is the point with those
-coordinates in the frame; `p .- q` is a displacement `Vec 3 m`; `p .+ v` moves
-a position by a displacement; `p.0` is the first coordinate as a scalar point on
-the sliced frame; `p to eci` re-expresses a position in another frame of the
-same dimension. A chart may also name the parent chart its origin is given in,
-`chart antenna = m at [2, 0, 1] m site`, and an orientation, `by B` (§3.8).
-Since §3.9's stage 2b a chart with no parent names axes of its own, and a
-point and a displacement carry its root's: `:type [1, 2, 3] site` prints
-`Point (Vec site m)` and `p .- q` is a `Vec site m`; `p to eci` needs
-`eci` and `site` to share a root.
+**Points over vectors.** A space may be of vectors, `space Inertial = Vec 3
+m`, with base axes of its own (§3.10, F2). `chart site on Inertial at [100,
+200, 0] m` is a frame; `[1, 2, 3] site` is the point with those coordinates
+on it, `:type [1, 2, 3] site` is `Point site`, `p .- q` a displacement `Vec
+Inertial m` along the base axes (a translated chart's axes are its
+parent's), `p .+ v` moves a position, `p.0` is its first coordinate, the
+amount `1 m`, and `p to eci` re-expresses it on another chart of the space.
+A chart may also name a parent chart, `chart antenna on site at [2, 0, 1]
+m`, and turn its axes, `by B` (§3.8).
 
 ### 3.7 Mixed dimensions
 
@@ -1835,12 +1836,17 @@ terms). The axes of the chart are those of its parent rotated by `exp B`; an
 axis-aligned chart has `B = 0`, and that is every chart written today.
 
 ```
-chart degC = K at 273.15 K                         -- step, origin
-chart site = m at [100, 200, 0] m                  -- step, origin
-chart lvlh = m at r0 eci by B                      -- step, origin, parent, orientation
-chart pf   = m at [0, 0, 0] m eci by rotz Ω then rotx i then rotz ω   -- a sequence of turns
-chart ecef t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 1] * ω_e  -- moving
+chart degC on Temperature at 273.15 K              -- a space, an origin
+chart site on Inertial at [100, 200, 0] m          -- a space, an origin
+chart lvlh on eci at r0 by B                       -- a parent, an origin, an orientation
+chart pf   on eci by rotz Ω then rotx i then rotz ω            -- a sequence of turns
+chart ecef t on eci by rotz (gmst t) spinning [0, 0, 1] * ω_e  -- moving
 ```
+
+(The declarations here are written as §3.10's part F has them, `chart name
+params… on parent [at origin] [step unit] [by B then …] [spinning ω]`;
+the history below records the stages that built the tree with the earlier
+`chart name = step at origin parent by …`, whose meaning is unchanged.)
 
 Why the generator and not the matrix: `exp` of an antisymmetric matrix is
 always a rotation, so there is nothing to check, and its inverse is
@@ -1853,7 +1859,7 @@ the one place the affine arithmetic suffers (§3.3, `inverse`). The matrix
 is computed once per chart value, when a conversion first needs it, by
 Rodrigues' formula for a single plane and by the exponential series in
 general, with the same rigorous enclosures as `sin` and `cos` (§3.2.3);
-`mkChart4` checks
+`mkRoot` and `mkChart` check
 `B + Bᵀ == 0` exactly, which holds for anything built with `∧` and for
 every constructor in `linalg` (§3.3, which notes the one exception: an
 angle with an inexact `±` radius).
@@ -1887,77 +1893,62 @@ so `by` takes a list of generators applied in order, written with `then`:
 of three. `then` is read as a separator in the chart statement only, after
 `by` and outside brackets, and an `if` inside a generator keeps its own
 `then`; the parser makes a list literal of the generators, so the
-desugarer stays syntactic and the Core is `mkChart4 step origin parent {g₁,
-…}`. Every element is checked antisymmetric as before, the inverse is the
+desugarer stays syntactic and the Core is `mkChart {F} {A} parent {} {} {g₁,
+…} {}`, the empty lists the clauses not written (§4.3). Every element
+is checked antisymmetric as before, the inverse is the
 list reversed with each element negated, and nothing needs a matrix
 logarithm or an orthogonality check on enclosures. The chart keeps its
 rotation `R = expm B₁ · expm B₂ · …` beside the generators, computed once
 per chart value when first used.
 
-**Conversion.** `p to c` gives `p`'s coordinates on chart `c`: `(exp (-B_c)
-(p .- o_c)) / step_c`, components of a vector in `c`'s axes. A displacement
-converts by the rotation alone, a point by rotation and translation. An
-amount carries no axes, so `.-` and `.+` are along the base axes whatever
-charts their points are on (built, below). A
-tensor of any rank converts by applying the rotation along every axis, so a
-covariance block goes as `R P Rᵀ` (§3.7), and one kernel ("apply `R` on every
-index", `transformBy`) serves every rank. Charts form a tree: a chart names the chart its
-origin and axes are given in (`eci` at the root, a library definition), and
-`a to b` goes up to the common ancestor and down, composing at the matrix
-level since two rotations in different planes do not add as bivectors. A
-chart's parent is the chart its origin and axes are given in, written after
-the origin:
+**Conversion.** `p to c` gives `p`'s coordinates on chart `c`: from its
+own frame's `(o_F, R_F)` to the base and down, `R_c⁻¹ (o_F + R_F x − o_c) /
+step_c`, components along `c`'s axes. A displacement converts by the
+rotations alone, a point by rotation and translation. A tensor of any rank
+converts by applying the rotation along every axis, so a covariance block
+goes as `R P Rᵀ` (§3.7), and one kernel ("apply `R` on every index",
+`transformBy`) serves every rank. Charts form a tree: a chart names the
+chart its origin and axes are given in, and at the root a space (§3.10,
+F2), and `a to b` goes up to the common ancestor and down, composing at
+the matrix level since two rotations in different planes do not add as
+bivectors. A chart's parent comes after `on`:
 
 ```
-chart eci       = m at [0, 0, 0] m                        -- the root for positions
-chart perifocal = m at [0, 0, 0] m eci by rotz Ω then rotx i then rotz ω  -- rotated, same origin
-chart site      = m at [6378, 0, 0] km eci                -- translated
-chart antenna   = m at [2, 0, 1] m site by rotz (30 deg)  -- relative to site
+space Inertial = Vec 3 m
+chart eci       on Inertial                                   -- the root for positions
+chart perifocal on eci by rotz Ω then rotx i then rotz ω       -- rotated, same origin
+chart site      on eci at [6378, 0, 0] km                      -- translated
+chart antenna   on site at [2, 0, 1] m by rotz (30 deg)        -- relative to site
 ```
 
-A chart with no parent is relative to the implicit base of its dimension, as
-every scale is today (absolute zero for temperatures); the parent is a
-reference to a definition, so the chart tree and the namespace tree are
-unrelated, and renaming a chart changes nothing. None of this needs §3.7's
-route A: a rotation is dimensionless and a chart has one dimension on every
-axis, so every conversion stays homogeneous.
+A chart on a space is given against the space's base (origin zero, base
+axes, the base unit as step); the parent is a reference to a definition,
+so the chart tree and the namespace tree are unrelated, and renaming a
+chart changes nothing. None of this needs §3.7's route A: a rotation is
+dimensionless and a chart has one dimension on every axis, so every
+conversion stays homogeneous.
 
-**Built: the parent and `by`, and the translated tree.** The statement is
-`chart name = step at origin [parent] [by B [then B …]]` (§2.7). The parent is a chart
-name juxtaposed after the origin, which is the quantity rule's own reading:
-the parser keeps it in the origin, since only the desugarer knows which
-names are charts, and the desugarer splits it off when the last atom of the
-origin's quantity chain (`[2, 0, 1] m site`) or application (`r0 eci`) is a
-chart name. An origin that ended in a chart name was a point, never an
-amount, so a chart written before reads the same, with one exception: an
-origin that applied a function to a chart, `scale x = m at f eci`, now reads
-`eci` as the parent (stored Core is unaffected; bind `f eci` to a name to
-keep it). A trailing unit is
-still a unit (`chart warm = K at 300 K`). An origin built with an operator
-is parenthesised before the parent, `m at (r0 + r0) site`, and a function
-applied to a chart cannot stand last in the origin (bind it to a name
-first). `by` is a keyword in this statement only: the statement's tokens are
-cut at the first `by` outside brackets, so `by B * pi / 6` keeps its whole
-expression and `let by = 5` is still a name everywhere else. A turned chart
-names the chart it is turned from: `by` without a parent is refused, "a
-turned chart names the chart its axes are turned from", which keeps three
-forms and three primitives (`mkScale`, `mkChart3`, `mkChart4`, below). The
-origin is an amount from the parent's origin along the parent's axes, so
-`chart site = m at [6378, 0, 0] km eci` and `chart antenna = m at [2, 0, 1]
-m site` put `[0, 0, 0] antenna` at `[6378002, 0, 1] eci`. Points stay
-amounts from the base origin, so for translated charts `to` and `.-`
-through the tree are the kernels §3.6 already had: `[1, 2, 3] antenna to
-eci` is `[6378003, 2, 4] eci` and converts back exactly, `[1, 2, 3] antenna
-.- [0, 0, 0] site` is `[3, 2, 4] m`, a chart with no parent composes with
-the tree unchanged, and temperature charts are untouched. `:view` and
-`:edit` print `chart antenna = m at [2, 0, 1] m site`: a literal and a unit
-before the parent read back as a quantity, anything else parenthesised,
-and re-entering it gives the same hash. A turned chart is stored and
-printed with its `by`, the generators joined by `then`, and re-entering
-what `:view` or `:edit` prints gives the same hash.
+**Built: the parent and `by`, and the translated tree.** The statement was
+built as `chart name = step at origin [parent] [by B [then B …]]`, the
+parent juxtaposed after the origin and split off by the desugarer; part F
+(§3.10, F10) respells it as clauses, `chart name on parent [at origin]
+[step unit] [by B [then B …]]`, each running to the next clause word, so
+an origin built with an operator needs no parentheses (`at r0 + r0`) and
+a function applied to a chart may stand in it. `by` is a word in this
+statement only, so `by B * pi / 6` keeps its whole expression and `let by
+= 5` is still a name everywhere else. The origin is an amount from the
+parent's origin along the parent's axes, so `chart site on eci at [6378,
+0, 0] km` and `chart antenna on site at [2, 0, 1] m` put `[0, 0, 0]
+antenna` at `[6378002, 0, 1] eci`: `[1, 2, 3] antenna to eci` is `[6378003,
+2, 4] eci` and converts back exactly, `[1, 2, 3] antenna .- [0, 0, 0] site
+on site` is `[3, 2, 4] m`, and temperature charts are untouched. `:view`
+and `:edit` print `chart antenna on site at [2, 0, 1] m`, and re-entering
+it gives the same hash. A turned chart is stored and printed with its
+`by`, the generators joined by `then`, and re-entering what `:view` or
+`:edit` prints gives the same hash.
 
 **Built: turned charts.** Every chart keeps its *absolute frame*, its origin
-and rotation from the base, so that no conversion walks the tree:
+and rotation from the space's base, so that no conversion walks the tree:
 
 ```
 R_abs = R_parent_abs · expm B₁ · expm B₂ · …          -- I for a root; a chart with no by has its parent's
@@ -1967,96 +1958,84 @@ o_abs = o_parent_abs + R_parent_abs · a               -- a: the amount the orig
 
 The origin `a` is an amount with its own unit (`[7000, 0, 0] km`), not a
 count of the parent's steps, so a translated chart is exactly what it was.
-Points stay amounts from the base origin along the base axes. A point
-written on a chart is `o_abs + R_abs (step · c)`; reading one, which is what
-printing a point on a chart does (`p to c` changes only the chart a point
-prints on), is `R_abs⁻¹ (p − o_abs) / step`. With `chart eci = m at [0, 0,
-0] m` and `chart lvlh = m at [7000, 0, 0] km eci by rotz (90 deg)`, lvlh's
-x axis is eci's y: `[1, 0, 0] lvlh to eci` prints `[7000000.0000000000000…,
+A point holds its coordinates on its frame with the step applied (§3.10,
+F6), `step · c`; `p to c` maps them through the base, `o_abs + R_abs x`
+up and `R_abs⁻¹ (· − o_abs)` down. With `chart eci on Inertial` and `chart
+lvlh on eci at [7000, 0, 0] km by rotz (90 deg)`, lvlh's x axis is eci's
+y: `[1, 0, 0] lvlh to eci` prints `[7000000.0000000000000…,
 1.0000000000000000000…, 0] eci`, and `[7000000, 1, 0] eci to lvlh` prints
 `[1.0000000000000000000…, 3.0e-24 ± 3.8e-24, 0] lvlh`. A round trip
 encloses the point it started from, with bounds under `4 × 10⁻²⁴` for one
 level of turning and `3 × 10⁻²³` for two, and is checked with `bound` or an
 enclosure test, never `==`, which may answer "cannot decide".
 
-*Displacements are along the base axes.* An amount carries no axes, so
-`p .- q` and `p .+ v` mean one thing whatever charts `p` and `q` print on:
-`[1, 2, 3] lvlh .- [0, 5, 0] lvlh` is `R (step · ([1, 2, 3] − [0, 5, 0]))`,
-the rotated difference with no origin term, `[3, 1, 3] m` in eci's axes,
-and `q .+ (p .- q)` is `p` on any charts. An amount along a turned chart's
-axes is brought to the base axes with `linalg.inChart`: `[0, 0, 0] lvlh .+
-inChart lvlh ([1, 0, 0] m)` is `[1, 0, 0] lvlh`. Rotating the amount by the
-point's chart inside `.+` would break that law against `.-`, and printing
-a difference along a chart's axes would need an amount to carry its axes,
-which waits on §3.9's labelled vectors. (Since stage 2b of §3.9 an amount's
-type carries its axes: the difference is a `Vec eci m`, and `inChart
-lvlh ([1, 0, 0] m)` takes a `Vec lvlh` to a `Vec eci`.)
+*Displacements are along a frame's axes.* Since part F a point is held in
+its frame's coordinates, so `p .- q` for two points on one frame is the
+difference of their coordinates, exact, along the frame's axes: `[1, 2, 3]
+lvlh .- [0, 5, 0] lvlh` is `[1, -3, 3] m`, a `Vec lvlh m`, and `q .+ (p .-
+q)` is `p`. Re-expressed along another chart's axes it turns by the
+rotations alone: `([1, 2, 3] lvlh .- [0, 5, 0] lvlh) from lvlh to eci`
+encloses `[3, 1, 3] m`. (Before part F points were held from the base
+origin along the base axes, and `.-` gave the rotated difference, read
+along a chart's axes with `linalg.along` and back with `linalg.inChart`;
+both are now `to`, §3.10, F10.)
 
 *Tensors of higher rank.* `rotationOf c` (a primitive) is `R_abs`, whose
-columns are `c`'s axes along the base axes; it is exactly the identity for
-a chart that is not turned. Its type says so (§3.9): `rotationOf lvlh :
-Mat eci lvlh`, rows along the root, columns along the chart. `inChart c v
-= rotationOf c @ v` reads a vector given along `c`'s axes and gives it
-along the root's, `R v`, and `along c v = transpose (rotationOf c) @ v` is
-the other way, `Rᵀ v`: `R` is orthogonal, so the transpose of an entrywise
-enclosure of it is an entrywise enclosure of `R⁻¹`. A covariance turns as
-`R P Rᵀ`, `linalg.rotateCov (rotationOf c) p`, and `inChartCov2 c p` does
-each block of a `Cov2` (§3.7) so, since a state's rotation is `R` on
-positions and velocities alike. `transformBy`, which applies `R` along
-every axis at once, is for anonymous axes only.
+columns are `c`'s axes along the space's base axes; it is exactly the
+identity for a chart that is not turned. Its type says so (§3.10, F5):
+`rotationOf lvlh : Mat Inertial lvlh`, rows along the base, columns along
+the chart. `v to c`, with `v` along the base axes, is `Rᵀ v`, and `v from c
+to eci`, with `v` along `c`'s, is `R v`: `R` is orthogonal, so the
+transpose of an entrywise enclosure of it is an entrywise enclosure of
+`R⁻¹`. A covariance turns as `R P Rᵀ`, `linalg.rotateCov (rotationOf c)
+p`, and `inChartCov2 c p` does each block of a `Cov2` (§3.7) so, since a
+state's rotation is `R` on positions and velocities alike. `transformBy`,
+which applies `R` along every axis at once, is for anonymous axes only.
 
-A coordinate of a point on a turned chart, `p.0`, is refused, "a component
-of a point on a turned chart: take it on an axis-aligned chart, (p to
-eci).0", since the point is stored along the base axes and the slice would
-label a base component as the chart's. A turned chart's rotation is
-computed once per value, and a definition's value is shared by every
-reference to it in one evaluation, so a chart named in a hundred
-conversions computes `expm` once per generator and direction.
+A coordinate of a point, `p.0`, is an amount along its frame's own axis,
+the step applied, on any chart (§3.10, F5); the refusal on a turned chart
+went with base-form storage. A turned chart's rotation is computed once per
+value, and a definition's value is shared by every reference to it in one
+evaluation, so a chart named in a hundred conversions computes `expm` once
+per generator and direction.
 
 **Built: moving charts.** A chart that moves is a function of an epoch to a
 chart, and the epoch is a point on a time chart (`unix`, `J2000`). The
-chart statement takes parameters exactly as `let f x = …` does, and a
-`spinning` part last:
+chart statement takes parameters exactly as `let f x = …` does, before
+`on`, and a `spinning` clause:
 
 ```
-chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w
+chart spinner t on eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w
 ```
 
-desugars to `\t -> mkChart5 Axes m ([0, 0, 0] m) eci {rotz (w * (t .- t0))}
-([0, 0, 1] * w)`, `Axes` the constructor of the axis type the declaration
-mints (§3.9), inside the lambda, so that `spinner t` has one axis set for
-every `t`; and the *name* carries the chart flag. `spinning` is a
-keyword in this statement only, like `by`: the statement is cut at the
-first `spinning` outside brackets, the origin and the generators are read
-before it, and the angular velocity, one expression, after it. It takes a
-`Vec 3 (rad/s)` (a literal is dimensionless, so a spin is written `[0,
-0, 1] * w` or `[0, 0, 7.29e-5] rad/s`, not `[0, 0, w]`); the radian is
-stripped as `rotz` strips it, so the chart keeps `Vec 3 (1/s)`, an
-angular velocity along the chart's *own* axes, relative to its parent. A
-spinning chart with no `by` has an empty list of generators and prints with
-no `by`; one with no parent is refused, "a spinning chart names the chart
-it spins relative to, after the origin: chart ecef t = m at [0, 0, 0] m eci
-by rotz (gmst t) spinning w". `mkChart5 : Axes -> Num d -> Vec 3 d -> Chart (Vec 3
-d) -> {Mat 3 3} -> Vec 3 (rad/s) -> Chart (Vec 3 d)` is used only when
-`spinning` is written, so every chart without it keeps `mkScale`,
-`mkChart3` or `mkChart4` and its hash. `:view spinner` prints `chart
-spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0,
-1] * w`, the lambda's parameters before the `=`, and `:edit` reads back to
-the same hash.
+desugars to `\t -> mkChart {Frame} {Axes} eci {} {} {rotz (w * (t .-
+t0))} {[0, 0, 1] * w}`, `Frame` and `Axes` the constructors of the frame
+and axis types the declaration mints (§3.10, F3), inside the lambda, so
+that `spinner t` has one frame and one axis set for every `t`; and the
+*name* carries the chart flag. `spinning` is a word in this statement
+only, like `by`. It takes a `Vec 3 (rad/s)` (a literal is dimensionless,
+so a spin is written `[0, 0, 1] * w` or `[0, 0, 7.29e-5] rad/s`, not `[0,
+0, w]`); the radian is stripped as `rotz` strips it, so the chart keeps
+`Vec 3 (1/s)`, an angular velocity along the chart's *own* axes, relative
+to its parent. A spinning chart with no `by` has an empty list of
+generators and prints with no `by`. `:view spinner` prints `chart spinner
+t on eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w`, the lambda's
+parameters before `on`, and `:edit` reads back to the same hash.
 
 *Applying one.* A chart declared with parameters is a *moving chart*, which
 the resolver reads off its stored Core (a lambda), so a store reload keeps
-it with no flag of its own. Where a chart name goes, an application whose
-head is a moving chart's name takes the chart at that instant: `p to
-spinner t1`, `p to (spinner t1)`, `[1, 2, 3] (spinner t1)` and a parent
-`chart station t = m at [6378, 0, 0] km (spinner t) by roty (30 deg)`. A
-moving chart's bare name where a chart is wanted (`p to spinner`, `[1, 2,
-3] spinner`, `… m spinner` as a parent) is refused when desugaring,
-"`spinner` moves: apply it at a time, as in p to spinner t0", which makes
-the classic wrong-epoch mistake an error. An instant prints as it was
-applied, `[1, 2, 3] (spinner (1000 unix))`, which reads back. There is no
-`state to ecef`: `to` is chosen by syntax and there are no type classes, so
-a state is converted by named library functions (below).
+it with no flag of its own. Where a chart goes, an application whose head
+is a moving chart's name takes the chart at that instant: `p to spinner
+t1`, `p to (spinner t1)`, `[1, 2, 3] (spinner t1)` and a parent `chart
+station t on (spinner t) at [6378, 0, 0] km by roty (30 deg)`. A moving
+chart's bare name where a chart is wanted (`p to spinner`, `[1, 2, 3]
+spinner`, `on spinner` as a parent) is refused when desugaring, "`spinner`
+takes arguments: apply it, as in p to (spinner t0)" (§3.10, F7), and a
+point on it converts from a configuration named with `from`, `p from
+(spinner t1) to eci`, never the one it was written with, which makes the
+classic wrong-epoch mistake an error. An instant prints as it was applied,
+`[1, 2, 3] (spinner (1000 unix))`, which reads back. A state is converted
+by named library functions (below).
 
 *Kinematics, composed through the tree.* A velocity seen from a moving chart
 picks up transport terms, and a moving chart states its angular velocity,
@@ -2083,39 +2062,40 @@ v_c = R_abs⁻¹ (v − v_o_abs − ω_abs × (p − o_abs))
 v   = R_abs v_c + v_o_abs + ω_abs × (p − o_abs)
 ```
 
-Two primitives read the new fields: `spinOf : Chart (Vec a d) r -> Vec r
-(1/s)` is `ω_abs` and `originVelocityOf : Chart (Vec a d) r -> Vec r (d/s)`
-is `v_o_abs` (a chart in metres gives `Vec r (m/s)`), both along the
-chart's root (§3.9) and over three axes, each exactly zero
-when nothing here or above spins. `R_abs⁻¹` is `transpose (rotationOf c)`:
-`R` is orthogonal, so the transpose of an entrywise enclosure of it
-encloses its inverse.
+Three primitives read the new fields: `spinOf : forall s (c : s). Chart c
+-> Vec s (1/s)` is `ω_abs`, `originVelocityOf : Chart c -> Vec s (d/s)` is
+`v_o_abs` (a space in metres gives `Vec s (m/s)`) and `originOf : Chart c
+-> Vec s d` is `o_abs`, each along the space's base axes (§3.10, F5), the
+first two over three axes and exactly zero when nothing here or above
+spins. `R_abs⁻¹` is `v to c`: `R` is orthogonal, so the transpose of an
+entrywise enclosure of it encloses its inverse.
 
 *States, in `astro`.* `astro` is not used by default, so its field labels
 never meet a user's (`:use astro` first):
 
 ```
-data State r = State {epoch :: Point (Num s), pos :: Point (Vec r m), vel :: Vec r (m/s)}
-velocityIn :: forall (a : 3) (r : 3). Chart (Vec a m) r -> State r -> Vec a (m/s)
-velocityIn c st = linalg.along c
-                    (st.vel - originVelocityOf c - linalg.cross (spinOf c) (st.pos .- pointOn c [0, 0, 0]))
-stateFrom :: forall (a : 3) (r : 3). Chart (Vec a m) r -> Point (Num s) -> Vec a m -> Vec a (m/s) -> State r
-stateFrom c t pc vc = let r = linalg.inChart c pc in
-  State {epoch = t, pos = pointOn c [0, 0, 0] .+ r,
-         vel = linalg.inChart c vc + originVelocityOf c + linalg.cross (spinOf c) r}
+data State t r = State {epoch :: Point t, pos :: Vec r m, vel :: Vec r (m/s)}
+velocityIn c st =
+  (st.vel - originVelocityOf c - linalg.cross (spinOf c) (st.pos - originOf c)) to c
+stateFrom c t pc vc = let r = rotationOf c @ pc in
+  State {epoch = t, pos = originOf c + r,
+         vel = rotationOf c @ vc + originVelocityOf c + linalg.cross (spinOf c) r}
 ```
 
-`pos` is an absolute point and `vel` is along the base axes: the velocity
-relative to the base chart, the inertial frame. A state is typed by its
-root's axes (§3.9): `stateFrom lvlh …` is a `State eci`, its `pos` a
-`Point (Vec eci m)`, and `pc` and `vc` are along the chart's own axes,
-so `velocityIn` and `stateFrom` refuse a vector of another frame. `velocityIn c st` is that
-velocity relative to `c`, along `c`'s axes; `stateFrom c t pc vc` is the
-inverse, a position `pc` (an amount from `c`'s origin along its axes) and
-a velocity `vc` relative to `c` to a state at epoch `t`. Both take a chart
-*value*, so a moving chart is passed at the state's instant, `velocityIn
-(ecef st.epoch) st`. The formulas are library code, so `:view
-astro.velocityIn` shows them.
+`pos` is the position as an amount from the space's base origin and `vel`
+the velocity, both along the base axes: the velocity relative to the base,
+the inertial frame. A state is typed by its epoch's frame and its space's
+base axes (§3.10, part F, as built): `stateFrom lvlh (0 unix) …` is a
+`State unix Inertial`, and `pc` and `vc` are along the chart's own axes,
+`Vec lvlh m`, so `velocityIn` and `stateFrom` refuse a vector of another
+frame. They are not signed, since no written type says that the chart's
+space is in metres; `:type` prints `forall s1 (c : s1) c1. Chart c ->
+State c1 s1 -> Vec c (m/s)`. `velocityIn c st` is that velocity relative
+to `c`, along `c`'s axes; `stateFrom c t pc vc` is the inverse, a position
+`pc` (an amount from `c`'s origin along its axes) and a velocity `vc`
+relative to `c` to a state at epoch `t`. Both take a chart *value*, so a
+moving chart is passed at the state's instant, `velocityIn (ecef st.epoch)
+st`. The formulas are library code, so `:view astro.velocityIn` shows them.
 
 *What the tests check* (`movingChartTests`): physics, not the formulas
 echoed. A body fixed on `spinner t1`, with inertial velocity `ω × r`
@@ -2169,7 +2149,11 @@ A.
 
 
 **Interfaces fixed for the build**, so that the pieces, built by several
-hands, meet:
+hands, meet. (These are as built through §3.9's stage 2b. Part F replaced
+`mkScale`, `mkChart3`, `mkChart4` and `mkChart5` by `mkRoot` and `mkChart`,
+gave the chart value its `frame` and `moving`, and holds a point in its
+frame's coordinates rather than from the base origin; §3.10, part F, as
+built.)
 
 - **Built.** The chart value (`Eval.Eval.Chart`, once `ScaleHint`; the value
   constructor `VChart`) has `parent :: Maybe Chart` (the chart its origin and
@@ -2266,7 +2250,7 @@ hands, meet:
   author's to keep, and leap seconds are not modelled.
 - *Origins that move relative to their parent.* `v_o_abs` counts only the
   parent's spin: a chart whose origin is a function of its time parameter
-  (`chart c t = m at r t eci`) gets no velocity for that motion, which a
+  (`chart c t on eci at r t`) gets no velocity for that motion, which a
   declared origin velocity, as the spin is declared, would add.
 - *A declared spin is not checked* against the rotation it goes with (it
   would need the derivative of `expm B(t)`).
@@ -2274,15 +2258,15 @@ hands, meet:
   library functions (`velocityIn c st`, `rotationOf c`) but not for `to`
   or the quantity rule, which picked a chart by its declared name. Closed
   by §3.10's part U: they read the type, so `3 c` and `p to c` work.
-- Whether `eci` is a library definition or a primitive root (none is
-  shipped yet: a user's `chart eci = m at [0, 0, 0] m` is a root like any
-  chart without a parent).
+- Whether `Inertial` and `eci` are library declarations (none is shipped
+  yet: a user's `space Inertial = Vec 3 m` and `chart eci on Inertial` are a
+  space and a root like any other).
 
 **Axis sets.** Named positions and vectors typed by their axes are designed in
 §3.9, to be decided with charts: a chart is an axis set with an origin, and
 what `p to lvlh` returns is what decides whether `Vec lvlh` exists.
 
-### 3.9 Axis sets: named positions and index types (layer 2, stages 1, 2a and 2b built; stage 3 designed in §3.10; the rest design)
+### 3.9 Axis sets: named positions and index types (layer 2, stages 1, 2a and 2b built; stage 3 built in §3.10; the rest design)
 
 Two layers, the first a sugar and the second a type-system extension; the
 first can be built alone and does not prejudge the second.
@@ -2330,36 +2314,37 @@ frame's axes. The decisions:
    comes from. `rotationOf lvlh : Mat eci lvlh` (rows along the parent's
    axes, columns along lvlh's), and `@` requires the contracted axes to
    match, so `rotationOf lvlh @ v` with `v : Vec lvlh` is a `Vec eci`, and
-   applying the wrong rotation is a type error. Route A for mixed dimensions
+   applying the wrong rotation is a type error. (Since §3.10's part F the rows are
+   along the space's base axes, `rotationOf lvlh : Mat Inertial lvlh`.) Route A for mixed dimensions
    (§3.7) needs the same row and column machinery for dimensions; the two
    should share it, but stay separate designs.
 4. **Points are typed by their axes and stored in their chart's
    coordinates** (decided by the owner). Revised in §3.10: a point is
-   typed by its frame, `Point lvlh`; storage in chart coordinates stands. `[1.5, 2.25, 3] lvlh : Point (Vec
-   lvlh m)`, held as the three numbers `1.5, 2.25, 3` and the chart, so
-   arithmetic inside a frame is exact, `p.0` is `1.5` along lvlh's x axis,
+   typed by its frame, `Point lvlh`; storage in chart coordinates stands.
+   `[1.5, 2.25, 3] lvlh : Point lvlh`, held as the three numbers `1.5, 2.25,
+   3` and the chart, so arithmetic inside a frame is exact, `p.0` is `1.5` along lvlh's x axis,
    and `q .- p` for two points on one chart is a `Vec lvlh m`. A point on a
    moving chart is held in that chart's coordinates too, so a point fixed on
    a moving body (a ground station) is a constant; converting it out needs
    the chart's arguments, its time and any other parameters, so the
    wrong-epoch mistake is a missing argument rather than a silent error.
    Points on different axis sets compare or subtract only after an explicit
-   `to`, which is the typed conversion between them. Scalar points (`Point (Num
-   K)`) have no axes, so temperature charts are unaffected. This supersedes
-   §3.8's base-form storage, which is replaced when this layer is built.
+   `to`, which is the typed conversion between them. Scalar points (`Point
+   degC`) have no axes, so temperature charts are unaffected. This superseded
+   §3.8's base-form storage, which part F replaced (§3.10, F6).
 5. **Literals are polymorphic in their axes** (decided by the owner). An
    unannotated literal vector gets a fresh axis variable, as an untyped
    numeric literal does in Haskell, so its frame comes from where it is used:
    `p .+ [1, 0, 0] m` is along `p`'s axes, `[1, 0, 0] m + v` along `v`'s. A
    literal has no frame until it is used, so this is not a frame mix-up.
-   `along c v` remains for re-expressing a vector that already has a frame
+   `v to c` (once `along c v`) re-expresses a vector that already has a frame
    along another chart's axes, which is a rotation and stays visible. The
    restriction is on named values: functions generalise over axis variables
    as usual (`let shift p = p .+ [1, 0, 0] m` is "the same frame as `p`"),
    but a named non-function value does not keep a free axis variable. If
    nothing in its definition fixes its frame, its axes default to anonymous,
    so `let offset = [0, 0, 2] m` cannot silently be a body-frame offset in
-   one use and an inertial one in another; it meets a frame through `along`
+   one use and an inertial one in another; it meets a frame through `to`
    or a signature (`offset :: Vec body m`), and the first use against a
    frame says so. An ascription narrows and never relabels (§4.8).
 6. **`forall` is required, with kinds on binders** (decided by the owner).
@@ -2383,7 +2368,7 @@ frame's axes. The decisions:
    a rotated child names its own. Two unrelated root charts (`eci`, a lab
    bench) never mix without a `to`. Literals take their frame from use
    (decision 5); a named value with no frame of its own is anonymous and
-   meets a frame through `along` or a signature.
+   meets a frame through `to` or a signature.
 8. **Encoding.** The anonymous set of size `k` encodes byte for byte as
    today's length `k`, so stored `data` types and `sig` lines do not change;
    a named set or an axis variable is an appended type tag. No format bump
@@ -2398,10 +2383,10 @@ frame's axes. The decisions:
 ```
 cross       : forall (a : 3). Vec a d -> Vec a d1 -> Vec a (d*d1)
 norm        : Vec a d -> Num d
-rotationOf  : Chart a r … -> Mat r a                 -- rows along the root's axes, columns along the chart's
-p to c      : Point (Vec a d) -> Chart b r … -> Point (Vec b d)   -- same root and length; a moving c needs its arguments
-along       : Chart b … -> Vec a d -> Vec b d        -- re-express a framed vector: a rotation, visible
-q .- p      : Point (Vec a d) -> Point (Vec a d) -> Vec a d        -- one chart's axes in, the same axes out
+rotationOf  : Chart c -> Mat s c                     -- rows along the space's base axes, columns along the frame's (§3.10)
+p to c      : Point c -> Chart c1 -> Point c1        -- one space; a chart with parameters is applied, its source named with from
+v to c      : Vec s d -> Chart c -> Vec c d          -- re-express a vector along a chart's axes: a rotation, visible (was along)
+q .- p      : Point c -> Point c -> Diff c           -- one frame in, its axes out (Diff lvlh = Vec lvlh m)
 v.0         : Vec a d -> Num d                       -- a has at least one axis
 v.x         : Vec a d -> Num d                       -- x one of a's axis labels (layer 1)
 ```
@@ -2428,7 +2413,7 @@ v.x         : Vec a d -> Num d                       -- x one of a's axis labels
    cannot say "every axis" over axis sets at any rank); literals
    polymorphic in their axes with the named-value default of decision 5;
    printing of named vectors. Built (below).
-3. **Units, spaces and frames: revised and designed in §3.10.** Points are
+3. **Units, spaces and frames: revised, designed and built in §3.10.** Points are
    typed by their frame (`Point lvlh`), not by their axes; units become a
    type; spaces and frames are new kinds. The original plan, kept for
    reference: the point value changes representation (chart coordinates and the chart, not base form);
@@ -2438,7 +2423,8 @@ v.x         : Vec a d -> Num d                       -- x one of a's axis labels
    2b: a point's type moves from its root's axes to its chart's own
    (`[1, 2, 3] lvlh : Point (Vec lvlh m)`), `pointOn` and `toScale` lose
    their root relation, `to` between roots becomes possible where the tree
-   joins them, and the refusal of `p.0` on a turned chart goes.
+   joins them, and the refusal of `p.0` on a turned chart goes. (Done
+   in §3.10's part F, with a point typed by its frame, `Point lvlh`.)
 4. **The library.** `cross`, `norm`, `dual`, the rotation constructors,
    `Cov2`, `timap` generalised over axis sets with sized binders; §12's
    sessions rewritten to the typed form.
@@ -2547,7 +2533,12 @@ rules in full.
   unchanged `:edit`.
 
 **Stage 2b, as built.** Decisions 1, 3, 5, 6 (printing) and 7, with points
-still stored in base form.
+still stored in base form. (Part F of §3.10 superseded the parts below on
+points and roots: a point is typed by its frame and held in its frame's
+coordinates, `to` converts between frames of one space wherever the tree
+joins them, a root chart has its space's base axes rather than its own,
+`rotationOf` is `Mat s c`, rows along the space's base, and `linalg.inChart`
+and `linalg.along` are `to`; §3.10, part F, as built.)
 
 - **Minted axis types.** Entering a root chart, a turned one or a spinning
   one mints a nominal type: no parameters, one constructor with no fields,
@@ -2613,8 +2604,8 @@ still stored in base form.
   and `e3` are anonymous where they are used; `rotz` and the other
   constructors, functions over a literal-built body, print sized binders.
   An anonymous value meeting a named one is the unifier's axes error with a
-  hint, "give it a frame with `withAxes c v`, or `along c v` if it is
-  along the root". `noise` stays anonymous.
+  hint, "give it a frame with `withAxes c v`, or `v to c` if it is along
+  its space's base axes" (once `along c v`). `noise` stays anonymous.
 - **Written types.** A name in a length position resolves through the type
   scope to a minted axis type and means that many positions along it:
   `Vec lvlh m`, `Mat eci lvlh`, `Cov2 lvlh m (m/s)`. The number is
@@ -2658,7 +2649,7 @@ still stored in base form.
   free axes of their own (`rotation`, `dual`, `axisAngle`) until stage 4
   generalises them.
 
-### 3.10 Units, spaces and frames (stage 3 of §3.9; part U built, part F design)
+### 3.10 Units, spaces and frames (stage 3 of §3.9; parts U and F built)
 
 Decided by the owner, 2026-10-31. This is stage 3 of §3.9, revised: a point
 is typed by its *frame* (`Point lvlh`, `Point degC`), not by its axes as
@@ -2802,8 +2793,9 @@ Unit δ  = Quantity Unit δ
   as a `Unit`.
 
 **Part U, as built.** As decided, with these details the decision left
-open. Until part F lands, the chart readings are today's: U4's builds
-`pointOn` on `Chart σ δ` and gives `Point σ δ`, and U6's keeps `toScale`.
+open. Until part F landed, the chart readings were stage 2b's: U4's built
+`pointOn` on `Chart σ δ` and gave `Point σ δ`, and U6's kept `toScale` (part F, as
+built, below, replaces both).
 
 - **The pending reading.** One constraint, `Dispatch`, solved as `Append`
   and `Rank` are, whenever a type it waits on becomes known. Arithmetic
@@ -3166,6 +3158,128 @@ desugared `to` is refused as F7 says, and the subtraction is written out.
 **Deferred.** A frame per item of data (F3, §11); constraints over
 `Diff` beyond the pending one (F4); printing values with `·` (§4.1).
 
+**Part F, as built.** As decided, with these details the decision left
+open, and four places where the library or an example could not be written
+as decided, marked *deviation*.
+
+- **Frames and spaces as types.** A frame in a type is its identity, a
+  minted frame's hash or a frame variable (kind `Frame`), beside two
+  companions, its axes (`Axes c`) and its space; a space is its identity, a
+  declared space's hash or a space variable (kind `Space`), beside its
+  shape (lengths only), its dimension and its base axes. A named frame or
+  space carries its companions as its declaration fixed them, and a
+  variable's companions are variables, so every relation F4 and F5 state
+  is unification and none needs a lookup: `Point c` and `Point c1` meet by
+  their identities, then their spaces and axes. This is the slot the brief
+  asked for, as the axis slot is, not general kind polymorphism. `:type`
+  prints a frame by its name and absorbs its companions: a frame's axes
+  print as the frame (`Vec c m`), a space's base axes as the space (`Mat s
+  c`), and a space variable is a binder only when two frames share it or
+  its base axes are written, `forall s (c : s) (c1 : s)`; otherwise `forall
+  c`. A binder names a frame's space, `(c : Temperature)` or `(c : s)`.
+- **`Diff` and `Coords`.** One residual form, `Diff c` and the dimensionless
+  `Coords c` (what `pointOn` takes, F5), reduced in substitution as soon as
+  the space's shape is known, to the shape along `Axes c` in the space's
+  dimension (or none). Residual `Diff` against a tensor of known shape fixes
+  the space's shape; against one of unknown shape it is the pending
+  constraint F4 names, solved when either is known, and one still pending
+  when its definition is generalised is refused, "the amount between points
+  on a frame of a space not known here: give a signature naming the space,
+  as in forall (c : Inertial)", since a scheme cannot carry it.
+- **What a type cannot say.** A frame variable whose space's shape or
+  dimension a definition fixes, but not its identity, has no written type
+  that says so: `let shift q = q .+ [1, 0, 0] m` prints `forall c. Point c
+  -> Point c`, which reads back more general than it is. Recorded in §4.6.
+  *Deviation:* F8's own example, `pt :: forall c. Chart c -> Point c` with
+  `pt c = 3 c`, is refused as not as general as its signature: a number is
+  the coordinate of a point on a space of numbers only, and `forall c`
+  ranges over every space. Written `pt :: forall (c : Temperature). Chart c
+  -> Point c` it holds, and the tests have both.
+- **Declarations.** `space Name = type` takes `Num δ` or `Vec n δ` and mints
+  a type labelled with its path (a label kind of its own, `SpaceLabel`),
+  with two constructors: the tag a chart's Core names it by, and one that
+  holds its amounts' type, so that a space's hash fixes what it is. A vector
+  space mints its base axes with it, `Axes path`, as a chart's are. A frame
+  is a type labelled `FrameLabel path moving`, minted when the clauses F3
+  lists are written, and named as the chart in the type namespace; a
+  rescaling mints none, and its name is refused where a frame goes,
+  "`degR` is a rescaling and shares the frame of its parent: write Point
+  kelvin". `space`, `on` and `from` are keywords; `step`, `by` and
+  `spinning` are clause words in a chart statement only, and a chart's
+  tokens are cut at them outside brackets, `then` separating generators as
+  before. A clause given twice is refused, and so is the old declaration
+  with `=`, "a chart is declared with no `=`: its parent after `on`, then
+  its clauses, as in chart degC on Temperature at 273.15 K"; one with no
+  `on` is "name its space: `chart … on Temperature`, or the chart it is on".
+- **Core.** Two primitives, no new Core constructor: `mkRoot frame {axes}
+  space {step} {origin} {generators…} {spin}` on a space and `mkChart
+  {frame} {axes} parent {step} {origin} {generators…} {spin}` on a chart,
+  each clause a list of none or one (the generators any number), so that
+  which clauses are written is in the term and an omitted one is
+  inherited. Their schemes are computed from those lists and the tags, as
+  `contract`'s are from its positions, `mkRoot`'s from the space's
+  declaration. `:view` prints the clauses in the order `at`, `step`, `by`,
+  `spinning`, and every chart reads back to its hash. The run time looks a
+  space's declaration up by hash for the shape and dimension of an
+  omitted origin and step.
+- **Storage (F6).** A point holds its coordinates on its frame times the
+  step, and the chart value holds its frame's hash and whether that frame
+  takes parameters. `to` between charts of one frame relabels; between
+  frames it goes through the space's base, `R_T⁻¹ (o_F + R_F x − o_T)`.
+  `p.k` is an amount in the chart's step unit, on a space of one axis set.
+- **Conversions.** `to`'s third reading, an amount along a chart's axes
+  (`toAxes`), takes an amount along the space's base axes, on its leading
+  position; `v from c0 to c1` (`axesFromTo`) takes one along `c0`'s axes,
+  and `p from c0 to c1` (`fromTo`) a point. An amount carries no chart, so
+  one along a turned frame's axes is converted with `from` even when that
+  frame takes no parameters. The reading is chosen by the value's type
+  once the target is a chart; a value still unknown is ambiguous at
+  generalisation, and an amount before a target still unknown takes the
+  unit reading, as before. A `to` from a frame whose chart takes
+  parameters is refused when its frame is known, "lvlh takes arguments:
+  write p from (lvlh …) to eci" (the operands as written), and at run time
+  when only a frame variable is (`toE :: forall (c : Inertial). Point c ->
+  Point eci`), never read off the chart a point was written on.
+- **`on`.** `b .- a on c` desugars to `let x = c in (b to x) .- (a to x)`,
+  one chart value for both, and prints so; it reads back to its hash.
+- **`astro`.** `data State t r = State {epoch :: Point t, pos :: Vec r m,
+  vel :: Vec r (m/s)}`: the epoch a point on a time frame, the position an
+  amount from the space's base origin and both along its base axes, as
+  F5's "rows along the space's base axes". *Deviation:* `velocityIn` and
+  `stateFrom` need the chart's origin from the base, so `originOf : Chart c
+  -> Vec s δ` is a new primitive beside `originVelocityOf`, and they are
+  not signed, since a position in metres ties the chart's space to metres
+  and no written type says that of a space variable. F10's `chart lvlh s on
+  (ecef s.epoch) at s.pos by lvlhTurn s` works for a state whose position is
+  along `ecef`'s axes (the tests use one); with `astro.State` the origin is
+  `(s.pos - originOf (ecef s.epoch)) to (ecef s.epoch)`. Whether `State`
+  should hold a point on a frame instead is the owner's to decide.
+- **Library.** *Deviation:* `space Pressure = Num (kg/(m*s^2))`, since a
+  group's spaces are entered before its definitions and `Pa` is one, and
+  `chart gauge on Pressure at 101325 Pa step Pa`, since a root's inherited
+  step is the space's base unit with no display unit of its own and a
+  difference of gauge pressures would print in `kg m^-1 s^-2`.
+- **Declared types.** A `data` parameter used where a frame goes is a frame
+  parameter, with its companions as parameters after the written ones (the
+  axes of each length first, then each frame's axes and space's slot,
+  shape, dimension and base); its axes cannot be written in a declaration,
+  "no type says how many it has".
+- **Listing.** `:ls --types` lists a frame as `frame degC` and a space as its
+  declaration, `space Temperature = Num K`; plain `:ls` leaves frames out,
+  as their charts list. Minted axes print as their frame's or space's name.
+- **Identity by path.** A chart redefined at its path keeps its frame, as
+  its axes did (§3.9); a chart moved by `:rename` takes its frame and axes
+  with it, re-stamped.
+- **Known gaps.** A `data` declaration that names a chart's axes, pending in
+  one group with a chart whose definition uses that declaration's fields,
+  is read before the chart (§3.9's one-pass fallback): `:add` the chart
+  first. The tests check every example of this part, the refusals, the
+  sibling frames and the three subtractions.
+- **Hashes and the store.** Every library chart re-hashed (its Core names
+  its frame and space), and so did `astro.velocityIn`, `astro.stateFrom`
+  and `astro.State`; `linalg.inChart` and `linalg.along` are gone. Every
+  other library name kept its hash. The store is format 9.
+
 ## 4. Type system
 
 Hindley-Milner with let-polymorphism, extended with dimensions after Kennedy
@@ -3176,29 +3290,34 @@ concatenation for the products and an equality instance (§4.2).
 ### 4.1 Types
 
 ```
-τ ::= Tensor σ δ | Point σ δ | Chart σ δ | T a… | τ -> τ | α
-a ::= τ | σ | δ | ν | χ                 -- an argument of a declared type T, by the kind of its parameter
+τ ::= Tensor σ δ | Unit δ | Point φ | Chart φ | Diff φ | Coords φ | T a… | τ -> τ | α
+a ::= τ | σ | δ | ν | χ | φ | ς          -- an argument of a declared type T, by the kind of its parameter
 σ ::= [] | ν·χ : σ | s                 -- a shape: a list of positions, each a length and a name slot, possibly ending in a shape variable
-χ ::= _ | A | x                         -- a name slot (§3.9): anonymous, a named axis set (a chart's minted type), or an axis variable
+χ ::= _ | A | x                         -- a name slot (§3.9): anonymous, a named axis set (a chart's or a space's minted type), or an axis variable
+φ ::= F | c                             -- a frame (§3.10, F1): a chart's minted frame, or a frame variable, of kind Frame ς
+ς ::= S | s                             -- a space: a declared space, or a space variable, of kind Space
 δ ::= 1 | B | d | δ·δ | δ⁻¹          -- an abelian group, normalised
 ν ::= k | n | n + k | rank s + k       -- a literal, a length variable, a variable plus a literal offset, or the rank of a shape variable plus one
 ```
 
 `Num δ` abbreviates `Tensor [] δ`, `Vec ν δ` abbreviates `Tensor [ν] δ`, and
-`Mat μ ν δ` abbreviates `Tensor [μ, ν] δ`. `Point σ δ` is a point of the affine space
-over `Tensor σ δ` and `Chart σ δ` a chart, or frame, for writing and printing
-them (§3.6, §3.8; `Scale σ δ` is the old spelling). A chart also holds the
-name slot of its root's axes (§3.9), along which its points lie and its
-rotation's rows are, written and printed after a vector chart's type,
-`Chart (Vec lvlh m) eci`, and anonymous when not written. `Point (Num K)`
-prints for a scalar point and `Point (Vec eci m)` for a position on a
-chart whose root is `eci`.
+`Mat μ ν δ` abbreviates `Tensor [μ, ν] δ`. `Point c` is a point on the frame
+`c` and `Chart c` a chart of it, for writing and printing its points (§3.6,
+§3.8, §3.10 F4; `Scale c` is the old spelling); `Diff c` is the amount
+between two points on `c`, the space's amounts along `Axes c`, and `Coords
+c` the coordinates a point is written with, dimensionless. A frame carries
+its axes and its space, and a space its shape, dimension and base axes, as
+companions: known for a named frame, variables beside a frame variable
+(§3.10, part F, as built), so that `Diff c` reduces to a tensor once the
+space's shape is known (`Diff degC = Num K`, `Diff lvlh = Vec lvlh m`) and
+stays residual before. In a written type a frame's name where a length goes
+means its axes, `Vec lvlh m`, and a space's name its base axes, `Vec
+Inertial m`. `Point degC` prints for a point on `degC` and `forall c. Point c
+-> Point c -> Diff c` for `\p q -> p .- q`; a binder names a frame's space,
+`forall (c : Temperature)`, `forall s (c : s) (c1 : s)`.
 
-`Unit δ` is the type of units (§3.10, part U, built): `τ ::= … | Unit δ`,
-written and printed as `Num` is, `Unit m`, `Unit (m/s)`, and `Unit` alone when
-dimensionless. Stage 3's part F (§3.10) will add `Point c` and `Chart c` over
-a frame `c` in place of `Point σ δ` and `Chart σ δ`, the type functions
-`Diff c` and `Axes c`, and the kinds `Space` and `Frame s`.
+`Unit δ` is the type of units (§3.10, part U, built): written and printed as
+`Num` is, `Unit m`, `Unit (m/s)`, and `Unit` alone when dimensionless.
 
 **Dimension syntax** (decided by the owner; replaces the bracket form).
 A dimension is an ordinary type argument, not a bracketed one. Square
@@ -3214,7 +3333,7 @@ Num (kg·m²/s²)            -- unicode spelling; kg*m^2/s^2 in ASCII
 Num (m²/(s²·K))           -- a denominator of several factors is grouped
 Num (1/s)                 -- only negative powers
 forall d d1. Num d -> Num d1 -> Num (d·d1)
-Tensor [2, 3] (m/s^2), Point (Num K), Chart (Vec lvlh m) eci
+Tensor [2, 3] (m/s^2), Point degC, Chart lvlh, Vec lvlh m
 Num                       -- dimensionless, as before
 ```
 
@@ -3234,8 +3353,9 @@ Num                       -- dimensionless, as before
   last of `Num`, `Vec`, `Mat` and `Tensor`, and a declared type's
   parameters of kind dimension. Required `forall` (§3.9, decision 6) is
   what makes the bare spelling unambiguous.
-- **`Point` and `Chart` take a type**, so the scalar shorthand `Point [K]`
-  is now written and printed `Point (Num K)`, `Chart (Num K)`.
+- **`Point` and `Chart` took a type**, so the scalar shorthand `Point [K]`
+  was written and printed `Point (Num K)`, `Chart (Num K)`; since part F
+  (§3.10) they take a frame, `Point degC`, `Chart degC`.
 - **Printing** follows the same rule, so what `:type` prints reads back
   as itself: positive powers first, in the customary order (`kg m s A K
   mol cd rad`, variables last), then `/` and the negative powers, grouped
@@ -3261,7 +3381,9 @@ decision left open:
   product is written with * or ·, not by juxtaposition: write m*s"; the
   resolver says it of an application, the parser of a power followed by a
   name (`(m^2 s)`). A bracket where a dimension goes, `Num [m]`, is refused
-  as a shape; `Point K` with "write (Num K)"; a unit where a length goes,
+  as a shape; `Point K` with "write (Num K)" (since part F a point takes a frame:
+  `Point K` is "unknown frame `K`" and `Point (Num K)` "a point and a chart
+  are typed by a frame"); a unit where a length goes,
   `Vec m`, with "a vector's length comes first, Vec 3 m". A power outside
   parentheses, `Num m^2`, does not parse.
 - **Printing.** Variables come last in a product, after the base units
@@ -3269,10 +3391,13 @@ decision left open:
   go after the `/`, though `^-k` and `⁻ᵏ` read. A dimensionless point or
   chart prints `Point Num`, `Chart Num` (the old bare `Point` did not read
   back), and a point or chart as a declared type's argument is
-  parenthesised, `Q (Chart (Num K))`, which the old printer missed. Typed
+  parenthesised, `Q (Chart (Num K))`, which the old printer missed.
+  (Since part F a point or chart prints its frame, `Point degC`, `Q (Chart
+  degC)`.) Typed
   Core's type applications print the argument form, `sq @(m/s)`, `sq @1`.
 - **`Point d`**, with `d` a dimension parameter, was a scalar point; a
   point takes a type now, so it is `Point (Num d)`.
+  Since part F it takes a frame, `Point c`.
 - **The highlighter** colours a unit where a dimension goes, an argument
   (`Num m`) or a factor of a product (`(m/s^2)`), and leaves a name in a
   type's place plain (`(g → m) → {g}`); a `data` declaration's parameters
@@ -3321,8 +3446,9 @@ declared type, except that two tuples of different arities fail with "expected
 a tuple of 2 components, got one of 3".
 
 **Variables are kinded.** There is one namespace of variables, each with a kind:
-`Type`, `Len`, `Shape`, `Dim`, and `Axis`, the name slot of a shape position
-(§3.9). Each kind is an index
+`Type`, `Len`, `Shape`, `Dim`, `Axis`, the name slot of a shape position
+(§3.9), and `Frame` and `Space`, the identities of a frame and a space
+(§3.10, F1), with their companions. Each kind is an index
 domain with its own equational theory and its own unifier: syntactic for types,
 the offset rule below for lengths, element-wise for shapes, Kennedy's algorithm
 for dimensions, syntactic for name slots. A written length variable stands
@@ -3550,7 +3676,7 @@ m           : Unit m          kg : Unit kg     s : Unit s     (etc.: a base unit
 (== /=)     : Num d -> Num d -> Bool                     (and Vec, Mat)
 (< <= > >=) : Num d -> Num d -> Bool
 (&& ||)     : Bool -> Bool -> Bool          not : Bool -> Bool
-to          : Tensor s d -> Unit d -> Tensor s d         -- a display unit (3.2.12, 3.10 U6); toScale for a chart, below
+to          : Tensor s d -> Unit d -> Tensor s d         -- a display unit (3.2.12, 3.10 U6); toScale and toAxes for a chart, below
 scale       : Tensor s 1 -> Unit d -> Tensor s d         -- the quantity rule after a unit, `3 km`, `[1, 0, 0] (km/h)` (2.6, 3.10 U4)
 unit        : Num d -> Unit d  |  Unit d -> Unit d      -- a unit's declaration made a unit, by its body's type (3.10 U7)
 (±) (±σ)    : Num d -> Num d -> Num d                    (and Vec, Mat)
@@ -3564,19 +3690,21 @@ sin cos tan : Num rad -> Num 1
 asin acos atan : Num 1 -> Num rad
 sinh cosh tanh exp log : Num 1 -> Num 1
 atan2       : Num d -> Num d -> Num rad
-mkScale     : Axes A -> Unit d -> Tensor s d -> Chart s d         -- the minted axes, step, origin; s along A, root A, or anonymous if scalar (3.6, 3.9)
-mkChart3    : Unit d -> Tensor s d -> Chart s d -> Chart s d                 -- step, origin in the parent, parent; the parent's axes and root (3.8)
-mkChart4    : Axes A -> Unit d -> Vec n d -> Chart [n] d -> {Mat n n} -> Chart [n·A] d    -- and the generators, each antisymmetric, dimensionless, applied in order, over axes of their own; the parent's root (3.8, 3.9)
-mkChart5    : Axes A -> Unit d -> Vec 3 d -> Chart [3] d -> {Mat 3 3} -> Vec 3 (rad/s) -> Chart [3·A] d   -- and the spin along its own axes, the radian stripped (3.8)
-rotationOf  : Chart (Vec (n·a) d) r -> Mat (n·r) (n·a) 1   -- the absolute rotation, rows along the root; computed once per chart; exactly I when not turned (3.8, 3.9)
-spinOf      : Chart (Vec (3·a) d) r -> Vec (3·r) (1/s)    -- the absolute angular velocity, root axes; exactly 0 when nothing spins (3.8)
-originVelocityOf : Chart (Vec (3·a) d) r -> Vec (3·r) (d/s)   -- the velocity of the origin, root axes; exactly 0 when nothing above spins (3.8)
-withAxes    : Chart (Vec (n·a) d) r -> Vec (n·_) d1 -> Vec (n·a) d1   -- anonymous axes read as the chart's; no arithmetic (3.9)
-pointOn     : Chart s d -> Tensor s 1 -> Point t d      -- what the quantity rule builds for `20 degC`, `[1, 2, 3] site`; t is s along the root (3.9)
-pointAdd    : Point s d -> Tensor s d -> Point s d      -- `.+`
-pointSub    : Point s d -> Point s d -> Tensor s d      -- `.-`
-toScale     : Point t d -> Chart s d -> Point t d       -- `p to c` when c is a chart; t is s along c's root (3.9)
-p.i         : Point (n + i + 1 : s) d -> Point s d      -- a coordinate is a point
+mkRoot      : Frame F -> {Axes A} -> Space S -> {Unit d} -> {Tensor σ d} -> {Mat n n} -> {Vec 3 (rad/s)} -> Chart F   -- a chart on a space: its frame, its axes if turned, the space, then its clauses, each a list of none or one; d, σ the space's (3.10 F3, F10)
+mkChart     : {Frame F} -> {Axes A} -> Chart p -> {Unit d} -> {Diff p} -> {Mat n n} -> {Vec 3 (rad/s)} -> Chart F'   -- a chart on a chart: F' is F if minted, else p (a rescaling); its axes A if turned, else p's (3.10 F3)
+rotationOf  : Chart c -> Mat s c                        -- the absolute rotation, rows along the space's base, columns along the frame's axes; computed once per chart; exactly I when not turned (3.8, 3.10)
+spinOf      : Chart c -> Vec s (1/s)                    -- the absolute angular velocity, base axes; exactly 0 when nothing spins (3.8)
+originVelocityOf : Chart c -> Vec s (d/s)               -- the velocity of the origin, base axes; exactly 0 when nothing above spins (3.8)
+originOf    : Chart c -> Vec s d                        -- the origin from the space's base origin, base axes (3.10, part F as built)
+withAxes    : Chart c -> Vec n d1 -> Vec c d1           -- anonymous axes read as the chart's; no arithmetic (3.9)
+pointOn     : Chart c -> Coords c -> Point c            -- what the quantity rule builds for `20 degC`, `[1, 2, 3] site` (3.10 F5)
+pointAdd    : Point c -> Diff c -> Point c              -- `.+`
+pointSub    : Point c -> Point c -> Diff c              -- `.-`
+toScale     : Point c -> Chart c1 -> Point c1           -- `p to c1`, c and c1 frames of one space (3.10 F5)
+fromTo      : Point c -> Chart c -> Chart c1 -> Point c1   -- `p from c to c1` (3.10 F7)
+toAxes      : Tensor (n·s : t) d -> Chart c -> Tensor (n·c : t) d     -- `v to c`, v along the space's base axes (3.10 F10)
+axesFromTo  : Tensor (n·c : t) d -> Chart c -> Chart c1 -> Tensor (n·c1 : t) d   -- `v from c to c1` (3.10 F10)
+p.i         : Point c -> Num δ                          -- a coordinate, the step applied; δ the space's dimension (3.10 F5)
 covariance  : Vec n d -> Mat n n (d^2)                  -- Σ cᵢcᵢᵀ over the statistical nudges (3.5)
 crossCovariance : Vec n d1 -> Vec m d2 -> Mat n m (d1*d2)   -- Σ cᵢc'ⱼᵀ over the statistical nudges both share; exact; display unit as for * (3.5, 3.7)
 cholesky    : Mat n n (d^2) -> Mat n n d
@@ -3603,13 +3731,15 @@ Each length in these types is a position with a name slot (§3.9), written
 `n·a` where it matters (not syntax) and otherwise as the length alone: a
 length variable has an axis variable beside it and a literal `3` of the
 three-dimensional primitives one too, shared where the axes are one set, and
-`_` is anonymous. `Axes A` is the type of the constructor a chart
-declaration mints, `A` its hash; `mkScale`, `mkChart4` and `mkChart5` read
-`A` off that argument as `contract` reads its positions, and a root chart's
-"`s` along `A`" and a point's "`t` is `s` along the root" are relations
-inference solves once the shape is known (a shape nothing fixes is scalar).
-Which slots are shared is listed in §3.9 under "Stage 1, as built" and
-"Stage 2b, as built".
+`_` is anonymous. `Frame F`, `Axes A` and `Space S` are the types of the
+constructors a chart or space declaration mints (§3.10, F3), and the
+primitives read `F`, `A` and `S` off those arguments as `contract` reads
+its positions; a frame's space, shape and dimension are its companions
+(§4.1), so `s` and `d` in the rows above are the space's base axes and
+dimension, solved once the frame is known. `Diff c` reduces to a tensor once
+the space's shape is known. Which slots are shared is listed in §3.9 under
+"Stage 1, as built" and "Stage 2b, as built", and the frame companions in
+§3.10 under "Part F, as built".
 
 The circular functions take an angle and their inverses return one (§3.2.11):
 `rad` is a base unit and `deg = pi / 180 * 1 rad`, so `sin (90 deg)` type-checks,
@@ -3717,6 +3847,15 @@ Num (m/s^2)
   The same holds for the positions of `contract` and `permute` (§4.2): a
   function cannot take them as parameters, so `\i -> contract i 0 t` is an
   error.
+- A type cannot tie a frame variable's space's shape or dimension without
+  naming the space (§3.10, part F, as built). A definition that fixes them,
+  `let shift q = q .+ [1, 0, 0] m`, still checks and runs, but `:type`
+  prints `forall c. Point c -> Point c`, which reads back more general than
+  it is, and a signature that would say it, `pt :: forall c. Chart c ->
+  Point c` for `pt c = 3 c`, is refused: the definition is not as general
+  as its signature. Naming the space, `forall (c : Temperature)`, says it. The amount
+  between points on a frame whose space nothing fixes is refused at
+  generalisation for the same reason.
 
 ### 4.7 Error reporting
 
@@ -4205,25 +4344,33 @@ bytes never changed.
 
 A declared type (§2.3) is hashed separately, from its own canonical encoding:
 varint parameter count and one kind byte per parameter (0 type, 1 length, 2
-shape, 3 dimension, 4 axis); varint constructor count, and per constructor a varint
+shape, 3 dimension, 4 axis, and, appended by §3.10's part F, 5 frame, 6
+space); varint constructor count, and per constructor a varint
 field count and each field type; then the label (0 owner and the type name,
 or 1 and an empty text for `structural`, or, appended, 2 and a chart's full
 path for the axis type its declaration mints, §3.9: no parameters, one
-constructor with no fields, a label kind no source declaration produces).
+constructor with no fields, a label kind no source declaration produces;
+appended by §3.10's part F, 3 and a space's full path for the type a `space`
+declaration mints, and 4, a chart's full path and a byte, 1 for a moving
+chart, for its frame type).
 Types use tags of their own:
 
 | Tag | Type | Payload |
 |---|---|---|
 | 0x20 | retired | was `Bool`, now `0x28` on the hash of `Bool`; never written, and not read |
 | 0x21 | `Tensor σ δ` | shape, dimension |
-| 0x22 | `Point σ δ` | shape, dimension |
-| 0x23 | `Chart σ δ` | shape, dimension (the tag of the type once spelled `Scale`); a chart with an anonymous root |
+| 0x22 | retired | was `Point σ δ`: shape, dimension; points take a frame since §3.10's part F (`0x2B`) |
+| 0x23 | retired | was `Chart σ δ` (once spelled `Scale`): shape, dimension; now `0x2C` |
 | 0x24 | retired | was a tuple: varint count, each type; now `0x28` on the tuple type of that arity |
 | 0x25 | retired | was a list: the element type; now `0x28` on the hash of `List` |
 | 0x26 | `a -> b` | `a`, `b` |
 | 0x27 | variable | varint id (a parameter: 0 .. k-1) |
 | 0x28 | `T a…` | 32-byte hash, varint count, each argument as a kind byte and a type, length, shape, dimension or axis |
-| 0x29 | `Chart σ δ` | shape, axis, dimension: a chart whose root slot is not anonymous (§3.9; appended) |
+| 0x29 | retired | was `Chart σ δ` with a root slot (§3.9): shape, axis, dimension; now `0x2C` |
+| 0x2A | `Unit δ` | dimension (§3.10, U1; appended) |
+| 0x2B | `Point φ` | frame (§3.10, F4; appended) |
+| 0x2C | `Chart φ` | frame (§3.10, F4; appended) |
+| 0x2D | `Diff φ`, `Coords φ` | frame, then 0 for `Diff` or 1 and a dimension (`Coords`, dimension 1), the residual amount type until the space's shape is known (§3.10, F4; appended) |
 
 A shape is 0 for `[]`, 1 then a length and a shape (a position with anonymous
 axes), 2 and a variable id, or 3 then a length, an axis and a shape (a position
@@ -4245,6 +4392,13 @@ hashes of
 their declarations (§2.3), which are therefore fixed by this encoding:
 `structural data Bool = False | True` is no parameters, two constructors of
 no fields and the structural label, and so on.
+
+A frame (§3.10, F9) is its slot, 0 and the 32-byte hash of its minted frame
+type or 1 and a variable id, then its axis and its space; a space is its
+slot, 0 and the hash of its minted space type or 1 and a variable id, then
+its shape, dimension and base axis. A declared type's argument of kind
+frame is 5 and a frame slot, of kind space 6 and a space slot. All of it is
+appended: a type that names no point, chart or frame keeps its bytes.
 
 `varint` is unsigned LEB128. `sint` is one sign byte followed by a varint byte
 length and big-endian magnitude bytes, so arbitrarily large integers encode
@@ -4416,7 +4570,7 @@ Scratch and codebase (7.5)
 Inspection
 :ls [glob|namespace] [--all|--units|--charts|--types] [: type]
                    names with their types, sorted; alone, the current namespace's own labels,
-                   then one line per namespace directly under it, `namespace si (800 names)`;
+                   then one line per namespace directly under it, `namespace si (801 names)`;
                    a word that names a namespace lists everything under it, relative to it, data
                    lines included; --all lists everything by full path; a glob (* anywhere, else
                    a substring; on the full path or its last segment), a kind (--scales is the
@@ -4424,7 +4578,8 @@ Inspection
                    whose lowercase unknown names are variables (no forall needed: a query is a
                    pattern), matched by unification both ways, searches everything; a signed
                    name shows, and matches, its signature (4.8); types print headed by forall;
-                   --types lists a chart's minted axes as `axes lvlh` (3.9)
+                   --types lists a chart's minted frame as `frame lvlh` and a space as
+                   `space Inertial = Vec 3 m`; minted axes go by their chart's name (3.9, 3.10)
 :type e            inferred type scheme of e, headed by forall when it has variables
                    (forall a. a -> a); a signed name's signature, as its uses see it (4.8);
                    the type of `it`, so a value that is not a function has anonymous axes
@@ -4433,7 +4588,8 @@ Inspection
 :names #hash       every name that points at the hash (current or historical)
 :history name      refs the name has pointed at, newest first
 :view name         pretty-print the term with refs rendered as in 7.2; for a type, its declaration;
-                   a chart with its keyword, `chart degC = K at 273.15 K` (3.6)
+                   a chart with its keyword, `chart degC on Temperature at 273.15 K`, a space as
+                   `space Temperature = Num K` (3.6, 3.10)
 :core name         print the Typed Core (5.3) with every annotation
 :lint name         re-run lint on a stored definition and print its type(s)
 :dependents name   definitions whose terms reference the current ref of name
@@ -4848,7 +5004,8 @@ same hashes (`names`, `typeNames`, `conNames`, `fieldNames`, `units`,
 Each namespace is a `namespace` block, nested as
 the paths nest, with root definitions outside any block. Each definition
 is rendered as `:edit` renders it (`let name = body`, `unit name = …`,
-`chart name = … at …` with its parent and `by` when set (3.8), `data` declarations with their field names, and a
+`space Name = type`, `chart name params on parent` with its clauses when set
+(3.8, 3.10), `data` declarations with their field names, and a
 signed definition's `name :: type` line just before it, spelled for its
 block, with its `forall`, §4.8). The standard library's
 namespaces are not exported unless one is asked for (`:export si`): a codebase that
@@ -4905,14 +5062,15 @@ never leaves a name pointing at a missing term. A term that fails to decode,
 fails to typecheck, or is named but missing is reported as a note at start and
 skipped; the rest loads.
 
-**Formats.** A store opens only at the format this build writes, 8. A
+**Formats.** A store opens only at the format this build writes, 9. A
 store of an older format is refused, and nothing in it is touched: "this
-codebase is format N; it predates format 8 and cannot be opened: recreate
+codebase is format N; it predates format 9 and cannot be opened: recreate
 it (with the previous eval, `:export` it, respell its quantities for units
-as a type, 60 * s as 60 s and x / s as x / 1 s, and the dimensions in its
-types, Num [m s^-1] as Num (m/s), and `:load` the file into a new
-codebase)". A newer format, or a format file that
-says anything else, is refused as not a store of format 8. Earlier builds
+as a type, 60 * s as 60 s and x / s as x / 1 s, the dimensions in its
+types, Num [m s^-1] as Num (m/s), and its charts on spaces, chart degC on
+Temperature at 273.15 K, and `:load` the file into a new codebase)". A
+newer format, or a format file that says anything else, is refused as not
+a store of format 9. Earlier builds
 migrated each older format in place on open, a chain of steps: written
 names after references (format 2), `Case` and `Con` for `If` and the
 boolean literal (3), the library seeded into the store under `std` (4), the
@@ -4922,7 +5080,10 @@ which are text, write dimensions as type arguments (§4.1), so an older
 log's bracketed signatures would not read back. Format 8 holds units as a
 type (§3.10, part U): a quantity is `scale` where it was `*`, a unit's
 declaration wraps its body, and the library is respelled, so every term
-that names a unit has another hash. While the language is still in design, a
+that names a unit has another hash. Format 9 holds
+points by frame (§3.10, part F): a chart's Core names its frame and space,
+the type encoding has new tags for points, charts and amounts on frames,
+and every chart re-hashes. While the language is still in design, a
 migration claimed more than it did: the 4 to 5 step recognised the old
 library's labels by the hashes of a "frozen" copy of the format-4 library,
 but that copy was entered by the current elaborator, so when the
@@ -5255,11 +5416,11 @@ included), 904 in all:
 | namespace | contents | labels | stored `use` by default |
 |---|---|---|---|
 | `std` | the types `Bool` (`False True`), `Pair` and `List` (`Nil Cons`), the compiler's own declarations; the structural functions `fst snd map filter foldr foldl length reverse zip range` | 17 | yes |
-| `linalg` | `ε levi cross trace vimap`; the rotations `e1 e2 e3 rotx roty rotz dual axisAngle rotation euler313` (§3.3), `inChart` (§3.8) and `along rotateVec rotateCov` (§3.9); the record `Cov2` with its fields `rr rv vv`, and `jointCovariance propagateCov2 innovationCov2 gain2 updateCov2 inChartCov2` (§3.7, §3.8) | 29 | yes |
-| `si` | the spelled-out base units `metre second kilogram ampere mole candela radian`; the 24 prefixes as plain numbers, `quetta` to `quecto` (`let kilo = 10^3`); the 22 coherent derived and accepted units by symbol (`N J W Pa Hz C V Ω F S T H Wb lm lx Bq Gy Sv kat g L t`), each with its name as an alias on the same term (`newton`, …, `ohm`, …, `gram`, `litre`, `tonne`); the chart `gauge`; the 699 prefixed units, each written from the prefix's name (`unit km = kilo * 1 metre`, `unit kPa = kilo * 1 Pa`), with `kohm` and the other prefixed ohms aliases of `kΩ` | 800 | yes |
-| `time` | `min hr day week year`, with `h` an alias of `hr` (`unit hr = 60 * min`); the charts (time scales) `JD MJD J2000 unix`, written with `chart` | 10 | yes |
+| `linalg` | `ε levi cross trace vimap`; the rotations `e1 e2 e3 rotx roty rotz dual axisAngle rotation euler313` (§3.3), `rotateVec rotateCov` (§3.9); the record `Cov2` with its fields `rr rv vv`, and `jointCovariance propagateCov2 innovationCov2 gain2 updateCov2 inChartCov2` (§3.7, §3.8) | 27 | yes |
+| `si` | the spelled-out base units `metre second kilogram ampere mole candela radian`; the 24 prefixes as plain numbers, `quetta` to `quecto` (`let kilo = 10^3`); the 22 coherent derived and accepted units by symbol (`N J W Pa Hz C V Ω F S T H Wb lm lx Bq Gy Sv kat g L t`), each with its name as an alias on the same term (`newton`, …, `ohm`, …, `gram`, `litre`, `tonne`); the space `Pressure` and the chart `gauge`; the 699 prefixed units, each written from the prefix's name (`unit km = kilo * 1 metre`, `unit kPa = kilo * 1 Pa`), with `kohm` and the other prefixed ohms aliases of `kΩ` | 801 | yes |
+| `time` | `min hr day week year`, with `h` an alias of `hr` (`unit hr = 60 * min`); the space `Time` and the charts (time scales) `JD MJD J2000 unix`, written with `chart` | 11 | yes |
 | `angle` | `deg arcmin arcsec turn sr`, with `steradian` an alias of `sr` | 6 | yes |
-| `temperature` | the charts (temperature scales) `degC degF degR kelvin`, written with `chart`, the steps `deltaC deltaF` | 6 | yes |
+| `temperature` | the space `Temperature`; the charts (temperature scales) `degC degF degR kelvin`, written with `chart`, `degR` a rescaling of `kelvin`; the steps `deltaC deltaF` | 7 | yes |
 | `astro` | the units `AU pc ly` (`pc = 648000 / pi * AU`, `ly = physics.c * time.year`); `G M_earth M_sun GM_earth GM_sun R_earth`; the record `State` with its fields `epoch pos vel`, and `velocityIn stateFrom` (§3.8) | 15 | no: `:use astro` |
 | `physics` | `c planck hbar k_B N_A e_charge g0` and the unit `eV`, with `h kB NA e` aliases of `planck k_B N_A e_charge`: `physics.h` is Planck's constant, the hour is `time.h` | 12 | no |
 | `imperial` | `inch ft yd mile lb oz lbf psi mph`, exact by the 1959 yard and pound (`lbf = lb * physics.g0`, `psi = lbf / inch^2`) | 9 | no |
@@ -5448,6 +5609,8 @@ tuned, and compilation is a later milestone.
    Points and charts (§3.6): done, over any shape; charts with a parent: done,
    translated and turned by constant generators, and moving charts with a
    declared spin, composed through the tree, with states in `astro` (§3.8).
+   Since §3.10's part F a point is typed and stored by its frame, and a chart
+   sits on a declared space.
 5. **Mutual recursion.** SCC analysis, cycle hashing, group inference.
 6. **Persistence and REPL polish.** User and project-local stores, haskeline, all
    `:` commands, error messages with source spans. Status: stores done (§7.4),
@@ -5487,7 +5650,7 @@ tuned, and compilation is a later milestone.
      generator with an exact inverse, every other description sugar to a
      bivector, moving charts as functions of an epoch, the transport terms
      from a declared angular velocity. Built: constant orientations (`by B
-     then B …`), moving charts (`chart ecef t = … spinning ω`) and states
+     then B …`), moving charts (`chart ecef t on eci by … spinning ω`) and states
      (`astro.velocityIn`, `astro.stateFrom`); an Earth chart is the owner's
      decision (§3.8, open).
    - *Axis sets as index types.* Designed in §3.9, layer 2: a kind `Axes`,
@@ -5500,7 +5663,9 @@ tuned, and compilation is a later milestone.
      and printed by `:type`, `:ls` and written-back signatures (sized
      printing waits for 2b). Layer 1, the `axes x y z` sugar, can be
      built any time. Stage 3 (§3.10): part U, units as a type, built
-     (format 8); part F, spaces and frames, designed.
+     (format 8); part F, spaces and frames, built (format 9): points
+     typed and stored by frame, `space`, `chart … on …` with clauses, `from …
+     to`, `on`.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's
      architecture (§3.2.9).
@@ -5835,10 +6000,11 @@ copied from what that test checks; the precision is the default. Ω = 30°,
 i = 45°, ω = 60°, and the chart's step is the kilometre:
 
 ```
-> chart eci = m at [0, 0, 0] m
-> chart pf = km at [0, 0, 0] km eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
+> space Inertial = Vec 3 m
+> chart eci on Inertial
+> chart pf on eci step km by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
 > :view pf
-chart pf = km at [0, 0, 0] km eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
+chart pf on eci step km by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
 > let rp = [7000, 0, 0] pf
 > rp to eci
 [887785.38831025442775…, 5462310.6012293745031…, 4286607.0498705616718…] eci
@@ -5854,26 +6020,29 @@ is why a round trip is tested with `bound`, not `==`.
 
 The velocity at periapsis is along the perifocal y axis. An amount's type
 carries its axes (§3.9): the literal is taken along `pf`'s, `Vec pf
-(km/s)`, and `inChart` brings it to eci's, a `Vec eci (km/s)`. A
-covariance known along the perifocal axes (radial 1 km, along-track 2 km,
-normal 3 km) goes the same way, as `R P Rᵀ`, by `rotateCov` with `pf`'s
-rotation, a `Mat eci pf`. It is written in place: a value named by `let`
-is anonymous until given a frame (§3.9, decision 5), and `rotateCov` would
-refuse it, with a hint, as a frame mix-up.
+(km/s)`, and `from pf to eci` turns it to eci's, which are the space's base
+axes, a `Vec Inertial (m/s)`, by the rotation alone (§3.10, F10). A
+covariance known along the perifocal axes (radial 1 km, along-track 2
+km, normal 3 km) goes the same way, as `R P Rᵀ`, by `rotateCov` with `pf`'s rotation, a `Mat Inertial pf`. It is
+written in place: a value named by `let` is anonymous until given a frame
+(§3.9, decision 5), and `rotateCov` would refuse it, with a hint, as a
+frame mix-up.
 
 ```
-> let vp = inChart pf ([0, 7.5, 0] km/s)
+> let vp = [0, 7.5, 0] km/s from pf to eci
 > vp to km/s
 [-6.9508252147247766082…, -0.95119863033241545830…, 2.6516504294495532165…] km s^-1
 > rotateCov (rotationOf pf) ([[1, 0, 0], [0, 4, 0], [0, 0, 9]] km^2) to km^2
 [4.5767451288348659649…, -1.3794313182928119555…, 1.0170048711651340350…; -1.3794313182928119555…, 4.0482548711651340350…, -3.5986214154904359879…; 1.0170048711651340350…, -3.5986214154904359879…, 5.3749999999999999999…] km^2
 > rp.0
-error: a component of a point on a turned chart: take it on an axis-aligned chart, (p to eci).0
+7000 km
 ```
 
-The trace is still 14 km², as a rotation keeps it. A coordinate of a point
-on a turned chart is refused rather than read off the base axes under the
-chart's name.
+The trace is still 14 km², as a rotation keeps it. A point is held in its
+frame's coordinates (§3.10, F6), so a coordinate of a point on a turned
+chart is an amount along that chart's own axis, the step applied: `rp.0`
+is `7000 km`, exactly. (Before part F points were held along the base
+axes, and `rp.0` was refused.)
 
 ### A spinning Earth
 
@@ -5894,14 +6063,15 @@ two agree by construction. At 2026 Jan 1 0h UT1 it is 100.6608323° modulo
 illustration") at the default precision:
 
 ```
-> chart eci = m at [0, 0, 0] m
+> space Inertial = Vec 3 m
+> chart eci on Inertial
 > let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)
-> chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg/day
+> chart earth t on eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg/day
 > :view earth
-chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg / day
-> chart greenwich t = m at [3972.5, 0, 4990] km (earth t)
+chart earth t on eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg / day
+> chart greenwich t on (earth t) at [3972.5, 0, 4990] km
 > let t26 = 9496.5 J2000
-> [0, 0, 0] (greenwich t26) to eci
+> [0, 0, 0] (greenwich t26) from (greenwich t26) to eci
 [-734892.0553385001942 ± 3e-13, 3903932.6219852148939…, 4990000] eci
 > :use astro
 stored use astro
@@ -5911,16 +6081,23 @@ stored use astro
 > velocityIn (greenwich st.epoch) st
 [0, 0, 0] m s^-1
 > velocityIn (greenwich t26) (State {epoch = t26, pos = st.pos, vel = [0, 0, 0] m/s})
-[0.0000000000000000000…, -289.67930235205722039…, 0] m s^-1
+[0.00000000000000000 ± 4e-17, -289.67930235205722039…, 0] m s^-1
 ```
 
 `greenwich` is a moving chart under a moving chart: its time is passed to
-`earth`, its parent. `st` is a `State eci`, its position a `Point (Vec eci
-m)`: a state is typed by its root's axes (§3.9), whatever chart it was
-made from, and `earth t` has one axis set, `earth`'s, for every `t`. At that epoch the station is at right ascension
-100.66° in eci, 3972.5 km from the axis, and `stateFrom` gives it `ω × r`, 289.68 m/s
-(`7.2921158553e-5 s⁻¹ × 3972.5 km`) eastward, with no velocity of its own.
-Read back on its own chart it is at rest. A body at rest in eci passing the
-station moves west on the station's chart at the same speed: the
-transport terms, `−v_o − ω × (p − o)` turned onto the chart's axes, are
-all of its velocity there.
+`earth`, its parent. A point on it converts from the configuration named
+with `from`, never the one it was written with (§3.10, F7): `[0, 0, 0]
+(greenwich t26) to eci` is refused, "greenwich takes arguments: write [0,
+0, 0] (greenwich t26) from (greenwich …) to eci". `st` is a `State J2000
+Inertial`, its epoch a `Point J2000` and its position a `Vec Inertial m`,
+an amount from the space's base origin along its base axes: a state is
+typed by its epoch's frame and its space's base axes (§3.10, part F, as
+built), whatever chart it was made from. `velocityIn (greenwich t26) st` is
+a `Vec earth (m/s)`, since a translated chart shares its parent's axes and
+`earth t` has one frame and one axis set, `earth`'s, for every `t`. At that
+epoch the station is at right ascension 100.66° in eci, 3972.5 km from the
+axis, and `stateFrom` gives it `ω × r`, 289.68 m/s (`7.2921158553e-5 s⁻¹ ×
+3972.5 km`) eastward, with no velocity of its own. Read back on its own
+chart it is at rest. A body at rest in eci passing the station moves west
+on the station's chart at the same speed: the transport terms, `−v_o − ω ×
+(p − o)` turned onto the chart's axes, are all of its velocity there.

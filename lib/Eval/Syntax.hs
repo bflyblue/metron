@@ -10,6 +10,7 @@ module Eval.Syntax (
   Op (..),
   Expr (..),
   Node (..),
+  ChartClauses (..),
   Binding (..),
   Pattern (..),
   PatNode (..),
@@ -99,6 +100,8 @@ data Op
   | -- | @±@ (bound) or @±σ@ (statistical)
     PlusMinus NudgeKind
   | To
+  | -- | @b .- a on c@: subtract in a frame (design §3.10, F10)
+    On
   | Compose
   | -- | a backticked name used infix
     Infix Text
@@ -146,19 +149,31 @@ data Node
     CaseOf Expr [(Pattern, Expr)]
   | -- | @(e :: type)@: an ascription (design §4.8); it narrows and does not reach Core
     Ascribe Expr TyExpr
-  | {- | The body of @chart name params = step at origin [parent] [by g₁
-    then g₂ …] [spinning ω]@ (design §3.8): the step, the origin as written
-    with the parent still juxtaposed after it (only the desugarer knows
-    which names are charts), the generators, as the list literal the parser
-    made of them, and the angular velocity of a moving chart, along its own
-    axes.
+  | {- | The body of @chart name params… on parent [at origin] [step unit]
+    [by g₁ then g₂ …] [spinning ω]@ (design §3.10, F10): the parent, a
+    space or a chart, and the clauses written, the generators as the list
+    literal the parser made of them.
     -}
-    ChartForm Expr Expr (Maybe Expr) (Maybe Expr)
+    ChartForm ChartClauses
+  | -- | @p from c to c1@ (design §3.10, F7): a value, its source chart, the target.
+    FromTo Expr Expr Expr
   | {- | The body of a @unit@ declaration (§3.10, U7): an amount, the
     unit's size, or a unit, made a unit. The resolver wraps a unit's body
     in it to desugar it; no source writes it.
     -}
     UnitBody Expr
+  deriving stock (Eq, Show)
+
+-- | A chart's parent and clauses (design §3.10, F10); an omitted one is inherited.
+data ChartClauses = ChartClauses
+  { parent :: Expr
+  , origin :: Maybe Expr
+  , step :: Maybe Expr
+  , generators :: Maybe Expr
+  , spin :: Maybe Expr
+  , parameterised :: Bool
+  -- ^ whether the chart takes parameters, so that its frame says so (design §3.10, F7)
+  }
   deriving stock (Eq, Show)
 
 -- | A pattern of a case alternative: one constructor deep (§2.3).
@@ -224,9 +239,10 @@ data TyNode
   deriving stock (Eq, Show)
 
 {- | A variable bound by @forall@, with the length it stands for when it is
-sized, @(a : 3)@ (design §3.9, decision 6).
+sized, @(a : 3)@ (design §3.9, decision 6), or the space it is a frame
+of, @(c : Temperature)@ or @(c : s)@ (design §3.10, F1).
 -}
-data TyBinder = TyBinder {name :: Name, size :: Maybe Integer}
+data TyBinder = TyBinder {name :: Name, size :: Maybe Integer, space :: Maybe Name}
   deriving stock (Eq, Show)
 
 {- | Juxtaposed names in a dimension, @Num (m s)@, read as an application
@@ -264,6 +280,8 @@ data Decl
   | DData Scope DataDecl
   | -- | @name :: type@: a signature for the definition of that name (design §4.8)
     DSig Scope Name TyExpr
+  | -- | @space Name = type@: a space (design §3.10, F2)
+    DSpace Scope Name TyExpr
   deriving stock (Eq, Show)
 
 instance HasField "name" Decl Name where
@@ -271,18 +289,21 @@ instance HasField "name" Decl Name where
     DBind _ b -> b.name
     DData _ d -> d.name
     DSig _ n _ -> n
+    DSpace _ n _ -> n
 
 instance HasField "span" Decl Span where
   getField = \case
     DBind _ b -> b.span
     DData _ d -> d.span
     DSig _ n t -> spanUnion n.span t.span
+    DSpace _ n t -> spanUnion n.span t.span
 
 instance HasField "scope" Decl Scope where
   getField = \case
     DBind s _ -> s
     DData s _ -> s
     DSig s _ _ -> s
+    DSpace s _ _ -> s
 
 -- | Whether a declaration is a signature rather than a definition or a type.
 isSignature :: Decl -> Bool
@@ -304,6 +325,8 @@ data Statement
   | SData DataDecl
   | -- | @name :: type@, a signature (design §4.8)
     SSig Name TyExpr
+  | -- | @space Name = type@ (design §3.10, F2)
+    SSpace Name TyExpr
   | SExpr Expr
   | -- | @namespace a.b@ and an indented block of statements (design §7.6)
     SNamespace Path [Statement]
@@ -367,6 +390,9 @@ flatten = go
       SSig n t ->
         let (ds, es, s) = go scope rest
          in (DSig scope (full n) t : ds, es, s)
+      SSpace n t ->
+        let (ds, es, s) = go scope rest
+         in (DSpace scope (full n) t : ds, es, s)
       SExpr e ->
         let (ds, es, s) = go scope rest in (ds, (scope, e) : es, s)
       SUse p alias ->

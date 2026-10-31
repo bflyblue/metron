@@ -253,16 +253,14 @@ renderValueWith printer scale prefs showMagnitude = \case
   VData c fields -> do
     parts <- mapM (>>= \v -> fieldText v <$> recur v) fields
     pure (T.unwords (conText c : parts))
-  -- A point prints on the scale it was written on (design §3.6): steps from
-  -- the origin along the chart's axes (§3.8), then the scale's name;
-  -- without a scale, as an amount from the base origin in base units.
-  VPoint dims d sc buf -> do
+  -- A point prints on the chart it was written on (design §3.10, F6):
+  -- its coordinates, the step divided out, then the chart's name; on a
+  -- chart with no name, as coordinates in base units from its origin.
+  VPoint dims d s buf -> do
     xs <- sequence (V.toList buf)
-    pure $ case sc of
-      Just s
-        | Just named <- chartName s
-        , Right steps <- coordinatesOn (scale + 4) s xs ->
-            renderNested showMagnitude dims steps <> " " <> named
+    pure $ case (chartName s, coordinatesOn (scale + 4) s xs) of
+      (Just named, Right steps) ->
+        renderNested showMagnitude dims steps <> " " <> named
       _ ->
         renderNested showMagnitude dims xs
           <> unitSuffix d
@@ -641,44 +639,24 @@ renderTermUnits spelling namer isUnitRef = go 0
     (_, [s, Lit (LTensor ([], [r]))])
       | p == "pointOn" ->
           paren (prec > 10) (renderRational 20 r <> " " <> go 11 ctx s)
-    -- A chart's axes are its declaration's (design §3.9): the tag is not
-    -- written.
-    (_, [Con _ [], a, b]) | p == "mkScale" -> paren (prec > 0) (go 1 ctx a <> " at " <> go 1 ctx b)
+    -- A chart reads back as its clauses (design §3.10, F10): its parent
+    -- after `on`, a space by its type's name, then each clause written,
+    -- in the order @at@, @step@, @by@, @spinning@. The frame and axes it
+    -- mints are its declaration's, not written.
+    (_, [_, _, Con (UserCon h 0) [], st, o, g, w])
+      | p == "mkRoot"
+      , Just cl <- clauses ctx st o g w ->
+          paren (prec > 0) (T.unwords ("on" : showHash h : cl))
+    (_, [_, _, par, st, o, g, w])
+      | p == "mkChart"
+      , Just cl <- clauses ctx st o g w ->
+          paren (prec > 0) (T.unwords ("on" : go 11 ctx par : cl))
+    -- A conversion from a configuration (design §3.10, F7).
     (_, [a, b, c])
-      | p == "mkChart3" ->
-          paren (prec > 0) (go 1 ctx a <> " at " <> origin ctx b <> " " <> go 11 ctx c)
-    -- A spinning chart reads back with its spin last, and with its
-    -- generators only when it has any (design §3.8).
-    (_, [Con _ [], a, b, c, g, w])
-      | p == "mkChart5"
-      , Just gs <- listSpine g ->
+      | p `elem` ["fromTo", "axesFromTo"] ->
           paren
-            (prec > 0)
-            ( go 1 ctx a
-                <> " at "
-                <> origin ctx b
-                <> " "
-                <> go 11 ctx c
-                <> (if null gs then "" else " by " <> T.intercalate " then " (map (go 1 ctx) gs))
-                <> " spinning "
-                <> go 1 ctx w
-            )
-    -- The generators read back as the sequence they were written as, `by
-    -- rotz a then rotx b`; a list that is not a literal has no such form
-    -- and prints as the primitive applied.
-    (_, [Con _ [], a, b, c, g])
-      | p == "mkChart4"
-      , Just gs@(_ : _) <- listSpine g ->
-          paren
-            (prec > 0)
-            ( go 1 ctx a
-                <> " at "
-                <> origin ctx b
-                <> " "
-                <> go 11 ctx c
-                <> " by "
-                <> T.intercalate " then " (map (go 1 ctx) gs)
-            )
+            (prec > 1)
+            (go 2 ctx a <> " from " <> go 2 ctx b <> " to " <> go 2 ctx c)
     (Just (sym, lvl, assoc), [a, b]) ->
       let (lp, rp) = case assoc of
             L -> (lvl, lvl + 1)
@@ -710,16 +688,22 @@ renderTermUnits spelling namer isUnitRef = go 0
 
   paren b s = if b then "(" <> s <> ")" else s
 
-  -- A chart's origin before its parent (design §3.8): a literal and a unit
-  -- read back as a quantity, `[2, 0, 1] km site`; anything else is
-  -- parenthesised, so that the parent stays outside it.
-  origin :: Vec m Text -> Term m -> Text
-  origin ctx = \case
-    PrimApp "scale" [x, u]
-      | literal x
-      , unitAtom u ->
-          go 11 ctx x <> " " <> go 11 ctx u
-    o -> go 11 ctx o
+  -- A chart's clauses (design §3.10, F10), each a list of none or one
+  -- (the generators of any number), each running to the next clause word,
+  -- so none needs parentheses.
+  clauses :: Vec m Text -> Term m -> Term m -> Term m -> Term m -> Maybe [Text]
+  clauses ctx st o g w = do
+    sts <- listSpine st
+    os <- listSpine o
+    gs <- listSpine g
+    ws <- listSpine w
+    let one word = map (\x -> word <> " " <> go 1 ctx x)
+    pure
+      ( one "at" os
+          ++ one "step" sts
+          ++ ["by " <> T.intercalate " then " (map (go 1 ctx) gs) | not (null gs)]
+          ++ one "spinning" ws
+      )
   -- A declared unit, or one to a power: what a quantity takes in (U5).
   unitLeaf :: Term m -> Bool
   unitLeaf = \case
@@ -735,12 +719,6 @@ renderTermUnits spelling namer isUnitRef = go 0
   isLocal :: Term m -> Bool
   isLocal = \case
     Var _ -> True
-    _ -> False
-  literal :: Term m -> Bool
-  literal = \case
-    Lit (LTensor ([], [r])) -> r >= 0
-    Lit (LTensor _) -> True
-    Pack _ -> True
     _ -> False
   unitAtom :: Term m -> Bool
   unitAtom = \case
@@ -812,6 +790,9 @@ binary = \case
   "and" -> Just ("&&", 3, R)
   "or" -> Just ("||", 2, R)
   "to" -> Just ("to", 1, N)
+  -- A point or an amount to a chart (design §3.10, F5, F10).
+  "toScale" -> Just ("to", 1, N)
+  "toAxes" -> Just ("to", 1, N)
   _ -> Nothing
 
 -- | A magnitude to two significant digits, for radii and bias boxes.

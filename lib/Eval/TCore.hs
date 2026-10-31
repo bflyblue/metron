@@ -13,8 +13,6 @@ module Eval.TCore (
   primScheme,
   primSchemeFor,
   StaticArg (..),
-  chartRelation,
-  rootward,
   baseUnit,
   closedLens,
   appendShape,
@@ -131,38 +129,60 @@ primScheme name = case name of
   "exp" -> num1
   "log" -> num1
   "atan2" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) angleT)))
-  -- Points and charts (design §3.6, §3.8). A root chart, a turned one and
-  -- a spinning one have axes of their own, read off their first argument
-  -- ('primSchemeFor'); a translated chart, in a parent of its own shape and
-  -- dimension, shares its parent's axes and root (design §3.9). The origin
-  -- is an amount along the parent's axes, the step a unit (design §3.10,
-  -- U7).
-  "mkChart3" ->
-    Just
-      ( Forall
-          [sv, dv, rv]
-          (TFun (TUnit d) (TFun sd (TFun (chartOf s) (chartOf s))))
-      )
-  -- A point is stored from the base origin along the base axes, so its
-  -- type is along the chart's root (design §3.9, stage 2b): the
-  -- coordinates are along the chart's own axes, @s@, and the point along
-  -- @t@, @s@ with the root's axes at every position, a relation inference
-  -- defers and lint checks ('chartRelation'). A scalar point has no axes.
+  -- Points and charts over frames (design §3.10, F4, F5). A chart's own
+  -- declaration is 'primSchemeFor''s: it reads the frame, axes and space it
+  -- names. A point is written with coordinates along its frame's axes,
+  -- @Coords c@, and two points on one frame are @Diff c@ apart.
   "pointOn" ->
-    Just
-      ( Forall
-          [sv, dv, rv, tv]
-          (TFun (chartOf s) (TFun (TTensor s dimOne) (TPoint t d)))
-      )
-  "pointAdd" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun sd (TPoint s d))))
-  "pointSub" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun (TPoint s d) sd)))
-  -- To a chart of the same root: a point keeps its axes, the root's.
+    let (f, vs) = frameVar 20
+     in Just (Forall vs (TFun (TScale f) (TFun (TOver f (Just dimOne)) (TPoint f))))
+  "pointAdd" ->
+    let (f, vs) = frameVar 20
+     in Just (Forall vs (TFun (TPoint f) (TFun (TOver f Nothing) (TPoint f))))
+  "pointSub" ->
+    let (f, vs) = frameVar 20
+     in Just (Forall vs (TFun (TPoint f) (TFun (TPoint f) (TOver f Nothing))))
+  -- A point to a chart of another frame of its space (F5), and from a
+  -- configuration of its frame (F7).
   "toScale" ->
-    Just
-      ( Forall
-          [sv, dv, rv, tv]
-          (TFun (TPoint t d) (TFun (chartOf s) (TPoint t d)))
-      )
+    let (f, vs) = frameVar 20
+        (f1, vs1) = sibling f
+     in Just (Forall (vs ++ vs1) (TFun (TPoint f) (TFun (TScale f1) (TPoint f1))))
+  "fromTo" ->
+    let (f, vs) = frameVar 20
+        (f1, vs1) = sibling f
+     in Just
+          ( Forall
+              (vs ++ vs1)
+              (TFun (TPoint f) (TFun (TScale f) (TFun (TScale f1) (TPoint f1))))
+          )
+  -- An amount along a chart's axes (F10): from the space's base axes, or
+  -- from a configuration of a frame, along its leading position. Only the
+  -- rotation applies.
+  "toAxes" ->
+    let (f, vs) = vectorFrameVar 20 Nothing
+     in Just
+          ( Forall
+              (vs ++ [tailV, dTailV])
+              ( TFun
+                  (TTensor (SCons (spaceLen f) f.space.base tailS) dTail)
+                  (TFun (TScale f) (TTensor (SCons (spaceLen f) f.axes tailS) dTail))
+              )
+          )
+  "axesFromTo" ->
+    let (f, vs) = vectorFrameVar 20 Nothing
+        (f1, vs1) = sibling f
+     in Just
+          ( Forall
+              (vs ++ vs1 ++ [tailV, dTailV])
+              ( TFun
+                  (TTensor (SCons (spaceLen f) f.axes tailS) dTail)
+                  ( TFun
+                      (TScale f)
+                      (TFun (TScale f1) (TTensor (SCons (spaceLen f) f1.axes tailS) dTail))
+                  )
+              )
+          )
   -- lt, le, gt, ge have instance types; see lintConstrained.
   "and" -> mono (TFun boolT (TFun boolT boolT))
   "or" -> mono (TFun boolT (TFun boolT boolT))
@@ -290,36 +310,45 @@ primScheme name = case name of
           [nv, sv, dv]
           (TFun (matA (n, AAnon) (n, AAnon) dimOne) (TFun sd sd))
       )
-  -- A chart's absolute rotation (design §3.8, §3.9): its axes, as columns
-  -- along its root's, so rows along the root and columns along the chart.
+  -- A chart's absolute rotation (design §3.8, §3.10 F5): its axes, as
+  -- columns along its space's base axes, so rows along the base and
+  -- columns along the frame's axes.
   "rotationOf" ->
-    Just
-      ( Forall
-          [nv, dv, xav, rv]
-          (TFun (chartOf (pos n xa)) (matA (n, root) (n, xa) dimOne))
-      )
-  -- Its absolute angular velocity and the velocity of its origin, along
-  -- its root's axes (design §3.8): zero for a chart that does not move.
+    let (f, vs) = vectorFrameVar 20 Nothing
+     in Just
+          ( Forall
+              vs
+              ( TFun
+                  (TScale f)
+                  (matA (spaceLen f, f.space.base) (spaceLen f, f.axes) dimOne)
+              )
+          )
+  -- Its absolute angular velocity, the velocity of its origin and its
+  -- origin, along its space's base axes (design §3.8): zero for a chart
+  -- that does not move. The origin is an amount from the space's base
+  -- origin, in the space's dimension.
   "spinOf" ->
-    Just
-      ( Forall
-          [dv, xav, rv]
-          (TFun (chartOf (pos three xa)) (vecA three root (dimInv (dimBase T))))
-      )
+    let (f, vs) = vectorFrameVar 20 (Just 3)
+     in Just (Forall vs (TFun (TScale f) (baseVec f (dimInv (dimBase T)))))
   "originVelocityOf" ->
-    Just
-      ( Forall
-          [dv, xav, rv]
-          (TFun (chartOf (pos three xa)) (vecA three root (dimDiv d (dimBase T))))
-      )
-  -- A vector with anonymous axes, read as along a chart's (design §3.9):
-  -- a relabelling, no arithmetic.
+    let (f, vs) = vectorFrameVar 20 (Just 3)
+     in Just
+          (Forall vs (TFun (TScale f) (baseVec f (dimDiv f.space.dim (dimBase T)))))
+  "originOf" ->
+    let (f, vs) = vectorFrameVar 20 Nothing
+     in Just (Forall vs (TFun (TScale f) (baseVec f f.space.dim)))
+  -- A vector with anonymous axes, read as along a chart's (design §3.9,
+  -- §3.10): a relabelling, no arithmetic.
   "withAxes" ->
-    Just
-      ( Forall
-          [nv, dv, d2v, xav, rv]
-          (TFun (chartOf (pos n xa)) (TFun (vecA n AAnon d2) (vecA n xa d2)))
-      )
+    let (f, vs) = vectorFrameVar 20 Nothing
+     in Just
+          ( Forall
+              (vs ++ [d2v])
+              ( TFun
+                  (TScale f)
+                  (TFun (vecA (spaceLen f) AAnon d2) (vecA (spaceLen f) f.axes d2))
+              )
+          )
   -- A base unit is a unit (design §3.10, U1).
   _ -> case baseUnit name of
     Just b -> mono (TUnit (dimBase b))
@@ -330,12 +359,9 @@ primScheme name = case name of
   d2v = (2, KDim)
   nv = (3, KLen)
   mv = (4, KLen)
-  -- Axis variables (design §3.9): the axes of positions, and a chart's root.
+  -- Axis variables (design §3.9): the axes of positions.
   xav = (6, KAxis)
   xbv = (7, KAxis)
-  rv = (8, KAxis)
-  -- The root's axes along a shape: where a point lies (design §3.9).
-  tv = (5, KShape)
   s = SVar 0
   d = dimVar 1
   d2 = dimVar 2
@@ -343,16 +369,21 @@ primScheme name = case name of
   m = LVar 4 0
   xa = AVar 6
   xb = AVar 7
-  root = AVar 8
-  t = SVar 5
   three = LLit 3
   sd = TTensor s d
   sd2 = TTensor s d2
-  -- One position, a vector along it, a matrix of two, a chart of a shape.
+  -- One position, a vector along it, a matrix of two.
   pos l x = SCons l x SNil
   vecA l x = TTensor (pos l x)
   matA (r, x) (c, y) = TTensor (SCons r x (pos c y))
-  chartOf sh = TScale sh root d
+  -- A vector along a frame's space's base axes.
+  baseVec f = vecA (spaceLen f) f.space.base
+  -- What an amount converted along a chart's axes carries after its
+  -- leading position.
+  tailV = (40, KShape)
+  dTailV = (41, KDim)
+  tailS = SVar 40
+  dTail = dimVar 41
   mono = Just . Forall []
   num1 = mono (TFun numT numT)
   angleT = numD (dimBase Ang)
@@ -376,139 +407,228 @@ position @i@ and is dropped.
 Each position is a length and an axis variable (design §3.9), moved or
 dropped with its length: @contract@'s paired positions share both.
 
-A chart that introduces axes, @mkScale@, @mkChart4@ and @mkChart5@, takes
-the constructor of the axis type its declaration minted first (design
-§3.9, decision 1), read as @contract@ reads its positions: the chart's own
-axes are that type's hash. A turned chart keeps its parent's root; a root
-chart's root is its own axes, which for a scalar chart, with no axes, is
-anonymous: that, and that every position of a root chart's shape is along
-its axes, is a relation on the shape ('chartRelation'). The generators
-and the spin are over axes of their own: a rotation constructor's are
-anonymous.
+A chart's declaration (design §3.10, F3, F10), @mkRoot@ on a space and
+@mkChart@ on a parent chart, takes the constructor of the frame type it
+mints and, when it turns, that of the axis type it mints, read as
+@contract@ reads its positions, so that its frame and axes are those
+types' hashes; @mkRoot@'s space is read off the space's declaration, from
+the given lookup. Every clause is a list of none or one (the generators
+any number), and its type depends on which are written: an omitted step,
+origin or spin is the empty list. A chart that mints no frame, a rescaling,
+has its parent's frame and axes (F3). The generators and the spin are over
+axes of their own: a rotation constructor's are anonymous.
 -}
-primSchemeFor :: Text -> [Maybe StaticArg] -> Maybe (Either Text Scheme)
-primSchemeFor name statics = case name of
-  "mkScale" -> Just $ tagged $ \_ tag ->
-    Forall
-      [sv, dv, rv]
-      (TFun tag (TFun (TUnit d) (TFun (TTensor s d) (TScale s root d))))
-  "mkChart4" -> Just $ tagged $ \h tag ->
-    Forall
-      [nv, dv, xav, xbv, rv]
-      ( TFun
-          tag
-          ( TFun
-              (TUnit d)
-              ( TFun
-                  (vecA n xa d)
-                  ( TFun
-                      (TScale (pos n xa) root d)
-                      (TFun (listT (matA (n, xb) (n, xb))) (TScale (pos n (ANamed h)) root d))
-                  )
+primSchemeFor ::
+  (Hash -> Maybe TypeDef) ->
+  Text ->
+  [Maybe StaticArg] ->
+  Maybe (Either Text Scheme)
+primSchemeFor defs name statics = case name of
+  "mkRoot" -> Just $ case statics of
+    [ Just (ConArg (UserCon hf 0))
+      , Just (ListArg axesL)
+      , Just (ConArg (UserCon hs 0))
+      , Just (ListArg step)
+      , Just (ListArg origin)
+      , Just (ListArg gens)
+      , Just (ListArg spin)
+      ] -> do
+        frameIs hf
+        axes <- axesFrom axesL
+        sp <-
+          maybe
+            (Left "mkRoot takes a space a declaration made")
+            Right
+            (defs hs >>= spaceOf hs)
+        let ls = fromMaybe [] (spaceLens sp)
+            f = Frame (FrNamed hf) (fromMaybe (if null ls then AAnon else sp.base) axes) sp
+            along = TTensor (foldr (`SCons` sp.base) SNil ls) sp.dim
+        turning <- turns ls gens spin
+        pure
+          ( Forall
+              turning.vars
+              ( foldr
+                  TFun
+                  (TScale f)
+                  [ TData hf []
+                  , optional axesL (maybe numT (`TData` []) (firstTag axesL))
+                  , TData hs []
+                  , optional step (TUnit sp.dim)
+                  , optional origin along
+                  , turning.gens
+                  , turning.spin
+                  ]
               )
           )
-      )
-  "mkChart5" -> Just $ tagged $ \h tag ->
-    Forall
-      [dv, xav, xbv, xcv, rv]
-      ( TFun
-          tag
-          ( TFun
-              (TUnit d)
-              ( TFun
-                  (vecA three xa d)
-                  ( TFun
-                      (TScale (pos three xa) root d)
-                      ( TFun
-                          (listT (matA (three, xb) (three, xb)))
-                          ( TFun
-                              (vecA three xc angularRate)
-                              (TScale (pos three (ANamed h)) root d)
-                          )
-                      )
-                  )
+    _ ->
+      Left
+        "mkRoot takes the frame a chart declaration mints first: declare the chart with chart"
+  "mkChart" -> Just $ case statics of
+    [ Just (ListArg frameTagL)
+      , Just (ListArg axesL)
+      , _
+      , Just (ListArg step)
+      , Just (ListArg origin)
+      , Just (ListArg gens)
+      , Just (ListArg spin)
+      ] -> do
+        mapM_ frameIs (firstTag frameTagL)
+        axes <- axesFrom axesL
+        let size
+              | not (null spin) = Just 3
+              | not (null gens) = Just (0 :: Int)
+              | otherwise = Nothing
+            (parent, parentVars) = case size of
+              Just k -> vectorFrameVar 20 (if k == 3 then Just 3 else Nothing)
+              Nothing -> frameVar 20
+            f =
+              Frame
+                (maybe parent.slot FrNamed (firstTag frameTagL))
+                (fromMaybe parent.axes axes)
+                parent.space
+            ls = case size of
+              Just _ -> [spaceLen parent]
+              Nothing -> []
+        turning <- if null ls then turns [] gens spin else turns ls gens spin
+        pure
+          ( Forall
+              (parentVars ++ turning.vars)
+              ( foldr
+                  TFun
+                  (TScale f)
+                  [ optional frameTagL (maybe numT (`TData` []) (firstTag frameTagL))
+                  , optional axesL (maybe numT (`TData` []) (firstTag axesL))
+                  , TScale parent
+                  , optional step (TUnit parent.space.dim)
+                  , optional origin (TOver parent Nothing)
+                  , turning.gens
+                  , turning.spin
+                  ]
               )
           )
-      )
+    _ ->
+      Left
+        "mkChart takes the frame a chart declaration mints first: declare the chart with chart"
   _ -> primSchemeForLits name (map (>>= litOf) statics)
  where
   litOf = \case
     LitArg l -> Just l
-    ConArg _ -> Nothing
-  tagged f = case statics of
-    Just (ConArg (UserCon h 0)) : _ -> Right (f h (TData h []))
+    _ -> Nothing
+  firstTag = \case
+    [Just (ConArg (UserCon h 0))] -> Just h
+    _ -> Nothing
+  -- A clause written is a list of one of its type; one omitted, the empty
+  -- list, typed at a number.
+  optional clause t = listT (if null clause then numT else t)
+  frameIs h = case defs h >>= frameDefMoving of
+    Just _ -> Right ()
+    Nothing ->
+      Left
+        ( name
+            <> " takes the frame a chart declaration mints first: declare the chart with chart"
+        )
+  axesFrom = \case
+    [] -> Right Nothing
+    [Just (ConArg (UserCon h 0))]
+      | Just def <- defs h
+      , isAxesDef def ->
+          Right (Just (ANamed h))
     _ ->
       Left
         ( name
-            <> " takes the axes a chart declaration mints first: declare the chart with chart"
+            <> " takes the axes a chart declaration mints: declare the chart with chart"
         )
-  sv = (0, KShape)
-  dv = (1, KDim)
-  nv = (3, KLen)
-  xav = (6, KAxis)
+  -- The generators and the spin: on a space of one axis set, each a
+  -- dimensionless matrix over axes of its own, and a spin of three.
+  turns ls gens spin = case (ls, null gens, null spin) of
+    (_, True, True) -> Right (Turning [] (listT numT) (listT numT))
+    ([l], _, _)
+      | not (null spin) && l /= LLit 3 && not (isVarLen l) ->
+          Left "a spinning chart is on a space of three axes"
+      | otherwise ->
+          Right
+            ( Turning
+                ([xbv | not (null gens)] ++ [xcv | not (null spin)])
+                (optional gens (matA (l, xb) (l, xb)))
+                (optional spin (vecA (LLit 3) xc angularRate))
+            )
+    _ ->
+      Left
+        "a chart on a space of numbers has no axes to turn: `by` and `spinning` are for a space of vectors"
+  isVarLen = \case
+    LVar{} -> True
+    _ -> False
   xbv = (7, KAxis)
-  rv = (8, KAxis)
   xcv = (9, KAxis)
-  s = SVar 0
-  d = dimVar 1
-  n = LVar 3 0
-  xa = AVar 6
   xb = AVar 7
-  root = AVar 8
   xc = AVar 9
-  three = LLit 3
   angularRate = dimDiv (dimBase Ang) (dimBase T)
   pos l x = SCons l x SNil
   vecA l x = TTensor (pos l x)
   matA (r, x) (c, y) = TTensor (SCons r x (pos c y)) dimOne
 
-{- | A constant argument of a primitive, which 'primSchemeFor' may read: a
-literal, or a constructor with no fields.
--}
-data StaticArg = LitArg Lit | ConArg ConRef
-  deriving stock (Eq, Show)
+-- | The generators' and the spin's types and variables of a chart declaration.
+data Turning = Turning {vars :: [(VarId, Kind)], gens :: Type, spin :: Type}
 
-{- | What the schemes of the chart primitives cannot say over a shape
-variable (design §3.9), checked on the type a primitive is used at, as
-inference solved it. A root chart's positions are along the axes it
-minted and so is its root, unless it is scalar, when its root is
-anonymous; a point on a chart, written ('pointOn') or converted
-('toScale'), is along the chart's root at every position. A shape still
-unknown when its definition was generalised was taken to be
-scalar, so none is still unknown here.
+{- | A frame variable with its companions (design §3.10, F1), numbered from
+the given id: its slot, its axes, and its space's slot, shape, dimension
+and base axes.
 -}
-chartRelation :: Text -> Type -> [Maybe StaticArg] -> Either Text ()
-chartRelation name ty statics = case (name, ty, statics) of
-  ( "mkScale"
-    , TFun _ (TFun _ (TFun (TTensor sh _) (TScale _ r _)))
-    , Just (ConArg (UserCon h _)) : _
-    ) ->
-      case closedLens sh of
-        Just [] -> require (r == AAnon) "mkScale: a scalar chart's root is anonymous"
-        Just ls ->
-          require
-            (all ((== ANamed h) . snd) ls && r == ANamed h)
-            "mkScale: a root chart is along the axes it minted"
-        Nothing -> Left "mkScale: a chart's shape is unknown"
-  ("pointOn", TFun (TScale sh r _) (TFun _ (TPoint t _)), _) -> along sh r t
-  ("toScale", TFun (TPoint t _) (TFun (TScale sh r _) _), _) -> along sh r t
-  _ -> Right ()
+frameVar :: Int -> (Frame, [(VarId, Kind)])
+frameVar k =
+  ( Frame
+      (FrVar k)
+      (AVar (k + 1))
+      (Space (SpVar (k + 2)) (SVar (k + 3)) (dimVar (k + 4)) (AVar (k + 5)))
+  ,
+    [ (k, KFrame)
+    , (k + 1, KAxis)
+    , (k + 2, KSpace)
+    , (k + 3, KShape)
+    , (k + 4, KDim)
+    , (k + 5, KAxis)
+    ]
+  )
+
+{- | A frame variable on a space of one axis set: of a given number of
+axes, or of a length variable.
+-}
+vectorFrameVar :: Int -> Maybe Int -> (Frame, [(VarId, Kind)])
+vectorFrameVar k size =
+  ( Frame
+      (FrVar k)
+      (AVar (k + 1))
+      (Space (SpVar (k + 2)) (SCons len AAnon SNil) (dimVar (k + 4)) (AVar (k + 5)))
+  , [(k, KFrame), (k + 1, KAxis), (k + 2, KSpace)]
+      ++ [(k + 3, KLen) | Nothing <- [size]]
+      ++ [(k + 4, KDim), (k + 5, KAxis)]
+  )
  where
-  along sh r t = case closedLens sh of
-    Just _ ->
-      require
-        (t == rootward sh r)
-        (name <> ": a point is not along its chart's root at every position")
-    Nothing -> Left (name <> ": a chart's shape is unknown")
+  len = maybe (LVar (k + 3) 0) LLit size
 
-{- | A chart's shape with its root's axes at every position: where its
-points lie (design §3.9, stage 2b). A shape still a variable is left as
-it is, for the caller to wait on.
+{- | Another frame of a frame's space (design §3.10, F5): its slot and axes
+its own, numbered ten on.
 -}
-rootward :: Shape -> Axis -> Shape
-rootward sh r = case closedLens sh of
-  Just ls -> appendShape [(l, r) | (l, _) <- ls] SNil
-  Nothing -> sh
+sibling :: Frame -> (Frame, [(VarId, Kind)])
+sibling f = case f.slot of
+  FrVar k ->
+    ( Frame (FrVar (k + 10)) (AVar (k + 11)) f.space
+    , [(k + 10, KFrame), (k + 11, KAxis)]
+    )
+  FrNamed _ -> (f, [])
+
+-- | The length of a frame's space of one axis set.
+spaceLen :: Frame -> Len
+spaceLen f = case f.space.shape of
+  SCons l _ _ -> l
+  _ -> LLit 0
+
+{- | A constant argument of a primitive, which 'primSchemeFor' may read: a
+literal, a constructor with no fields, or a list literal of such, whose
+length is what a chart's clauses say (design §3.10, F10).
+-}
+data StaticArg = LitArg Lit | ConArg ConRef | ListArg [Maybe StaticArg]
+  deriving stock (Eq, Show)
 
 primSchemeForLits :: Text -> [Maybe Lit] -> Maybe (Either Text Scheme)
 primSchemeForLits name lits = case name of
@@ -631,13 +751,15 @@ lint look ctx = \case
         Right
         (nth (fromMaybe 0 idx) schemes)
   TPrimApp name ty args -> do
-    let literals =
-          [ case a of
-              TLit l _ -> Just (LitArg l)
-              TCon c _ [] -> Just (ConArg c)
-              _ -> Nothing
-          | a <- args
-          ]
+    let static = \case
+          TLit l _ -> Just (LitArg l)
+          TCon NilC _ [] -> Just (ListArg [])
+          TCon ConsC _ [x, rest] -> case static rest of
+            Just (ListArg xs) -> Just (ListArg (static x : xs))
+            _ -> Nothing
+          TCon c _ [] -> Just (ConArg c)
+          _ -> Nothing
+        literals = map static args
         instanceOf general =
           require
             (ty `isInstanceOf` general)
@@ -648,7 +770,10 @@ lint look ctx = \case
                 <> ", not an instance of "
                 <> renderScheme general
             )
-    case (unitReading name ty, primScheme name, primSchemeFor name literals) of
+    case ( unitReading name ty
+         , primScheme name
+         , primSchemeFor look.typeDefOf name literals
+         ) of
       -- Unit arithmetic and a unit's declaration (design §3.10): the
       -- reading of units.
       (Just check, _, _) -> check
@@ -656,7 +781,6 @@ lint look ctx = \case
       -- contract, permute and slice: the scheme the literal positions determine.
       (_, _, Just general) -> general >>= instanceOf
       _ -> lintConstrained look name ty
-    chartRelation name ty literals
     let go t = \case
           [] -> Right t
           arg : rest -> case t of
@@ -798,9 +922,11 @@ lint look ctx = \case
       TTensor (SCons (LLit k) _ rest) d | i < k -> mono (TTensor rest d)
       TTensor (SCons (LVar _ k) _ rest) d | i < k -> mono (TTensor rest d)
       TTensor (SCons (LRank _ k) _ rest) d | i < k -> mono (TTensor rest d)
-      TPoint (SCons (LLit k) _ rest) d | i < k -> mono (TPoint rest d)
-      TPoint (SCons (LVar _ k) _ rest) d | i < k -> mono (TPoint rest d)
-      TPoint (SCons (LRank _ k) _ rest) d | i < k -> mono (TPoint rest d)
+      -- A coordinate of a point on a frame (design §3.10, F5): an amount.
+      TPoint f
+        | SCons l _ SNil <- f.space.shape
+        , case l of LLit k -> i < k; LVar _ k -> i < k; LRank _ k -> i < k ->
+            mono (TTensor SNil f.space.dim)
       _ -> Left ("projection ." <> T.pack (show i) <> " from " <> renderType tt)
   TTyLam v k body -> do
     Forall vs t <- lint look ctx body
@@ -841,6 +967,8 @@ lint look ctx = \case
     AShape _ -> KShape
     ADim _ -> KDim
     AAxis _ -> KAxis
+    AFrame _ -> KFrame
+    ASpace _ -> KSpace
 
 {- | Lint's check of a primitive used at its reading of units (design §3.10,
 U2, U7), when the type it is used at is that reading: @*@ and @/@ of two
@@ -910,7 +1038,7 @@ lintConstrained look name ty = case (name, ty) of
         require (t == t') (eqName <> ": operands differ in type")
         case t of
           TTensor SNil _ -> Right ()
-          TPoint SNil _ -> Right ()
+          TPoint f | f.space.shape == SNil -> Right ()
           _ -> Left ("no ordering on " <> renderType t)
   _ ->
     Left
@@ -989,9 +1117,11 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (TVar v, _) | quantified v -> bindArg v (AType t) m
     (TFun a b, TFun c d) -> matchType a c m >>= matchType b d
     (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
-    (TPoint a da, TPoint b db) -> matchShape a b m >>= matchDim da db
+    (TPoint f, TPoint g) -> matchFrame f g m
     (TUnit da, TUnit db) -> matchDim da db m
-    (TScale a ra da, TScale b rb db) -> matchShape a b m >>= matchAxis ra rb >>= matchDim da db
+    (TScale f, TScale g) -> matchFrame f g m
+    -- A synonym is checked by the comparison at the end, reduced.
+    (TOver _ _, _) -> Just m
     (TData h as, TData h' bs)
       | h == h' && length as == length bs ->
           foldM (\acc (a, b) -> matchArg a b acc) m (zip as bs)
@@ -1002,7 +1132,19 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (AShape x, AShape y) -> matchShape x y m
     (ADim x, ADim y) -> matchDim x y m
     (AAxis x, AAxis y) -> matchAxis x y m
+    (AFrame x, AFrame y) -> matchFrameSlot x y m
+    (ASpace x, ASpace y) -> matchSpaceSlot x y m
     _ -> Nothing
+  matchFrame (Frame s a sp) (Frame s' a' sp') m =
+    matchFrameSlot s s' m >>= matchAxis a a' >>= matchSpace sp sp'
+  matchSpace (Space s sh d b) (Space s' sh' d' b') m =
+    matchSpaceSlot s s' m >>= matchShape sh sh' >>= matchDim d d' >>= matchAxis b b'
+  matchFrameSlot p a m = case p of
+    FrVar v | quantified v -> bindArg v (AFrame a) m
+    _ -> if p == a then Just m else Nothing
+  matchSpaceSlot p a m = case p of
+    SpVar v | quantified v -> bindArg v (ASpace a) m
+    _ -> if p == a then Just m else Nothing
   matchShape p sh m = case (p, sh) of
     (SVar v, _) | quantified v -> bindArg v (AShape sh) m
     (SCons l a rest, SCons l' a' rest') ->
@@ -1136,6 +1278,8 @@ renderTTerm namer = go 0
     KShape -> "s" <> T.pack (show v)
     KDim -> "d" <> T.pack (show v)
     KAxis -> "x" <> T.pack (show v)
+    KFrame -> "f" <> T.pack (show v)
+    KSpace -> "sp" <> T.pack (show v)
   showD r = T.pack (show (fromRational r :: Double))
   nested dims rs = case dims of
     [] -> maybe "[]" showD (nth 0 rs)
@@ -1164,6 +1308,7 @@ and structured data whose components are: tuples, lists and declared types.
 equatable :: (Hash -> Maybe TypeDef) -> Type -> Either Text ()
 equatable defs t = case t of
   TTensor _ _ -> Right ()
-  TPoint _ _ -> Right ()
+  TPoint _ -> Right ()
+  TOver _ _ -> Right ()
   TData h as | Just ts <- equalityArgs defs h as -> mapM_ (equatable defs) ts
   _ -> Left ("no equality on " <> renderType t)

@@ -74,6 +74,9 @@ encodeTypeDef def =
     Tag t -> word8 1 <> text t
     -- A chart's minted axis type (design §3.9): appended.
     Axes t -> word8 2 <> text t
+    -- A space and a frame (design §3.10, F9): appended.
+    SpaceLabel t -> word8 3 <> text t
+    FrameLabel t moving -> word8 4 <> text t <> word8 (if moving then 1 else 0)
 
 hashTypeDef :: TypeDef -> Hash
 hashTypeDef = Hash . SHA256.hash . encodeTypeDef
@@ -86,19 +89,23 @@ kindByte = \case
   KDim -> word8 3
   -- An axis variable (design §3.9): appended.
   KAxis -> word8 4
+  -- A frame and a space (design §3.10, F1): appended.
+  KFrame -> word8 5
+  KSpace -> word8 6
 
 encType :: Type -> Builder
 -- 0x20 (Bool), 0x24 (tuple) and 0x25 (list) are retired: those types are
 -- 0x28 on the built-in hashes (design §6.1), and no longer read either.
 encType = \case
   TTensor sh d -> word8 0x21 <> encShape sh <> encDim d
-  TPoint sh d -> word8 0x22 <> encShape sh <> encDim d
   -- A unit (design §3.10, U1): appended.
   TUnit d -> word8 0x2A <> encDim d
-  -- A chart's root slot (design §3.9): anonymous keeps the old bytes; any
-  -- other slot is the appended tag 0x29.
-  TScale sh AAnon d -> word8 0x23 <> encShape sh <> encDim d
-  TScale sh r d -> word8 0x29 <> encShape sh <> encAxis r <> encDim d
+  -- Points, charts and amounts on frames (design §3.10, F4, F9): appended;
+  -- 0x22, 0x23 and 0x29, a point and a chart over a tensor type, are
+  -- retired.
+  TPoint f -> word8 0x2B <> encFrame f
+  TScale f -> word8 0x2C <> encFrame f
+  TOver f md -> word8 0x2D <> encFrame f <> maybe (word8 0) ((word8 1 <>) . encDim) md
   TFun a b -> word8 0x26 <> encType a <> encType b
   TVar v -> word8 0x27 <> varint (fromIntegral v)
   TData (Hash h) as ->
@@ -114,6 +121,27 @@ encArg = \case
   AShape sh -> word8 2 <> encShape sh
   ADim d -> word8 3 <> encDim d
   AAxis a -> word8 4 <> encAxis a
+  AFrame f -> word8 5 <> encFrameSlot f
+  ASpace sp -> word8 6 <> encSpaceSlot sp
+
+{- | A frame (design §3.10, F9): its slot, its axes and its space, a
+space its slot, shape, dimension and base axes.
+-}
+encFrame :: Frame -> Builder
+encFrame f = encFrameSlot f.slot <> encAxis f.axes <> encSpace f.space
+
+encSpace :: Space -> Builder
+encSpace sp = encSpaceSlot sp.slot <> encShape sp.shape <> encDim sp.dim <> encAxis sp.base
+
+encFrameSlot :: FrameSlot -> Builder
+encFrameSlot = \case
+  FrNamed (Hash h) -> word8 0 <> byteString h
+  FrVar v -> word8 1 <> varint (fromIntegral v)
+
+encSpaceSlot :: SpaceSlot -> Builder
+encSpaceSlot = \case
+  SpNamed (Hash h) -> word8 0 <> byteString h
+  SpVar v -> word8 1 <> varint (fromIntegral v)
 
 {- | A position with anonymous axes keeps the bytes of a bare length (design
 §3.9, §6.1); a named or variable slot is the appended tag 3.

@@ -124,6 +124,8 @@ enc ph hint depth = \case
     Owner t -> word8 0 <> text t
     Tag t -> word8 1 <> text t
     Axes t -> word8 2 <> text t
+    SpaceLabel t -> word8 3 <> text t
+    FrameLabel t moving -> word8 4 <> text t <> word8 (if moving then 1 else 0)
   -- A constructor is an empty name, the type's hash and the index. The
   -- empty name is what is left of the built-in constructors, which were
   -- their names until storage version 4 (design §6.1).
@@ -241,6 +243,15 @@ decLabel =
     0 -> Owner <$> decText
     1 -> Tag <$> decText
     2 -> Axes <$> decText
+    3 -> SpaceLabel <$> decText
+    4 ->
+      FrameLabel
+        <$> decText
+        <*> ( byte >>= \case
+                0 -> pure False
+                1 -> pure True
+                k -> failDec ("unknown frame flag " <> T.pack (show k))
+            )
     k -> failDec ("unknown label kind " <> T.pack (show k))
 
 decHint :: Dec Hint
@@ -364,16 +375,25 @@ decodeTypeDef bs = do
       2 -> pure KShape
       3 -> pure KDim
       4 -> pure KAxis
+      5 -> pure KFrame
+      6 -> pure KSpace
       k -> failDec ("unknown kind " <> T.pack (show k))
 
 decType :: Dec Type
 decType =
   byte >>= \case
     0x21 -> TTensor <$> decShape <*> decDim
-    0x22 -> TPoint <$> decShape <*> decDim
     0x2A -> TUnit <$> decDim
-    0x23 -> (`TScale` AAnon) <$> decShape <*> decDim
-    0x29 -> TScale <$> decShape <*> decAxis <*> decDim
+    0x2B -> TPoint <$> decFrame
+    0x2C -> TScale <$> decFrame
+    0x2D ->
+      TOver
+        <$> decFrame
+        <*> ( byte >>= \case
+                0 -> pure Nothing
+                1 -> Just <$> decDim
+                k -> failDec ("unknown dimension option " <> T.pack (show k))
+            )
     0x26 -> TFun <$> ty <*> ty
     0x27 -> TVar . fromIntegral <$> decVarint
     0x28 -> do
@@ -390,6 +410,8 @@ decType =
       2 -> AShape <$> decShape
       3 -> ADim <$> decDim
       4 -> AAxis <$> decAxis
+      5 -> AFrame <$> decFrameSlot
+      6 -> ASpace <$> decSpaceSlot
       k -> failDec ("unknown argument kind " <> T.pack (show k))
   decShape =
     byte >>= \case
@@ -398,6 +420,18 @@ decType =
       2 -> SVar . fromIntegral <$> decVarint
       3 -> SCons <$> decLen <*> decAxis <*> decShape
       k -> failDec ("unknown shape tag " <> T.pack (show k))
+  decFrame = Frame <$> decFrameSlot <*> decAxis <*> decSpace
+  decSpace = Space <$> decSpaceSlot <*> decShape <*> decDim <*> decAxis
+  decFrameSlot =
+    byte >>= \case
+      0 -> FrNamed . Hash <$> bytes 32
+      1 -> FrVar . fromIntegral <$> decVarint
+      k -> failDec ("unknown frame tag " <> T.pack (show k))
+  decSpaceSlot =
+    byte >>= \case
+      0 -> SpNamed . Hash <$> bytes 32
+      1 -> SpVar . fromIntegral <$> decVarint
+      k -> failDec ("unknown space tag " <> T.pack (show k))
   decAxis =
     byte >>= \case
       0 -> pure AAnon
