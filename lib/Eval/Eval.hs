@@ -611,17 +611,30 @@ hintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
 hintPow p k a = mkHint p [u{power = u.power * k} | u <- a.atoms]
 
 {- | The hint of unit arithmetic (design §3.10, U2): the operands' hints
-combined as written, nothing cancelled.
+combined as written, nothing cancelled between units of one dimension,
+and a unit written twice taking the sum of its powers.
 -}
 unitHintMul :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
-unitHintMul p a b = mkHintAs False p (mergeAtoms a.atoms b.atoms)
+unitHintMul p a b = unitHint p (a.atoms ++ b.atoms)
 
 unitHintDiv :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
-unitHintDiv p a b =
-  mkHintAs False p (mergeAtoms a.atoms [u{power = negate u.power} | u <- b.atoms])
+unitHintDiv p a b = unitHint p (a.atoms ++ [u{power = negate u.power} | u <- b.atoms])
 
 unitHintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
-unitHintPow p k a = mkHintAs False p [u{power = u.power * k} | u <- a.atoms]
+unitHintPow p k a = unitHint p [u{power = u.power * k} | u <- a.atoms]
+
+{- | A unit's hint from its factors as written (design §3.10, U8, U9).
+When every unit cancels, as in @km/km@, the factors stay as written, so
+that the unit prints as an expression that reads back as a unit and not
+as the number one.
+-}
+unitHint :: Precision -> [UnitFactor] -> Maybe UnitHint
+unitHint p written
+  | not (null written) && all ((== 0) . (.power)) merged =
+      mkHintAs False p written
+  | otherwise = mkHintAs False p merged
+ where
+  merged = mergeAtoms [] written
 
 {- | Two units combined (design §3.10, U2): their magnitudes and dimensions
 as two numbers', their hints as written.
@@ -1097,7 +1110,10 @@ runPrim cfg rt prim args = case (prim, args) of
   ("to", [a, u]) -> do
     (dims, d, _, buf) <- tensor =<< a
     (_, _, uh) <- scalarFull =<< u
-    Right (VTensor dims d ((\h -> h{pinned = True}) <$> uh) buf)
+    -- A unit written twice is one (design §3.10, U9): to dozen/dozen
+    -- shows a plain number.
+    let shown h = (\h' -> h'{pinned = True}) <$> mkHintAs False p (mergeAtoms [] h.atoms)
+    Right (VTensor dims d (shown =<< uh) buf)
   -- Charts (design §3.10, F3, F10). The frame and axes a chart mints are
   -- type-level tags with nothing to compute; every clause is a list of
   -- none or one, and an omitted one is inherited: on a space, the origin
