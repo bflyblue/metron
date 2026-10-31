@@ -2653,6 +2653,54 @@ rotation's rows are, written and printed after a vector chart's type,
 prints for a scalar point and `Point (Vec eci [m])` for a position on a
 chart whose root is `eci`.
 
+**Dimension syntax** (decided by the owner; replaces the bracket form).
+A dimension is an ordinary type argument, not a bracketed one. Square
+brackets mean one thing in a type, a shape (`Tensor [2, 3] m`), as they
+mean a list of numbers in a vector literal; they no longer also enclose
+a dimension.
+
+```
+Num K                     -- one name: bare (was Num [K])
+Vec 3 m, Vec lvlh m       -- (was Vec 3 [m])
+Num (m/s^2)               -- compound: in parentheses (was Num [m s^-2])
+Num (kg·m²/s²)            -- unicode spelling; kg*m^2/s^2 in ASCII
+Num (m²/(s²·K))           -- a denominator of several factors is grouped
+Num (1/s)                 -- only negative powers
+forall d d1. Num d -> Num d1 -> Num (d·d1)
+Tensor [2, 3] (m/s^2), Point (Num K), Chart (Vec lvlh m) eci
+Num                       -- dimensionless, as before
+```
+
+- **Inside the parentheses** a dimension is written as a unit expression:
+  names (base units, declared units, `forall`-bound dimension variables),
+  products with `*` or `·`, `/`, powers with `^k`, `^-k` or superscripts,
+  parentheses for grouping, `1` for the identity. `*`, `·` and `/` share
+  one precedence and associate to the left, as in an expression, so
+  `m/s*kg` is `m·kg/s`. Juxtaposition is refused, `Num (m s)` reads as a
+  type application, with a hint to write `m*s`. A dimension is a bare
+  name only when it is one name to the first power; anything else is
+  parenthesised.
+- **A name in a dimension position** is a dimension variable when a
+  `forall` (or a `data` parameter) binds it, and otherwise a unit, which
+  means its dimension: `Num km` is `Num m`, `Num N` is `Num (kg·m/s^2)`.
+  Which arguments are dimensions is fixed by the type constructor: the
+  last of `Num`, `Vec`, `Mat` and `Tensor`, and a declared type's
+  parameters of kind dimension. Required `forall` (§3.9, decision 6) is
+  what makes the bare spelling unambiguous.
+- **`Point` and `Chart` take a type**, so the scalar shorthand `Point [K]`
+  is now written and printed `Point (Num K)`, `Chart (Num K)`.
+- **Printing** follows the same rule, so what `:type` prints reads back
+  as itself: positive powers first, in the customary order (`kg m s A K
+  mol cd rad`, variables last), then `/` and the negative powers, grouped
+  when there are several; `·` and superscripts with unicode on, `*` and
+  `^` with it off. A dimension standing alone, in an error message, prints
+  without the outer parentheses: "dimensions differ by m/s".
+- **Values print as before**, `9.81 m s^-2`: a value's units are a display
+  spelling of the value, not a type, and keep the juxtaposed form.
+- **Stores.** A stored signature is text, so the change bumps the store
+  format; an older store is refused with the usual message and recreated.
+  No hash changes: field types are hashed by content, not by spelling.
+
 In a written type a name in a length position may be a chart's axes, `Vec
 lvlh [m]`: that chart's number of positions along its minted type (§3.9,
 stage 2b). A named slot prints by name in place of its length; an axis
