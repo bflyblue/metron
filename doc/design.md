@@ -1188,8 +1188,10 @@ m) ([] :: Vec 0 m)` is `0 m^2`, or a signature. Typed Core keeps a pack's
 element type even with no elements (`TPack`), and an empty pack is built
 from it (§8). A definition may leave it open, `let e = []` is `forall s d.
 Tensor (0 : s) d`, each use choosing; an expression at the prompt whose
-value leaves a length, shape or dimension open outside any function has no
-value to build, and is refused as a type error: "ambiguous: nothing fixes the
+value leaves open, outside any function, a length, shape or dimension that
+building it needs has no value to build, and is refused as a type error
+(`Empty` of `data Box d = Empty | Full (Num d)` needs none, and is
+built): "ambiguous: nothing fixes the
 shape or dimension of this value, of type Tensor (0 : s) d; give an empty
 tensor a type, as in ([] :: Vec 0 m)".
 

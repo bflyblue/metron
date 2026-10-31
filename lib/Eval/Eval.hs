@@ -43,6 +43,7 @@ module Eval.Eval (
   evalClosed,
   evalAt,
   evalDefinition,
+  neededAtRuntime,
   TyEnv,
   apply,
   scalar,

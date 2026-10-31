@@ -64,7 +64,6 @@ import Eval.Syntax qualified as S
 import Eval.TCore
 import Eval.Type (
   Arg (..),
-  Kind (..),
   Scheme (..),
   Type (..),
   TypeDef (..),
@@ -318,7 +317,7 @@ evalChecked cfg scope cb src e = do
   (term, typed, scheme, linted) <- checkExpr scope cb src e
   case scheme of
     Just sc
-      | not (null (openInValue sc)) ->
+      | not (null (openInValue sc typed)) ->
           Left
             ( S.renderSpanError
                 (Just src)
@@ -334,15 +333,18 @@ evalChecked cfg scope cb src e = do
     either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cfg cb) h typed)
   pure (h, v, LastExpr term linted typed cb)
 
-{- | The length, shape and dimension variables an expression's type leaves
-open in its value, outside any function (design §3.3). Nothing fixes
-them, and a value with them, an empty tensor alone (@[]@ is @Tensor (0 :
-s) d@), has no shape or dimension to be built or printed with. Inside a
-function they are the function's to receive.
+{- | The length, shape and dimension variables an expression leaves open in
+its value, outside any function, that its evaluation needs (design §3.3).
+Nothing fixes them, so a value that needs one, an empty tensor alone
+(@[]@ is @Tensor (0 : s) d@), has no shape or dimension to be built or
+printed with. Inside a function they are the function's to receive, and
+a value that never consults one, a constructor with no fields of a type
+with a dimension parameter, is built without it. The typed term is the
+expression's, abstracted over the scheme's variables.
 -}
-openInValue :: Scheme -> [VarId]
-openInValue (Forall vs t) =
-  [v | (v, k) <- vs, k `elem` [KLen, KShape, KDim], v `elem` inValue t]
+openInValue :: Scheme -> TTerm Z -> [VarId]
+openInValue (Forall vs t) typed =
+  [v | (v, k) <- vs, v `elem` inValue t, neededAtRuntime v k typed]
  where
   inValue = \case
     TFun _ _ -> []
