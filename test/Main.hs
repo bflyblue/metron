@@ -2986,6 +2986,26 @@ namedAxesTests =
               )
           )
           "Vec lvlh [m]"
+        -- In one group with the chart: a signature framing a chart's
+        -- origin, and a data declaration over a chart's axes.
+        runLinesP
+          [ multiline
+              [ eci
+              , "r0 :: Vec eci [m]"
+              , "let r0 = [7000, 0, 0] km"
+              , "chart lvlh = m at r0 eci by rotz (90 deg)"
+              , "data Obs = Obs (Vec eci [m])"
+              ]
+          , ":type r0"
+          , ":type Obs ([1, 2, 3] eci .- [0, 0, 0] eci)"
+          , ":type rotationOf lvlh"
+          ]
+          @?= Right ["Vec eci [m]", "Obs", "Mat eci lvlh"]
+        -- A chart redefined as no chart leaves no axes behind.
+        fmap
+          (drop 2)
+          (runLinesP [eci, ":add", "let eci = 3", ":update", ":ls --types eci"])
+          @?= Right ["nothing matches"]
         -- A signature that names a chart's axes reads back in one group
         -- with the chart: through :export and :load, and across a reload.
         s <- sessionOf (signed ++ [":add"])

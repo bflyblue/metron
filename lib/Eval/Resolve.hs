@@ -470,20 +470,19 @@ new one.
 -}
 processGroup :: Codebase -> [S.Decl] -> Either ResolveError Codebase
 processGroup cb0 decls
-  | null charts
-      || length (filter (not . S.isSignature) part)
-        == length (filter (not . S.isSignature) decls) =
-      enterGroup cb0 decls
-  | otherwise = case enterGroup cb0 part of
-      Right cb1 -> enterGroup cb1 decls
-      Left _ -> enterGroup cb0 decls
+  | null charts = enterGroup True cb0 decls
+  | otherwise = case enterGroup False cb0 part of
+      Right cb1 -> enterGroup True cb1 decls
+      Left _ -> enterGroup True cb0 decls
  where
   -- A written type names a chart's axes by a label the chart's entry
   -- binds (design §3.9), and the group's signatures, data declarations
   -- and ascriptions are read before its definitions, or before a chart
-  -- they do not use: so the group's charts, with what they depend on and
-  -- the data declarations, are entered first, without the signatures,
-  -- and the whole group then again, which binds them to what they are.
+  -- they do not use: so the group's charts, with the definitions they
+  -- depend on, are entered first for their labels alone, unchecked
+  -- against any annotation, and the whole group then again, which binds
+  -- them to what they are. A chart that needs the group's own data
+  -- declarations is entered with the group in one pass.
   bindings = [(s, b) | S.DBind s b <- decls]
   groupNames = Set.fromList [b.name.text | (_, b) <- bindings]
   charts = [b.name.text | (_, b) <- bindings, b.kind == S.ChartDecl]
@@ -503,18 +502,11 @@ processGroup cb0 decls
       n : ns
         | Set.member n seen -> go seen ns
         | otherwise -> go (Set.insert n seen) (depsOf n ++ ns)
-  part =
-    [ d
-    | d <- decls
-    , case d of
-        S.DBind _ b -> Set.member b.name.text closure
-        S.DData{} -> True
-        S.DSig{} -> False
-    ]
+  part = [d | d@(S.DBind _ b) <- decls, Set.member b.name.text closure]
 
--- | 'processGroup' in one pass.
-enterGroup :: Codebase -> [S.Decl] -> Either ResolveError Codebase
-enterGroup cb0 decls = do
+-- | 'processGroup' in one pass, checking annotations or not.
+enterGroup :: Bool -> Codebase -> [S.Decl] -> Either ResolveError Codebase
+enterGroup checking cb0 decls = do
   checkDuplicates (filter (not . S.isSignature) decls)
   checkDuplicates (filter S.isSignature decls)
   -- A name is never both a label and a namespace (design §7.6).
@@ -562,7 +554,7 @@ enterGroup cb0 decls = do
               ]
           )
       nodes = [(sb, (snd sb).name.text, dependsOn sb) | sb <- bindings]
-  foldlM (enterComponent groupNames signed) cb2 (stronglyConnComp nodes)
+  foldlM (enterComponent checking groupNames signed) cb2 (stronglyConnComp nodes)
  where
   newLabels = \case
     S.DBind _ b -> [(b.name.text, "definition", b.name.span)]
@@ -600,12 +592,13 @@ with its full path (design §3.2.4), so that @lab.offset = 1 ± 0.1@ and
 @field.offset = 1 ± 0.1@ are two measurements, not one.
 -}
 enterComponent ::
+  Bool ->
   Set Text ->
   Map.Map Text Signed ->
   Codebase ->
   SCC (S.Scope, S.Binding) ->
   Either ResolveError Codebase
-enterComponent group signed cb0 = \case
+enterComponent checking group signed cb0 = \case
   AcyclicSCC (scope, b) -> do
     (term, prov) <-
       either
@@ -629,7 +622,7 @@ enterComponent group signed cb0 = \case
       either (Left . LintFailure b.name) Right (lintClosed (typeLookupFor cb) typed)
     -- With ascriptions, they are checked on the term desugared with markers.
     (checkTerm, checkProv, asc) <-
-      if null prov.ascriptions
+      if not checking || null prov.ascriptions
         then pure (term, prov, Map.empty)
         else do
           (marked, markedProv) <-
@@ -646,17 +639,24 @@ enterComponent group signed cb0 = \case
           (checkTerm, asc) <-
             scopedAscriptions scope cb signed 0 [] "" b.name.text marked markedProv
           pure (checkTerm, markedProv, asc)
-    checked <- annotatedCheck cb asc checkTerm (typeErrorIn b checkProv)
+    checked <-
+      if checking
+        then annotatedCheck cb asc checkTerm (typeErrorIn b checkProv)
+        else pure Nothing
     let h = hashTerm term
         ref = Reference h Nothing
         stored = preferLint schemes linted
     cb' <-
       labelAxes
-        [(b, sc) | b.name.text `elem` minted, sc <- take 1 stored]
+        minted
+        [(b, sc) | sc <- take 1 stored]
         (bindName b.name.text ref (addTerm h term stored typed cb))
-    signed' <- signMembers signed cb [(b, fromMaybe stored checked)]
+    signed' <-
+      if checking
+        then signMembers signed cb [(b, fromMaybe stored checked)]
+        else pure id
     pure (signed' (markKind b.kind b.name.text cb'))
-  CyclicSCC bs -> enterCycle group signed cb0 bs
+  CyclicSCC bs -> enterCycle checking group signed cb0 bs
 
 {- | A member's ascriptions, desugared with markers, converted with the
 variables of the member's signature in scope (design §4.8), and the term
@@ -786,12 +786,13 @@ compute ordering hashes with the cycle variables as placeholders, then
 desugared again in the resulting order to build the stored 'Cycle'.
 -}
 enterCycle ::
+  Bool ->
   Set Text ->
   Map.Map Text Signed ->
   Codebase ->
   [(S.Scope, S.Binding)] ->
   Either ResolveError Codebase
-enterCycle group signed cb sbs = do
+enterCycle checking group signed cb sbs = do
   ordering <- mapM (\sb -> (,sb) <$> placeholderHashOf sb) sbs
   let sortedScoped = map snd (sortOn fst ordering)
       sorted = map snd sortedScoped
@@ -819,60 +820,67 @@ enterCycle group signed cb sbs = do
       -- With ascriptions, they are checked on the members desugared with
       -- markers, each member's tagged by its index.
       checked <-
-        if all (null . (.ascriptions)) provs
-          then annotatedCheck cbm Map.empty cycleTerm (cycleTypeError sorted provs)
-          else do
-            (marked, _) <-
-              runStateT
-                ( vecTraverse
-                    ( \m -> do
-                        i <- gets id
-                        modify (+ 1)
-                        lift (desugarMarkedOne ctx i m)
+        if not checking
+          then pure Nothing
+          else
+            if all (null . (.ascriptions)) provs
+              then annotatedCheck cbm Map.empty cycleTerm (cycleTypeError sorted provs)
+              else do
+                (marked, _) <-
+                  runStateT
+                    ( vecTraverse
+                        ( \m -> do
+                            i <- gets id
+                            modify (+ 1)
+                            lift (desugarMarkedOne ctx i m)
+                        )
+                        members
                     )
-                    members
-                )
-                (0 :: Int)
-            let markedProvs = vecToList (vecMap snd marked)
-            -- Each member's body is wrapped in its signature's marker when
-            -- its ascriptions name the signature's variables.
-            (scoped, (_, asc)) <-
-              runStateT
-                ( vecTraverse
-                    ( \(body, prov) -> do
-                        i <- gets fst
-                        let (s, b) = sortedScoped !! i
-                        (body', asc) <-
-                          lift
-                            ( scopedAscriptions
-                                s
-                                cbm
-                                signed
-                                i
-                                [i]
-                                (T.pack (show i))
-                                b.name.text
-                                body
-                                prov
-                            )
-                        modify (\(_, acc) -> (i + 1, Map.union acc asc))
-                        pure body'
+                    (0 :: Int)
+                let markedProvs = vecToList (vecMap snd marked)
+                -- Each member's body is wrapped in its signature's marker when
+                -- its ascriptions name the signature's variables.
+                (scoped, (_, asc)) <-
+                  runStateT
+                    ( vecTraverse
+                        ( \(body, prov) -> do
+                            i <- gets fst
+                            let (s, b) = sortedScoped !! i
+                            (body', asc) <-
+                              lift
+                                ( scopedAscriptions
+                                    s
+                                    cbm
+                                    signed
+                                    i
+                                    [i]
+                                    (T.pack (show i))
+                                    b.name.text
+                                    body
+                                    prov
+                                )
+                            modify (\(_, acc) -> (i + 1, Map.union acc asc))
+                            pure body'
+                        )
+                        marked
                     )
-                    marked
-                )
-                (0 :: Int, Map.empty)
-            let markedTerm = Cycle (vecMap (Hint . (.name.text) . snd) members) scoped
-            annotatedCheck cbm asc markedTerm (cycleTypeError sorted markedProvs)
+                    (0 :: Int, Map.empty)
+                let markedTerm = Cycle (vecMap (Hint . (.name.text) . snd) members) scoped
+                annotatedCheck cbm asc markedTerm (cycleTypeError sorted markedProvs)
       let stored = preferLint schemes linted
           cb' = addTerm h cycleTerm stored typed cbm
           bindMember acc (i, b) =
             let ref = Reference h (Just i)
                 acc' = bindName b.name.text ref acc
              in markKind b.kind b.name.text acc'
-      signed' <- signMembers signed cbm [(b, fromMaybe stored checked) | b <- sorted]
+      signed' <-
+        if checking
+          then signMembers signed cbm [(b, fromMaybe stored checked) | b <- sorted]
+          else pure id
       labelled <-
         labelAxes
-          [(b, sc) | (b, sc) <- zip sorted stored, b.name.text `elem` minted]
+          minted
+          (zip sorted stored)
           (foldl bindMember cb' (zip [0 ..] sorted))
       pure (signed' labelled)
  where
@@ -996,22 +1004,28 @@ name (@Vec lvlh [m]@) and for printing. A scalar chart's axes have no
 positions to name, so its type stays unnamed. A chart cannot take the
 name of a declared type.
 -}
-labelAxes :: [(S.Binding, Scheme)] -> Codebase -> Either ResolveError Codebase
-labelAxes members cb0 = foldlM label cb0 members
+labelAxes ::
+  [Text] -> [(S.Binding, Scheme)] -> Codebase -> Either ResolveError Codebase
+labelAxes minted members cb0 = foldlM label cb0 members
  where
-  label cb (b, Forall _ t)
-    | vectorChart t = case lookupTypeName n cb >>= (`lookupTypeDef` cb) of
-        Just def
-          | not (isAxesDef def) ->
-              Left
-                ( DataError
-                    b.name.span
-                    ("`" <> n <> "` names a type; a chart's axes are named as the chart")
-                )
-        _ -> Right (bindTypeName n (axesHash n) cb)
-    | otherwise = Right cb
+  label cb (b, Forall _ t) = case lookupTypeName n cb >>= (`lookupTypeDef` cb) of
+    Just def
+      | isAxesDef def && not names ->
+          -- Redefined as a chart with no axes of its own to name, or as
+          -- no chart: the old axes' label goes.
+          Right cb{typeNames = Map.delete n cb.typeNames}
+      | not (isAxesDef def) && names ->
+          Left
+            ( DataError
+                b.name.span
+                ("`" <> n <> "` names a type; a chart's axes are named as the chart")
+            )
+    _
+      | names -> Right (bindTypeName n (axesHash n) cb)
+      | otherwise -> Right cb
    where
     n = b.name.text
+    names = n `elem` minted && vectorChart t
   vectorChart = \case
     TFun _ r -> vectorChart r
     TScale (SCons{}) _ _ -> True
