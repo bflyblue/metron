@@ -362,22 +362,24 @@ annotationsWith cb = Annotations $ \written h idx ->
     _ -> Nothing
 
 {- | The ascriptions the desugarer found (design §4.8), by marker, each
-converted in the scope of its expression as a type query is (a lowercase
-unknown name is a fresh variable), with the path an error in it is
-reported at: after the given prefix, a cycle member's index, the key its
-span is recorded under ('D.ascriptionPath').
+converted in the scope of its expression as a signature is, its
+variables bound by its own @forall@ or by the signature of the definition
+it is in (the given variables, which stay free in its scheme), with the
+path an error in it is reported at: after the given prefix, a cycle
+member's index, the key its span is recorded under ('D.ascriptionPath').
 -}
 ascriptionsIn ::
   S.Scope ->
   Codebase ->
+  Bound ->
   D.Path ->
   Provenance ->
   Either ResolveError (Map.Map Text (Scheme, D.Path))
-ascriptionsIn scope cb prefix prov =
+ascriptionsIn scope cb outer prefix prov =
   Map.fromList
     <$> sequence
-      [ (\sc -> (marker, (sc, prefix ++ [D.ascriptionPath k])))
-          <$> queryScheme scope cb t
+      [ (\(sc, _) -> (marker, (sc, prefix ++ [D.ascriptionPath k])))
+          <$> explicitScheme scope cb outer t
       | (k, (marker, t)) <- zip [0 ..] prov.ascriptions
       ]
 
@@ -392,9 +394,10 @@ usesSignatures cb t
  where
   signatureAt a (w, h, i) = a.signatureFor w h i
 
-{- | A written name that a type reads as a variable (design §7.3, §4.8): a
-lowercase name that is not @rank@, a built-in or declared type, a base
-unit or a unit, in the scope.
+{- | A written lowercase name that names nothing a type can name (design
+§7.3, §4.8): not @rank@, a built-in or declared type, a base unit or a
+unit, in the scope. A @:ls@ query reads it as a variable; a signature or
+an ascription refuses it unless a @forall@ binds it.
 -}
 typeVariable :: S.Scope -> Codebase -> Text -> Bool
 typeVariable scope cb n =
@@ -408,12 +411,13 @@ typeVariable scope cb n =
     Found u -> isUnitName u cb
     _ -> False
 
-{- | A signature as it is written back in a scope (design §4.8): it reads
-back there as the same scheme. Declared types print by hash, for the
-driver to name ('Eval.Driver.nameTypes').
+{- | A signature as it is written back (design §4.8): headed by its
+@forall@, so that it reads back as the same scheme in any scope, since a
+bound variable shadows a unit of its name. Declared types print by hash,
+for the driver to name ('Eval.Driver.nameTypes').
 -}
-signatureText :: Spelling -> S.Scope -> Codebase -> Scheme -> Text
-signatureText spelling scope cb = renderSignature spelling (typeVariable scope cb) showHash
+signatureText :: Spelling -> Scheme -> Text
+signatureText = renderForallWith showHash
 
 {- | A signature after its definition was inferred (design §4.8): the
 signature must hold of the definition's scheme, which must be at least as
@@ -438,8 +442,11 @@ checkSignature key sp n sig general
             )
         )
 
--- | A signature of the group: its key, its span and the scheme it was written as.
-data Signed = Signed {key :: Text, span :: S.Span, scheme :: Scheme}
+{- | A signature of the group: its key, its span, the scheme it was written
+as, and the variables its @forall@ binds, which scope over the body of
+its definition (design §4.8).
+-}
+data Signed = Signed {key :: Text, span :: S.Span, scheme :: Scheme, bound :: Bound}
 
 {- | Enter a binding group into the codebase. Statements may refer to each
 other in any order; strongly connected components are hashed as cycles.
@@ -467,9 +474,9 @@ processGroup cb0 decls = do
   signed <-
     Map.fromList
       <$> sequence
-        [ (n.text,) . Signed (S.declKey d) d.span <$> converted
+        [ (n.text,) . uncurry (Signed (S.declKey d) d.span) <$> converted
         | d@(S.DSig s n t) <- decls
-        , let converted = case queryScheme s cb1 t of
+        , let converted = case signatureScheme s cb1 t of
                 Left (DataError sp msg) -> Left (SignatureError (S.declKey d) sp msg)
                 other -> other
         ]
@@ -579,7 +586,9 @@ enterComponent group signed cb = \case
                   VNil
                   (asLambda b)
               )
-          (marked,markedProv,) <$> ascriptionsIn scope cb [] markedProv
+          (checkTerm, asc) <-
+            scopedAscriptions scope cb signed 0 [] "" b.name.text marked markedProv
+          pure (checkTerm, markedProv, asc)
     checked <- annotatedCheck cb asc checkTerm (typeErrorIn b checkProv)
     let h = hashTerm term
         ref = Reference h Nothing
@@ -589,6 +598,63 @@ enterComponent group signed cb = \case
     signed' <- signMembers signed cb [(b, fromMaybe stored checked)]
     pure (signed' (markKind b.kind b.name.text cb'))
   CyclicSCC bs -> enterCycle group signed cb bs
+
+{- | A member's ascriptions, desugared with markers, converted with the
+variables of the member's signature in scope (design §4.8), and the term
+to check them on. When an ascription names one of those variables, the
+member's body is wrapped in a marker for the signature itself
+('D.signatureMarker'), so that the definition's type and its ascriptions
+meet the same variables: those of the signature, renumbered into a range
+of the member's own ('scopedSignature'), which every marker shares and no
+variable of inference meets. Their unification is flexible; the
+signature's check afterwards, on the scheme this check gives, refuses a
+definition whose ascriptions narrowed a variable or made two one.
+-}
+scopedAscriptions ::
+  S.Scope ->
+  Codebase ->
+  Map.Map Text Signed ->
+  Int ->
+  D.Path ->
+  Text ->
+  Text ->
+  Term n ->
+  Provenance ->
+  Either ResolveError (Term n, Map.Map Text (Scheme, D.Path))
+scopedAscriptions scope cb signed member prefix tag n marked prov = do
+  let scoped = scopedSignature member (Map.lookup n signed)
+  asc <- ascriptionsIn scope cb (maybe Map.empty fst scoped) prefix prov
+  pure $ case scoped of
+    Just (bound, sigType)
+      | any (mentions (Map.keysSet bound) . snd) prov.ascriptions ->
+          let wrapper = D.signatureMarker tag
+           in (PrimApp wrapper [marked], Map.insert wrapper (Forall [] sigType, prefix) asc)
+    _ -> (marked, asc)
+ where
+  mentions vars t =
+    not (Set.null (Set.intersection vars (Set.fromList (map (.text) (tyNames t)))))
+
+{- | The variables a member's signature binds, renumbered into a range of
+the member's own, far from every variable an inference run makes, with
+the signature's type over them; none for a member without a signature or
+one without variables.
+-}
+scopedSignature :: Int -> Maybe Signed -> Maybe (Bound, Type)
+scopedSignature member = \case
+  Just sig
+    | not (Map.null sig.bound) ->
+        let Forall vs ty = sig.scheme
+            base = scopedBase + member * scopedStride
+            moved = Map.fromList [(v, varArg k (base + v)) | (v, k) <- vs]
+            bound =
+              Map.map (\bv -> bv{var = base + bv.var, axis = (base +) <$> bv.axis}) sig.bound
+         in Just (bound, substOnce moved ty)
+  _ -> Nothing
+ where
+  -- Below 'axisBase', where axis variables start, and far above the
+  -- variables of any other kind a run makes.
+  scopedBase = 500000000
+  scopedStride = 100000
 
 {- | The check of a definition that the annotations of the input take part
 in (design §4.8): its uses of signed names see their signatures, and its
@@ -706,13 +772,34 @@ enterCycle group signed cb sbs = do
                 )
                 (0 :: Int)
             let markedProvs = vecToList (vecMap snd marked)
-                markedTerm = Cycle (vecMap (Hint . (.name.text) . snd) members) (vecMap fst marked)
-            asc <-
-              Map.unions
-                <$> sequence
-                  [ ascriptionsIn s cb [i] prov
-                  | (i, (s, _), prov) <- zip3 [0 ..] sortedScoped markedProvs
-                  ]
+            -- Each member's body is wrapped in its signature's marker when
+            -- its ascriptions name the signature's variables.
+            (scoped, (_, asc)) <-
+              runStateT
+                ( vecTraverse
+                    ( \(body, prov) -> do
+                        i <- gets fst
+                        let (s, b) = sortedScoped !! i
+                        (body', asc) <-
+                          lift
+                            ( scopedAscriptions
+                                s
+                                cb
+                                signed
+                                i
+                                [i]
+                                (T.pack (show i))
+                                b.name.text
+                                body
+                                prov
+                            )
+                        modify (\(_, acc) -> (i + 1, Map.union acc asc))
+                        pure body'
+                    )
+                    marked
+                )
+                (0 :: Int, Map.empty)
+            let markedTerm = Cycle (vecMap (Hint . (.name.text) . snd) members) scoped
             annotatedCheck cb asc markedTerm (cycleTypeError sorted markedProvs)
       let stored = preferLint schemes linted
           cb' = addTerm h cycleTerm stored typed cb
@@ -927,6 +1014,7 @@ enterData scope cb decl = do
       , params = Map.fromList (zip (map (.text) decl.params) [0 ..])
       , paramNames = map (.text) decl.params
       , axisOf = Map.empty
+      , sized = Map.empty
       }
   convertAll e = mapM (mapM (tyType e . (.ty)) . snd) decl.constructors
   fieldLabels =
@@ -955,6 +1043,8 @@ data DataEnv = DataEnv
   , paramNames :: [Text]
   , axisOf :: Map.Map Text VarId
   -- ^ each length parameter's companion axis parameter (design §3.9)
+  , sized :: Map.Map Text Int
+  -- ^ the length of each sized @forall@ binder, @(a : 3)@ (design §3.9)
   }
 
 {- | The companion axis parameters of written parameters with their kinds
@@ -1044,6 +1134,7 @@ tyType env t = case t.node of
   S.TyFun a b -> TFun <$> tyType env a <*> tyType env b
   S.TyInt _ -> bad t "a number is a length, not a type"
   S.TyBracket _ -> bad t "a bracket is a shape or a dimension, not a type"
+  S.TyForall _ _ -> bad t "forall goes only at the head of a signature or an ascription"
  where
   -- A written chart's root slot is anonymous (design §3.9, stage 1).
   chart sh = TScale sh AAnon
@@ -1137,7 +1228,9 @@ tyLen env a = case a.node of
   S.TyInt k | k >= 0 -> pure (LLit (fromInteger k), AAnon)
   S.TyName p | Map.member p env.params -> do
     v <- useParam env a p KLen
-    pure (LVar v 0, maybe AAnon AVar (Map.lookup p env.axisOf))
+    -- A sized binder is its literal length beside its own axes.
+    let len = maybe (LVar v 0) LLit (Map.lookup p env.sized)
+    pure (len, maybe AAnon AVar (Map.lookup p env.axisOf))
   -- The one type-level function (design §4.1): the rank of a shape.
   S.TyApp hd [sh] | hd.text == "rank" -> (,AAnon) . rankLen <$> tyShape env sh
   S.TyName "rank" -> bad a "rank takes a shape: rank s"
@@ -1188,41 +1281,159 @@ tyDim env a = case a.node of
 
 {- | A type written as a search query (design §7.3): every name that is not
 a built-in type, a declared type, a base unit or a unit is a variable, of
-the kind its position gives it.
+the kind its position gives it. A query headed by @forall@ is read as a
+signature is ('signatureScheme'), which is how a signature's log line
+reads back (design §7.4); one without stays implicit, as a search pattern
+and as the log lines written before @forall@ was required.
 -}
 queryScheme :: S.Scope -> Codebase -> S.TyExpr -> Either ResolveError Scheme
-queryScheme scope cb t = do
-  let vars = Set.toList (Set.filter isVar (names t))
-      env =
-        DataEnv
-          { codebase = cb
-          , scope = scope
-          , self = S.Name t.span ""
-          , params = Map.fromList (zip vars [0 ..])
-          , paramNames = vars
-          , axisOf = Map.empty
-          }
-  -- As for a declaration: kinds first, then each length variable with its
-  -- companion axis variable (design §3.9).
-  (_, kinds1) <- runStateT (tyType env t) Map.empty
-  let axes = companionAxes [(v, Map.findWithDefault KType v kinds1) | v <- vars]
-  (ty, kinds) <- runStateT (tyType env{axisOf = Map.fromList axes} t) kinds1
-  pure
-    ( Forall
-        ( [(i, Map.findWithDefault KType v kinds) | (i, v) <- zip [0 ..] vars]
-            ++ [(i, KAxis) | (_, i) <- axes]
-        )
-        ty
-    )
+queryScheme scope cb t = case t.node of
+  S.TyForall _ _ -> fst <$> signatureScheme scope cb t
+  _ -> do
+    let vars = Set.toList (Set.filter isVar (Set.fromList (map (.text) (tyNames t))))
+        env =
+          DataEnv
+            { codebase = cb
+            , scope = scope
+            , self = S.Name t.span ""
+            , params = Map.fromList (zip vars [0 ..])
+            , paramNames = vars
+            , axisOf = Map.empty
+            , sized = Map.empty
+            }
+    -- As for a declaration: kinds first, then each length variable with its
+    -- companion axis variable (design §3.9).
+    (_, kinds1) <- runStateT (tyType env t) Map.empty
+    let axes = companionAxes [(v, Map.findWithDefault KType v kinds1) | v <- vars]
+    (ty, kinds) <- runStateT (tyType env{axisOf = Map.fromList axes} t) kinds1
+    pure
+      ( Forall
+          ( [(i, Map.findWithDefault KType v kinds) | (i, v) <- zip [0 ..] vars]
+              ++ [(i, KAxis) | (_, i) <- axes]
+          )
+          ty
+      )
  where
   -- Names resolve through the scope (design §7.6).
   isVar = typeVariable scope cb
-  names :: S.TyExpr -> Set Text
-  names e = case e.node of
-    S.TyName n -> Set.singleton n
-    S.TyInt _ -> Set.empty
-    S.TyApp hd args -> Set.insert hd.text (foldMap names args)
-    S.TyTuple ts -> foldMap names ts
-    S.TyList a -> names a
-    S.TyFun a b -> names a <> names b
-    S.TyBracket items -> foldMap (foldMap (names . fst)) items
+
+-- | Every name a written type uses, with its span, in order.
+tyNames :: S.TyExpr -> [S.Name]
+tyNames e = case e.node of
+  S.TyName n -> [S.Name e.span n]
+  S.TyInt _ -> []
+  S.TyApp hd args -> hd : concatMap tyNames args
+  S.TyTuple ts -> concatMap tyNames ts
+  S.TyList a -> tyNames a
+  S.TyFun a b -> tyNames a ++ tyNames b
+  S.TyBracket items -> concatMap (concatMap (tyNames . fst)) items
+  S.TyForall bs a -> map (.name) bs ++ tyNames a
+
+{- | The variables a @forall@ binds, by name (design §4.8): each with its
+id and kind in the scheme, and, for a length, its companion axis variable
+(design §3.9) and the literal it is when the binder is sized.
+-}
+type Bound = Map.Map Text BoundVar
+
+data BoundVar = BoundVar {var :: VarId, kind :: Kind, axis :: Maybe VarId, size :: Maybe Int}
+
+{- | A signature's type (design §4.8, §3.9 decision 6), with the variables
+its @forall@ binds. The variables are numbered in the order they first
+appear, as 'canonicalScheme' numbers them, so that a signature and the
+text it prints as convert to the same scheme.
+-}
+signatureScheme ::
+  S.Scope -> Codebase -> S.TyExpr -> Either ResolveError (Scheme, Bound)
+signatureScheme scope cb t = do
+  (Forall _ ty, bound) <- explicitScheme scope cb Map.empty t
+  let vs = freeVars ty
+      renumber = Map.fromList (zip (map fst vs) [0 ..])
+      moved = Map.fromList [(v, varArg k i) | ((v, k), i) <- zip vs [0 ..]]
+      at v = Map.findWithDefault v v renumber
+  pure
+    ( Forall [(i, k) | ((_, k), i) <- zip vs [0 ..]] (substOnce moved ty)
+    , Map.map (\bv -> bv{var = at bv.var, axis = at <$> bv.axis}) bound
+    )
+
+{- | A type whose variables are bound explicitly (design §4.8, §3.9
+decision 6): by its own @forall@, or, for an ascription, by the signature
+of the definition it is in (the given variables, which stay free in the
+scheme). Every other name is a name and resolves like one; an unknown
+lowercase one is an error. A binder, or a signature's variable in an
+ascription, shadows a unit, a base unit or a declared type of its name
+throughout the type, brackets included. Kinds
+are learned from where the variables are used; a length variable stands
+for a whole axis set, its length and a companion axis variable, and a
+sized binder, @(a : 3)@, for that many axes of its own.
+-}
+explicitScheme ::
+  S.Scope -> Codebase -> Bound -> S.TyExpr -> Either ResolveError (Scheme, Bound)
+explicitScheme scope cb outer t0 = do
+  let (binders, body) = case t0.node of
+        S.TyForall bs b -> (bs, b)
+        _ -> ([], t0)
+  checkBinders Set.empty (map (.name) binders)
+  let own = map (.name.text) binders
+      -- Outer variables keep their ids; the type's own are numbered above them.
+      base =
+        1
+          + maximum (-1 : concat [bv.var : maybe [] pure bv.axis | bv <- Map.elems outer])
+      ownIds = Map.fromList (zip own [base ..])
+      visible = Map.withoutKeys outer (Set.fromList own)
+      params = ownIds <> Map.map (.var) visible
+      sizes =
+        Map.fromList [(b.name.text, fromInteger k) | b <- binders, Just k <- [b.size]]
+          <> Map.mapMaybe (.size) visible
+  case [ n | n <- tyNames body, Map.notMember n.text params, typeVariable scope cb n.text
+       ] of
+    n : _ ->
+      Left
+        ( DataError
+            n.span
+            ( "unknown name `"
+                <> n.text
+                <> "` in a type; bind it with forall if it is a variable"
+            )
+        )
+    [] -> pure ()
+  let env =
+        DataEnv
+          { codebase = cb
+          , scope = scope
+          , self = S.Name t0.span ""
+          , params = params
+          , paramNames = Map.keys params
+          , axisOf = Map.mapMaybe (.axis) visible
+          , sized = sizes
+          }
+      known =
+        Map.map (.kind) visible
+          <> Map.fromList [(n, KLen) | n <- Map.keys sizes]
+  -- Kinds first, then each length variable with its companion axis variable.
+  (_, kinds) <- runStateT (tyType env body) known
+  let used = [(n, k) | n <- own, Just k <- [Map.lookup n kinds]]
+      axes = zip [n | (n, KLen) <- used] [base + length own ..]
+  (ty, _) <-
+    runStateT (tyType env{axisOf = Map.fromList axes <> env.axisOf} body) known
+  let idOf n = Map.findWithDefault 0 n ownIds
+  pure
+    ( Forall
+        ( [(idOf n, k) | (n, k) <- used, Map.notMember n sizes]
+            ++ [(i, KAxis) | (_, i) <- axes]
+        )
+        ty
+    , Map.fromList
+        [(n, BoundVar (idOf n) k (lookup n axes) (Map.lookup n sizes)) | (n, k) <- used]
+    )
+ where
+  checkBinders _ [] = Right ()
+  checkBinders seen (n : ns)
+    | not (maybe False (isLower . fst) (T.uncons n.text)) || n.text == "rank" =
+        Left
+          ( DataError
+              n.span
+              ("`" <> n.text <> "` cannot be a type variable; a variable is a lowercase name")
+          )
+    | Set.member n.text seen =
+        Left (DataError n.span ("`" <> n.text <> "` is bound twice"))
+    | otherwise = checkBinders (Set.insert n.text seen) ns

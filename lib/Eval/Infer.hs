@@ -713,9 +713,12 @@ infer look p ctx = \case
   -- §4.8): the ascribed type, instantiated fresh, is unified with the
   -- expression's, so it narrows and never widens. The marker elaborates to
   -- the expression's own typed term.
+  -- A signature's marker around a body whose ascriptions name its
+  -- variables reads the same way, its body at its own path.
   PrimApp marker [a]
     | ascriptionMarker `T.isPrefixOf` marker -> do
-        r@(t, _) <- infer look (0 : p) ctx a
+        let signature = ":signature" `T.isSuffixOf` marker
+        r@(t, _) <- infer look (if signature then p else 0 : p) ctx a
         ascribed <- gets (Map.lookup marker . (.annotations.ascriptions))
         case ascribed of
           Nothing -> failAt p "internal error: an ascription without its type"
@@ -724,7 +727,10 @@ infer look p ctx = \case
             st <- get
             case runStateT (unify p want t) st of
               Right ((), st') -> put st'
-              Left err -> failAt (reverse at) ("the ascription: " <> err.message)
+              Left err ->
+                failAt
+                  (reverse at)
+                  ((if signature then "the signature: " else "the ascription: ") <> err.message)
         pure r
   Var i -> do
     (t, args) <- instantiate (lookupCtx i ctx)

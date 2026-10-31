@@ -119,7 +119,7 @@ desugaring (§2.9); the type checker never sees it.
 - **Comments**: `--` to end of line, `{- … -}` nestable blocks.
 - **Keywords**: `let`, `in`, `where`, `if`, `then`, `else`, `to`, `true`, `false`,
   `unit`, `chart` (and `scale`, its old spelling), `at`, `case`, `of`, `data`,
-  `namespace`, `use`. (`as` in
+  `namespace`, `use`, `forall` (also `∀`). (`as` in
   `use a as k` is not a keyword: it is also the attosecond.)
 - **Operators**: `+ - * / ^ ± == /= < <= > >= && ||` and their unicode spellings
   (§2.8). A name in backticks is an infix operator: `a `dot` b`.
@@ -445,7 +445,7 @@ statement  ::= 'let' name param* '=' expr [ 'where' bindings ]
              | ['structural'] 'data' name param* '=' con ( '|' con )*   -- a data type (2.3)
              | 'namespace' path statements                -- an indented block (7.6)
              | 'use' [ '.' ] path [ 'as' name ]            -- 'as' is a name, not a keyword (7.6)
-             | name '::' type                             -- a signature (4.8)
+             | name '::' sigtype                          -- a signature (4.8)
              | expr
 origin     ::= expr                                   -- a chart name juxtaposed last is the parent (3.8);
                                                        -- 'by' is a keyword here only, cut at the first one outside brackets;
@@ -455,6 +455,8 @@ path       ::= name ( '.' name )*                       -- glued dots
 statements ::= statement ( sep statement )*            -- indented block, opened as after 'where'
 qname      ::= [ '.' ] name ( '.' name )*              -- a qualified or absolute name (7.6)
 con        ::= name tyatom* | name '{' name '::' type ( ',' name '::' type )* '}'   -- a record (2.3)
+sigtype    ::= [ 'forall' binder+ '.' ] type               -- a signature's or an ascription's type (4.8): its variables
+binder     ::= name | '(' name ':' natural ')'          -- a variable, or one sized: that many axes of its own (3.9)
 type       ::= tyapp [ '->' type ]
 tyapp      ::= qname tyatom* | tyatom
 tyatom     ::= qname | natural | '(' type ( ',' type )* ')' | '{' type '}' | '[' bracket ']'
@@ -484,7 +486,7 @@ projection ::= natural
 primary    ::= number | name | '.' name | 'true' | 'false'     -- '.' name not glued: absolute (7.6)
              | '(' expr ')' | section | vector | matrix
              | '(' expr ( ',' expr )+ ')'                      -- a tuple
-             | '(' expr '::' type ')'                          -- an ascription (4.8)
+             | '(' expr '::' sigtype ')'                       -- an ascription (4.8)
              | '{' [ expr ( ',' expr )* ] '}'                   -- a list
              | 'case' expr 'of' alts                       -- alts: an indented block, or ; separated
 alt        ::= pattern '->' expr
@@ -520,6 +522,7 @@ so a plain keyboard is never a barrier, and the pretty-printer can emit either.
 | `°C` `°F` | `degC` `degF` | temperature scales (§3.6); `°` alone is `deg` |
 | `√` | `sqrt` | prefix: `√x`, `√(a² + b²)` |
 | `∘` | `.` | composition |
+| `∀` | `forall` | binds a signature's or an ascription's type variables (§4.8); input only, printed `forall` |
 | `²` `³` `⁻¹` … | `^2` `^3` `^-1` | superscript digits and `⁻` as a power: `m/s²`, `s⁻²` |
 | `π` | `pi` | the constant |
 | `°` | `deg` | postfix unit: `45°` is `45 deg` |
@@ -1190,7 +1193,7 @@ true
 > transformBy [[0, -1, 0], [1, 0, 0], [0, 0, 1]] [[4, 1, 0], [1, 9, 0], [0, 0, 1]]
 [9, -1, 0; -1, 4, 0; 0, 0, 1]
 > :type rotation
-Vec 3 d -> Vec 3 d1 -> Mat 3 3
+forall d d1. Vec 3 d -> Vec 3 d1 -> Mat 3 3
 ```
 
 - `a ∧ b` is stored as the matrix `a bᵀ − b aᵀ`, whose product with a
@@ -1297,15 +1300,15 @@ display unit and every nudge. For example:
 > :type permute [2, 0, 1] [[[1, 2, 3], [4, 5, 6]]]
 Tensor [3, 1, 2]
 > :type \t -> contract 0 2 t
-Tensor (n : m : n : s) d -> Tensor (m : s) d
+forall n m s d. Tensor (n : m : n : s) d -> Tensor (m : s) d
 > :type \t -> permute [2, 0, 1] t
-Tensor (n : m : k : s) d -> Tensor (k : n : m : s) d
+forall n m k s d. Tensor (n : m : k : s) d -> Tensor (k : n : m : s) d
 > ([1, 2; 3, 4] m)._.0
 [1, 3] m
 > :type \m -> m._.0
-Tensor (n : m + 1 : s) d -> Tensor (n : s) d
+forall n m s d. Tensor (n : m + 1 : s) d -> Tensor (n : s) d
 > :type \t -> t._._.2
-Tensor (n : m : k + 3 : s) d -> Tensor (n : m : s) d
+forall n m k s d. Tensor (n : m : k + 3 : s) d -> Tensor (n : m : s) d
 ```
 
 `vzipWith f a b` is `⊙`'s general form: it applies the two-argument `f` to
@@ -1324,7 +1327,7 @@ a map can see each component's position:
 > vimap (\i x -> i * x) [10, 20, 30]
 [0, 20, 60]
 > :type vimap
-(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1
+forall d d1 n. (Num -> Num d -> Num d1) -> Vec n d -> Vec n d1
 ```
 
 The position arrives as a value, a `Num`, never as a literal, so it cannot be
@@ -1350,10 +1353,10 @@ general one. A diagonal mask:
 > timap (\i x -> i.0 * x) [10, 20, 30]
 [0, 20, 60]
 > :type timap
-(Vec (rank s) -> Num d -> Num d1) -> Tensor s d -> Tensor s d1
+forall s d d1. (Vec (rank s) -> Num d -> Num d1) -> Tensor s d -> Tensor s d1
 > let diag t = timap (\i x -> if i.0 == i.1 then x else 0) t
 > :type diag
-Tensor (n : m : s) -> Tensor (n : m : s)
+forall n m s. Tensor (n : m : s) -> Tensor (n : m : s)
 ```
 
 The projections inside `f` are what fix how much of the shape a definition
@@ -2210,7 +2213,7 @@ hands, meet:
 §3.9, to be decided with charts: a chart is an axis set with an origin, and
 what `p to lvlh` returns is what decides whether `Vec lvlh` exists.
 
-### 3.9 Axis sets: named positions and index types (layer 2, stage 1 built; the rest design)
+### 3.9 Axis sets: named positions and index types (layer 2, stages 1 and 2a built; the rest design)
 
 Two layers, the first a sugar and the second a type-system extension; the
 first can be built alone and does not prejudge the second.
@@ -2222,7 +2225,7 @@ the same hash as the numeric form, so `:view` prints whichever was written
 and projection's static bound applies (`v.z` on a `Vec 2` is refused). It
 works at any rank (`m.y.x` is row 1, column 0). `linalg` seeds `axes x y z`.
 
-**Layer 2, axis sets as types (design; stage 1 built, below).** Amounts
+**Layer 2, axis sets as types (design; stages 1 and 2a built, below).** Amounts
 carry the axes they are measured along, so mixing components of two frames
 is a type error and a displacement taken inside a frame prints along that
 frame's axes. The decisions:
@@ -2302,7 +2305,8 @@ frame's axes. The decisions:
    scopes its variables over the body, so an ascription inside refers to the
    signature's frame. `:type`, `:ls` and `:view` print the `forall`, so what
    is printed can be pasted back; `:ls : type` queries stay implicit, being
-   search patterns; `data` parameters are already explicit. Built in stage 4.
+   search patterns; `data` parameters are already explicit. Built in stage 2a
+   (below), but for printing a sized binder.
 7. **The base axes are named** (decided by the owner). Every chart without
    a parent names its own axis set; a translated child shares its parent's,
    a rotated child names its own. Two unrelated root charts (`eci`, a lab
@@ -2428,6 +2432,42 @@ representation the later stages build on.
   stored scheme and of the run that instantiates it are numbered from the
   same base, so lint now renames a variable still to be applied apart
   from the argument's before substituting.
+
+**Stage 2a, as built.** Decision 6, ahead of the named sets; §4.8 has the
+rules in full.
+
+- **Syntax.** `forall` (or `∀`), binders, `.` at the head of a signature's
+  or an ascription's type; a binder is a name or a sized `(a : 3)`
+  (§2.7). `forall` is a keyword.
+- **Required.** Every variable of a signature or an ascription is bound;
+  an unknown lowercase name is refused ("unknown name `x` in a type; bind
+  it with forall if it is a variable"). The resolver's guess and the
+  printer's dodging of unit names in scope are gone: a binder shadows a
+  unit, base unit or type of its name within its type (and a signature's,
+  within its body's ascriptions), never in an expression, so the printer
+  uses plain names and skips one only when the same type prints that
+  base symbol (`forall s1 d. Tensor s1 d -> Tensor s1 [s d]`).
+- **Kinds from use, companions as in stage 1.** A length binder is a
+  whole axis set; a sized one is its literal length beside an axis
+  variable of its own. Signatures are numbered in order of appearance,
+  so a signature and the text it prints as are one scheme.
+- **Scoped.** A signature given with its definition scopes its variables
+  over the body's ascriptions; when one names them, the body is checked
+  wrapped in the signature, with the shared variables in a range of
+  their own, and the signature checked again on the result (§4.8).
+- **Printing.** `:type`, `:ls` and every written-back signature (`:edit`,
+  `:export`, `:scratch`, the `sig` line) print the `forall`; errors,
+  `:lint` and `:core` do not. `:view` shows a term or a declaration, never a
+  scheme, so it has none to print. `:ls : type` queries stay implicit, and an
+  old `sig` line without `forall` still replays.
+- **Not yet: sized printing.** A binder prints plain, so a sized
+  signature is written back as its literal (`forall d. Vec 3 d -> Vec 3
+  d`) and reads back with anonymous axes: `:export`/`:load`, the `sig`
+  line across a reload and an unchanged `:edit` (`signed keep`) narrow
+  it. Printing a binder sized wherever an axis variable stands beside a
+  literal would also change `:type cross` and `:ls`'s `cross` (the
+  library's `cross` is over one axis variable beside `3`), so it is left
+  to stage 2b with the printing of named sets.
 
 ## 4. Type system
 
@@ -2806,12 +2846,14 @@ Standard algorithm W over Core (§5.1), dispatching to §4.4 at `Num`, `Vec`,
 `Mat`, and emitting §4.2 constraints at overloaded operators. A binding group is
 split into strongly connected components (§6.3); each component is inferred
 monomorphically, then generalised over its free type, dimension and length
-variables. Printed schemes use `a b c` for type variables, `d1 d2` for dimension
-variables, `n m` for lengths, and show dimensions with base-unit symbols:
+variables. Printed schemes are headed by `forall` and their variables
+(§4.8), use `a b c` for type variables, `d d1` for dimension variables, `n
+m` for lengths and `s s1` for shapes, and show dimensions with base-unit
+symbols:
 
 ```
 > :type \r -> pi * r^2
-Num d1 -> Num [d1^2]
+forall d. Num d -> Num [d^2]
 > :type (*)
 Mul a b c => a -> b -> c
 > :type 9.81 m/s^2
@@ -2828,8 +2870,8 @@ Num [m s^-2]
   dimension. `sqrt` covers the `1/2` case; a `cbrt` can follow.
 - `det` is on dimensionless matrices only. Its natural type, `Mat n n d -> Num
   [d^n]`, needs a length as a dimension exponent, which the type system does
-  not have. So `det : Mat n n 1 -> Num 1` (`:type det` prints `Mat n n ->
-  Num`): it is polymorphic in `n` with no static size check, so `let d a =
+  not have. So `det : Mat n n 1 -> Num 1` (`:type det` prints `forall n.
+  Mat n n -> Num`): it is polymorphic in `n` with no static size check, so `let d a =
   det a` generalises and works at every size. A matrix with a unit is a type
   error ("expected Mat n n, got Mat 2 2 [m]"); divide the unit out first, as
   in `det (a / (1 m))`, and multiply by `m^n` for the size at hand.
@@ -2912,13 +2954,75 @@ cases are placeholders that elaboration makes unreachable.
 ### 4.8 Type annotations
 
 A **signature** `name :: type` (§2.2) says what type a definition is to
-have. The type is written as `:type` prints types (§2.3), and converted as
-a `:ls` type query is (§7.3), in the scope of the statement: a lowercase
-name that is not a built-in type, a declared type, a base unit or a unit
-is a variable, of the kind its position gives it (`Num d`, `Vec n`,
-`Tensor sh d`), and an unknown capitalised name is an unknown type. So a
-variable cannot be named like a unit: `m` and `s` are the metre and the
-second, and a shape variable is `sh`, not `s`.
+have. The type is written as `:type` prints types (§2.3), in the scope of
+the statement. **Its variables are bound by `forall`** (§3.9, decision 6;
+built in stage 2a): `ident :: forall a. a -> a`, `norm2 :: forall n d. Vec
+n d -> Num [d^2]`, `∀` for `forall`. Every other name in it is a name and
+resolves like one: a built-in type, a declared type, a base unit or a
+unit, by the scope. An unknown lowercase name is an error, not a guessed
+variable:
+
+```
+f :: a -> a
+error at 1:6
+  f :: a -> a
+       ^
+  unknown name `a` in a type; bind it with forall if it is a variable
+```
+
+and an unknown capitalised name is an unknown type, as before. A type
+without variables needs no `forall`: `area :: Shape -> Num [m^2]`.
+
+- **Kinds come from use**, as a `data` parameter's do (§2.3): `a` in `a ->
+  a` is a type, `n` in `Vec n` a length, `s` in `Tensor s d` a shape, `d` a
+  dimension. A variable used at two kinds is refused. A length variable
+  stands for a whole axis set, its length and a companion axis variable
+  (§3.9, stage 1). A binder that is not used binds nothing.
+- **A sized binder**, `forall (a : 3) d. Vec a d -> Vec a d`, is a length
+  fixed to the literal beside axes of its own: "any three-axis set, the same
+  one throughout". In stage 2a every axis set is anonymous, so it accepts a
+  `Vec 3` and refuses a `Vec 2` with the lengths message, and a definition
+  that holds of it must be polymorphic in those axes (`let keep v = v`
+  is; a definition that adds a literal `Vec 3` is not, since a literal's
+  axes are anonymous until stage 2b). Used as anything but a length, it is
+  refused.
+- **A binder shadows** a unit, a base unit or a declared type of its name
+  throughout its type, brackets included, and, for a signature given with
+  its definition, in the types of that body's ascriptions (below); never
+  in an expression. In `same :: forall s d. Tensor s d -> Tensor s d`, `s`
+  is the shape variable; in `secs :: Num [s] -> Num [s]` it is the second;
+  in `forall s. Num [s] -> Num [s]` it is a dimension variable, and the
+  body of either definition still reads `1 s` as the second. A binder is a
+  lowercase name other than `rank`, bound once, so only a lowercase
+  declared type can be shadowed, and a binder used as a head, `a Num`, is
+  refused as taking no arguments.
+- `forall` goes only at the head of a signature's or an ascription's type;
+  `data` parameters are already explicit, and a field cannot hold one.
+
+**Printing.** `:type`, `:ls` (definitions and constructors), and every place
+a signature is written back (`:edit`, `:export`, `:scratch`'s `pending:`
+line and the `sig` log line, §7.4) print the `forall` when the type has
+variables, in the order the printer names them, so what is printed can be
+pasted back: `forall a. a -> a`, `forall n d. Vec n d -> Num d`. A type
+without variables prints as before. Variables are named by kind as always
+(`a b c`, `n m k`, `s s1`, `d d1`); since a binder shadows a unit of its
+name, a name is skipped only when the same type prints that base symbol in
+a dimension, so a shape variable beside the second is `s1`: `forall s1 d.
+Tensor s1 d -> Tensor s1 [s d]`. Axis variables print as nothing and are
+not bound. A binder prints plain even when it was sized: in stage 2a the
+size is written back as its literal, `keep :: forall d. Vec 3 d -> Vec 3
+d`, which reads back with anonymous axes, so `:export` and `:load`, the
+`sig` line across a reload and an unchanged `:edit` (`signed keep`) narrow
+a sized signature; it still holds and still refuses a `Vec 2`. Sized
+printing is stage 2b's. Error messages, `:lint` and `:core` print types
+without `forall`, as before. `forall` prints so in unicode mode too; `∀` is
+input only.
+
+**Queries stay implicit.** A `:ls : type` query is a search pattern, not a
+type to read back, so its unknown lowercase names are still variables
+(`:ls : {a} -> Num` finds `length`). A query headed by `forall` reads as a
+signature does; so does a `sig` log line, and one written before `forall`
+was required, without it, still replays by the query rule.
 
 **Meaning: an instance of the inferred scheme.** A signature is checked
 after the definition's component has been inferred and linted, never used
@@ -2933,11 +3037,11 @@ signature can narrow a definition's type and never widen it:
 f :: Num [m] -> Num [m]
 let f x = x                     -- holds: a := Num [m]
 
-f :: a -> a
+f :: forall a. a -> a
 let f x = 1                     -- refused, at the signature:
 error at 1:1
-  f :: a -> a
-  ^^^^^^^^^^^
+  f :: forall a. a -> a
+  ^^^^^^^^^^^^^^^^^^^^^
   `f`'s definition has type `a -> Num`, not as general as its signature `a -> a`
 ```
 
@@ -2976,18 +3080,22 @@ again with the signatures its references see, which may refuse it. Its
 own type stays its Core's: `let h y = f y` has type `a -> a`, and `h (3 s)`
 is `3 s`. To narrow `h`, sign it: a signature is checked against the type
 the second check inferred, `Num [m] -> Num [m]` here, so `h :: Num [m] ->
-Num [m]` holds and `h :: a -> a` is refused. §11 has this as open.
+Num [m]` holds and `h :: forall a. a -> a` is refused. §11 has this as
+open.
 
 **Ascription.** `(e :: type)`, anywhere an expression goes, in parentheses
 as a tuple or a section is, gives `e` a type. The type is converted in the
-scope of the expression as a signature's is, each lowercase unknown name a
-fresh variable, and unified with `e`'s inferred type at `e`'s node, so an
-ascription narrows and never widens: `(1 :: a)` is `1`, of type `Num`,
-because `a` is a fresh variable that unifies with `Num`; `:type \x -> (x ::
-Num d)` is `Num d -> Num d` where `\x -> x` is `a -> a`; `(3 m :: Num [m])`
-is `3 m`. Each ascription's variables are its own: two ascriptions that
-both say `d` do not share it. A failure is reported at the ascription, in
-the usual form with the prefix "the ascription":
+scope of the expression as a signature's is: its variables are bound by
+its own `forall`, or by the signature of the definition it is in (below),
+and an unknown lowercase name is the same error. Each of its own variables
+is fresh, and the type is unified with `e`'s inferred type at `e`'s node,
+so an ascription narrows and never widens: `(1 :: forall a. a)` is `1`, of
+type `Num`, because `a` is a fresh variable that unifies with `Num`;
+`:type \x -> (x :: forall d. Num d)` is `forall d. Num d -> Num d` where
+`\x -> x` is `forall a. a -> a`; `(3 m :: Num [m])` is `3 m`. Two
+ascriptions whose own `forall`s both bind `d` do not share it. A failure is
+reported at the ascription, in the usual form with the prefix "the
+ascription":
 
 ```
 > (3 m :: Num [kg])
@@ -3016,8 +3124,40 @@ x = (x :: Num [m]) + 1 m` views as `f = \x -> x + 1 * m`. An expression's type i
 evaluates to), but inside a definition an ascription only checks: the
 definition's type is its Core's, as for a use of a signed name above,
 because the store recomputes types from the terms, which have no
-ascriptions. `let g x = (x :: Num [m])` is `a -> a`, the same hash as `let
-g x = x`; sign `g` to narrow it.
+ascriptions. `let g x = (x :: Num [m])` is `forall a. a -> a`, the same
+hash as `let g x = x`; sign `g` to narrow it.
+
+**Scoped variables.** A signature's `forall` scopes its variables over the
+body of its definition, when the signature is given in the same input as
+the definition (a stored signature keeps no names, so a redefinition
+alone does not see them): an ascription in the body may name them, and
+they are the signature's variables, not fresh ones. An ascription's own
+`forall` shadows one of the same name.
+
+```
+f :: forall a. a -> a
+let f x = (x :: a)                    -- holds: x has the signature's a
+
+g :: forall a b. a -> b -> a
+let g x y = (x :: b)                  -- refused, at the signature:
+  `g`'s definition has type `a -> a -> a`, not as general as its signature `a -> b -> a`
+```
+
+Without the scope, `(x :: b)` would only narrow `x`, which any type does,
+and `g` would hold. With it, the check that ascriptions take part in
+(above) wraps the definition's body in a marker for the signature itself
+(`Desugar.signatureMarker`), which unifies the body's type with the
+signature's, and the ascriptions' converted types refer to the same
+variables, renumbered into a range of the member's own that no variable
+of inference meets (`Resolve.scopedSignature`). These unify as any
+variable does; the signature is then checked, as always, against the
+scheme that check gives, so an ascription that narrowed one of its
+variables or made two of them one is refused with the usual "not as
+general" message at the signature. This happens only when an ascription
+names one of the signature's variables, so a definition without one
+checks exactly as before; it applies to each member of a cycle with its
+own signature. A failure to unify the body with the signature in that
+check is reported with the prefix "the signature".
 
 ---
 
@@ -3438,10 +3578,11 @@ Inspection
                    lines included; --all lists everything by full path; a glob (* anywhere, else
                    a substring; on the full path or its last segment), a kind (--scales is the
                    old spelling of --charts), or a type query
-                   whose lowercase unknown names are variables, matched by unification both
-                   ways, searches everything; a signed name shows, and matches, its
-                   signature (4.8)
-:type e            inferred type scheme of e; a signed name's signature, as its uses see it (4.8)
+                   whose lowercase unknown names are variables (no forall needed: a query is a
+                   pattern), matched by unification both ways, searches everything; a signed
+                   name shows, and matches, its signature (4.8); types print headed by forall
+:type e            inferred type scheme of e, headed by forall when it has variables
+                   (forall a. a -> a); a signed name's signature, as its uses see it (4.8)
 :hash name         current ref of name
 :names #hash       every name that points at the hash (current or historical)
 :history name      refs the name has pointed at, newest first
@@ -3579,8 +3720,9 @@ the table in §2.8, and nothing else changes except the echo described below:
 | `\` | `λ` | lambdas: `λx → x² + 1` |
 | `<=` `>=` `/=` `\|\|` | `≤` `≥` `≠` `∨` | operators in `:view` |
 
-`*` stays `*`, because `×` is the cross product; `/`, `&&`, `sqrt` and names
-such as `pi` and `deg` keep their ASCII spelling. `√` would change the
+`*` stays `*`, because `×` is the cross product; `/`, `&&`, `sqrt`, `forall` and
+names such as `pi` and `deg` keep their ASCII spelling (`∀` reads as `forall`
+but is not printed). `√` would change the
 binding (it is a prefix operator, `sqrt` an application), and `π` and `°`
 are names, not syntax. `·`, `∧`, `⊙`, `⊘`, `±` and `±σ` print in unicode
 in both modes, as before. A power whose base does not end in an atom keeps
@@ -3671,7 +3813,7 @@ terminal themes do not show dim text:
 | an error's carets | bold red |
 | notes: `pending:`, `added`, `updated`, `nothing …`, the namespace lines of a bare `:ls`, `kept`, `stored use`, `(input abandoned)`, the `≡` of the unicode echo | bright black (grey) |
 | comments, `-- …` and `{- … -}` | bright black |
-| keywords: `let unit chart scale data case of in where if then else to true false at`, and `structural` before `data` | magenta |
+| keywords: `let unit chart scale data case of in where if then else to true false at forall`, and `structural` before `data` | magenta |
 | numbers and superscript powers | plain |
 | units, the SI base units and charts | cyan |
 | type names, constructors, the built-in heads `Num Vec Mat Tensor Point Chart Scale Bool` | yellow |
@@ -3693,6 +3835,8 @@ Some details of the rules:
 
 - In a type, a name is cyan only inside `[…]`. So a type variable such
   as `m` or `g` stays plain in `(g → m) → {g}`.
+- A variable that a `forall` on the line binds stays plain inside `[…]`
+  too, since it shadows the unit: `s` in `forall s. Num [s]`.
 - In a `data` declaration, the type name and the constructor names are
   yellow even before the session knows them.
 - A name that a line binds (between `let`, `where`, `\`, `of` or `;` and
@@ -3810,12 +3954,17 @@ history            the REPL's line history
 
 A `sig` line holds the signature as text that reads back at the root
 whatever came after it: ASCII, declared types by their absolute paths
-(`.Shape`, so the stored `use`s cannot change what it means), and variables
-named by kind but never like a unit or base symbol (`Tensor s1 d`, not
-`Tensor s d`, whose `s` is the second). On replay it is parsed and
-converted as a signature is (§4.8), and kept when its name is bound to a
-definition it holds of; otherwise it is skipped with a note. Sig lines
-come after every other line of a sync, so the labels they name exist.
+(`.Shape`, so the stored `use`s cannot change what it means), and its
+variables bound by `forall` (§4.8), so a variable shadows a unit of its
+name: `sig same forall s d. Tensor s d -> Tensor s d`. On replay it is
+parsed and converted as a `:ls` query is, which reads a type headed by
+`forall` as a signature (§4.8); a line written before `forall` was
+required has none and replays by the query rule, its unknown lowercase
+names variables. It is kept when its name is bound to a definition it
+holds of; otherwise it is skipped with a note. A sized binder is written
+back as its literal in stage 2a, so it reads back with anonymous axes
+(§4.8). Sig lines come after every other line of a sync, so the labels
+they name exist.
 `unsig` is written when a name loses its signature, whether or not it stays
 bound.
 
@@ -3849,12 +3998,13 @@ directory, shadows the user store, and `--codebase DIR` names one explicitly;
 stored codebase, or the namespace `ns`, as source that `:load` reads back:
 in a fresh session, `:load file` then `:add` gives the same labels on the
 same hashes (`names`, `typeNames`, `conNames`, `fieldNames`, `units`,
-`scales`, `signatures`). Each namespace is a `namespace` block, nested as
+`scales`, `signatures`, but for a sized binder's axes in stage 2a, §4.8).
+Each namespace is a `namespace` block, nested as
 the paths nest, with root definitions outside any block. Each definition
 is rendered as `:edit` renders it (`let name = body`, `unit name = …`,
 `chart name = … at …` with its parent and `by` when set (3.8), `data` declarations with their field names, and a
 signed definition's `name :: type` line just before it, spelled for its
-block, §4.8). The standard library's
+block, with its `forall`, §4.8). The standard library's
 namespaces are not exported unless one is asked for (`:export si`): a codebase that
 reads the export is seeded with it already. The codebase's stored `use`s
 (§7.7) head the export as `use` statements, the six of a seeded codebase,
@@ -4490,7 +4640,10 @@ tuned, and compilation is a later milestone.
      labels from charts or a coercion, a `where` clause on signatures. Decided
      with charts. Stage 1 built: a shape position is a length and a name
      slot, all anonymous or variable, the primitive schemes saying which
-     axes match, nothing printed. Layer 1, the `axes x y z` sugar, can be
+     axes match, nothing printed. Stage 2a built: `forall` required in
+     signatures and ascriptions, with sized binders and scoped variables,
+     and printed by `:type`, `:ls` and written-back signatures (sized
+     printing waits for 2b). Layer 1, the `axes x y z` sugar, can be
      built any time.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's

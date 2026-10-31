@@ -17,6 +17,7 @@ module Eval.Syntax (
   Statement (..),
   TyExpr (..),
   TyNode (..),
+  TyBinder (..),
   DataDecl (..),
   FieldDecl (..),
   Decl (..),
@@ -204,6 +205,16 @@ data TyNode
     @[2, 3]@ is a shape, @[kg m^2 s^-2]@ a dimension; @[m / s]@ divides.
     -}
     TyBracket [[(TyExpr, Integer)]]
+  | {- | @forall a (n : 3) d. τ@: the variables of a signature or an
+    ascription (design §4.8), only at its head
+    -}
+    TyForall [TyBinder] TyExpr
+  deriving stock (Eq, Show)
+
+{- | A variable bound by @forall@, with the length it stands for when it is
+sized, @(a : 3)@ (design §3.9, decision 6).
+-}
+data TyBinder = TyBinder {name :: Name, size :: Maybe Integer}
   deriving stock (Eq, Show)
 
 {- | @data Name params = Con fields | …@ (design §2.3). A @structural@

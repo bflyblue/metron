@@ -752,3 +752,29 @@
   when its history has exactly one entry, with no allowance for migrated
   history; `stdlibUpgrade` lost its moved-references argument. Hashes,
   the encoding and the library are unchanged.
+- Axis sets, stage 2a (design §3.9 decision 6, §4.8): `forall` is required
+  in signatures and ascriptions. `ident :: forall a. a -> a`, `∀` for
+  `forall`, now a keyword; a binder may be sized, `forall (a : 3) d. Vec a
+  d -> Vec a d`, a length fixed to the literal with axes of its own. Every
+  other name in such a type is a name: an unknown lowercase one is refused,
+  "unknown name `x` in a type; bind it with forall if it is a variable",
+  where it used to be read as a variable, and a binder shadows a unit,
+  base unit or type of its name within its type (and a signature's within
+  its body's ascriptions), never in an expression, so `forall s d. Tensor
+  s d -> …` and `Num [s] -> …` (the second) both mean what they say. A
+  signature given with its definition scopes its variables over the body:
+  an ascription there may name them, and one that would narrow them or
+  make two one is refused at the signature. `:type`, `:ls`, `:edit`,
+  `:export`, `:scratch` and the `sig` log line print the `forall` when the
+  type has variables (`forall n d. Vec n d -> Num d`), with plain names,
+  skipping only a base symbol the same type prints (`forall s1 d. Tensor
+  s1 d -> Tensor s1 [s d]`); a type without variables, error messages,
+  `:lint` and `:core` print as before. `:ls : type` queries stay implicit.
+  Old `sig` lines without `forall` still replay; an exported file or a
+  script whose signatures or ascriptions have unbound variables no longer
+  loads until they gain their `forall`. The library's `linalg.vimap`
+  signature gains one. Known gap: a sized binder prints plain, so a sized
+  signature written back (`:export`, `:edit`, the `sig` line) reads back
+  with anonymous axes, and an unchanged `:edit` reports it `signed`;
+  sized printing comes with stage 2b. Core, hashing, encodings and the
+  store format are unchanged.

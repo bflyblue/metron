@@ -133,6 +133,7 @@ keywords =
   , "false"
   , "namespace"
   , "use"
+  , "forall"
   ]
 
 {- | Whether the cursor is at a file name: the argument of @:load@ or of
@@ -563,6 +564,8 @@ colourTokens level names located =
   shadowed = case level of
     Expression -> binders [tok | (_, _, tok) <- located]
     TypeLevel -> Set.empty
+  -- A type's variables shadow units of their names (design §4.8).
+  bound = forallBinders [tok | (_, _, tok) <- located]
   go _ _ [] = []
   go depth prev (((s, e, tok), here) : rest) =
     let depth' = case tok of
@@ -584,11 +587,24 @@ colourTokens level names located =
         | n `Set.member` names.unitWords, n `Set.notMember` shadowed -> Just Cyan
         | n `Set.member` names.typeWords -> Just Yellow
       TypeLevel
+        | n `Set.member` bound -> Nothing
         | depth > 0 -> if n `Set.member` names.unitWords then Just Cyan else Nothing
         | n `Set.member` names.typeWords || n `Set.member` names.conWords -> Just Yellow
         | prev `elem` map Just [TKw KData, TEquals, TBar] -> Just Yellow
       _ -> Nothing
     _ -> Nothing
+
+{- | The variables @forall@ binds on a line (design §4.8): the names between
+it and the next @.@. As for 'binders', a name bound anywhere on the line is
+a variable everywhere in its types.
+-}
+forallBinders :: [Token] -> Set Text
+forallBinders = \case
+  [] -> Set.empty
+  TKw KForall : rest ->
+    let (region, after) = break (== TOp ".") rest
+     in Set.fromList [n | TIdent n <- region] <> forallBinders after
+  _ : rest -> forallBinders rest
 
 {- | Each token's level. In an expression, what follows @::@ is a type
 (design §4.8): to the end of the statement for a signature, @area ::

@@ -19,6 +19,7 @@ module Eval.Desugar (
   desugarMember,
   desugarMarked,
   ascriptionMarker,
+  signatureMarker,
   ascriptionPath,
   unmarked,
   Resolution (..),
@@ -199,6 +200,15 @@ desugarMarked tag name resolve ctx e =
 -- | The name of an ascription marker starts so (design §4.8).
 ascriptionMarker :: Text
 ascriptionMarker = "§ascribe"
+
+{- | The marker around a member's body when its ascriptions name the
+variables of its signature (design §4.8): the signature's type, read as an
+ascription of the whole body, so that both meet the same variables. Its
+body is at the marker's own path, since the desugarer did not put it
+one level down. The tag tells the members of a cycle apart.
+-}
+signatureMarker :: Text -> Text
+signatureMarker tag = ascriptionMarker <> tag <> ":signature"
 
 {- | The provenance key of the @k@th ascription's span in a term desugared
 with markers: a path of one negative step, which no node has, so that an
