@@ -9723,31 +9723,32 @@ partFTests =
             , "true"
             ]
     , testCase
-        "F8: any chart after a literal writes a point; one with parameters unapplied is refused" $ do
-        runLinesP
-          ( earth
-              ++ [ "let c = degF"
-                 , "3 c"
-                 , "[1, 2, 3] (ecef (0 J2000))"
-                 , multiline
-                     ["pt :: forall (c : Temperature). Chart c -> Point c", "let pt c = 3 c"]
-                 , "pt degF"
-                 , "(\\c -> 3 c) degC"
-                 ]
-          )
-          @?= Right ["3 degF", "[1, 2, 3] (ecef (0 J2000))", "3 degF", "3 degC"]
-        expectError
-          (runLinesP (earth ++ ["3 ecef"]))
-          "`ecef` takes arguments: a point is written on an applied chart"
-        expectError
-          (runLinesP ["let pt c = 3 c"])
-          "ambiguous: what follows this literal could be a unit or a chart"
-        -- Written as F8 has it, over every space: a number is the coordinate
-        -- of a point on a space of numbers only, so the definition is not as
-        -- general as its signature (design §3.10, part F, as built).
-        expectError
-          (runLinesP [multiline ["pt :: forall c. Chart c -> Point c", "let pt c = 3 c"]])
-          "not as general as its signature"
+        "F8: any chart after a literal writes a point; one with parameters unapplied is refused"
+        $ do
+          runLinesP
+            ( earth
+                ++ [ "let c = degF"
+                   , "3 c"
+                   , "[1, 2, 3] (ecef (0 J2000))"
+                   , multiline
+                       ["pt :: forall (c : Temperature). Chart c -> Point c", "let pt c = 3 c"]
+                   , "pt degF"
+                   , "(\\c -> 3 c) degC"
+                   ]
+            )
+            @?= Right ["3 degF", "[1, 2, 3] (ecef (0 J2000))", "3 degF", "3 degC"]
+          expectError
+            (runLinesP (earth ++ ["3 ecef"]))
+            "`ecef` takes arguments: a point is written on an applied chart"
+          expectError
+            (runLinesP ["let pt c = 3 c"])
+            "ambiguous: what follows this literal could be a unit or a chart"
+          -- Written as F8 has it, over every space: a number is the coordinate
+          -- of a point on a space of numbers only, so the definition is not as
+          -- general as its signature (design §3.10, part F, as built).
+          expectError
+            (runLinesP [multiline ["pt :: forall c. Chart c -> Point c", "let pt c = 3 c"]])
+            "not as general as its signature"
     , testCase "F9: printing and encoding" $ do
         runLinesP
           ( frame
@@ -9825,19 +9826,20 @@ partFTests =
             runLinesP (frame ++ [multiline outs, ":hash " <> n])
               @?= runLinesP (stored ++ [":hash " <> n])
     , testCase
-        "F7: with no type to say so, a frame with parameters is refused when converting" $ do
-        -- A function over any frame cannot know statically: the conversion
-        -- refuses at run time, never reading the chart a point was written on.
-        let setup =
-              earth
-                ++ [ multiline
-                       ["toE :: forall (c : Inertial). Point c -> Point eci", "let toE p = p to eci"]
-                   ]
-        runLinesP (setup ++ [":type toE", "toE ([1, 2, 3] eci)"])
-          @?= Right ["forall (c : Inertial). Point c -> Point eci", "[1, 2, 3] eci"]
-        expectError
-          (runLinesP (setup ++ ["toE ([1, 2, 3] (ecef (0 J2000)))"]))
-          "ecef takes arguments: write p from (ecef …) to c"
+        "F7: with no type to say so, a frame with parameters is refused when converting"
+        $ do
+          -- A function over any frame cannot know statically: the conversion
+          -- refuses at run time, never reading the chart a point was written on.
+          let setup =
+                earth
+                  ++ [ multiline
+                         ["toE :: forall (c : Inertial). Point c -> Point eci", "let toE p = p to eci"]
+                     ]
+          runLinesP (setup ++ [":type toE", "toE ([1, 2, 3] eci)"])
+            @?= Right ["forall (c : Inertial). Point c -> Point eci", "[1, 2, 3] eci"]
+          expectError
+            (runLinesP (setup ++ ["toE ([1, 2, 3] (ecef (0 J2000)))"]))
+            "ecef takes arguments: write p from (ecef …) to c"
     ]
  where
   inertial = [multiline ["space Inertial = Vec 3 m", "chart eci on Inertial"]]
