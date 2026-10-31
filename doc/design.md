@@ -1576,6 +1576,14 @@ so `v ± P` with a matrix is a type error.
 ordinary function on a homogeneous vector, exact in the coefficients, and
 `cholesky : Mat n n (d^2) -> Mat n n d` is its inverse on positive-definite
 matrices (it fails with a domain error when a pivot's enclosure reaches zero).
+Both `cholesky` and `v ±σ P` read only the lower triangle, so they first
+check that the matrix is symmetric: a pair `P.i.j`, `P.j.i` that is
+provably unequal, exact and different or decided different at the stated
+sigma as a comparison is (§3.2.9), is refused by its entries.
+`cholesky [1, 100; 0, 1]` fails with "cholesky needs a symmetric matrix:
+entries .0.1 and .1.0 differ", and `[0, 0] ±σ [1, 100; 0, 1]` with "±σ
+needs a symmetric covariance: …". A pair whose enclosures may be equal
+passes, and the lower entry is the one used.
 The REPL view `:covariance e` prints the covariance of a vector, or the variance
 of a number, followed by the **bound box**: each component's rigorous radius
 from the bound nudges, which has no variance and is reported beside it:

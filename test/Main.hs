@@ -4517,6 +4517,20 @@ affineTests =
           @?= Left "error: sqrt of a value that may be negative"
         typeOfTextP "covariance" @?= Right "forall n d. Vec n d -> Mat n n (d^2)"
         typeOfTextP "cholesky" @?= Right "forall n a d. Mat n a (d^2) -> Mat n a d"
+    , testCase "cholesky and ±σ refuse a matrix that is provably not symmetric" $ do
+        evalP "cholesky [1, 100; 0, 1]"
+          @?= Left "error: cholesky needs a symmetric matrix: entries .0.1 and .1.0 differ"
+        evalP "[0, 0] ±σ [1, 100; 0, 1]"
+          @?= Left "error: ±σ needs a symmetric covariance: entries .0.1 and .1.0 differ"
+        evalP "cholesky [4, 0, 1; 0, 4, 0; 2, 0, 4]"
+          @?= Left "error: cholesky needs a symmetric matrix: entries .0.2 and .2.0 differ"
+        -- enclosures that do not overlap
+        evalP "cholesky [4, 2 ± 0.1; 3, 3]"
+          @?= Left "error: cholesky needs a symmetric matrix: entries .0.1 and .1.0 differ"
+        -- enclosures that may be equal pass
+        evalP "cholesky [4, 2 ± 0.1; 2, 3]"
+          @?= Right ["[2, 0; 1, 1.4142135623730950488…]"]
+        evalP "[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2" @?= Right ["[0 ±σ 1, 0.0 ±σ 1.0] m"]
     , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
         runLinesP
           [ "let w = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"

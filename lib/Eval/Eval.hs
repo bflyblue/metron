@@ -376,7 +376,9 @@ eval cfg rt = go
         -- component, identified by this site (design §3.5).
         ([n], [en, _]) | en == n -> do
           pRows <- chunksOf n <$> sequence (V.toList es)
-          lrows <- arith (choleskyRows (precisionOf cfg) pRows)
+          lrows <-
+            arith
+              (choleskyRows "±σ needs a symmetric covariance" cfg.sigma (precisionOf cfg) pRows)
           let noise j = unitNoise k (originOf site l j)
               component i =
                 ( \vi ->
@@ -876,7 +878,7 @@ runPrim cfg rt prim args = case (prim, args) of
     case dims of
       [n, n'] | n == n' -> do
         rows <- matrixRows n buf
-        l <- arith (choleskyRows p rows)
+        l <- arith (choleskyRows "cholesky needs a symmetric matrix" cfg.sigma p rows)
         d2 <-
           maybe
             (Left (Internal "cholesky of a dimension that is not a square"))
@@ -1854,11 +1856,37 @@ covarianceMatrix d hint as bs =
 {- | Cholesky–Banachiewicz on enclosures (design §3.5): @L Lᵀ = P@ with @L@
 lower triangular. A pivot whose enclosure reaches zero or below means the
 matrix may not be positive definite, which is a domain error.
+
+It reads only the lower triangle, so the matrix is checked symmetric
+first: a pair @m.i.j@, @m.j.i@ that is provably unequal, exact and
+different or decided different at the stated sigma as a comparison is
+(design §3.2.9), is refused by its entries, after the given text. A pair
+the enclosures cannot tell apart passes.
 -}
-choleskyRows :: Precision -> [[Magnitude]] -> Either ArithError [[Magnitude]]
-choleskyRows p a = go 0 []
+choleskyRows ::
+  Text -> Int -> Precision -> [[Magnitude]] -> Either ArithError [[Magnitude]]
+choleskyRows what sigma p a = mapM_ symmetric pairs >> go 0 []
  where
   n = length a
+  pairs = [(i, j) | i <- [0 .. n - 1], j <- [i + 1 .. n - 1]]
+  symmetric (i, j) = case compareM sigma p ((a !! i) !! j) ((a !! j) !! i) of
+    Right ord
+      | ord /= EQ ->
+          Left
+            ( Eval.Affine.Domain
+                ( what
+                    <> ": entries ."
+                    <> tshow i
+                    <> "."
+                    <> tshow j
+                    <> " and ."
+                    <> tshow j
+                    <> "."
+                    <> tshow i
+                    <> " differ"
+                )
+            )
+    _ -> Right ()
   go i done
     | i == n = Right done
     | otherwise = do
