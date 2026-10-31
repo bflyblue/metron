@@ -4246,6 +4246,19 @@ affineTests =
           Right q -> radius q > 0 @? show q
           Left err -> assertFailure (show err)
         divM 24 (scaleM 3 named) named @?= Right (Exact 3)
+    , testCase "remainders of different operand lists never share a nudge" $ do
+        -- [1, 12] and [1/11, 2] once ran together as the same bytes
+        let remainder operands = enclose "op" 24 operands 1 (Exact 0)
+            a = remainder [Exact 1, Exact 12]
+            b = remainder [Exact (1 / 11), Exact 2]
+        map fst (nudges a) @?= [1]
+        subM a b /= Exact 0 @? "the remainders cancelled"
+        radius (subM a b) @?= 2
+        -- the same operation twice is still one unknown
+        subM a (remainder [Exact 1, Exact 12]) @?= Exact 0
+        -- an operand's kind and its count are part of the identity
+        let x = uncertain Bound (Tagged "s" 0) (Exact 1) (Exact (1 / 2))
+        subM (remainder [x]) (remainder [x, Exact 0]) /= Exact 0 @? "count"
     , testCase "declared bounds print as mid ± r" $ do
         evalText "5 ± 0.1" @?= Right ["5.0 ± 0.1"]
         evalText "(5 ± 0.1) * (5 ± 0.1)" @?= Right ["25 ± 1"]

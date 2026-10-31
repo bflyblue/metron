@@ -79,6 +79,8 @@ module Eval.Affine (
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
+import Data.ByteString.Builder (Builder, byteString, toLazyByteString, word8)
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -86,8 +88,8 @@ import Data.Ord (Down (..))
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
 import Eval.Core (Hash (..), NudgeKind (..))
+import Eval.Encode (sint, text, varint)
 
 -- Types -----------------------------------------------------------------------------
 
@@ -347,18 +349,40 @@ withFresh name p operands size base =
 fresh :: Text -> Precision -> [Magnitude] -> Rational -> Rational -> Magnitude
 fresh name p operands m size = withFresh name p operands size (Exact m)
 
+{- | The identity of a builtin's remainder: a tagged, length-delimited
+encoding of the whole operation (design §3.2.4), its name, the
+precision, the operand count, and each operand by kind with every field
+length-prefixed, so that no two different operations share bytes (the
+operand lists @[1, 12]@ and @[1/11, 2]@ once ran together).
+-}
 builtinId :: Text -> Precision -> [Magnitude] -> NudgeId
 builtinId name p operands =
-  NudgeId
-    (SHA256.hash (bytes name <> bytes (tshow p) <> foldMap fingerprint operands))
+  nudgeId
+    ( word8 3
+        <> text name
+        <> sint (toInteger p)
+        <> varint (toInteger (length operands))
+        <> foldMap operand operands
+    )
  where
-  bytes = TE.encodeUtf8
-  fingerprint = \case
-    Exact r -> bytes (tshow r)
+  operand = \case
+    Exact r -> word8 0 <> rational r
     Affine m ts s ->
-      bytes (tshow m)
-        <> foldMap (\(NudgeId i, (c, _)) -> i <> bytes (tshow c)) (Map.toList ts)
-        <> bytes (tshow s)
+      word8 1
+        <> rational m
+        <> varint (toInteger (Map.size ts))
+        <> foldMap (\(i, (c, _)) -> idBytes i <> rational c) (Map.toList ts)
+        <> rational s
+
+-- | A nudge id from its encoding.
+nudgeId :: Builder -> NudgeId
+nudgeId = NudgeId . SHA256.hashlazy . toLazyByteString
+
+rational :: Rational -> Builder
+rational r = sint (numerator r) <> sint (denominator r)
+
+idBytes :: NudgeId -> Builder
+idBytes (NudgeId b) = varint (toInteger (BS.length b)) <> byteString b
 
 tshow :: (Show a) => a -> Text
 tshow = T.pack . show
@@ -929,10 +953,19 @@ itself, nothing else:  ± r #s7@ is  + r·e_s7@ whatever @ and @ are,
 which is how a systematic error shared by several readings is written.
 -}
 originId :: NudgeKind -> Origin -> Rational -> NudgeId
-originId k origin m = NudgeId . SHA256.hash $ case origin of
-  Declared (Hash h) path i -> h <> TE.encodeUtf8 (tshow (k, path, i, m))
-  Tagged l i -> TE.encodeUtf8 ("#" <> l) <> TE.encodeUtf8 (tshow (k, i))
-  Builtin name -> TE.encodeUtf8 name
+originId k origin m = nudgeId $ case origin of
+  Declared (Hash h) path i ->
+    word8 0
+      <> kindTag
+      <> idBytes (NudgeId h)
+      <> varint (toInteger (length path))
+      <> foldMap (sint . toInteger) path
+      <> sint (toInteger i)
+      <> rational m
+  Tagged l i -> word8 1 <> kindTag <> text l <> sint (toInteger i)
+  Builtin name -> word8 2 <> kindTag <> text name
+ where
+  kindTag = word8 (case k of Bound -> 0; Stat -> 1)
 
 {- | The coefficients of the statistical nudges: one column of the
 square-root factor of the covariance (design §3.5).

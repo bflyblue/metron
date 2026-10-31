@@ -837,7 +837,15 @@ of what created it.
   ids and coefficients, working precision)`. Two evaluations of `sin 1` at the same
   precision produce the same nudge, so `sin 1 - sin 1 = 0`. This is correct: the
   approximation error of a deterministic algorithm on identical input is the same
-  error.
+  error. The hash is over a tagged, length-delimited encoding of the whole
+  operation: the builtin's name, the precision, the number of operands, and
+  each operand with a tag for its kind (exact, or affine with its midpoint,
+  its nudges' ids and coefficients, and its slack) and every field
+  length-prefixed, rationals as numerator and denominator. Two different
+  operations never encode to the same bytes: operand lists `[1, 12]` and
+  `[1/11, 2]` written end to end as text would, and their remainders would
+  then cancel to an exact zero. Declared nudges' ids below use the same
+  encoding. Nudge ids live only in values, never in the store.
 - **Declared uncertainty** (`±`, `±σ`, `noise`, `gauss`): `id = hash(kind, hash of
   the enclosing top-level definition, path to the node inside it, component index,
   midpoint)`. Re-evaluating the same `±` with the same inputs gives the same
