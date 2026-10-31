@@ -106,8 +106,14 @@ primScheme name = case name of
   "sub" -> Just (Forall [sv, dv] (TFun sd (TFun sd sd)))
   "emul" -> Just (Forall [sv, dv, d2v] (TFun sd (TFun sd2 (TTensor s (dimMul d d2)))))
   "ediv" -> Just (Forall [sv, dv, d2v] (TFun sd (TFun sd2 (TTensor s (dimDiv d d2)))))
+  -- Division by a scalar of the same role (design §3.10, U9): an amount
+  -- of any shape by an amount, a unit by a unit.
   "div" ->
-    Just (Forall [sv, dv, d2v] (TFun sd (TFun (numD d2) (TTensor s (dimDiv d d2)))))
+    Just
+      ( Forall
+          [rv, sv, dv, d2v]
+          (TFun (TQty rr s d) (TFun (TQty rr SNil d2) (TQty rr s (dimDiv d d2))))
+      )
   -- outer, dot, eq and ne have constraint types; see 'lintConstrained'.
   "neg" -> Just (Forall [sv, dv] (TFun sd sd))
   "abs" -> Just (Forall [sv, dv] (TFun sd sd))
@@ -193,6 +199,9 @@ primScheme name = case name of
   -- The quantity rule after a unit (design §3.10, U4): a dimensionless
   -- literal of any shape times one unit, an amount.
   "scale" -> Just (Forall [sv, dv] (TFun (TTensor s dimOne) (TFun (TUnit d) sd)))
+  -- A unit's declaration (design §3.10, U7, U9): its size, an amount, or a
+  -- unit, made a unit; the identity at run time.
+  "unit" -> Just (Forall [rv, dv] (TFun (TQty rr SNil d) (TUnit d)))
   -- The wedge product is the general binary product of vectors; the 3D
   -- cross product is `star (wedge a b)` and lives in the prelude. Both
   -- vectors and the matrix are along one axis set (design §3.9).
@@ -369,6 +378,9 @@ primScheme name = case name of
   m = LVar 4 0
   xa = AVar 6
   xb = AVar 7
+  -- A role variable (design §3.10, U9).
+  rv = (8, KRole)
+  rr = RVar 8
   three = LLit 3
   sd = TTensor s d
   sd2 = TTensor s d2
@@ -770,16 +782,10 @@ lint look ctx = \case
                 <> ", not an instance of "
                 <> renderScheme general
             )
-    case ( unitReading name ty
-         , primScheme name
-         , primSchemeFor look.typeDefOf name literals
-         ) of
-      -- Unit arithmetic and a unit's declaration (design §3.10): the
-      -- reading of units.
-      (Just check, _, _) -> check
-      (_, Just general, _) -> instanceOf general
+    case (primScheme name, primSchemeFor look.typeDefOf name literals) of
+      (Just general, _) -> instanceOf general
       -- contract, permute and slice: the scheme the literal positions determine.
-      (_, _, Just general) -> general >>= instanceOf
+      (_, Just general) -> general >>= instanceOf
       _ -> lintConstrained look name ty
     let go t = \case
           [] -> Right t
@@ -889,9 +895,8 @@ lint look ctx = \case
   TPow b n -> do
     tb <- monoOf b
     case tb of
-      TTensor SNil d -> mono (TTensor SNil (dimPow (fromIntegral n) d))
-      -- A power of a unit is a unit (design §3.10, U2).
-      TUnit d -> mono (TUnit (dimPow (fromIntegral n) d))
+      -- A power of a number in its role (design §3.10, U9).
+      TQty r SNil d -> mono (TQty r SNil (dimPow (fromIntegral n) d))
       _ -> Left "power of a non-number"
   TNoise _ _ k -> mono (vecT (LLit (fromIntegral k)))
   TUncertain _ _ x e -> do
@@ -969,32 +974,7 @@ lint look ctx = \case
     AAxis _ -> KAxis
     AFrame _ -> KFrame
     ASpace _ -> KSpace
-
-{- | Lint's check of a primitive used at its reading of units (design §3.10,
-U2, U7), when the type it is used at is that reading: @*@ and @/@ of two
-units, and a unit's declaration from an amount or a unit. 'Nothing' when
-the type is not the reading of units, so the reading of amounts is checked.
--}
-unitReading :: Text -> Type -> Maybe (Either Text ())
-unitReading name ty = case (name, ty) of
-  ("outer", TFun (TUnit d1) (TFun (TUnit d2) (TUnit d3))) ->
-    Just
-      ( require
-          (d3 == dimMul d1 d2)
-          "outer: a unit product's dimension is not its operands'"
-      )
-  ("div", TFun (TUnit d1) (TFun (TUnit d2) (TUnit d3))) ->
-    Just
-      ( require
-          (d3 == dimDiv d1 d2)
-          "div: a unit quotient's dimension is not its operands'"
-      )
-  ("unit", TFun (TUnit d) (TUnit d')) ->
-    Just (require (d == d') "unit: a unit declared at another dimension")
-  ("unit", TFun (TTensor SNil d) (TUnit d')) ->
-    Just (require (d == d') "unit: a unit declared at another dimension")
-  ("unit", _) -> Just (Left ("unit: declared at " <> renderType ty))
-  _ -> Nothing
+    ARole _ -> KRole
 
 {- | The primitives whose types are relations rather than schemes (design
 §4.2). Inference solved or defaulted their constraints; lint re-checks the
@@ -1002,7 +982,9 @@ relation on the elaborated type.
 -}
 lintConstrained :: TypeLookup -> Text -> Type -> Either Text ()
 lintConstrained look name ty = case (name, ty) of
-  ("outer", TFun (TTensor s1 d1) (TFun (TTensor s2 d2) (TTensor s3 d3))) -> do
+  -- One role throughout (design §3.10, U9): two amounts or two units.
+  ("outer", TFun (TQty r1 s1 d1) (TFun (TQty r2 s2 d2) (TQty r3 s3 d3))) -> do
+    require (r1 == r2 && r2 == r3) "outer: operands and result in different roles"
     ls <-
       maybe (Left "outer: the left operand's rank is not known") Right (closedLens s1)
     require
@@ -1116,9 +1098,9 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
   matchType p t m = case (p, t) of
     (TVar v, _) | quantified v -> bindArg v (AType t) m
     (TFun a b, TFun c d) -> matchType a c m >>= matchType b d
-    (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
+    (TQty r sa da, TQty r' sb db) ->
+      matchRole r r' m >>= matchShape sa sb >>= matchDim da db
     (TPoint f, TPoint g) -> matchFrame f g m
-    (TUnit da, TUnit db) -> matchDim da db m
     (TScale f, TScale g) -> matchFrame f g m
     -- A synonym is checked by the comparison at the end, reduced.
     (TOver _ _, _) -> Just m
@@ -1134,7 +1116,11 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (AAxis x, AAxis y) -> matchAxis x y m
     (AFrame x, AFrame y) -> matchFrameSlot x y m
     (ASpace x, ASpace y) -> matchSpaceSlot x y m
+    (ARole x, ARole y) -> matchRole x y m
     _ -> Nothing
+  matchRole p a m = case p of
+    RVar v | quantified v -> bindArg v (ARole a) m
+    _ -> if p == a then Just m else Nothing
   matchFrame (Frame s a sp) (Frame s' a' sp') m =
     matchFrameSlot s s' m >>= matchAxis a a' >>= matchSpace sp sp'
   matchSpace (Space s sh d b) (Space s' sh' d' b') m =
@@ -1280,6 +1266,7 @@ renderTTerm namer = go 0
     KAxis -> "x" <> T.pack (show v)
     KFrame -> "f" <> T.pack (show v)
     KSpace -> "sp" <> T.pack (show v)
+    KRole -> "r" <> T.pack (show v)
   showD r = T.pack (show (fromRational r :: Double))
   nested dims rs = case dims of
     [] -> maybe "[]" showD (nth 0 rs)

@@ -10,6 +10,7 @@ module Eval.Type (
   Kind (..),
   VarId,
   Type (..),
+  Role (..),
   Frame (..),
   FrameSlot (..),
   Space (..),
@@ -40,6 +41,7 @@ module Eval.Type (
   applyShape,
   applyDim,
   applyAxis,
+  applyRole,
   applyFrame,
   applySpace,
   applyArg,
@@ -331,7 +333,7 @@ axisRoles t =
 -- | Every position of a type, a length and its axes, in order.
 positionsOf :: Type -> [(Len, Axis)]
 positionsOf = \case
-  TTensor sh _ -> shape sh
+  TQty _ sh _ -> shape sh
   TData _ as -> concatMap arg as ++ [(l, x) | (ALen l, Just x) <- withCompanions as]
   TFun a b -> positionsOf a ++ positionsOf b
   _ -> []
@@ -425,16 +427,16 @@ forallNames taken vs = snd (foldl pick (taken, Map.empty) vs)
     KAxis -> ["a", "b", "c", "e", "f", "g", "h"] ++ numbered "a"
     KFrame -> "c" : numbered "c"
     KSpace -> "s" : numbered "s"
+    KRole -> "r" : numbered "r"
   numbered p = [p <> T.pack (show i) | i <- [1 :: Int ..]]
 
 -- | The base symbols a type's dimensions print with.
 baseSymbolsOf :: Type -> Set.Set Text
 baseSymbolsOf = \case
-  TTensor _ d -> dim d
+  TQty _ _ d -> dim d
   TPoint _ -> Set.empty
   TScale _ -> Set.empty
   TOver _ md -> foldMap dim md
-  TUnit d -> dim d
   TData _ as -> foldMap arg as
   TFun a b -> baseSymbolsOf a <> baseSymbolsOf b
   TVar _ -> Set.empty
@@ -495,6 +497,7 @@ renderArg = \case
   AFrame (FrVar v) -> "f" <> T.pack (show v)
   ASpace (SpNamed h) -> showHash h
   ASpace (SpVar v) -> "sp" <> T.pack (show v)
+  ARole r -> roleText (\v -> "r" <> T.pack (show v)) r
  where
   shapeVars = \case
     SNil -> []
@@ -532,6 +535,14 @@ renderWithNamed typeName spelling axes names prec = \case
   -- A unit (design §3.10, U1) takes its dimension as `Num` does: `Unit m`,
   -- `Unit (m/s)`, and `Unit` alone when dimensionless.
   TUnit d -> paren (prec > 10 && not (isDimOne d)) ("Unit" <> dim d)
+  -- A quantity of a role variable (design §3.10, U9): `Quantity r d`, and
+  -- `Quantity r` when dimensionless. A role variable's shape is `[]` once
+  -- it is generalised; before, in an error, one of another shape prints
+  -- as the amount it can only be.
+  TQty r SNil d -> paren (prec > 10) ("Quantity " <> roleText varName r <> dim d)
+  TQty _ sh d
+    | prec > 10 -> "(" <> tensor sh <> dim d <> ")"
+    | otherwise -> tensor sh <> dim d
   -- A declared type prints by its short hash here; the driver replaces that
   -- with the current name (design §7.2), so inference needs no name table.
   -- An axis argument, a length's companion, prints with its length (design
@@ -575,7 +586,9 @@ renderWithNamed typeName spelling axes names prec = \case
     | isDimOne d = ""
     | otherwise = " " <> renderDimArgIn spelling dimName d
   dimName v = Map.findWithDefault ("d" <> T.pack (show v)) v names
+  varName v = Map.findWithDefault ("r" <> T.pack (show v)) v names
   argWith = \case
+    (ARole r, _) -> roleText varName r
     (AType t, _) -> renderWithNamed typeName spelling axes names 11 t
     (ALen l, Just x) -> position False (l, x)
     (ALen l, Nothing) -> renderLen names l
@@ -650,6 +663,7 @@ prettyNames vs =
         [v | (v, KFrame) <- vs]
         ("c" : ["c" <> T.pack (show i) | i <- [1 :: Int ..]])
       ++ zip [v | (v, KSpace) <- vs] ["sp" <> T.pack (show i) | i <- [1 :: Int ..]]
+      ++ zip [v | (v, KRole) <- vs] ("r" : ["r" <> T.pack (show i) | i <- [1 :: Int ..]])
 
 idNames :: [(VarId, Kind)] -> Map VarId Text
 idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
@@ -662,6 +676,16 @@ idNames vs = Map.fromList [(v, prefix k <> T.pack (show v)) | (v, k) <- vs]
     KAxis -> "x"
     KFrame -> "f"
     KSpace -> "sp"
+    KRole -> "r"
+
+{- | A role as it is written (design §3.10, U9): @Amount@, @Unit@, or its
+variable's name.
+-}
+roleText :: (VarId -> Text) -> Role -> Text
+roleText name = \case
+  RAmount -> "Amount"
+  RUnit -> "Unit"
+  RVar v -> name v
 
 -- Data ----------------------------------------------------------------------------
 
@@ -717,7 +741,12 @@ equalityArgs :: (Hash -> Maybe TypeDef) -> Hash -> [Arg] -> Maybe [Type]
 equalityArgs defs0 h as = do
   def <- defs h
   need <- equalityParams defs def
-  Just [t | (True, AType t) <- zip need as]
+  -- A role parameter that needs equality asks for an amount (design §3.10,
+  -- U9): equality takes amounts.
+  Just
+    ( [t | (True, AType t) <- zip need as]
+        ++ [TQty r SNil dimOne | (True, ARole r) <- zip need as]
+    )
  where
   defs = withBuiltins defs0
 
@@ -736,6 +765,9 @@ equalityParams defs def = go (map (const False) def.params)
   -- parameters are assumed to need.
   needs need = \case
     TTensor _ _ -> Just []
+    -- A quantity whose role is a parameter has equality when that role is
+    -- an amount's (design §3.10, U9).
+    TQty (RVar v) _ _ -> Just [v]
     TPoint _ -> Just []
     TOver _ _ -> Just []
     TVar v -> Just [v]

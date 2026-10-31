@@ -1301,6 +1301,8 @@ builtinTypeNames =
   [ "Bool"
   , "Num"
   , "Unit"
+  , "Quantity"
+  , "Amount"
   , "Vec"
   , "Mat"
   , "Tensor"
@@ -1431,6 +1433,7 @@ kindNoun = \case
   KAxis -> "an axis set"
   KFrame -> "a frame"
   KSpace -> "a space"
+  KRole -> "a role"
 
 -- | A parameter used at a kind: record it, or report the clash.
 useParam :: DataEnv -> S.TyExpr -> Text -> Kind -> Kinds VarId
@@ -1475,6 +1478,8 @@ tyType env t = case t.node of
     | n == "Bool" -> pure boolT
     | n == "Num" -> pure numT
     | n == "Unit" -> pure (TUnit dimOne)
+    | n == "Amount" ->
+        bad t "Amount is a role, not a type: an amount is Num d, or Quantity Amount d"
     | n `elem` builtinTypeNames -> bad t ("`" <> n <> "` needs its arguments")
     | otherwise -> applied env t n []
   S.TyApp hd args
@@ -1488,6 +1493,10 @@ tyType env t = case t.node of
         ("Num", [d]) -> TTensor SNil <$> tyDim env d
         -- A unit takes its dimension as Num does (design §3.10, U1).
         ("Unit", [d]) -> TUnit <$> tyDim env d
+        -- A quantity in a role (design §3.10, U9): @Quantity Amount d@ is
+        -- @Num d@ and @Quantity Unit d@ is @Unit d@.
+        ("Quantity", [r]) -> (\x -> TQty x SNil dimOne) <$> tyRole env r
+        ("Quantity", [r, d]) -> (`TQty` SNil) <$> tyRole env r <*> tyDim env d
         ("Vec", [n]) -> (\l -> TTensor (position l SNil) dimOne) <$> tyLen env n
         ("Vec", [n, d]) -> (\l -> TTensor (position l SNil)) <$> tyLen env n <*> tyDim env d
         ("Mat", [m, n]) ->
@@ -1520,6 +1529,16 @@ tyType env t = case t.node of
   S.TyShape _ -> bad t "a bracket is a shape, not a type"
   S.TyDim _ -> bad t "a dimension is not a type: a quantity of it is Num (m/s)"
   S.TyForall _ _ -> bad t "forall goes only at the head of a signature or an ascription"
+
+{- | A role (design §3.10, U9): @Amount@, @Unit@, or a variable of kind
+role.
+-}
+tyRole :: DataEnv -> S.TyExpr -> Kinds Role
+tyRole env a = case a.node of
+  S.TyName p | Map.member p env.params -> RVar <$> useParam env a p KRole
+  S.TyName "Amount" -> pure RAmount
+  S.TyName "Unit" -> pure RUnit
+  _ -> bad a "a role is Amount or Unit, or a variable, as in Quantity r m"
 
 {- | A frame (design §3.10, F4): a frame variable, with its companions, or
 a chart's name, which names the frame it minted, read off the chart's
@@ -1692,6 +1711,7 @@ argOf env k a = case k of
   KFrame -> (\f -> (AFrame f.slot, FrameOf f)) <$> tyFrame env a
   KAxis -> bad a "an axis set cannot be written"
   KSpace -> bad a "a space is written as a frame's: (c : Temperature)"
+  KRole -> (,NoCompanion) . ARole <$> tyRole env a
 
 -- | A position of a shape: a length and its axes.
 position :: (Len, Axis) -> Shape -> Shape

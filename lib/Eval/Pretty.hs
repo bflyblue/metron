@@ -276,8 +276,9 @@ renderValueWith printer scale prefs showMagnitude = \case
           <> unitSuffix s.dim
   -- A unit prints as its unit expression, written as a type's dimension is
   -- (design §3.10, U8), so that it reads back as unit arithmetic: `km`,
-  -- `km/h`, `kg*m/s^2`. One whose expression does not give its size (`km/km`
-  -- once its units cancel) prints as the amount of one of it, marked.
+  -- `km/h`, `kg*m/s^2`; one whose units all cancel keeps them as written,
+  -- `km/km` (U9). One whose expression does not give its size, its hint
+  -- lost, prints as the amount of one of it, marked.
   VUnit v -> case v of
     VTensor [] d (Just h) buf
       | h.dim == d

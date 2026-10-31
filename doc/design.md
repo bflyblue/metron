@@ -2649,7 +2649,7 @@ and `linalg.along` are `to`; §3.10, part F, as built.)
   free axes of their own (`rotation`, `dual`, `axisAngle`) until stage 4
   generalises them.
 
-### 3.10 Units, spaces and frames (stage 3 of §3.9; parts U and F built)
+### 3.10 Units, spaces and frames (stage 3 of §3.9; parts U and F built, and U9's roles)
 
 Decided by the owner, 2026-10-31. This is stage 3 of §3.9, revised: a point
 is typed by its *frame* (`Point lvlh`, `Point degC`), not by its axes as
@@ -2792,6 +2792,75 @@ Unit δ  = Quantity Unit δ
   as written, `km/m` and `km/km`, never `1 (a unit)`, so that it reads back
   as a `Unit`.
 
+**U9, as built.** As decided, with these details the decision left open.
+
+- **A role slot on the tensor form.** A quantity is a tensor with a role:
+  `Num δ`, `Vec`, `Mat` and `Tensor σ δ` are the role `Amount`, and `Unit
+  δ` is the role `Unit` at the shape `[]`. A role is `Amount`, `Unit` or a
+  variable of the new kind `Role`, and unifies syntactically. `Quantity r
+  δ` is a quantity of shape `[]` in the role `r`: `Quantity Amount m` reads
+  as `Num m` and `Quantity Unit m` as `Unit m`, and a role variable prints
+  `Quantity r d` (`Quantity r` when dimensionless), named `r`, `r1`.
+  `Quantity` and `Amount` are reserved type names. A declared type may
+  take a role, `data Box r = Box (Quantity r m)`, whose argument prints by
+  its name, `Box Unit`; its equality asks the role to be an amount's.
+- **A unit is one number.** The operands of `*` and `/` have a role and a
+  shape that may both be unknown, so a pending constraint, solved as
+  `Append` is, keeps a unit scalar: once the role is `Unit` the shape is
+  `[]`, and once the shape has a position the role is `Amount`. At
+  generalisation a role still open makes its shapes `[]`, so that the role
+  generalises: `\a b -> a * b` is `forall r d d1. Quantity r d -> Quantity
+  r d1 -> Quantity r (d*d1)`, `\a b -> a / b` likewise with `d/d1`, and
+  `\u -> u^3` is `Quantity r d -> Quantity r (d^3)`.
+- **What that costs.** A generalised function of arithmetic on parameters
+  alone is no longer rank-polymorphic: `\k v -> k * v` was `Num d ->
+  Tensor s d1 -> Tensor s (d*d1)` (§4.2's default), and is now the scalar
+  form above, so with `let sc k v = k * v`, `sc 2 [1, 2]` is refused
+  ("expected Num d, got Vec 2"); a lambda applied where it stands is not
+  generalised and still takes a vector. An operand known to be an amount
+  fixes the role and brings the old form back, `\k v -> 2 * k * v` is `Num
+  d -> Tensor s d1 -> Tensor s (d1*d)`, and a signature says it outright.
+  No library definition is of this kind: every library name keeps its
+  type. Recorded in §4.6.
+- **The primitives.** `outer` is `Tensor r s1 δ1 -> Tensor r s2 δ2 ->
+  Tensor r (s1 ++ s2) (δ1·δ2)`, the role written on `Tensor` here only,
+  `div` is `Tensor r s δ1 -> Quantity r δ2 -> Tensor r s (δ1/δ2)`, and a
+  power `Quantity r δ -> Quantity r (δ^k)`. A unit's declaration, `unit`,
+  had a static reading as arithmetic did, and is now `Quantity r δ -> Unit
+  δ`; a tensor there is still "a unit is one number". So `Dispatch` chooses
+  only the quantity rule's and `to`'s readings, and nothing defaults to
+  amounts. Lint checks one role across a product.
+- **Roles fixed.** `+`, `-`, negation and the other amount primitives
+  take `Tensor`, an amount; equality and comparison fix an open role to
+  `Amount` and refuse a unit, "no equality on Unit m", "no ordering on
+  Unit m". A quantity of an open role after a literal or a `to` can only
+  be a unit, so `3 (u * u)` reads `scale` and fixes the role.
+- **Messages.** At `*` or `/` whose operands' roles are known and differ,
+  U2's "an amount and a unit together: * takes two amounts or two units",
+  with the hint "`s` is a unit; write `1 s`" on a unit's name; elsewhere a
+  role mismatch is "a unit where an amount goes" or "an amount where a
+  unit goes", as before. Through a role-polymorphic function the first
+  argument settles the role: with `g a b = a * b`, `g km 2` is "expected
+  Unit d, got Num: an amount where a unit goes".
+- **`sq`.** `sq :: forall d. Unit d -> Unit (d^2)` with `sq u = u * u` is
+  accepted, its `:edit` file and its `:export` read back, and `f ::
+  forall r d. Quantity r d -> Quantity r (d^2)` with `f x = x * x` serves
+  both roles and survives a store reload.
+- **A cancelled unit.** Unit arithmetic sums the powers of a unit written
+  twice and, when every unit cancels, keeps the factors as written: `km/km`
+  prints `km/km` and reads back as `Unit`, `km/m` stays `km/m`, `(km/km) *
+  km` is `km` and `km^2/km` is `km`. `to` sums a unit written twice, so `to
+  dozen/dozen` still shows a plain number. `1 (a unit)` is left for a unit
+  whose hint was lost.
+- **Encoding, hashes and the store.** A role is the kind byte 7 and the
+  argument kind 7 (0 `Amount`, 1 `Unit`, 2 and a variable id), and a
+  quantity of a role variable the appended type tag `0x2E` (role, shape,
+  dimension); an amount keeps `0x21` and a unit `0x2A`. A term's hash does
+  not cover its type and no declared type's fields changed, so no hash
+  moved: the `:hash` of each of the library's 887 names is the same before
+  and after. The store is format 10, since a signature may say `Quantity
+  r` and a definition of arithmetic alone has another type.
+
 **Part U, as built.** As decided, with these details the decision left
 open. Until part F landed, the chart readings were stage 2b's: U4's built
 `pointOn` on `Chart σ δ` and gave `Point σ δ`, and U6's kept `toScale` (part F, as
@@ -2799,12 +2868,10 @@ built, below, replaces both).
 
 - **The pending reading.** One constraint, `Dispatch`, solved as `Append`
   and `Rank` are, whenever a type it waits on becomes known. Arithmetic
-  (`*` as `outer`, `/` as `div`, `^k`) takes the units' reading when any of
-  its operands or its result is a `Unit`, the amounts' when any is another
-  known type, and refuses a `Unit` with a tensor; at generalisation it
-  takes the amounts' reading. Its shapes and dimensions are made with the
-  primitive's type, before its operands', so that dimensions solve as
-  before and no scheme changes its spelling. A quantity is read by what
+  (`*` as `outer`, `/` as `div`, `^k`) took the units' reading when any of
+  its operands or its result was a `Unit` and the amounts' otherwise, and
+  the amounts' at generalisation; since U9 it has no reading and no
+  default, being polymorphic in the role (U9, as built). A quantity is read by what
   follows its literal or by its result (an amount is `scale`, a point
   `pointOn`), a `to` by its target or by its value or result (a tensor is
   the display unit's, a point `toScale`); either still open at
@@ -2830,13 +2897,14 @@ built, below, replaces both).
 - **A `let`-bound chart works with `to` and the quantity rule**, which now
   read its type: `let c = degF` then `3 c` and `20 degC to c` (the known gap
   of §3.8 closed).
-- **Arithmetic's reading is static only**, as decided, and not written
-  in: a function of units made by arithmetic alone, `sq u = u * u`, takes
-  the amounts' reading, so `sq :: forall d. Unit d -> Unit (d^2)` is
-  refused as not as general as its signature. Recorded in §4.6.
+- **Arithmetic's reading was static only**, as decided, and not written
+  in: a function of units made by arithmetic alone, `sq u = u * u`, took
+  the amounts' reading, so `sq :: forall d. Unit d -> Unit (d^2)` was
+  refused. Since U9 arithmetic is polymorphic in the role, and `sq` is
+  accepted.
 - **A unit's declaration is its own term.** `unit name = e` desugars to the
-  primitive `unit e`, `Num δ -> Unit δ` or `Unit δ -> Unit δ` by `e`'s
-  type, the identity at run time (its reading static, like arithmetic's).
+  primitive `unit e`, `Quantity r δ -> Unit δ` (U9; it had a static
+  reading by `e`'s type before), the identity at run time.
   So `unit dozen = 12` and `let eggs = 12` are two terms now, a `Unit` and
   a `Num` (§3.2.12 said one); an alias still shares its unit's term, and
   `Bq` and `Hz` share `s^-1`. That the name is its own display unit stays
@@ -2872,8 +2940,9 @@ built, below, replaces both).
   joined by `*` (`·` in unicode), then `/` and those with negative powers,
   in parentheses when there are several (`m/(s^2*K)`); with only negative
   powers, `s^-1` (`s⁻¹`), since `1/s` would be an amount over a unit. A
-  unit whose units all cancelled (`km/km`) prints as the amount of one of
-  it, marked: `1 (a unit)`. `:view` writes a quantity's unit bare when it
+  unit whose units all cancel prints them as written, `km/km` (U9, as
+  built); one whose hint was lost prints as the amount of one of it,
+  marked: `1 (a unit)`. `:view` writes a quantity's unit bare when it
   is one declared unit or a chain of them that U5 takes in (`9.81 m /
   s^2`), in parentheses otherwise (`3 (u / s)`); every library namespace's
   `:edit` file reads back to its hashes.
@@ -3311,8 +3380,9 @@ concatenation for the products and an equality instance (§4.2).
 ### 4.1 Types
 
 ```
-τ ::= Tensor σ δ | Unit δ | Point φ | Chart φ | Diff φ | Coords φ | T a… | τ -> τ | α
-a ::= τ | σ | δ | ν | χ | φ | ς          -- an argument of a declared type T, by the kind of its parameter
+τ ::= Tensor σ δ | Unit δ | Quantity ρ δ | Point φ | Chart φ | Diff φ | Coords φ | T a… | τ -> τ | α
+a ::= τ | σ | δ | ν | χ | φ | ς | ρ      -- an argument of a declared type T, by the kind of its parameter
+ρ ::= Amount | Unit | r                 -- a role (§3.10, U9): an amount, a unit, or a role variable
 σ ::= [] | ν·χ : σ | s                 -- a shape: a list of positions, each a length and a name slot, possibly ending in a shape variable
 χ ::= _ | A | x                         -- a name slot (§3.9): anonymous, a named axis set (a chart's or a space's minted type), or an axis variable
 φ ::= F | c                             -- a frame (§3.10, F1): a chart's minted frame, or a frame variable, of kind Frame ς
@@ -3338,7 +3408,15 @@ Inertial m`. `Point degC` prints for a point on `degC` and `forall c. Point c
 `forall (c : Temperature)`, `forall s (c : s) (c1 : s)`.
 
 `Unit δ` is the type of units (§3.10, part U, built): written and printed as
-`Num` is, `Unit m`, `Unit (m/s)`, and `Unit` alone when dimensionless.
+`Num` is, `Unit m`, `Unit (m/s)`, and `Unit` alone when dimensionless. A
+unit and an amount are one quantity type in two roles (§3.10, U9): a
+tensor is a quantity in a role, `Tensor σ δ` the role `Amount` and `Unit
+δ` the role `Unit` at the shape `[]`, a unit being always one number.
+`Quantity ρ δ` is the scalar in the role `ρ`: `Num δ` is `Quantity Amount
+δ`, `Unit δ` is `Quantity Unit δ`, and a role variable prints `Quantity r
+δ`, as in `forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r
+(d·d1)` for `\a b -> a * b`. A role variable's quantity has the shape
+`[]` by the time it is generalised (§3.10, U9, as built).
 
 **Dimension syntax** (decided by the owner; replaces the bracket form).
 A dimension is an ordinary type argument, not a bracketed one. Square
@@ -3468,11 +3546,12 @@ a tuple of 2 components, got one of 3".
 
 **Variables are kinded.** There is one namespace of variables, each with a kind:
 `Type`, `Len`, `Shape`, `Dim`, `Axis`, the name slot of a shape position
-(§3.9), and `Frame` and `Space`, the identities of a frame and a space
-(§3.10, F1), with their companions. Each kind is an index
+(§3.9), `Frame` and `Space`, the identities of a frame and a space
+(§3.10, F1), with their companions, and `Role`, a quantity's role (§3.10,
+U9). Each kind is an index
 domain with its own equational theory and its own unifier: syntactic for types,
 the offset rule below for lengths, element-wise for shapes, Kennedy's algorithm
-for dimensions, syntactic for name slots. A written length variable stands
+for dimensions, syntactic for name slots and roles. A written length variable stands
 for a whole axis set, a length variable and a companion axis variable
 introduced together, and a written literal length for anonymous axes
 (§3.9, stage 1). No term ever appears in a type, which is what keeps this on the
@@ -3540,14 +3619,14 @@ Nothing in the language is overloaded except equality. Every product is its own
 operator with one type (core.md, "Operators across ranks"):
 
 ```
-(*) (⊗)  outer : Tensor s1 δ1 -> Tensor s2 δ2 -> Tensor (s1 ++ s2) (δ1·δ2)   -- tensor product; scalar scaling is the rank-zero case
+(*) (⊗)  outer : Tensor s1 δ1 -> Tensor s2 δ2 -> Tensor (s1 ++ s2) (δ1·δ2)   -- tensor product; scalar scaling is the rank-zero case; two units too (U9, below)
 (·) (@)  dot   : Tensor (s1 ++ [n]) δ1 -> Tensor (n : s2) δ2 -> Tensor (s1 ++ s2) (δ1·δ2)   -- contracting product: dot, Mat·Vec, Mat·Mat
 (∧) (/\) wedge : Vec n δ1 -> Vec n δ2 -> Mat n n (δ1·δ2)                       -- antisymmetrised outer product; the general binary product of vectors
 (⋆)      star  : Mat 3 3 δ -> Vec 3 δ                                          -- 3D Hodge dual
 (×) (><) cross : Vec 3 δ1 -> Vec 3 δ2 -> Vec 3 (δ1·δ2)                         -- prelude: cross a b = star (wedge a b)
 (⊙) (.*) emul  : Tensor s δ1 -> Tensor s δ2 -> Tensor s (δ1·δ2)               -- elementwise
 (⊘) (./) ediv  : Tensor s δ1 -> Tensor s δ2 -> Tensor s (δ1/δ2)
-(/) (÷)  div   : Tensor s δ1 -> Num δ2 -> Tensor s (δ1/δ2)                     -- division by a scalar
+(/) (÷)  div   : Tensor s δ1 -> Num δ2 -> Tensor s (δ1/δ2)                     -- division by a scalar; a unit by a unit too (U9, below)
 ```
 
 `dot`'s contracted positions, the left's last and the right's first, are one
@@ -3567,12 +3646,14 @@ can:
 
 At a generalisation point a constraint whose variables are all about to be
 quantified cannot wait any longer and is **defaulted**: the unknown-rank left
-operand is taken to be a scalar for `outer` (so `\k v -> k * v` gets
-`Num -> Tensor s -> Tensor s`) and a vector for `dot`. This is the one place the
-type system guesses, it guesses the common case, and it is the rule that
-dictionary passing will later remove: when data constructors exist, an
-unresolved constraint becomes a parameter of the definition instead of a
-default, and `\k v -> k * v` becomes polymorphic in the rank of `k`.
+operand is taken to be a scalar for `outer` (so `\k v -> 2 * k * v`,
+whose role is an amount's, gets `Num -> Tensor s -> Tensor s`) and a
+vector for `dot`. This is the one place the type system guesses, it
+guesses the common case, and it is the rule that dictionary passing will
+later remove: when data constructors exist, an unresolved constraint
+becomes a parameter of the definition instead of a default, and `\k v ->
+2 * k * v` becomes polymorphic in the rank of `k`. A role still open makes
+both operands scalar instead (below, and §3.10, U9).
 
 **Ranks.** A length `rank s + k` (§4.1) unifies with another length by
 binding a variable outright wherever it can, because a rank says exactly how
@@ -3633,6 +3714,13 @@ its implementation cannot handle (core.md §9).
 Division of a tensor by a tensor is `⊘`; `/` takes a scalar divisor only, so it
 has one type too.
 
+`*` and `/` are polymorphic in the role as well (§3.10, U9): their operands
+and result share one role, an amount's of any shape or a unit's of the
+shape `[]`. A role still open at generalisation makes its operands scalar,
+so the default above applies to amounts: `\k v -> 2 * k * v` is `Num d ->
+Tensor s d1 -> Tensor s (d1·d)`, while `\k v -> k * v`, whose role nothing
+fixes, is `Quantity r d -> Quantity r d1 -> Quantity r (d·d1)`.
+
 **Contraction and permutation with literal positions.** `contract i j` and
 `permute [p0, …, pk-1]` work at any rank. Their positions are part of the type,
 as a projection's is (§4.1), so the desugarer insists on literals the way it
@@ -3685,21 +3773,21 @@ matrices of any size until the length-as-exponent relation `Num (d^n)`
 exists (§4.6). Display
 units, the prelude and `to` with a display hint are the remaining pieces of
 roadmap item 2. Units are a type (§3.10, part U): a base unit is a `Unit`,
-and `*`, `/`, `^`, the quantity rule and `to` each read their operands'
-types, below.
+the quantity rule and `to` read their operands' types, and `*`, `/` and
+`^` are polymorphic in the role (§3.10, U9), below.
 
 ```
 literal     : Num 1
 m           : Unit m          kg : Unit kg     s : Unit s     (etc.: a base unit is a unit, 3.10)
 (+) (-)     : Num d -> Num d -> Num d                    (and Vec, Mat instances)
-(*)         : Num d1 -> Num d2 -> Num (d1*d2)            (and the table; Unit d1 -> Unit d2 -> Unit (d1*d2), by the operands' types, 3.10)
-(/)         : Num d1 -> Num d2 -> Num (d1/d2)            (and the table; Unit d1 -> Unit d2 -> Unit (d1/d2), 3.10)
+(*)         : Quantity r d1 -> Quantity r d2 -> Quantity r (d1*d2)   (and the table, for amounts; one role, 3.10 U9)
+(/)         : Quantity r d1 -> Quantity r d2 -> Quantity r (d1/d2)   (and Tensor s d1 -> Num d2 -> Tensor s (d1/d2) for amounts; 3.10 U9)
 (== /=)     : Num d -> Num d -> Bool                     (and Vec, Mat)
 (< <= > >=) : Num d -> Num d -> Bool
 (&& ||)     : Bool -> Bool -> Bool          not : Bool -> Bool
 to          : Tensor s d -> Unit d -> Tensor s d         -- a display unit (3.2.12, 3.10 U6); toScale and toAxes for a chart, below
 scale       : Tensor s 1 -> Unit d -> Tensor s d         -- the quantity rule after a unit, `3 km`, `[1, 0, 0] (km/h)` (2.6, 3.10 U4)
-unit        : Num d -> Unit d  |  Unit d -> Unit d      -- a unit's declaration made a unit, by its body's type (3.10 U7)
+unit        : Quantity r d -> Unit d                   -- a unit's declaration made a unit, from an amount or a unit (3.10 U7, U9)
 (±) (±σ)    : Num d -> Num d -> Num d                    (and Vec, Mat)
 sqrt        : Num (d^2) -> Num d
 abs         : Num d -> Num d
@@ -3735,7 +3823,7 @@ timap       : (Vec (rank s) -> Num d1 -> Num d2) -> Tensor s d1 -> Tensor s d2  
 x ± e, x ±σ e : Tensor s d -> Num d | Tensor s d -> Tensor s d   -- per component (3.4)
 v ±σ P      : Vec n d -> Mat n n (d^2) -> Vec n d       -- a vector with covariance P (3.5)
 pi e        : Num 1
-e ^ n       : Num d -> Num (d^n)            -- special form, n an integer literal; Unit d -> Unit (d^n) for a unit (3.10)
+e ^ n       : Quantity r d -> Quantity r (d^n)   -- special form, n an integer literal; an amount or a unit (3.10 U9)
 noise n     : Vec n 1                        -- special form, n a natural literal
 gauss n     : Vec n 1                        -- special form, n a natural literal
 det         : Mat (n·a) (n·b) 1 -> Num 1    -- a plain primitive, any n; dimensionless only; rows and columns may be two axis sets (4.6, 3.9)
@@ -3843,12 +3931,12 @@ Num (m/s^2)
   which is then inferred alone as before (`per u = 3 u` under `per ::
   forall d. Unit d -> Num d` stores `scale 3 u`). The definition's own
   ascriptions do not take part, since they are not in its term.
-- Arithmetic's reading is not written into the term, since both are one
-  operation at run time (§3.10, U2): inferred alone, `*`, `/` and `^` on
-  parameters take the amounts' reading, so a function of units built by
-  arithmetic alone, `sq u = u * u` under `sq :: forall d. Unit d -> Unit
-  (d^2)`, is refused as not as general as its signature. One whose result
-  is used as a unit, `3 (u * u)`, reads the units' reading from that use.
+- A function of arithmetic on parameters alone generalises over the role
+  (§3.10, U9), which keeps its operands scalar: `\k v -> k * v` is
+  `Quantity r d -> Quantity r d1 -> Quantity r (d·d1)`, not rank-polymorphic
+  over amounts as before roles. An operand known to be an amount, or a
+  signature, gives the tensor form, `Num d -> Tensor s d1 -> Tensor s
+  (d·d1)`.
 - `^` requires a literal exponent, because `x ^ y` with a runtime `y` has no static
   dimension. `sqrt` covers the `1/2` case; a `cbrt` can follow.
 - `det` is on dimensionless matrices only. Its natural type, `Mat n n d -> Num
@@ -4366,7 +4454,7 @@ bytes never changed.
 A declared type (§2.3) is hashed separately, from its own canonical encoding:
 varint parameter count and one kind byte per parameter (0 type, 1 length, 2
 shape, 3 dimension, 4 axis, and, appended by §3.10's part F, 5 frame, 6
-space); varint constructor count, and per constructor a varint
+space, and by U9, 7 role); varint constructor count, and per constructor a varint
 field count and each field type; then the label (0 owner and the type name,
 or 1 and an empty text for `structural`, or, appended, 2 and a chart's full
 path for the axis type its declaration mints, §3.9: no parameters, one
@@ -4392,6 +4480,7 @@ Types use tags of their own:
 | 0x2B | `Point φ` | frame (§3.10, F4; appended) |
 | 0x2C | `Chart φ` | frame (§3.10, F4; appended) |
 | 0x2D | `Diff φ`, `Coords φ` | frame, then 0 for `Diff` or 1 and a dimension (`Coords`, dimension 1), the residual amount type until the space's shape is known (§3.10, F4; appended) |
+| 0x2E | `Quantity r δ` | role, shape, dimension: a quantity of a role variable (§3.10, U9; appended); an amount is `0x21` and a unit `0x2A` |
 
 A shape is 0 for `[]`, 1 then a length and a shape (a position with anonymous
 axes), 2 and a variable id, or 3 then a length, an axis and a shape (a position
@@ -4419,7 +4508,9 @@ type or 1 and a variable id, then its axis and its space; a space is its
 slot, 0 and the hash of its minted space type or 1 and a variable id, then
 its shape, dimension and base axis. A declared type's argument of kind
 frame is 5 and a frame slot, of kind space 6 and a space slot. All of it is
-appended: a type that names no point, chart or frame keeps its bytes.
+appended: a type that names no point, chart or frame keeps its bytes. A
+role (§3.10, U9) is 0 for `Amount`, 1 for `Unit`, or 2 and a variable id; a
+declared type's argument of kind role is 7 and a role.
 
 `varint` is unsigned LEB128. `sint` is one sign byte followed by a varint byte
 length and big-endian magnitude bytes, so arbitrarily large integers encode
@@ -5083,15 +5174,15 @@ never leaves a name pointing at a missing term. A term that fails to decode,
 fails to typecheck, or is named but missing is reported as a note at start and
 skipped; the rest loads.
 
-**Formats.** A store opens only at the format this build writes, 9. A
+**Formats.** A store opens only at the format this build writes, 10. A
 store of an older format is refused, and nothing in it is touched: "this
-codebase is format N; it predates format 9 and cannot be opened: recreate
+codebase is format N; it predates format 10 and cannot be opened: recreate
 it (with the previous eval, `:export` it, respell its quantities for units
 as a type, 60 * s as 60 s and x / s as x / 1 s, the dimensions in its
 types, Num [m s^-1] as Num (m/s), and its charts on spaces, chart degC on
 Temperature at 273.15 K, and `:load` the file into a new codebase)". A
 newer format, or a format file that says anything else, is refused as not
-a store of format 9. Earlier builds
+a store of format 10. Earlier builds
 migrated each older format in place on open, a chain of steps: written
 names after references (format 2), `Case` and `Con` for `If` and the
 boolean literal (3), the library seeded into the store under `std` (4), the
@@ -5686,7 +5777,8 @@ tuned, and compilation is a later milestone.
      built any time. Stage 3 (§3.10): part U, units as a type, built
      (format 8); part F, spaces and frames, built (format 9): points
      typed and stored by frame, `space`, `chart … on …` with clauses, `from …
-     to`, `on`.
+     to`, `on`; U9, roles, built (format 10): one quantity type, `Quantity
+     r δ`, with arithmetic polymorphic in the role.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's
      architecture (§3.2.9).

@@ -82,12 +82,15 @@ quantity is @scale@, a unit's declaration wraps its body, and the library
 is respelled, so every term over a unit is another; format 9 holds spaces
 and frames (design §3.10, part F): a point is typed by its frame, a
 chart's Core names the frame and the space it is on, and the library's
-charts are respelled. A store opens only
+charts are respelled; format 10 holds roles (design §3.10, U9): a
+signature may say @Quantity r d@, a type encodes a role variable, and a
+definition built from arithmetic alone is polymorphic in its role. A store
+opens only
 at this format: until the language is released, an older store is
 refused, not migrated (core.md §6).
 -}
 formatVersion :: Int
-formatVersion = 9
+formatVersion = 10
 
 {- | The store to use: the directory given, else a @.eval@ directory found by
 walking up from the working directory, else the user store under

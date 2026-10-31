@@ -883,3 +883,19 @@
   `astro.State`, `astro.velocityIn` and `astro.stateFrom`; `linalg.inChart`
   and `linalg.along` are removed; every other library name keeps its hash.
   A user's chart re-hashes when typed again. Store format 9.
+- Roles (design §3.10, U9). A unit and an amount are one quantity type in
+  two roles, `Quantity r δ`, with `Num δ` the role `Amount`, `Unit δ` the
+  role `Unit` and `Tensor σ δ` an amount; a role variable is written and
+  printed `Quantity r d`, and a declared type may take a role. `*`, `/`
+  and `^k` are polymorphic in the role and settle it by unification, with
+  no dispatch and no defaulting to amounts: `\a b -> a * b` is `forall r d
+  d1. Quantity r d -> Quantity r d1 -> Quantity r (d*d1)`, used at units
+  and at amounts, and `sq :: forall d. Unit d -> Unit (d^2)` with `sq u = u
+  * u` is accepted. A role left open keeps its operands scalar, so a
+  generalised `\k v -> k * v` no longer scales a vector; one operand known
+  to be an amount, or a signature, gives the tensor form. `+`, `-`,
+  negation, comparison and equality take amounts; an amount and a unit
+  under `*` or `/` are refused as before. A unit's declaration is
+  `Quantity r d -> Unit d`. A fully cancelled unit prints its units as
+  written, `km/km`, and reads back as a unit. No hash moved. Store format
+  10.

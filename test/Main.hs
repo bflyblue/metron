@@ -129,6 +129,7 @@ main =
         , readingTests
         , partUTests
         , partFTests
+        , roleTests
         ]
     )
 
@@ -1304,8 +1305,13 @@ typeTests =
         typeOfText "[1, 2] .* [3, 4]" @?= Right "Vec 2"
         typeOfText "[2, 4] / 2" @?= Right "Vec 2"
     , testCase "an unknown-rank product operand defaults at generalisation" $ do
+        -- Amounts: the left operand is a scalar, the right any tensor.
+        typeOfText "\\k v -> (1 * k) * v"
+          @?= Right "forall d s d1. Num d -> Tensor s d1 -> Tensor s (d1*d)"
+        -- A role left open keeps both operands scalar, so that the role
+        -- generalises (design §3.10, U9).
         typeOfText "\\k v -> k * v"
-          @?= Right "forall d s d1. Num d -> Tensor s d1 -> Tensor s (d*d1)"
+          @?= Right "forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"
         typeOfText "\\a b -> a @ b"
           @?= Right "forall n d s d1. Vec n d -> Tensor (n : s) d1 -> Tensor s (d*d1)"
     , testCase "contraction requires matching inner lengths"
@@ -3338,8 +3344,9 @@ axisSlotTests =
 {- | The readings of design §3.10 (U2, U4, U6, U7), on Core whose stored
 definitions are typed by hand: a unit @km : Unit m@, @hr : Unit s@, an
 amount @len : Num m@ and a chart @cK@ of a frame of its own. Arithmetic,
-powers and a unit's declaration choose a reading statically; a quantity
-or a @to@ marker is resolved by the types and written into the term.
+powers and a unit's declaration are polymorphic in the role (U9); a
+quantity or a @to@ marker is resolved by the types and written into the
+term.
 -}
 readingTests :: TestTree
 readingTests =
@@ -3369,16 +3376,17 @@ readingTests =
         -- The parameter is a unit once the lambda is applied to one.
         typed (App (Lam "u" (Var FZ *. Var FZ)) (ref km))
           @?= Right [Forall [] (TUnit (Dimension.dimPow 2 metre))]
-    , testCase "unknown at generalisation, arithmetic takes the amounts' reading" $ do
+    , testCase "unknown at generalisation, arithmetic generalises over the role" $ do
         fmap (map renderScheme) (typed (Lam "a" (Lam "b" (Var (FS FZ) *. Var FZ))))
-          @?= Right ["Num d -> Tensor s d1 -> Tensor s (d*d1)"]
+          @?= Right ["Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"]
         fmap (map renderScheme) (typed (Lam "u" (Pow (Var FZ) 2)))
-          @?= Right ["Num d -> Num (d^2)"]
-        -- A let generalises its square as one of amounts, so it does not
-        -- take a unit afterwards.
-        expectLeft
-          (typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref km))))
-          "a unit where an amount goes"
+          @?= Right ["Quantity r d -> Quantity r (d^2)"]
+        -- A let generalises its square over the role (design §3.10, U9),
+        -- so it takes a unit afterwards as well as an amount.
+        typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref km)))
+          @?= Right [Forall [] (TUnit (Dimension.dimPow 2 metre))]
+        typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref len)))
+          @?= Right [Forall [] (numD (Dimension.dimPow 2 metre))]
     , testCase "a quantity after a unit is scale, after a chart pointOn" $ do
         readings (PrimApp (q 0) [num 3, ref km]) @?= Right (Map.singleton (q 0) "scale")
         readings (PrimApp (q 0) [num 20, ref cK])
@@ -3572,10 +3580,9 @@ partUTests =
           (runLinesP ["km + km"])
           "units do not add: this is Unit m, and + and - take amounts"
         expectError (runLinesP ["1 km - m"]) "units do not add"
-        -- Unknown at generalisation, the reading of amounts; known from a
-        -- use, the reading of units.
+        -- Polymorphic in the role (design §3.10, U9): a unit from a use.
         runLinesP [":type \\u -> u * u", "(\\u -> u * u) km"]
-          @?= Right ["forall d. Num d -> Num (d^2)", "km^2"]
+          @?= Right ["forall r d. Quantity r d -> Quantity r (d^2)", "km^2"]
     , testCase "U3: a unit's name is the unit, everywhere" $ do
         expectError
           (runLinesP ["let x = 6 m", "x / s"])
@@ -3736,6 +3743,139 @@ partUTests =
           (ns, outs) @?= (ns, ["nothing changed"])
     ]
 
+{- | Roles (design §3.10, U9): a unit and an amount are one quantity type
+in two roles, @Quantity r δ@, and arithmetic is polymorphic in the role.
+-}
+roleTests :: TestTree
+roleTests =
+  testGroup
+    "roles: one quantity type (design §3.10, U9)"
+    [ testCase "arithmetic generalises over the role and is used at both" $ do
+        runLinesP [":type \\a b -> a * b", ":type \\a b -> a / b", ":type \\u -> u^3"]
+          @?= Right
+            [ "forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"
+            , "forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d/d1)"
+            , "forall r d. Quantity r d -> Quantity r (d^3)"
+            ]
+        -- Unannotated, applied to units and to amounts.
+        runLinesP
+          [ "(\\a b -> a * b) km h"
+          , "(\\a b -> a * b) (2 m) (3 s)"
+          , "(\\a b -> a / b) km h"
+          , "(\\a b -> a / b) 6 3"
+          ]
+          @?= Right ["km*h", "6 m s", "km/h", "2"]
+        -- Let-bound, and stored: one definition serves both roles.
+        runLinesP ["let g a b = a * b", ":add", "g km h", "g (2 m) (3 s)", ":type g"]
+          @?= Right
+            [ "added g"
+            , "km*h"
+            , "6 m s"
+            , "forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"
+            ]
+        -- A role fixed by an operand: amounts keep the scalar-times-tensor
+        -- form.
+        runLinesP [":type \\k v -> 2 * k * v", "(\\k v -> 2 * k * v) 3 ([1, 2] m)"]
+          @?= Right ["forall d s d1. Num d -> Tensor s d1 -> Tensor s (d1*d)", "[6, 12] m"]
+    , testCase "sq over units is accepted, and reads back through :edit and :export" $ do
+        let sq = multiline ["sq :: forall d. Unit d -> Unit (d^2)", "let sq u = u * u"]
+        runLinesP [sq, "sq km", "sq (km/h)", ":type sq"]
+          @?= Right ["km^2", "km^2/h^2", "forall d. Unit d -> Unit (d^2)"]
+        s <- either (assertFailure . T.unpack) pure (sessionP [sq, ":add"])
+        file <- editFileOf s ["sq"]
+        ("sq :: forall d. Unit d -> Unit (d^2)" `T.isInfixOf` file) @? T.unpack file
+        (_, outs) <- edited (EditName "sq") file s
+        outs @?= ["nothing changed"]
+        source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
+        reloaded <-
+          either
+            (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
+            pure
+            (sessionP [source, ":add"])
+        reloaded.codebase.names @?= s.codebase.names
+        linesIn reloaded ["sq km", ":type sq"]
+          @?= Right ["km^2", "forall d. Unit d -> Unit (d^2)"]
+    , testCase "Quantity r d is written in a signature and reads back" $ do
+        let f =
+              multiline
+                ["f :: forall r d. Quantity r d -> Quantity r (d^2)", "let f x = x * x"]
+        runLinesP [f, ":type f", "f km", "f (3 m)"]
+          @?= Right ["forall r d. Quantity r d -> Quantity r (d^2)", "km^2", "9 m^2"]
+        -- What :type prints is a signature that reads back as itself.
+        expecting (runLinesP ["let g a b = a / b", ":type g"]) $ \case
+          [printed] ->
+            runLinesP [multiline ["g :: " <> printed, "let g a b = a / b"], ":type g"]
+              @?= Right [printed]
+          other -> assertFailure (show other)
+        -- Amount and Unit are the roles of Num and Unit.
+        runLinesP [":type (3 m :: Quantity Amount m)", ":type (km :: Quantity Unit m)"]
+          @?= Right ["Num m", "Unit m"]
+        -- A declared type may take a role; equality asks it to be an amount's.
+        runLinesP
+          ["data Box r = Box (Quantity r m)", "Box (2 m) == Box (2 m)", ":type Box km"]
+          @?= Right ["true", "Box Unit"]
+        expectError
+          (runLinesP ["data Box r = Box (Quantity r m)", "Box km == Box km"])
+          "no equality on Unit"
+        expectError
+          (runLinesP ["(3 :: Quantity Num)"])
+          "a role is Amount or Unit, or a variable"
+    , testCase
+        "a quantity of a product of an open role is a unit's, with no signature"
+        $ do
+          -- Under part U this was ambiguous; the open role after a literal can
+          -- only be a unit's.
+          runLinesP ["let f u = 3 (u * u)", ":type f", "f km", "f (km/h)"]
+            @?= Right ["forall d. Unit d -> Num (d^2)", "3 km^2", "3 km^2 h^-2"]
+          s <-
+            either
+              (assertFailure . T.unpack)
+              pure
+              (sessionP ["let f u = 3 (u * u)", ":add"])
+          file <- editFileOf s ["f"]
+          (_, outs) <- edited (EditName "f") file s
+          outs @?= ["nothing changed"]
+    , testCase "Quantity r d survives a reload of the store" $ withTempStore $ \dir -> do
+        _ <-
+          persistLines
+            dir
+            [ multiline
+                ["f :: forall r d. Quantity r d -> Quantity r (d^2)", "let f x = x * x"]
+            , ":add"
+            ]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        linesIn loaded ["f km", "f (3 m)", ":type f"]
+          @?= Right ["km^2", "9 m^2", "forall r d. Quantity r d -> Quantity r (d^2)"]
+    , testCase "an amount and a unit together are refused, with the hint" $ do
+        expectError
+          (runLinesP ["let x = 3 m", "x * km"])
+          "an amount and a unit together: * takes two amounts or two units\n  hint: `km` is a unit; write `1 km`"
+        expectError
+          (runLinesP ["let x = 6 m", "x / s"])
+          "an amount and a unit together: / takes two amounts or two units\n  hint: `s` is a unit; write `1 s`"
+        -- Through a role-polymorphic function, the role is settled by its
+        -- first argument.
+        expectError
+          (runLinesP ["let g a b = a * b", "g km 2"])
+          "an amount where a unit goes"
+        expectError (runLinesP ["(\\u -> u * 2) km"]) "a unit where an amount goes"
+    , testCase "+ and - take amounts, so units do not add" $ do
+        expectError
+          (runLinesP ["km + h"])
+          "units do not add: this is Unit m, and + and - take amounts"
+        expectError (runLinesP ["(km/h) - (km/h)"]) "units do not add"
+        expectError (runLinesP ["(\\a b -> a + b) km km"]) "a unit where an amount goes"
+        expectError (runLinesP ["km < m"]) "no ordering on Unit m"
+    , testCase "a fully cancelled unit prints its units as written and reads back" $ do
+        runLinesP
+          ["km/km", "km/m", "(km/km) * km", "km^2/km", ":type km/km", "3 (km/km)"]
+          @?= Right ["km/km", "km/m", "km", "km", "Unit", "3"]
+        expecting (runLinesP ["km/km"]) $ \printed -> runLinesP printed @?= Right ["km/km"]
+        runLinesP [":type " <> "km/km", "let u = km/km", "u", "2 u"]
+          @?= Right ["Unit", "km/km", "2"]
+    ]
+
 propertyTests :: TestTree
 propertyTests =
   testGroup
@@ -3800,6 +3940,7 @@ generatorProperty =
           _ -> "rank 3"
       )
         <> (if isDimOne d then "" else " with a dimension")
+    TQty{} -> "Quantity"
     TVar _ -> "variable"
 
 rankOf :: Shape -> Int
@@ -3921,7 +4062,8 @@ unitTests =
           Left err -> T.isInfixOf "same shape" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "dimension polymorphism" $ do
-        typeOfText "\\r -> r^2" @?= Right "forall d. Num d -> Num (d^2)"
+        typeOfText "\\r -> r^2" @?= Right "forall r d. Quantity r d -> Quantity r (d^2)"
+        typeOfText "\\r -> pi * r^2" @?= Right "forall d. Num d -> Num (d^2)"
         typeOfText "\\x -> sqrt x" @?= Right "forall d. Num (d^2) -> Num d"
         typeOfText "\\x -> sqrt (x * x)" @?= Right "forall d. Num d -> Num d"
         typeOfText "\\a b -> atan2 a b"
@@ -3969,14 +4111,31 @@ lintRegressionTests :: TestTree
 lintRegressionTests =
   testGroup
     "lint regressions"
-    [ testCase "instantiation renames quantified variables simultaneously" $ do
+    [ -- Found by the property "evaluating a linted term never reports an
+      -- internal error", which ran for an hour on this program from the
+      -- type-directed generator. exp squared its halved argument back at
+      -- the precision of the value before squaring, so a small result
+      -- lost every digit (e^-200 was 0) and only a working precision of
+      -- thousands of digits found it: e^-19683 took 20 s, and its
+      -- reciprocal was refused as a division by zero.
+      localOption (mkTimeout 5000000)
+        $ testCase "exp of a large negative argument keeps its digits, quickly"
+        $ do
+          evalText "exp (-200)" @?= Right ["1.3838965267367375306…e-87"]
+          evalText "exp (-19683) > 0" @?= Right ["true"]
+          evalText "1 / exp (-19683) < 1" @?= Right ["false"]
+          evalText
+            "(((\\q -> [6, 9, 0] K ⊙ [5, 3, 2] K^-1) ([[-3]]._.0 - ([6] - [7])) ⊘ (if 0 > 1.5 then [5, 2, 8] ⊙ [2, 6, 1.5] else (\\x -> [9, 8, 5]) (\\y -> [0.5] m^-1 * kg^-1))).2 * (let g = 0.25 * (-0.5 mol * cd) / (2 * 0.5 mol) <= 3 mol^-1 * rad^-2 * (if true then -1 mol * cd * rad^2 else 5 mol * cd * rad^2) in [0.5] K * (4 kg / K) · ([[0]] rad^-1 ⊙ ([[3]] A * rad / kg)) ⊘ ((\\w -> [9] kg) g ⊙ ([4] * 9 kg^-1)))).0 ⊙ (-2 kg * A^-1 / (exp (((-3 to m / m) * (6 * 1.5))^3) ⊙ (\\f -> ([8, 1.5] kg).0) (vmap (\\z -> -2) (let x = [9] in [0, 8, 6; 1.5, 0, 8] K^2 / s))))"
+            @?= Right ["0"]
+    , testCase "instantiation renames quantified variables simultaneously" $ do
         typeOfTextP "\\a b -> a >< b"
           @?= Right "forall (a : 3) d d1. Vec a d -> Vec a d1 -> Vec a (d*d1)"
         evalP "[1, 0, 0] m >< ([0, 1, 0] m / s)" @?= Right ["[0, 0, 1] m^2 s^-1"]
         evalText "[1, 2] m ⊙ [3, 4] s" @?= Right ["[3, 8] m s"]
     , testCase "a stored polymorphic definition instantiates at several dimensions"
         $ runLines ["let sq x = x * x", ":add", "sq (3 m)", "sq (2 s)", ":type sq"]
-          @?= Right ["added sq", "9 m^2", "4 s^2", "forall d. Num d -> Num (d^2)"]
+          @?= Right
+            ["added sq", "9 m^2", "4 s^2", "forall r d. Quantity r d -> Quantity r (d^2)"]
     , -- Found while designing the type-directed generator, whose pinning
       -- rules lean on how pending constraints meet a let. `k * v` leaves a product
       -- constraint pending because `k` belongs to the enclosing lambda; the
@@ -5634,7 +5793,7 @@ storeTests =
                 @?= T.pack dir
                   <> ": this codebase is format "
                   <> T.pack (show v)
-                  <> "; it predates format 9 and cannot be opened: recreate it"
+                  <> "; it predates format 10 and cannot be opened: recreate it"
                   <> " (with the previous eval, `:export` it, respell its quantities for units as a type,"
                   <> " 60 * s as 60 s and x / s as x / 1 s, the dimensions in its types,"
                   <> " Num [m s^-1] as Num (m/s), and its charts on spaces, chart degC on Temperature at 273.15 K,"
@@ -5646,7 +5805,7 @@ storeTests =
         _ <- persistLines dir ["let x = 1", ":add"]
         readFile (dir </> "format")
           >>= (@?= "eval codebase " <> show formatVersion <> "\n")
-        formatVersion @?= 9
+        formatVersion @?= 10
         before <- snapshot dir
         (loaded, notes) <- reload dir
         notes @?= []
@@ -5789,7 +5948,7 @@ storeTests =
           -- a store of an older format is refused, and left as it is
           createDirectoryIfMissing True (root </> "old")
           writeFile (root </> "old" </> "format") "eval codebase 2\n"
-          refused (root </> "old") "this codebase is format 2; it predates format 9"
+          refused (root </> "old") "this codebase is format 2; it predates format 10"
           listDirectory (root </> "old") >>= (@?= ["format"])
           readFile (root </> "old" </> "format") >>= (@?= "eval codebase 2\n")
     ]
