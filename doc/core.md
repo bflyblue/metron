@@ -434,6 +434,14 @@ Applying the test to the roadmap, in order:
   No Core change: Core stays at 15 constructors. It was a hash-changing
   migration (format 8 to 9) for the library's charts and the two `astro`
   functions that build or read a state.
+- **Roles (design §3.10, U9).** A unit and an amount became one quantity
+  type in two roles: the type language's tensor gained a role, `Amount`,
+  `Unit` or a variable of a new kind, and `Unit δ` is the unit role at the
+  shape `[]`. `*`, `/`, `^k` and `unit` are polymorphic in the role, so
+  arithmetic's static reading went and the quantity rule and `to` are the
+  only readings left. No Core change, and no hash moved, since a term's
+  hash does not cover its type; the store moved to format 10 for the
+  types it holds.
 - **Affine arithmetic, units, printing, covariance.** Runtime and prelude work.
   `Noise` and `Uncertain` already existed for it, and the arithmetic itself
   landed without touching Core: `Eval.Affine` sits entirely under the
