@@ -88,6 +88,7 @@ main =
         , turnedChartTests
         , movingChartTests
         , axisSlotTests
+        , namedAxesTests
         , propertyTests
         , unitTests
         , lintRegressionTests
@@ -2817,10 +2818,210 @@ pipelineProperties src =
 
 -- Axis slots ------------------------------------------------------------------
 
-{- | The name slot of a shape position (design §3.9, stage 1). Nothing
-written in source makes a named axis set yet, so these read definitions
-whose stored types carry one, and check the unifier, lint and the
-encoding on the slot directly.
+{- | Design §3.9, stage 2b: a chart declaration mints its axes, and amounts,
+points and rotations are typed by them. Each turned chart here is only
+typed, or used once, since its rotation costs an @expm@.
+-}
+namedAxesTests :: TestTree
+namedAxesTests =
+  testGroup
+    "named axes"
+    [ testCase "a root chart mints an axis type, named as the chart" $ do
+        runLinesP [eci, ":ls --types eci", ":type eci"]
+          @?= Right ["axes eci", "Chart (Vec eci [m]) eci"]
+        -- Two charts of one body: two axis types, two hashes.
+        s <- sessionOf [eci, "chart lab = m at [0, 0, 0] m"]
+        lookupTypeName "eci" s.staging /= lookupTypeName "lab" s.staging
+          @? "one axis type for two charts"
+        isJust (lookupTypeName "eci" s.staging) @? "no axis type for eci"
+        linesIn s [":hash eci"] /= linesIn s [":hash lab"] @? "one hash for two charts"
+        -- No source declaration has the axes' label kind.
+        u <- sessionOf [eci, "data Eci = Eci"]
+        lookupTypeName "Eci" u.staging /= lookupTypeName "eci" u.staging
+          @? "a data type is a chart's axes"
+        hashTypeDef (axesDef "eci") /= hashTypeDef (TypeDef [] [[]] (Owner "eci"))
+          @? "an owner stamp is an axes stamp"
+        decodeTypeDef (encodeTypeDef (axesDef "eci")) @?= Right (axesDef "eci")
+        expectError
+          (linesIn u ["mkScale Eci m ([0, 0, 0] m)"])
+          "mkScale takes the axes a chart declaration mints first"
+        -- A translated chart shares its parent's axes; a scalar chart has
+        -- none to name.
+        t <- sessionOf [eci, "chart site = m at [6378, 0, 0] km eci"]
+        lookupTypeName "site" t.staging @?= Nothing
+        lookupTypeName "temperature.degC" t.staging @?= Nothing
+        -- The axes of a renamed chart follow it.
+        r <- sessionOf [eci, ":add", ":rename eci frame"]
+        linesIn r [":ls --types frame", ":type [1, 2, 3] frame"]
+          @?= Right ["axes frame", "Point (Vec frame [m])"]
+    , testCase "a point is along its chart's root; rotationOf is Mat root chart" $ do
+        runLinesP
+          ( frame
+              ++ [ ":type [1, 2, 3] lvlh"
+                 , ":type [1, 2, 3] lvlh .- [0, 0, 0] eci"
+                 , ":type rotationOf lvlh"
+                 , ":type along lvlh ([1, 0, 0] m)"
+                 , ":type spinOf lvlh"
+                 , ":type rotationOf lvlh @ along lvlh ([1, 0, 0] m)"
+                 ]
+          )
+          @?= Right
+            [ "Point (Vec eci [m])"
+            , "Vec eci [m]"
+            , "Mat eci lvlh"
+            , "Vec lvlh [m]"
+            , "Vec eci [s^-1]"
+            , "Vec eci [m]"
+            ]
+        runLinesP
+          ( frame
+              ++ [ encloses "1e-20" "inChart lvlh (along lvlh ([1, 2, 3] m)) / m" "[1, 2, 3]"
+                 , encloses "1e-20" "det (rotationOf lvlh)" "1"
+                 ]
+          )
+          @?= Right ["true", "true"]
+        -- The wrong rotation is a type error.
+        expectError
+          ( runLinesP
+              (frame ++ ["let v = [1, 2, 3] eci .- [0, 0, 0] eci", "rotationOf lvlh @ v"])
+          )
+          "the axes of lvlh against the axes of eci"
+    , testCase "a literal takes its frame from use; a named value is anonymous" $ do
+        let setup = frame ++ ["let p = [1, 2, 3] eci", "let off = [0, 0, 2] m"]
+        runLinesP
+          (setup ++ ["p .+ [1, 0, 0] m", ":type off", ":type withAxes lvlh off"])
+          @?= Right ["[2, 2, 3] eci", "Vec 3 [m]", "Vec lvlh [m]"]
+        expectError
+          (runLinesP (setup ++ ["p .+ off"]))
+          "the axes of eci against anonymous axes; give it a frame with `withAxes c v`, or `along c v` if it is along the root"
+        -- A function keeps its axes general; a value meets a frame through
+        -- withAxes or a signature that keeps it polymorphic.
+        runLinesP
+          ( setup
+              ++ [ "let shift q = q .+ [1, 0, 0] m"
+                 , ":type shift"
+                 , "shift p"
+                 , encloses "1e-20" "(p .+ inChart lvlh (withAxes lvlh off) .- p) / m" "[0, 0, 2]"
+                 , multiline ["off2 :: forall (a : 3). Vec a [m]", "let off2 = [0, 0, 2] m"]
+                 , ":ls off2"
+                 , "p .+ off2"
+                 , -- :type is the type of `it`, a named value
+                   ":type off2"
+                 ]
+          )
+          @?= Right
+            [ "forall (a : 3). Point (Vec a [m]) -> Point (Vec a [m])"
+            , "[2, 2, 3] eci"
+            , "true"
+            , "off2 : forall (a : 3). Vec a [m]"
+            , "[1, 2, 5] eci"
+            , "Vec 3 [m]"
+            ]
+    , testCase "two roots never mix" $ do
+        let setup = [eci, "chart lab = m at [0, 0, 0] m", "let p = [1, 2, 3] eci"]
+        expectError
+          (runLinesP (setup ++ ["p to lab"]))
+          "the axes of eci against the axes of lab"
+        expectError
+          (runLinesP (setup ++ ["(p .- [0, 0, 0] eci) + ([1, 0, 0] lab .- [0, 0, 0] lab)"]))
+          "the axes of eci against the axes of lab"
+    , testCase "scalar charts are untouched" $ do
+        runLinesP
+          [ "20 degC to degF"
+          , "77 °F .- 68 °F"
+          , ":type 20 degC"
+          , ":type degC"
+          , "chart warm = K at 300 K"
+          , "1 warm .- 0 warm"
+          ]
+          @?= Right ["68 degF", "9 deltaF", "Point [K]", "Chart [K]", "1 K"]
+    , testCase "a moving chart has one axis set for every time" $ do
+        let spinning =
+              [ eci
+              , "let w = 7.2921159e-5 rad/s"
+              , "let t0 = 0 unix"
+              , "chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w"
+              ]
+        runLinesP
+          ( spinning
+              ++ [ ":type rotationOf (spinner t0)"
+                 , ":type rotationOf (spinner (t0 .+ 1 s))"
+                 , ":type rotationOf (spinner t0) - rotationOf (spinner (t0 .+ 1 s))"
+                 ]
+          )
+          @?= Right ["Mat eci spinner", "Mat eci spinner", "Mat eci spinner"]
+    , testCase "a written type names a chart's axes and root" $ do
+        let signed =
+              frame
+                ++ [ multiline ["v :: Vec lvlh [m]", "let v = [1, 0, 0] m"]
+                   , multiline ["c :: Chart (Vec lvlh [m]) eci", "let c = lvlh"]
+                   ]
+        runLinesP
+          ( signed
+              ++ [ ":type v"
+                 , ":type rotationOf lvlh @ v"
+                 , ":type c"
+                 , ":type (rotationOf lvlh :: Mat eci lvlh)"
+                 ]
+          )
+          @?= Right
+            ["Vec lvlh [m]", "Vec eci [m]", "Chart (Vec lvlh [m]) eci", "Mat eci lvlh"]
+        expectError
+          (runLinesP (frame ++ [":type (rotationOf lvlh :: Mat lvlh eci)"]))
+          "the axes of"
+        expectError
+          ( runLinesP
+              ( frame
+                  ++ [ multiline ["v :: Vec lvlh [m]", "let v = [1, 0, 0] lvlh .- [0, 0, 0] lvlh"]
+                     , ":type v"
+                     ]
+              )
+          )
+          "Vec lvlh [m]"
+        -- A signature that names a chart's axes reads back in one group
+        -- with the chart: through :export and :load, and across a reload.
+        s <- sessionOf (signed ++ [":add"])
+        source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
+        reloaded <-
+          either
+            (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
+            pure
+            (sessionP [source, ":add"])
+        reloaded.codebase.signatures @?= s.codebase.signatures
+        reloaded.codebase.names @?= s.codebase.names
+        withTempStore $ \dir -> do
+          stored <- persistLines dir (signed ++ [":add"])
+          (loaded, notes) <- reload dir
+          notes @?= []
+          loaded.codebase.signatures @?= stored.codebase.signatures
+          linesIn loaded [":type v"] @?= Right ["Vec lvlh [m]"]
+    , testCase "the library's states are typed by their frames" $ do
+        runLinesP [":use astro", ":type velocityIn", ":type stateFrom"]
+          @?= Right
+            [ "stored use astro"
+            , "forall (a : 3) (b : 3). Chart (Vec a [m]) b -> State b -> Vec a [m s^-1]"
+            , "forall (a : 3) (b : 3). Chart (Vec a [m]) b -> Point [s] -> Vec a [m] -> Vec a [m s^-1] -> State b"
+            ]
+        runLinesP
+          ( frame
+              ++ [ ":use astro"
+                 , "let st = stateFrom lvlh (0 unix) ([1, 0, 0] m) ([0, 1, 0] m/s)"
+                 , ":type st"
+                 , ":type st.pos"
+                 , encloses "1e-20" "velocityIn lvlh st / (m / s)" "[0, 1, 0]"
+                 ]
+          )
+          @?= Right
+            ["stored use astro", "State eci", "Point (Vec eci [m])", "true"]
+    ]
+ where
+  eci = "chart eci = m at [0, 0, 0] m"
+  frame = [eci, "chart lvlh = m at [7000, 0, 0] km eci by rotz (90 deg)"]
+
+{- | The name slot of a shape position (design §3.9, stage 1). These read
+definitions whose stored types carry a named set by hash, with no chart
+behind it, and check the unifier, lint and the encoding on the slot
+directly; 'namedAxesTests' has them from source.
 -}
 axisSlotTests :: TestTree
 axisSlotTests =

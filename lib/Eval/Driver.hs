@@ -529,6 +529,8 @@ command session src = \case
   ["todo"] -> keep (todo session)
   ["scratch"] -> keep (Right (map pending session.scratch))
   ["forget", n] -> forget (pendingName n) session
+  -- The type the expression's value has as `it`, a named value (design
+  -- §3.9, decision 5): when not a function, its free axes anonymous.
   ("type" : rest) -> keep $ do
     e <- parseExpr (T.unwords rest)
     (_, _, ty, _) <- checkExpr scope ecb (T.unwords rest) e
