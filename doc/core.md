@@ -406,6 +406,15 @@ Applying the test to the roadmap, in order:
   `Point δ` and `Scale δ`, five saturated primitives, and a `scale`
   declaration that is label-level metadata like `unit`. No Core change: a
   point is a number at runtime and `.+`/`.-` are primitive applications.
+- **Units as a type (design §3.10, part U).** One constructor in the type
+  language, `Unit δ`, and two saturated primitives, `scale` (the quantity
+  rule after a unit) and `unit` (a unit's declaration), both named by
+  keywords so that no source names them. No Core change. The quantity rule
+  and `to` now have readings the types choose where the spelling does not;
+  the desugarer leaves a marker primitive there, inference resolves it,
+  and the reading is written into the term before it is hashed, so Core
+  never holds a marker and the rule is still a rewrite into Core, one that
+  needs the types. It was a hash-changing migration (format 7 to 8).
 - **Affine arithmetic, units, printing, covariance.** Runtime and prelude work.
   `Noise` and `Uncertain` already existed for it, and the arithmetic itself
   landed without touching Core: `Eval.Affine` sits entirely under the
