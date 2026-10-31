@@ -9288,6 +9288,65 @@ partFTests =
               "[0, -1, 0]"
           ]
           @?= Right (replicate 6 "true")
+    , testCase "a chart whose step may be zero is refused by name" $ do
+        let session =
+              [ "unit zero = 0 m"
+              , "unit fuzz = 0 m ± 1 m"
+              , "unit wobble = 1 m ± 2 m"
+              , "unit two = 2 m"
+              , "space Length = Num m"
+              , "chart origin on Length"
+              , "chart collapsed on origin step zero"
+              , "chart fuzzy on origin step fuzz"
+              , "chart wide on origin step wobble"
+              , "chart under on collapsed step two"
+              , "chart root on Length step zero"
+              ]
+            refused use = runLines (session ++ [use])
+        refused "1 collapsed == 2 collapsed"
+          @?= Left "error: chart collapsed has no invertible coordinates: its step is zero"
+        refused "1 fuzzy"
+          @?= Left
+            "error: chart fuzzy has no invertible coordinates: its step's enclosure reaches zero"
+        refused "1 wide"
+          @?= Left
+            "error: chart wide has no invertible coordinates: its step's enclosure reaches zero"
+        -- a chart on it inherits the refusal, which names the culprit
+        refused "1 under"
+          @?= Left "error: chart collapsed has no invertible coordinates: its step is zero"
+        refused "1 root"
+          @?= Left "error: chart root has no invertible coordinates: its step is zero"
+    , testCase "a negative step reverses a chart's direction"
+        $ runLines
+          [ "unit back = -1 m"
+          , "unit kback = -1000 m"
+          , "space Length = Num m"
+          , "chart origin on Length"
+          , "chart flipped on origin step back"
+          , "chart far on origin at 5 m step kback"
+          , "3 flipped"
+          , "(3 flipped) to origin"
+          , "(3 origin) to flipped"
+          , "(3 flipped) .- (1 flipped)"
+          , "((3 flipped) .- (1 flipped)) to m"
+          , "(1 origin) .- (3 flipped)"
+          , "(3 flipped) .+ 1 m"
+          , "(2 far) to origin"
+          , "(2 far) to flipped"
+          , "((2 far) to origin) == (-1995 origin)"
+          ]
+          @?= Right
+            [ "3 flipped"
+            , "-3 origin"
+            , "-3 flipped"
+            , "2 back"
+            , "-2 m"
+            , "4 m"
+            , "2 flipped"
+            , "-1995 origin"
+            , "1995 flipped"
+            , "true"
+            ]
     , testCase
         "restricted frame types print signatures that preserve their constraints"
         $ do

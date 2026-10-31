@@ -1690,6 +1690,17 @@ Rankine and kelvin are one frame, so `491.67 degR .- 0 kelvin` is `273.15 K`
 with no `to`. A chart's step and origin may themselves be approximate, in
 which case a point written on it carries their nudges like any other value.
 
+**A step must be invertible.** A point prints with its step divided out
+(F6), so a chart whose step may be zero has no coordinates: every point on
+it would be the origin, and `1 c == 2 c` would hold. A step whose enclosure
+reaches zero, exactly zero or uncertain across it (`step fuzz` with `unit
+fuzz = 0 m ± 1 m`), is refused when the chart is used, naming it: "chart
+collapsed has no invertible coordinates: its step is zero". A chart on such
+a chart inherits the refusal, which names the parent. A **negative step** is
+allowed and reverses the chart's direction: with `unit back = -1 m`, `chart
+flipped on origin step back` writes `3 flipped` for `-3 origin`, and `(3
+flipped) .- (1 flipped)` is `2 back`, that is `-2 m`.
+
 **Printing.** A point prints as its coordinates on the chart it was written
 on, the step divided out, followed by the chart's name: `25 degC`, `2451545
 J2000`. Points are the one place a display offset is needed, and the only

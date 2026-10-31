@@ -48,6 +48,7 @@ module Eval.Eval (
 ) where
 
 import Control.Monad (foldM, when, zipWithM)
+import Data.Bifunctor (first)
 import Data.List (nub, transpose)
 import Data.Map.Strict (Map)
 import Data.Maybe (catMaybes, fromMaybe, isJust)
@@ -113,6 +114,11 @@ data EvalError
   | UnknownRef Hash
   | BadCycleIndex Int
   | Unsupported Text
+  | {- | a chart whose step's enclosure reaches zero, so that its
+    coordinates are not invertible (design §3.10, F6): the chart's name,
+    once a reference to it gives one, and what is wrong with the step
+    -}
+    ChartStep (Maybe Text) Text
   | -- | Unreachable for linted terms.
     Internal Text
   deriving stock (Eq, Show)
@@ -303,7 +309,8 @@ eval cfg rt = go
     TRef h mi (Hint written) -> case rt.typedOf h of
       Nothing -> Left (UnknownRef h)
       Just t -> do
-        v <- case mi of
+        -- A chart whose step may be zero is named by its reference.
+        v <- first (namedChart (rt.chartName h mi written)) $ case mi of
           Nothing -> fromMaybe (go (Site h []) VNil t) (rt.shared h)
           Just i -> case t of
             TCycle _ _ bodies -> case vecIndex i (cycleMembers h VNil bodies) of
@@ -1244,6 +1251,7 @@ runPrim cfg rt prim args = case (prim, args) of
   -- lazy, to be computed once when first used ('chartFrame'), and so are
   -- the kinematics ('chartMotion').
   mkChart frameH movingF (stepM, d, stepHint) odims amount parentChart gens spinM = do
+    invertibleStep stepM
     let n = V.length amount
     -- R_parent a: the amount along the base axes.
     along <- case parentChart >>= (.rotation) of
@@ -1724,6 +1732,23 @@ cross3 p a b
       let x i j = subM (mulM p (a V.! i) (b V.! j)) (mulM p (a V.! j) (b V.! i))
        in Right (V.fromList [x 1 2, x 2 0, x 0 1])
   | otherwise = Left (Internal "a spin is a three-vector")
+
+{- | A chart's coordinates are its amounts divided by its step (design
+§3.10, F6), so the step must be invertible: its enclosure must exclude
+zero. A negative step reverses the chart's direction and is allowed.
+-}
+invertibleStep :: Magnitude -> Either EvalError ()
+invertibleStep step
+  | step == Exact 0 = Left (ChartStep Nothing "its step is zero")
+  | abs (midpoint step) <= radius step =
+      Left (ChartStep Nothing "its step's enclosure reaches zero")
+  | otherwise = Right ()
+
+-- | Name a chart whose step may be zero after the reference that reached it.
+namedChart :: Maybe Text -> EvalError -> EvalError
+namedChart name = \case
+  ChartStep Nothing why | Just _ <- name -> ChartStep name why
+  err -> err
 
 {- | The coordinates of a point on the chart it was written on (design
 §3.10, F6): its coordinates on its frame, the step divided out.

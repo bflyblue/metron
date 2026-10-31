@@ -1478,6 +1478,11 @@ renderEvalError = \case
   UnknownRef h -> "error: unknown reference " <> showHash h
   BadCycleIndex i -> "error: bad cycle index " <> T.pack (show i)
   Unsupported msg -> "not implemented: " <> msg
+  ChartStep name why ->
+    "error: "
+      <> maybe "a chart" ("chart " <>) name
+      <> " has no invertible coordinates: "
+      <> why
 
 {- | Evaluate a preference text (@km/h@) to the unit it names and the exact
 dimension it applies to. It must be a scalar with a display unit.
