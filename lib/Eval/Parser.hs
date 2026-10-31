@@ -521,7 +521,7 @@ opExpr = makeExprParser term table
     , [Prefix (foldr1 (.) <$> P.some (negP P.<|> sqrtP))]
     ,
       [ InfixL (binop Outer <$ opTok "*")
-      , InfixL (binop Dot <$ opTok "@")
+      , InfixL (binop Dot <$ (opTok "@" P.<|> opTok "·"))
       , InfixN (binop Cross <$ opTok "×")
       , InfixL (binop Wedge <$ opTok "/\\")
       , InfixL (binop EMul <$ opTok ".*")
@@ -784,7 +784,7 @@ sectionOp :: Bool -> Parser Op
 sectionOp allowMinus =
   P.choice
     $ [ Outer <$ tok (TOp "*")
-      , Dot <$ tok (TOp "@")
+      , Dot <$ (tok (TOp "@") P.<|> tok (TOp "·"))
       , Cross <$ tok (TOp "×")
       , Wedge <$ tok (TOp "/\\")
       , EMul <$ tok (TOp ".*")

@@ -6453,6 +6453,12 @@ replTests =
     | name == "sqrt" =
         -- A prefix operator where sqrt is an application (§7.3): same value.
         toks u == Right [TSqrt] && evalP "√9" == evalP "sqrt 9" && isRight (evalP "√9")
+    | u `elem` ["·", "⋅"] =
+        -- A token of its own, a product in a dimension (design §4.1), and
+        -- in an expression the same program as @.
+        toks ("a " <> u <> " b") == Right [TIdent "a", TOp "·", TIdent "b"]
+          && isRight (parseProgram ("a " <> u <> " b"))
+          && parseProgram ("a " <> u <> " b") == parseProgram "a @ b"
     | Just a <- lookup u asciiSpellings =
         let lexed = toks ("a " <> u <> " b")
          in isRight lexed && lexed == toks ("a " <> a <> " b")

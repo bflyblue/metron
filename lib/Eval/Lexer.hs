@@ -57,7 +57,8 @@ data Token
   | TIdent Text
   | TKw Keyword
   | {- | A binary operator in its canonical ASCII spelling: @+ - * / ^ == /=
-    < <= > >= && ||@ and @.@ for composition.
+    < <= > >= && ||@ and @.@ for composition; @·@ keeps its own, the
+    matrix product @\@@ in an expression and a product in a dimension.
     -}
     TOp Text
   | -- | @±@ or @±σ@.
@@ -291,7 +292,10 @@ symbol =
     , string "⊙" $> TOp ".*"
     , string "⊘" $> TOp "./"
     , string "⊗" $> TOp "*"
-    , oneOf ("·⋅@" :: String) $> TOp "@"
+    , -- `·` is the matrix product `@` in an expression but a product in a
+      -- dimension, where `@` is refused (design §4.1): a token of its own.
+      oneOf ("·⋅" :: String) $> TOp "·"
+    , char '@' $> TOp "@"
     , string "><" $> TOp "×"
     , char '×' $> TOp "×"
     , projection
