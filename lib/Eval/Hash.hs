@@ -126,22 +126,17 @@ enc ph hint depth = \case
     Axes t -> word8 2 <> text t
     SpaceLabel t -> word8 3 <> text t
     FrameLabel t moving -> word8 4 <> text t <> word8 (if moving then 1 else 0)
-  -- A constructor is an empty name, the type's hash and the index. The
-  -- empty name is what is left of the built-in constructors, which were
-  -- their names until storage version 4 (design §6.1).
-  conRef (UserCon (Hash h) i) = text "" <> byteString h <> varint (fromIntegral i)
+  -- A constructor is its type's hash and its index (design §6.1).
+  conRef (UserCon (Hash h) i) = byteString h <> varint (fromIntegral i)
 
 -- Decoding ------------------------------------------------------------------------
 
 {- | The storage encoding version this build writes and reads (design §7.4).
-Version 2 added the written name after a reference; version 4 retired the
-built-in constructors' names and the types @Bool@, tuple and list, which
-are declared types on the hashes of "Eval.Builtin". Only this version is
-read: a store written by an older one is refused by its format (core.md
-§6), so the retired forms are unknown tags here.
+Only this version is read; a store written by another is refused by its
+format.
 -}
 storageVersion :: Int
-storageVersion = 4
+storageVersion = 5
 
 {- | Read a term in the storage encoding. The scope is rebuilt as the
 binders are entered, so the result is well-scoped by construction; an
@@ -336,20 +331,9 @@ hashFromHex t
   pairs (a : b : rest) = fromIntegral (a * 16 + b) : pairs rest
   pairs _ = []
 
-{- | A constructor reference: the empty name the encoding still writes
-(what is left of the retired built-in constructors' names), the type's
-hash and the index. A name is a constructor of an older storage version,
-which is not read.
--}
+-- | A constructor reference: the type's hash and the index.
 decConRef :: Dec ConRef
-decConRef = do
-  name <- decText
-  if T.null name
-    then
-      UserCon . Hash
-        <$> bytes 32
-        <*> (fromIntegral <$> decVarint)
-    else failDec ("unknown constructor " <> name)
+decConRef = UserCon . Hash <$> bytes 32 <*> (fromIntegral <$> decVarint)
 
 -- | Read a declared type in the storage encoding.
 decodeTypeDef :: ByteString -> Either Text TypeDef

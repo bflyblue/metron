@@ -58,7 +58,6 @@ import Eval.Prelude (
   isLibraryPath,
   stdlibCodebase,
   stdlibDefaultUses,
-  stdlibMovedOut,
   stdlibNames,
   stdlibNamespaces,
  )
@@ -5103,10 +5102,6 @@ affineTests =
           case runLinesP ["let chart = 3"] of
             Left _ -> pure ()
             Right v -> assertFailure (show v)
-          -- The old declaration, with its `=`, is refused with the new one.
-          expectError
-            (runLinesP ["chart bp = mmHg at 0 mmHg"])
-            "a chart is declared with no `=`"
           expectError
             (runLinesP ["chart bp at 0 K"])
             "name its space: `chart … on Temperature`"
@@ -8126,9 +8121,18 @@ stdlibTests :: TestTree
 stdlibTests =
   testGroup
     "standard library"
-    [ testCase "the names moved out of the default namespaces need their namespace"
-        $ forM_ stdlibMovedOut
-        $ \n -> qualifyName TermLabel S.rootScope seeded.codebase n @?= NotFound
+    [ testCase "a name outside the namespaces used by default needs its namespace" $ do
+        let inDefault n = any (\u -> (u <> ".") `T.isPrefixOf` n) stdlibDefaultUses
+            defaultLast = Set.fromList (map S.lastSegment (filter inDefault stdlibNames))
+            outside =
+              Set.toList
+                ( Set.fromList (map S.lastSegment (filter (not . inDefault) stdlibNames))
+                    `Set.difference` defaultLast
+                )
+        -- The constants and AU among them (design §7.7).
+        all (`elem` outside) ["AU", "G", "c", "planck", "g0"] @? show outside
+        forM_ outside $ \n ->
+          qualifyName TermLabel S.rootScope seeded.codebase n @?= NotFound
     , testCase "no name is ambiguous among the namespaces used by default" $ do
         let cb = seeded.codebase
             used n = any (\u -> (u <> ".") `T.isPrefixOf` n) stdlibDefaultUses
@@ -9244,7 +9248,7 @@ forallTests =
           -- forall in a query binds, as in a signature.
           ls "forall a. {a} -> Num" @?= Right ["std.length : forall a. {a} -> Num"]
     , testCase
-        "a sig line writes forall, reads back across a reload; an old one still replays"
+        "a sig line writes forall and reads back across a reload"
         $ withTempStore
         $ \dir -> do
           s <-
@@ -9269,18 +9273,15 @@ forallTests =
             @? T.unpack logText
           (" sig pair forall a b. a -> b -> (a, b)\n" `T.isInfixOf` logText)
             @? T.unpack logText
-          -- A line written before forall was required, without it.
-          appendFile (dir </> "names.log") "0 sig ident a -> a\n"
           (loaded, notes) <- reload dir
           notes @?= []
-          Map.delete "ident" loaded.codebase.signatures @?= s.codebase.signatures
-          linesIn loaded [":type same", ":type pair", ":type ident"]
+          loaded.codebase.signatures @?= s.codebase.signatures
+          linesIn loaded [":type same", ":type pair"]
             @?= Right
               [ "forall s d. Tensor s d -> Tensor s d"
               , "forall a b. a -> b -> (a, b)"
-              , "forall a. a -> a"
               ]
-          userSignatures loaded.codebase @?= ["ident", "keep", "pair", "same"]
+          userSignatures loaded.codebase @?= ["keep", "pair", "same"]
     ]
 
 -- | What @:ls --types@ lists of the library's declarations of the built-in types.
@@ -9416,7 +9417,7 @@ dimensionSyntaxTests =
           @?= Right "Tensor [2, 3, 4] m -> Tensor [2, 3, 4] m"
         expectError
           (runLinesP ["\\x -> (x :: Num [m])"])
-          "a bracket is a shape; a dimension is written without one, like m or (m/s^2)"
+          "a dimension is a unit, a variable, 1, or a product of them in parentheses"
         expectError
           (runLinesP ["\\x -> (x :: Num [m s^-2])"])
           "unexpected"

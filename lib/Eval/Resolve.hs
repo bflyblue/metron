@@ -21,6 +21,7 @@ module Eval.Resolve (
   processGroup,
   enterData,
   queryScheme,
+  signatureScheme,
   typeVariable,
   signatureText,
   annotationsFor,
@@ -1814,10 +1815,6 @@ tyDim env a = case a.node of
   -- `Num (m s)` reads as an application: say how to write the product.
   S.TyApp hd args
     | Just names <- mapM nameOf args -> bad a (S.juxtaposedHint (hd.text : names))
-  S.TyShape _ ->
-    bad
-      a
-      "a bracket is a shape; a dimension is written without one, like m or (m/s^2)"
   _ ->
     bad
       a
@@ -1842,9 +1839,8 @@ unitDim env n
 {- | A type written as a search query (design §7.3): every name that is not
 a built-in type, a declared type, a base unit or a unit is a variable, of
 the kind its position gives it. A query headed by @forall@ is read as a
-signature is ('signatureScheme'), which is how a signature's log line
-reads back (design §7.4); one without stays implicit, as a search pattern
-and as the log lines written before @forall@ was required.
+signature is ('signatureScheme'); one without stays implicit, a search
+pattern.
 -}
 queryScheme :: S.Scope -> Codebase -> S.TyExpr -> Either ResolveError Scheme
 queryScheme scope cb t = case t.node of

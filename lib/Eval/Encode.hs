@@ -72,9 +72,9 @@ encodeTypeDef def =
   labelEnc = \case
     Owner t -> word8 0 <> text t
     Tag t -> word8 1 <> text t
-    -- A chart's minted axis type (design §3.9): appended.
+    -- A chart's minted axis type (design §3.9).
     Axes t -> word8 2 <> text t
-    -- A space and a frame (design §3.10, F9): appended.
+    -- A space and a frame (design §3.10, F9).
     SpaceLabel t -> word8 3 <> text t
     FrameLabel t moving -> word8 4 <> text t <> word8 (if moving then 1 else 0)
 
@@ -87,27 +87,25 @@ kindByte = \case
   KLen -> word8 1
   KShape -> word8 2
   KDim -> word8 3
-  -- An axis variable (design §3.9): appended.
+  -- An axis variable (design §3.9).
   KAxis -> word8 4
-  -- A frame and a space (design §3.10, F1): appended.
+  -- A frame and a space (design §3.10, F1).
   KFrame -> word8 5
   KSpace -> word8 6
-  -- A role (design §3.10, U9): appended.
+  -- A role (design §3.10, U9).
   KRole -> word8 7
 
 encType :: Type -> Builder
--- 0x20 (Bool), 0x24 (tuple) and 0x25 (list) are retired: those types are
--- 0x28 on the built-in hashes (design §6.1), and no longer read either.
+-- @Bool@, tuples and lists are declared types, 0x28 on the built-in hashes
+-- (design §6.1).
 encType = \case
   TTensor sh d -> word8 0x21 <> encShape sh <> encDim d
-  -- A unit (design §3.10, U1): appended.
+  -- A unit (design §3.10, U1).
   TUnit d -> word8 0x2A <> encDim d
-  -- A quantity of a role variable (design §3.10, U9): appended, so that an
-  -- amount and a unit keep their bytes.
+  -- A quantity of a role variable (design §3.10, U9); an amount is 0x21 and
+  -- a unit 0x2A.
   TQty r sh d -> word8 0x2E <> encRole r <> encShape sh <> encDim d
-  -- Points, charts and amounts on frames (design §3.10, F4, F9): appended;
-  -- 0x22, 0x23 and 0x29, a point and a chart over a tensor type, are
-  -- retired.
+  -- Points, charts and amounts on frames (design §3.10, F4, F9).
   TPoint f -> word8 0x2B <> encFrame f
   TChart f -> word8 0x2C <> encFrame f
   TOver f md -> word8 0x2D <> encFrame f <> maybe (word8 0) ((word8 1 <>) . encDim) md
@@ -157,7 +155,7 @@ encSpaceSlot = \case
   SpVar v -> word8 1 <> varint (fromIntegral v)
 
 {- | A position with anonymous axes keeps the bytes of a bare length (design
-§3.9, §6.1); a named or variable slot is the appended tag 3.
+§3.9, §6.1); a named or variable slot is tag 3.
 -}
 encShape :: Shape -> Builder
 encShape = \case
@@ -177,7 +175,7 @@ encLen :: Len -> Builder
 encLen = \case
   LLit k -> word8 0 <> varint (fromIntegral k)
   LVar v k -> word8 1 <> varint (fromIntegral v) <> varint (fromIntegral k)
-  -- rank s + k (design §4.1): appended, so older encodings are unchanged.
+  -- rank s + k (design §4.1).
   LRank v k -> word8 2 <> varint (fromIntegral v) <> varint (fromIntegral k)
 
 encDim :: Dim -> Builder

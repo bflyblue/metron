@@ -15,7 +15,6 @@ module Eval.Prelude (
   stdlibNames,
   stdlibNamespaces,
   stdlibDefaultUses,
-  stdlibMovedOut,
   isLibraryPath,
   stdlibCodebase,
 ) where
@@ -552,27 +551,6 @@ order. @astro@, @physics@ and @imperial@ are left to @:use@.
 -}
 stdlibDefaultUses :: [Text]
 stdlibDefaultUses = ["std", "linalg", "si", "time", "angle", "temperature"]
-
-{- | The names that were bare before the library was split by domain and
-are not now, because they moved to a namespace no stored @use@ reaches:
-the constants and @AU@ (design §7.7).
--}
-stdlibMovedOut :: [Text]
-stdlibMovedOut =
-  [ "AU"
-  , "G"
-  , "GM_earth"
-  , "GM_sun"
-  , "M_earth"
-  , "M_sun"
-  , "R_earth"
-  , "c"
-  , "planck"
-  , "k_B"
-  , "N_A"
-  , "e_charge"
-  , "g0"
-  ]
 
 -- | Whether a full path is under one of the library's namespaces.
 isLibraryPath :: Text -> Bool

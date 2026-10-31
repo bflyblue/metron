@@ -58,7 +58,7 @@ import Eval.Dimension (Spelling (..))
 import Eval.Hash
 import Eval.Parser (parseType)
 import Eval.Prelude (stdlibCodebase)
-import Eval.Resolve (queryScheme, renderResolveError, storeTerm)
+import Eval.Resolve (renderResolveError, signatureScheme, storeTerm)
 import Eval.Syntax (Use (..), renderUse, rootScope)
 import Eval.TCore (signatureHolds)
 import Eval.Type (Scheme, TypeDef (..), renderSignature)
@@ -463,13 +463,18 @@ signatureLogText cb =
     Ascii
     (\h -> maybe (showHash h) ("." <>) (typeNameOf h cb))
 
-{- | A signature line read back: the type parsed and converted at the root,
-for a name that is bound and whose definition it holds of.
+{- | A signature line read back: the type parsed and converted at the root
+as a written signature is, for a name that is bound and whose definition
+it holds of.
 -}
 replaySignature :: Text -> Text -> Codebase -> Either Text Codebase
 replaySignature name text cb = do
   t <- parseType text
-  sig <- either (Left . renderResolveError) Right (queryScheme rootScope cb t)
+  sig <-
+    either
+      (Left . renderResolveError)
+      (Right . fst)
+      (signatureScheme rootScope cb t)
   case lookupName name cb >>= (`typeOf` cb) of
     Just general
       | signatureHolds sig general -> Right (setSignature name sig cb)

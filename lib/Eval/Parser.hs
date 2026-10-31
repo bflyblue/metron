@@ -235,14 +235,6 @@ chartStatement = do
   s <- kw KChart
   n <- name
   ps <- P.many name
-  o <- P.getOffset
-  equals <- P.optional (tok TEquals)
-  case equals of
-    Just _ ->
-      P.setOffset o
-        >> fail
-          "a chart is declared with no `=`: its parent after `on`, then its clauses, as in chart degC on Temperature at 273.15 K"
-    Nothing -> pure ()
   _ <-
     kw KOn
       P.<|> fail
