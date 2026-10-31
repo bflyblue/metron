@@ -429,6 +429,11 @@ variable needs an explicit operator on either side: `x * km`, `5 * a`.
 
 The rule is a parse-time rewrite to `*`. Core (§5.1) never sees it.
 
+Stage 3 (§3.10, U4 and U5) changes the rule: it becomes type-directed (a
+literal followed by a `Unit` is an amount, followed by a `Chart` a point),
+and after a literal the quantity takes the whole unit expression, so
+`9.81 m/s^2` is `9.81 (m/s^2)`. This section describes the rule as built.
+
 Inside an application there is no such grouping: `f 3 m` applies `f` to `3`
 and then to `m`, exactly as `f x y` would, so a quantity in argument position
 is parenthesised, `Rect (3 m) (4 m)` and `Body (5 kg) ([1, 2, 3] km)`. The
@@ -2260,7 +2265,7 @@ hands, meet:
 §3.9, to be decided with charts: a chart is an axis set with an origin, and
 what `p to lvlh` returns is what decides whether `Vec lvlh` exists.
 
-### 3.9 Axis sets: named positions and index types (layer 2, stages 1, 2a and 2b built; the rest design)
+### 3.9 Axis sets: named positions and index types (layer 2, stages 1, 2a and 2b built; stage 3 designed in §3.10; the rest design)
 
 Two layers, the first a sugar and the second a type-system extension; the
 first can be built alone and does not prejudge the second.
@@ -2312,7 +2317,8 @@ frame's axes. The decisions:
    (§3.7) needs the same row and column machinery for dimensions; the two
    should share it, but stay separate designs.
 4. **Points are typed by their axes and stored in their chart's
-   coordinates** (decided by the owner). `[1.5, 2.25, 3] lvlh : Point (Vec
+   coordinates** (decided by the owner). Revised in §3.10: a point is
+   typed by its frame, `Point lvlh`; storage in chart coordinates stands. `[1.5, 2.25, 3] lvlh : Point (Vec
    lvlh m)`, held as the three numbers `1.5, 2.25, 3` and the chart, so
    arithmetic inside a frame is exact, `p.0` is `1.5` along lvlh's x axis,
    and `q .- p` for two points on one chart is a `Vec lvlh m`. A point on a
@@ -2404,8 +2410,10 @@ v.x         : Vec a d -> Num d                       -- x one of a's axis labels
    cannot say "every axis" over axis sets at any rank); literals
    polymorphic in their axes with the named-value default of decision 5;
    printing of named vectors. Built (below).
-3. **Points typed by axes and stored in chart coordinates.** The point value
-   changes representation (chart coordinates and the chart, not base form);
+3. **Units, spaces and frames: revised and designed in §3.10.** Points are
+   typed by their frame (`Point lvlh`), not by their axes; units become a
+   type; spaces and frames are new kinds. The original plan, kept for
+   reference: the point value changes representation (chart coordinates and the chart, not base form);
    `to` becomes the typed conversion between axis sets and needs a moving
    chart's arguments; `.-` on one chart gives that chart's `Vec`; `p.0` reads
    a chart coordinate; `velocityIn`/`stateFrom` retyped. What remains after
@@ -2632,6 +2640,249 @@ still stored in base form.
   free axes of their own (`rotation`, `dual`, `axisAngle`) until stage 4
   generalises them.
 
+### 3.10 Units, spaces and frames (stage 3 of §3.9; design)
+
+Decided by the owner, 2026-10-31. This is stage 3 of §3.9, revised: a point
+is typed by its *frame* (`Point lvlh`, `Point degC`), not by its axes as
+§3.9's decision 4 had it, and units become a type of their own. It is built
+as one stage (the owner's choice) in two parts that land in order, units
+(part U) and then frames (part F), since part F's `to` and quantity rule use
+part U's machinery.
+
+**The principle.** A chart is a step, an origin and axes. Each costs
+something different to convert, and the type records exactly the parts whose
+conversion is more than an exact multiplication:
+
+| part | converting it | in an amount's type | in a point's type |
+|---|---|---|---|
+| step (scale) | multiply by an exact factor | no | no |
+| origin | add an offset, possibly approximate or moving | no: it cancels | yes |
+| axes | rotate, possibly approximate or moving | yes | yes |
+
+Units are scale only, so a unit never enters a type: `1 km + 1 m` and
+`5 deltaC + 9 deltaF` add with no `to`, and `to` chooses the unit a result
+prints in (`5 deltaC + 9 deltaF to deltaC` is `10 deltaC`). Between frames,
+conversion is explicit, as Haskell makes conversion between types explicit:
+`20 degC .- 68 degF` is refused until one side is converted with `to`. Points
+never add (`20 degC + 5 degC` is refused), whatever their frames.
+
+#### Part U: units are a type
+
+**U1. `Unit δ`.** A unit is a value of type `Unit δ`, a newtype around
+`Num δ`: the same run-time value, a magnitude in base units with its display
+hint (§3.2.12), under a different type. `m : Unit m`, `km : Unit m`,
+`deltaF : Unit K`; `:type km` prints `Unit m`. A unit is a first-class value,
+passed, stored and returned like any other (`\u -> 3 u`).
+
+**U2. Unit arithmetic.** `*`, `/` and `^k` (a literal `k`) each have exactly
+two readings, chosen by the operand types: two amounts give an amount, as
+today; two units give a unit, `km/h : Unit (m/s)` with the hint `km h⁻¹`,
+`lbf / inch^2`, `rad^2`. An amount and a unit together are refused, never
+converted: "`s` is a unit; write `1 s`". `+` and `-` on units are refused.
+When an operand's type is not yet known the choice is a pending constraint,
+solved when it is known, as `Rank` and `Append` are (§4.2); one still unsolved
+when a definition is generalised takes the amount reading. Both readings are
+the same operation at run time, so the choice is static only.
+
+**U3. A unit's name is the unit.** In an expression a unit's name is the
+`Unit`, everywhere; no position reads it as an amount. `x / s` and
+`5 m + km` are refused with the hint to write `1 s` or `1 km`; `x / 1 s`
+works, because a quantity binds like an application.
+
+**U4. The quantity rule is type-directed** (amends §2.6). A literal followed
+by an expression of type `Unit δ` is the amount `scale lit u : Tensor σ δ`;
+followed by an expression of type `Chart c`, or a moving chart, it is the
+point `pointOn c lit : Point c` (part F); anything else is refused, "`pi` is
+a Num, not a unit or a chart: write the `*`". So `2 pi` and `5 a` stay
+errors, now by type rather than by a mark on the name, and what follows the
+literal may be any atom: a declared unit or chart, a parameter, `(ecef t)`,
+`(km/h)`. When the atom's type is not yet known the choice is a pending
+constraint; one unsolved at generalisation is refused as ambiguous, asking
+for a signature.
+
+```
+scale   : Tensor σ 1 -> Unit δ -> Tensor σ δ
+pointOn : forall c. Chart c -> Coords c -> Point c
+```
+
+**U5. Unit operators bind before numbers.** After a literal the quantity
+takes the whole unit expression: it extends through `*`, `/`, `^` and
+juxtaposition while the next atom is a declared unit's name, with or without a
+power. The desugarer decides where a quantity ends, because it knows which
+names are declared units; names decide only the grouping, and the types decide
+what each operator means (U2).
+
+```
+9.81 m/s^2      =  9.81 (m/s^2)
+5 km/h          =  5 (km/h)
+9.81 m s^-2     =  9.81 (m*s^-2)      -- values print juxtaposed, so they read back
+6 m / 2 s       =  (6 m) / (2 s)      -- a number after / ends the quantity
+6 m / x         =  (6 m) / x          -- x is not a declared unit
+x / 1 km/h      =  x / (1 (km/h))
+9.81 m/u        =  (9.81 m) / u       -- u a Unit-typed variable: refused, "write 9.81 (m/u)"
+```
+
+**U6. `to` has two readings**, chosen by its right operand's type with U2's
+mechanism: `Tensor σ δ -> Unit δ -> Tensor σ δ` replaces and pins the display
+unit, as today; `Point c -> Chart c1 -> Point c1` converts a point between
+frames of one space (F5). Its right side is an expression, so `v to km/h` is
+unit arithmetic. A `to` whose reading is still unknown at generalisation is
+refused as ambiguous.
+
+**U7. Declarations.** `unit name = e` takes `e : Num δ`, the unit's size
+(`unit min = 60 s`, `unit deg = pi / 180 * 1 rad`), or `e : Unit δ`
+(`unit N = kg*m/s^2`, `unit psi = lbf / inch^2`, `unit deltaC = K`). The
+library's declarations written as `60 * s`, `deg / 60` and `5/9 * K` are
+respelled `60 s`, `1 deg / 60` and `5/9 * 1 K`. A chart's step is a `Unit`
+and its origin an amount (`chart degF = deltaF at 459.67 deltaF
+temperature`). `:prefer` takes a unit.
+
+**U8. Printing.** `Unit δ` is written and printed like any type. A unit value
+prints as the unit expression of its hint, with `*`, `/` and `^` as a type's
+dimension is written (§4.1), so that it reads back as unit arithmetic: `km`,
+`km/h`, `kg*m/s^2`. Amounts print as before, `9.81 m s^-2`.
+
+#### Part F: spaces and frames
+
+**F1. Kinds.** Two new kinds: `Space`, and `Frame s` for a space `s`.
+`temperature : Space`, `degC : Frame temperature`. In a binder a space names
+the kind of its frames, so `forall (c : temperature).` means `c : Frame
+temperature`. A bare `forall c.` used as a frame gets the kind `Frame s` with
+`s` generalised too: a frame on any space (kind polymorphism, the way a `d`
+is inferred to be a dimension).
+
+**F2. Spaces are declared.** A space is a set of points that convert among
+each other: the temperatures, the instants of time, a physical space.
+
+```
+space temperature = Num K
+space time        = Num s
+space inertial    = Vec 3 m
+```
+
+A declaration mints a nominal space, as a chart mints its axes: two spaces
+declared alike are two spaces, and points of one never convert to the other
+(`20 degC to eci` is a kind error). It fixes the dimension and shape of the
+space's amounts and gives the space a base: origin zero, the base unit as
+step and, for a vector space, axes of its own, minted with it and named after
+it (`Vec inertial m`). The base is the reference every chart on the space is
+given against in the end; no point is written on the base itself. A chart
+names its space as its parent, `chart degC = K at 273.15 K temperature`,
+`chart JD = day at 0 day time`; a chart with no parent is refused, "name its
+space: `chart … temperature`". This replaces §3.8's implicit base of a
+dimension, and §3.9 decision 7's root chart that names its own axes: a root
+chart is a translated child of its space's base and has the base's axes, so
+two translated roots on one space (`eci`, a lab bench) have one set of axes
+and convert with `to`, and two on different spaces never meet. The library
+declares `time` (`JD`, `MJD`, `J2000`, `unix`), `temperature` (`degC`,
+`degF`, `degR`, `kelvin`) and `pressure` (`si.gauge`).
+
+**F3. Frames.** A frame is the type-level identity of a chart: which origin
+and which axes, with no numbers. Every chart has one. Whether a declaration
+makes a new frame is decided by what it says, never by comparing values: an
+origin may be approximate, and equality of computed values cannot be
+decided.
+
+- A chart with `at` (a new origin) mints a frame.
+- A chart with `by` or `spinning` (new axes) mints a frame and its axes, as
+  in §3.9 stage 2b.
+- A chart with a step and a parent and no `at` (`chart mdegC = mK degC`) is a
+  rescaling: it shares its parent's frame, its points have the parent's type,
+  and its step is only how they print.
+
+A frame is named after the chart that mints it, so `chart degC = …` makes
+`degC` a value (`degC : Chart degC`) and a frame (`degC : Frame
+temperature`), in separate namespaces as a chart and its axes are today. Two
+charts declared alike are two frames, like two `newtype`s over one type. A
+moving chart mints one frame for every argument: `ecef (100 unix)` and
+`ecef (200 unix)` are two chart values of type `Chart ecef`. The relation
+between the levels:
+
+```
+20 degC          : Point degC          -- a point on the frame
+degC  (value)    : Chart degC          -- the chart: its step and origin
+degC  (frame)    : Frame temperature   -- the type-level name and its kind
+temperature      : Space
+```
+
+**F4. Types.** `Point c` is the type of points on the frame `c`, and
+`Chart c` the type of charts whose frame is `c`: one value for a fixed chart,
+one per argument for a moving one. Two type functions read a frame:
+
+- `Axes c`, its axis set: a rotated frame's own, a translated or rescaled
+  frame's parent's, a root's its space's. In a written type a frame's name in
+  an axis position means `Axes c`, and a space's name the base axes.
+- `Diff c`, the type of amounts between points on `c`: the space's
+  dimension along `Axes c`. `Diff degC = Diff degF = Num K`, `Diff lvlh =
+  Vec lvlh m`, `Diff bench = Vec inertial m` for a translated chart.
+
+`Diff` is a synonym, not a new type (an associated type, not associated
+data): amounts from frames with the same axes mix freely, because the scale is
+applied into the value and the origin cancels. It reduces when the frame is
+known, and to the space's dimension and shape once the space is known; on a
+frame of an unknown space it stays residual, which a point operation accepts
+as it is, and arithmetic on it is a pending constraint `Diff c ~ Tensor σ δ`.
+`Point` keeps the frame, so `Point degC` and `Point degF` never unify.
+
+**F5. Primitives.**
+
+```
+pointOn    : forall c. Chart c -> Coords c -> Point c        -- 3 degC, [1, 2, 3] lvlh; Coords c dimensionless, along Axes c
+(.-)       : forall c. Point c -> Point c -> Diff c
+(.+)       : forall c. Point c -> Diff c -> Point c
+to         : forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1
+p.k        : Point c -> Num δ                                -- the k-th coordinate, the step applied
+rotationOf : forall s (c : s). Chart c -> Mat s c            -- rows along the space's base axes, columns along c's
+```
+
+`along`, `inChart`, `withAxes`, `spinOf`, `originVelocityOf`, `velocityIn`,
+`stateFrom` and `astro.State` are retyped over frames and spaces in the same
+way. The checker needs no special rule for "convert first": `.-` takes two
+`Point c`, so points on two frames fail to unify, reported as "points on degC
+and degF: convert one with `to`"; a different origin is two frame names that
+do not unify, different axes an `Axes` mismatch inside `Diff`, and a
+different scale alone cannot fail.
+
+**F6. Storage: chart coordinates** (§3.9 decision 4, kept). A point holds
+its coordinates on its frame with the step applied, an amount from the frame's
+origin along the frame's axes in base units, and its chart for printing. `20
+degC` holds `20 K` above degC's origin; `p.0` reads a coordinate; printing
+divides by the step, so a point prints on the chart it was written on with no
+other arithmetic. Applying the step is an exact multiplication, while the
+origin and the rotation, where error and motion come from, are applied only by
+`to`, so arithmetic inside a frame never passes through them. `.-` and `.+`
+within a frame are coordinate arithmetic; `to` maps through the tree, up to
+the common ancestor and down. A point written on a rescaled chart and one on
+its parent are on one frame and subtract directly. This replaces §3.8's
+base-form storage.
+
+**F7. Moving charts.** A point on a moving frame holds its coordinates and no
+instant: `[1, 2, 3] (ecef t0)` and `[1, 2, 3] (ecef t1)` are the same point,
+a point fixed on the moving body (a ground station is a constant), and the
+quantity rule also accepts the moving chart itself, `[1, 2, 3] ecef`.
+Converting needs the instant, from `at` or from an applied moving chart on
+the right: `p to eci at (100 unix)`, `q to (ecef t)`. A conversion that
+passes through a moving chart with no instant is refused, "ecef moves: say
+when, `p to eci at t`", so the wrong-epoch mistake is a missing argument, not
+a silent error. Charts chosen by a stored argument (a family with one chart
+per spacecraft) are deferred (§11).
+
+**F8. The quantity rule for charts** (U4). Any expression of type `Chart c`,
+or a moving chart, after a literal builds a point, so chart parameters,
+applied moving charts and local chart values need no declaration:
+`\c -> 3 c : forall c. Chart c -> Point c`. The `chart` keyword is still what
+mints a frame.
+
+**F9. Printing and encoding.** `:type 20 degC` is `Point degC`, `:type degC`
+is `Chart degC`, `:type [1, 2, 3] lvlh` is `Point lvlh`; a point prints as it
+did, `20 degC`, `[1, 2, 3] lvlh`. Spaces and frames are minted nominal types
+like a chart's axes, with label kinds of their own that no source `data`
+produces; a type that mentions them encodes them as appended tags (§6.1), and
+the store format moves if the encoding does.
+
+**Deferred.** Families selected by a stored argument (F7); constraints over
+`Diff` beyond the pending one (F4); printing values with `·` (§4.1).
+
 ## 4. Type system
 
 Hindley-Milner with let-polymorphism, extended with dimensions after Kennedy
@@ -2659,6 +2910,10 @@ rotation's rows are, written and printed after a vector chart's type,
 `Chart (Vec lvlh m) eci`, and anonymous when not written. `Point (Num K)`
 prints for a scalar point and `Point (Vec eci m)` for a position on a
 chart whose root is `eci`.
+
+Stage 3 (§3.10) adds to these: `Unit δ`, the type of units; `Point c` and
+`Chart c` over a frame `c` in place of `Point σ δ` and `Chart σ δ`; the type
+functions `Diff c` and `Axes c`; and the kinds `Space` and `Frame s`.
 
 **Dimension syntax** (decided by the owner; replaces the bracket form).
 A dimension is an ordinary type argument, not a bracketed one. Square
@@ -4992,6 +5247,11 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
+- Chart families chosen by a stored argument (§3.10, F7): one chart per
+  spacecraft, say, where the argument selects which chart and is not a time
+  supplied at conversion. A point on such a chart needs the selection in its
+  type or its value; named instances, or scoped generative frames in the
+  style of Haskell's `ST`, are the candidates.
 - Comparison operators beyond the certain `<` and `==` (§3.2.9): possible
   comparisons `<?` and `=?` ("consistent with", at `k` sigma for statistical
   nudges), tolerance equality `a ≈ b within t`, and enclosure containment. The
