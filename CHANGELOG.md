@@ -778,3 +778,38 @@
   with anonymous axes, and an unchanged `:edit` reports it `signed`;
   sized printing comes with stage 2b. Core, hashing, encodings and the
   store format are unchanged.
+- Axis sets, stage 2b (design §3.9 decisions 1, 3, 5, 6 and 7): typed
+  frames. A root, turned or spinning chart's declaration mints a nominal
+  axis type, stamped with the chart's full path under a new label kind
+  (`Axes`, an appended byte 2 in the type and label encodings) that no
+  `data` declaration can produce; it is stored like a declared type and,
+  for a chart over a vector, named as a type under the chart's path
+  (`:ls --types` lists it as `axes lvlh`; `:export` leaves it out). The
+  chart primitive takes its constructor first (`mkScale`, `mkChart4`,
+  `mkChart5`); a translated chart shares its parent's axes. Every chart's
+  Core changed, so every chart and the library's charts re-hash, and a
+  chart now re-hashes when `:rename` or `:move` moves it. Points carry
+  their chart's root: `[1, 2, 3] lvlh : Point (Vec eci [m])`, `.-` gives a
+  `Vec eci`, and `to` between charts of two roots is refused with the
+  unifier's axes message. `rotationOf : Chart (Vec a d) r -> Mat r a`;
+  `spinOf` and `originVelocityOf` along the root; `det` over two axis
+  sets; `transformBy` for anonymous axes only. In `linalg`, `inChart c v`
+  is `rotationOf c @ v` and the new `along c v` its inverse, and the new
+  `rotateVec` and `rotateCov` are rotation applied to a vector and to a
+  covariance; `inChartCov2` turns each block with `rotateCov`; the new
+  primitive `withAxes c v` reads an anonymous vector as along `c`'s axes.
+  `astro.State r` takes its root, `velocityIn` and `stateFrom` are typed
+  `forall (a : 3) (r : 3). Chart (Vec a [m]) r -> …`. Literal vectors and
+  matrices take their axes from use; a named value that is not a function
+  is anonymous where it is used (`:type` included) unless a signature keeps
+  it polymorphic (`off :: forall (a : 3). Vec a [m]`), and meeting a frame
+  it is refused with a hint, "give it a frame with `withAxes c v`, or
+  `along c v` if it is along the root". A written type may name a chart's
+  axes in a length position, `Vec lvlh [m]`, `Mat eci lvlh`, with the
+  chart's own number of positions, and a chart's root second, `Chart (Vec
+  lvlh [m]) eci`; a chart and a signature naming its axes read in one
+  group. Types print named slots by name and sized binders, `forall (a :
+  3) d. Vec a d -> Vec a d`, which closes 2a's round-trip gap; `:type
+  cross`, `rotz`, `euler313` and other literal-built functions now print
+  sized binders. A chart of a shape nothing fixes is scalar. Typed Core's
+  `TLit` and `TPack` carry their axes.
