@@ -126,6 +126,7 @@ main =
         , forallTests
         , dimensionSyntaxTests
         , readingTests
+        , partUTests
         ]
     )
 
@@ -3280,7 +3281,7 @@ readingTests =
           (typed (num 3 /. ref hr))
           "an amount and a unit together: / takes two amounts or two units"
         -- + and - take amounts only.
-        expectLeft (typed (ref km +. ref km)) "a unit where an amount goes"
+        expectLeft (typed (ref km +. ref km)) "units do not add"
     , testCase "an operand's type chooses when it becomes known"
         $
         -- The parameter is a unit once the lambda is applied to one.
@@ -3398,6 +3399,211 @@ readingTests =
     Left err ->
       (needle `T.isInfixOf` err) @? T.unpack ("expected " <> needle <> " in: " <> err)
     Right x -> assertFailure ("expected an error, got " <> show x)
+
+{- | Design §3.10, part U, from source: every decision and every example it
+writes.
+-}
+partUTests :: TestTree
+partUTests =
+  testGroup
+    "units are a type (design §3.10, part U)"
+    [ testCase "U1: a unit is a value of type Unit δ, first-class" $ do
+        runLinesP [":type km", ":type m", ":type temperature.deltaF", ":type km/h"]
+          @?= Right ["Unit m", "Unit m", "Unit K", "Unit (m/s)"]
+        -- Passed, stored and returned like any other value.
+        runLinesP ["let v = km/h", "5 v", "v", "(km, h)", "{km, m}", "(\\u -> u) km"]
+          @?= Right ["5 km h^-1", "km/h", "(km, h)", "{km, m}", "km"]
+        runLinesP ["data Box = Box {u :: Unit m}", "Box km", "(Box km).u"]
+          @?= Right ["Box {u = km}", "km"]
+        -- A function that puts one after a literal needs a signature.
+        runLinesP
+          [ multiline ["per :: forall d. Unit d -> Num d", "let per u = 3 u"]
+          , "per km"
+          , "per (km/h)"
+          , ":type per"
+          , ":view per"
+          ]
+          @?= Right ["3 km", "3 km h^-1", "forall d. Unit d -> Num d", "per = \\u -> 3 u"]
+    , testCase "U1: the reading a signature chose is in the stored term" $ withTempStore $ \dir -> do
+        _ <-
+          persistLines
+            dir
+            [multiline ["per :: forall d. Unit d -> Num d", "let per u = 3 u"], ":add"]
+        (loaded, notes) <- reload dir
+        notes @?= []
+        linesIn loaded ["per km", ":type per"]
+          @?= Right ["3 km", "forall d. Unit d -> Num d"]
+    , testCase "U2: two units give a unit, two amounts an amount, never one of each" $ do
+        runLinesP
+          [ "km/h"
+          , "kg*m/s^2"
+          , "rad^2"
+          , "km^-1"
+          , ":type rad^2"
+          , ":use imperial"
+          , "lbf / inch^2"
+          ]
+          @?= Right
+            [ "km/h"
+            , "kg*m/s^2"
+            , "rad^2"
+            , "km^-1"
+            , "Unit (rad^2)"
+            , "stored use imperial"
+            , "lbf/inch^2"
+            ]
+        runLinesP ["2 m * 3 m", "6 m / 2 s"] @?= Right ["6 m^2", "3 m s^-1"]
+        expectError
+          (runLinesP ["let x = 3 m", "x * km"])
+          "an amount and a unit together: * takes two amounts or two units\n  hint: `km` is a unit; write `1 km`"
+        expectError
+          (runLinesP ["1 / s"])
+          "an amount and a unit together: / takes two amounts or two units\n  hint: `s` is a unit; write `1 s`"
+        -- + and - are refused on units.
+        expectError
+          (runLinesP ["km + km"])
+          "units do not add: this is Unit m, and + and - take amounts"
+        expectError (runLinesP ["1 km - m"]) "units do not add"
+        -- Unknown at generalisation, the reading of amounts; known from a
+        -- use, the reading of units.
+        runLinesP [":type \\u -> u * u", "(\\u -> u * u) km"]
+          @?= Right ["forall d. Num d -> Num (d^2)", "km^2"]
+    , testCase "U3: a unit's name is the unit, everywhere" $ do
+        expectError
+          (runLinesP ["let x = 6 m", "x / s"])
+          "an amount and a unit together: / takes two amounts or two units\n  hint: `s` is a unit; write `1 s`"
+        expectError (runLinesP ["5 m + km"]) "hint: `km` is a unit; write `1 km`"
+        expectError (runLinesP ["sin rad"]) "hint: `rad` is a unit; write `1 rad`"
+        -- A quantity binds like an application.
+        runLinesP ["let x = 6 m", "x / 1 s", "x * 1 km"]
+          @?= Right ["6 m s^-1", "6 m km"]
+        expectError (runLinesP ["60 * s"]) "hint: `s` is a unit; write `1 s`"
+    , testCase "U4: the quantity rule is type-directed" $ do
+        runLinesP ["3 km", "3 (km/h)", "[1, 2] (km/h)", "20 degC"]
+          @?= Right ["3 km", "3 km h^-1", "[1, 2] km h^-1", "20 degC"]
+        expectError
+          (runLinesP ["2 pi"])
+          "`pi` is Num, not a unit or a chart: write the `*`"
+        expectError
+          (runLinesP ["let a = [1, 2; 3, 4]", "5 a"])
+          "`a` is Mat 2 2, not a unit or a chart: write the `*`"
+        -- What follows may be any atom: a parameter, read by a signature.
+        expectError
+          (runLinesP ["let per u = 3 u"])
+          "ambiguous: what follows this literal could be a unit or a chart; give the definition a signature"
+        expectError (runLinesP ["\\u -> 3 u"]) "ambiguous: what follows this literal"
+        runLinesP
+          [ multiline ["pt :: Chart (Num K) -> Point (Num K)", "let pt c = 3 c"]
+          , "pt degC"
+          , "pt degF"
+          , ":view pt"
+          ]
+          @?= Right ["3 degC", "3 degF", "pt = \\c -> 3 c"]
+        -- Used where it is made, a parameter's type is known: no signature.
+        runLinesP ["(\\u -> 3 u) km", "(\\c -> 3 c) degC"] @?= Right ["3 km", "3 degC"]
+    , testCase "U5: unit operators bind before numbers" $ do
+        runLinesP
+          ["9.81 m/s^2", "5 km/h", "9.81 m s^-2", "6 m / 2 s", "let x = 2", "6 m / x"]
+          @?= Right ["9.81 m s^-2", "5 km h^-1", "9.81 m s^-2", "3 m s^-1", "3 m"]
+        runLinesP ["let y = 2 m", "y / 1 km/h"] @?= Right ["0.002 h"]
+        -- The grouping, by the terms it makes.
+        let sameTerm a b =
+              runLinesP ["let p = " <> a, "let q = " <> b, ":hash p", ":hash q"]
+                >>= \case
+                  [hp, hq] -> Right (hp == hq)
+                  other -> Left (T.pack (show other))
+        sameTerm "9.81 m/s^2" "9.81 (m/s^2)" @?= Right True
+        sameTerm "5 km/h" "5 (km/h)" @?= Right True
+        sameTerm "9.81 m s^-2" "9.81 (m*s^-2)" @?= Right True
+        sameTerm "6 m / 2 s" "(6 m) / (2 s)" @?= Right True
+        sameTerm "\\x -> 6 m / x" "\\x -> (6 m) / x" @?= Right True
+        sameTerm "\\x -> x / 1 km/h" "\\x -> x / (1 (km/h))" @?= Right True
+        sameTerm "-9.81 m/s^2" "-9.81 (m/s^2)" @?= Right True
+        -- Values print juxtaposed, and read back.
+        runLinesP ["9.81 m s^-2 == 9.81 m/s^2"] @?= Right ["true"]
+        -- A name that is not a declared unit ends the quantity: a Unit-typed
+        -- variable there is refused, with the grouping to write.
+        expectError
+          (runLinesP ["let u = km/h", "9.81 m/u"])
+          "an amount and a unit together: / takes two amounts or two units\n  hint: `u` is not a declared unit, so the quantity ends before it; if it is a unit, write 9.81 (m/u)"
+        runLinesP ["let u = km/h", "9.81 (m/u)"] @?= Right ["0.00981 h"]
+        -- Parentheses keep a quantity whole.
+        expectError (runLinesP ["(6 m) / s"]) "an amount and a unit together"
+    , testCase "U6: to takes a unit or a chart, by its right operand" $ do
+        runLinesP
+          ["5 km/h to m/s", "1 km to m", "20 degC to degF", "let v = 36 km/h", "v to m/s"]
+          @?= Right ["1.3888888888888888888… m s^-1", "1000 m", "68 degF", "10 m s^-1"]
+        expectError
+          (runLinesP ["1 km to 1 m"])
+          "an amount after `to`, which takes a unit or a chart: write the unit, as in to km or to km/h"
+        runLinesP
+          [ multiline
+              [ "cv :: Point (Num K) -> Chart (Num K) -> Point (Num K)"
+              , "let cv p c = p to c"
+              ]
+          , "cv (20 degC) degF"
+          , multiline
+              ["show :: forall d. Num d -> Unit d -> Num d", "let show x u = x to u"]
+          , "show (1 km) m"
+          ]
+          @?= Right ["68 degF", "1000 m"]
+        expectError
+          (runLinesP ["let cv p c = p to c"])
+          "ambiguous: `to` here could take a unit or a chart; give the definition a signature"
+    , testCase "U7: a unit is declared from an amount or a unit" $ do
+        runLinesP
+          [ "unit min2 = 60 s"
+          , "unit deg2 = pi / 180 * 1 rad"
+          , "unit N2 = kg*m/s^2"
+          , "unit dC = K"
+          , "2 min2 to s"
+          , "180 deg2 to rad"
+          , ":type N2"
+          , "3 N2"
+          , "1 dC"
+          ]
+          @?= Right ["120 s", "3.1415926535897932384… rad", "Unit (kg*m/s^2)", "3 N2", "1 dC"]
+        runLinesP [":use imperial", "unit psi2 = lbf / inch^2", "1 psi2 to Pa"]
+          @?= Right ["stored use imperial", "6894.7572931683613367… Pa"]
+        -- The library's declarations, respelled.
+        runLinesP
+          [ ":view time.min"
+          , ":view angle.arcmin"
+          , ":view temperature.deltaF"
+          , ":view si.km"
+          ]
+          @?= Right
+            [ "min = 60 s"
+            , "arcmin = 1 deg / 60"
+            , "deltaF = 5 / 9 * 1 K"
+            , "km = kilo * 1 metre"
+            ]
+        expectError (runLinesP ["unit m2 = 60 * s"]) "hint: `s` is a unit; write `1 s`"
+        expectError
+          (runLinesP ["unit am = deg / 60"])
+          "hint: `deg` is a unit; write `1 deg`"
+        expectError (runLinesP ["unit dF = 5/9 * K"]) "hint: `K` is a unit; write `1 K`"
+        -- A chart's step is a unit and its origin an amount.
+        runLinesP ["chart degF2 = deltaF at 459.67 deltaF", "32 degF2 to degC"]
+          @?= Right ["0 degC"]
+        expectError (runLinesP ["chart bad = 1 K at 0 K"]) "an amount where a unit goes"
+    , testCase "U8: a unit prints as its unit expression, an amount as before" $ do
+        runLinesP ["km", "km/h", "kg*m/s^2", "s^-1", "km/m", "(km, 2 km)", "9.81 m/s^2"]
+          @?= Right ["km", "km/h", "kg*m/s^2", "s^-1", "km/m", "(km, 2 km)", "9.81 m s^-2"]
+        runLinesP [":set unicode on", "kg*m/s^2", "km^-2"]
+          @?= Right ["  ≡ kg*m/s²", "kg·m/s²", "  ≡ km⁻²", "km⁻²"]
+        -- What a unit prints reads back as the same unit.
+        forM_ ["km/h", "kg*m/s^2", "m/(s^2*K)", "s^-1", "rad^2"] $ \u ->
+          case runLinesP [u] of
+            Right [printed] -> runLinesP [printed] @?= Right [printed]
+            other -> assertFailure (show other)
+    , testCase "every library definition prints as source that reads back to its hash" $ do
+        s <- editSession
+        forM_ stdlibNamespaces $ \ns -> do
+          file <- editFileOf s [ns]
+          (_, outs) <- edited (EditNamespace ns) file s
+          (ns, outs) @?= (ns, ["nothing changed"])
+    ]
 
 propertyTests :: TestTree
 propertyTests =

@@ -1218,9 +1218,21 @@ infer look p ctx = \case
             TFun param r -> do
               -- The circular functions are the common place to forget that
               -- angles carry a unit (design §3.2.11).
-              if name `elem` ["sin", "cos", "tan"]
-                then unifyMsg (i : p) param a (name <> " takes an angle: write 1 rad or 45 deg")
-                else unify (i : p) param a
+              a' <- resolve a
+              case a' of
+                _
+                  | name `elem` ["sin", "cos", "tan"] ->
+                      unifyMsg (i : p) param a (name <> " takes an angle: write 1 rad or 45 deg")
+                -- Units do not add (design §3.10, U2).
+                TUnit _
+                  | name `elem` ["add", "sub"] ->
+                      failAt
+                        (i : p)
+                        ( "units do not add: this is "
+                            <> renderType a'
+                            <> ", and + and - take amounts"
+                        )
+                _ -> unify (i : p) param a
               go (i + 1) r rest
             _ -> failAt p ("primitive " <> name <> " applied to too many arguments")
     result <- go (0 :: Int) t (map fst typed)

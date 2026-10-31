@@ -689,6 +689,9 @@ renderTermUnits spelling namer isUnitRef = go 0
       -- `-3` reads back as the constant minus three (core.md §6), so the
       -- primitive applied to a constant keeps its name.
       ("neg", [a@(Lit _)]) -> paren (prec > 10) ("neg " <> go 11 ctx a)
+      -- So does a quantity of a constant, which `-` would fold into it.
+      ("neg", [a@(PrimApp "scale" [Lit _, _])]) ->
+        paren (prec > 10) ("neg " <> go 11 ctx a)
       ("neg", [a]) -> paren (prec > 8) ("-" <> go 9 ctx a)
       -- A slice along a later axis reads back as its wildcards, `m._.0`
       -- (design §2.10); along axis 0 it keeps its name, since `m.0` is a
