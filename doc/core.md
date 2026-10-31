@@ -310,44 +310,38 @@ The policy, now that stores exist (design §7.4):
   number (`format`, currently 6). Any change to the canonical encoding or to
   a Core constructor (the label field on `Noise` and `Uncertain` was the last,
   made before any store existed) bumps it, and the loader refuses a store of
-  another version it cannot migrate. The format number is no longer the
-  storage encoding's version (`storageVersion`, now 4): format 4 changed
-  what a store holds, not how a term is encoded. A format-3 store assumed a
-  prelude entered in memory at every start; a format-4 store holds the
-  standard library as labels under `std`, seeded into it (design §7.7). The
-  3 to 4 migration writes the library's terms and seed lines into the
-  store and moves no stored hash: every term file stays as it is, and a user
-  term that referenced an old prelude hash still finds it on disk. Format 5
-  changed what a store holds again: the library split by domain into
-  sibling namespaces (`si.km`, `astro.G`, design §7.7), with six stored
-  uses. The split is a library change, not an encoding one, but it
-  re-hashed much of the library (`si.km` is `kilo * metre`, not `10^3 *
-  m`), so the 4 to 5 migration re-seeds: it removes every label still on
-  the old library's binding, with its log lines, seeds the new library
-  before the user's lines, records each removed name's old references as
-  the history of its new home (so a user term on the old `km` is reported
-  stale and `:upgrade si.km` moves it), and replaces the stored `use std`
-  by the six; the user's labels and every term file stay (design §7.4).
-  The format-4 library is kept as `Eval.Prelude.stdlib4Source` for the 3
-  to 4 and 4 to 5 steps, which chain. Format 6 (storage version 4) changed
-  the encoding: `Bool`, tuples and lists became declarations the compiler
-  holds, so a constructor reference is always a type's hash and a position,
-  never a built-in name, and the type tags 0x20, 0x24 and 0x25 are retired
-  for 0x28 on the declarations' hashes. Every definition that uses them has
-  a new hash, so the migration re-hashes: types, then terms, in dependency
-  order, with the log's hashes remapped; it runs before the library steps,
-  which compare the store with the library as the current build enters it,
-  and the 5 to 6 step then adds the library's labels for the three types
-  (design §7.4). Opening an old store then means a numbered migration:
-  decode with the old decoder, re-encode, map every old hash to its new one,
-  rewrite the references in dependency order (the `propagate` machinery), and
-  rewrite the log. The first, format 1 to 2 (a written name after each
-  reference), changed no hashes and so needed only the term files rewritten.
-  Hints are the one thing in the storage encoding that is not in the hash,
-  which is what made it cheap.
+  any other format. The format number is not the storage encoding's
+  version (`storageVersion`, now 4): a format also changes when what a
+  store holds changes. Format 2 added a written name after each reference;
+  3 replaced `If` and the boolean literal by `Case` and `Con`; 4 seeded
+  the standard library into the store under `std` instead of entering a
+  prelude in memory; 5 split the library by domain into sibling
+  namespaces, re-hashing much of it; 6 (storage version 4) made `Bool`,
+  tuples and lists declarations the compiler holds, so a constructor
+  reference is always a type's hash and a position and the type tags
+  0x20, 0x24 and 0x25 are retired (design §6.1, §7.4, §7.7).
+- **Until the language is released, a format change refuses older stores
+  rather than migrating them.** Each of the changes above once came with
+  a migration that rewrote an older store in place on open. They are
+  retired: in a language still in design they claimed more than they did.
+  The 4 to 5 step recognised the old library's labels by the hashes of a
+  frozen copy of the format-4 library, but that copy was entered by the
+  current elaborator, so an elaborator change (the axis slot of design
+  §3.9) silently moved its hashes away from the ones old stores held,
+  while its tests still passed. An older store is now refused with a
+  message that says how to recreate it: with the previous build,
+  `:export` it, and `:load` the file into a new codebase (design §7.4).
+  Nothing in the build decodes an older storage version. Migrations
+  return with the first release, when stores must outlive the builds
+  that wrote them; a migration then is the numbered step it was: decode
+  with the old decoder, re-encode, map every old hash to its new one,
+  rewrite the references in dependency order (the `propagate`
+  machinery), rewrite the log, and keep no copy of an old library that
+  the current build re-enters.
 - **Primitives are append-only, and their types only tighten knowingly.** A
   stored term names its primitives by text, so a primitive may be added but
-  never renamed or removed without a migration. A primitive's type may change
+  never renamed or removed without a format bump (which, until release,
+  refuses older stores; after it, comes with a migration). A primitive's type may change
   (the circular functions gained an angle dimension after stores existed),
   but every stored term is re-checked on load, so such a change turns the
   definitions it breaks into load-time notes rather than wrong answers, and
@@ -375,8 +369,8 @@ before code:
    evaluator; the pretty-printer. Run the property tests from §9. Nothing is
    stored until lint accepts the new form.
 6. **Hash impact.** A new tag never changes the hash of an existing term.
-   Changing an existing constructor's encoding does, and so is a codebase
-   migration; it needs a reason strong enough to write down.
+   Changing an existing constructor's encoding does, and so is a format
+   bump (§6); it needs a reason strong enough to write down.
 
 ## 8. What is coming, and what it will cost
 

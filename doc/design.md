@@ -3192,11 +3192,11 @@ SHA-256 of the encoding, displayed as a base32hex prefix: `#a3f9k`.
 | 0x01 | `Ref h idx` | 32 bytes `h`, varint `idx + 1` (0 means no index) |
 | 0x02 | `PrimApp name args` | varint length, UTF-8 bytes, then each argument (count is fixed by the arity table) |
 | 0x03 | `Lit tensor` | varint rank, each length as varint, then each value as sint numerator, varint denominator, row-major |
-| 0x04 | retired | was `Lit bool`; read by the format-2 decoder as the constructor `True` or `False` of `Bool`, never written |
+| 0x04 | retired | was `Lit bool`; never written, and not read since the migrations were retired (§7.4) |
 | 0x05 | `Lam t` | `t` |
 | 0x06 | `App f a` | `f`, `a` |
 | 0x07 | `Let e b` | `e`, `b` |
-| 0x08 | retired | was `If c t e`; read by the format-2 decoder as a `Case` on `Bool`, never written |
+| 0x08 | retired | was `If c t e`; never written, and not read |
 | 0x09 | `Pow t n` | `t`, sint `n` |
 | 0x0A | `Noise k l n` | one byte kind (0 bound, 1 stat), label, varint `n` |
 | 0x0B | `Uncertain k l x err` | one byte kind, label, `x`, `err` |
@@ -3219,9 +3219,9 @@ A constructor reference is an empty text, the 32-byte definition hash of its
 type and the varint position of the constructor in it. Until storage version
 4 (format 6, §7.4) a built-in constructor was its text name (`True`, `False`,
 `Tuple`, `Nil`, `Cons`), which is why a reference begins with a text; the
-decoder reads those names from stores of storage version 3 and before as the
-constructors of the built-in declarations (`Tuple` by its field count), and
-the encoder writes only hashes. A declared constructor's bytes never changed.
+encoder writes only hashes, and the decoder refuses a name, since no store
+of storage version 3 or before is opened (§7.4). A declared constructor's
+bytes never changed.
 
 A declared type (§2.3) is hashed separately, from its own canonical encoding:
 varint parameter count and one kind byte per parameter (0 type, 1 length, 2
@@ -3231,12 +3231,12 @@ or 1 and an empty text for `structural`). Types use tags of their own:
 
 | Tag | Type | Payload |
 |---|---|---|
-| 0x20 | retired | was `Bool`; read from storage version 3 and before as `0x28` on the hash of `Bool`, never written |
+| 0x20 | retired | was `Bool`, now `0x28` on the hash of `Bool`; never written, and not read |
 | 0x21 | `Tensor σ δ` | shape, dimension |
 | 0x22 | `Point σ δ` | shape, dimension |
 | 0x23 | `Chart σ δ` | shape, dimension (the tag of the type once spelled `Scale`); a chart with an anonymous root |
-| 0x24 | retired | was a tuple: varint count, each type; read as `0x28` on the tuple type of that arity |
-| 0x25 | retired | was a list: the element type; read as `0x28` on the hash of `List` |
+| 0x24 | retired | was a tuple: varint count, each type; now `0x28` on the tuple type of that arity |
+| 0x25 | retired | was a list: the element type; now `0x28` on the hash of `List` |
 | 0x26 | `a -> b` | `a`, `b` |
 | 0x27 | variable | varint id (a parameter: 0 .. k-1) |
 | 0x28 | `T a…` | 32-byte hash, varint count, each argument as a kind byte and a type, length, shape, dimension or axis |
@@ -3826,9 +3826,9 @@ conflict on terms; the log is the one thing with order, and merging two stores
 is concatenating their logs and sorting by time, last writer winning per name.
 
 `eval [--codebase DIR] --merge OTHER` does that, into the store that `eval`
-would otherwise use. Both stores are opened as usual, so an older format is
-migrated in place, OTHER included, and the summary says so; a directory that is
-not a store is refused and left untouched. Every file in OTHER's `terms/` and
+would otherwise use. Both stores are opened as usual, OTHER first, so a store
+of an older format is refused (below), and so is a directory that is not a
+store; either is left untouched. Every file in OTHER's `terms/` and
 `types/` that DIR lacks is copied after its hash is checked as on load; a file
 that is already there is the same content and is never overwritten, and a
 corrupt one is skipped with a note. Then OTHER's log lines that DIR does not
@@ -3909,109 +3909,25 @@ never leaves a name pointing at a missing term. A term that fails to decode,
 fails to typecheck, or is named but missing is reported as a note at start and
 skipped; the rest loads.
 
-Format 1 stores (no written names after references, unit flags on
-references) are migrated in place on first open: every term file is decoded by
-the old rules and rewritten, with empty hints, and old `unit <hash>` lines in
-the log flag every name then bound to that hash. Hashes do not change, so the
-log and the names stay valid.
-
-Format 2 stores are migrated to 3 on first open as well, and this one changes
-hashes: `If` and the boolean literal became `Case` and `Con`, so every term that
-used them is decoded by the format-2 rules, re-encoded, and re-hashed, and the
-references to it and the `bind` lines of the log are rewritten to the new hash in
-dependency order. Old term files are removed.
-
-Format 3 stores are migrated to 4 on first open, and then to 5 and 6 (below);
-formats 1 and 2 chain through 3. A format-3 store held only the user's
-labels and assumed the prelude entered in memory at the root; format 4
-holds the library (§7.7), as it was then, everything under `std` (kept as
-`Eval.Prelude.stdlib4Source` for these two steps).
-The migration moves no stored hash. It seeds the store as a new one is
-seeded, its terms first, and puts the seed's time-0 lines *before* the
-log's own, then writes `eval codebase 4`. Replayed in that order, a user's
-root binding that shadowed a prelude name (`c`) is a root name that shadows
-`std.c`, and a user term that referenced a prelude hash still finds the
-term, which the format-3 code wrote beside it. One thing does move: a
-library definition whose `±` is stamped with its name (§3.2.4) has a new
-hash under `std` (`std.G` is not the root `G`), and so do those built on it
-(`M_earth`, `M_sun`). Where a user term still references the old hash, the
-migration records it as the history of the new name, a `0 bind std.G
-<old>` before the seed, and binds the new one again at time 1, after every
-seed line of any store, so that a merge with a store seeded fresh also ends
-on it. `:todo` then reports the user's term as stale on `G#…` and
-`:upgrade std.G` moves it, which is the honest story: the library's `G` was
-relabelled and re-hashed by the move. What does not carry over: a log line
-that unnamed a prelude name at the root now acts on a root name that no
-longer exists, so `km` resolves to `std.km` again (unname that if wanted);
-a prelude name renamed at the root keeps its new root label while the old
-spelling reaches the library again; and a user label named `std`, or under
-`std.`, meets the library there.
-
-Format 4 stores are migrated to 5 on first open. Format 5 holds the
-library split by domain into sibling namespaces (§7.7), and the split
-re-hashed much of it (`si.km` is `kilo * metre`, not `10^3 * m`; the hour
-is `60 * min`; `astro.G` is stamped with its new path), so the store is
-re-seeded rather than relabelled:
-
-1. The store is loaded, and every label still on the binding the format-4
-   library gave it (`std.km` on the seeded `km`, `std.Cov2` on the seeded
-   type) is removed, with every log line that names it: its `bind`,
-   `unit`, `scale`, `unflag`, `unname`, `type`, `con` and `field` lines,
-   the old seed's and those a 3 to 4 step wrote. A label the user rebound
-   (`std.c` to their own value) or added under `std` (`std.mine`) is
-   kept, with its lines.
-2. The stored `use std` and its `use`/`unuse std` lines go; the new seed
-   brings the six default uses at time 0, unless the user had removed `use
-   std`, in which case it brings none. The user's other stored uses stay,
-   after the six.
-3. The new library is seeded before what is left of the log, as a new
-   store is. Each removed name's home in the new library
-   (`Eval.Prelude.stdlibHomes`: the label of the same last segment, the
-   default-used one where two namespaces have it, so `std.h` is `time.h`)
-   gets the name's earlier references as history before the seed, oldest
-   first: the format-4 `std.km`, and for a name the move under `std`
-   changed, the root prelude's before it (`0 bind astro.G <root G>`, `0
-   bind astro.G <std G>`), each where its term file is in the store. The
-   current reference is bound again at time 1, so a merge with a store
-   seeded fresh ends on it too.
-4. `eval codebase 5` is written last.
-
-Replayed, a user term that used the old `km` is stale on it: `:todo` says
-`stale: d uses km#90tke (use :upgrade km)`, the term still evaluates (in
-base units, since its `km` is no unit name any more), and `:upgrade si.km`
-moves it. `:stdlib upgrade` counts a migrated name as untouched, since its
-older history is exactly these references (`Eval.Prelude.stdlibMoved`).
-What does not carry over: a library label the user rebound under `std`
-keeps its `std` path, so a bare `km` that both `std.km` (rebound) and
-`si.km` offer is ambiguous until one is unnamed; a format-4 library name
-the user renamed or aliased keeps that label on the old term; and the names
-that moved to `astro`, `physics` and `imperial` need `:use` (§7.7).
-
-Format 5 stores are migrated to 6 on first open, and this one changes hashes
-again: `Bool`, tuples and lists became declarations the compiler holds
-(§2.3), so a constructor is no longer stored by name (`True`, `Tuple`,
-`Nil`) but by the declaration's hash, and a type no longer uses tags 0x20,
-0x24 and 0x25 but `0x28` on those hashes (§6.1; storage version 4). Every
-type file is decoded by the old rules, which read those forms as the
-declared ones, and re-hashed, each after the types its fields use; then
-every term, its constructors moved to the re-hashed types and its
-references to the re-hashed terms, in dependency order, as the format-3
-migration did for `If`. Files are written under their new hashes and the
-old ones removed, and every hash in the log (`bind`, `type`, `con`,
-`field`) is replaced by its new one, so labels, history, unit flags,
-constructors and fields follow; signature lines name types by path and need
-nothing. A re-hashed type or term is the one the same source gets when
-entered now, with one exception: a cycle of several members keeps the order
-its old placeholder hashes gave it (§6.2), which the source entered again
-may not have. The library's labels for the three types, which a format-5
-library did not have, are then written at time 0 before the log (`0 type
-std.Bool …`, `0 con std.True …`), where the store does not bind them
-already, and `eval codebase 6` last. The re-hash changes nothing on a store
-already at format 6's hashes, and it runs before the 3 to 4 and 4 to 5 steps
-as well, since those compare the store with the library as the current
-build enters it; so formats 3 and 4 chain through it, and 1 and 2 through
-the format-3 step, whose decoder already reads the old forms as the
-declared ones.
+**Formats.** A store opens only at the format this build writes, 6. A
+store of an older format is refused, and nothing in it is touched: "this
+codebase is format N; it predates format 6 and cannot be opened: recreate
+it (with the previous eval, `:export` it and `:load` the file into a new
+codebase)". A newer format, or a format file that
+says anything else, is refused as not a store of format 6. Earlier builds
+migrated each older format in place on open, a chain of steps: written
+names after references (format 2), `Case` and `Con` for `If` and the
+boolean literal (3), the library seeded into the store under `std` (4), the
+library split by domain (5), and `Bool`, tuples and lists as declared types
+(6). Those migrations are retired. While the language is still in design, a
+migration claimed more than it did: the 4 to 5 step recognised the old
+library's labels by the hashes of a "frozen" copy of the format-4 library,
+but that copy was entered by the current elaborator, so when the
+elaborator changed (the axis slot of §3.9 re-hashed `Cov2`) its hashes
+silently stopped being the ones old stores held, while its tests still
+passed. An honest refusal, with the export as the way across, replaces
+code that could not be kept true. Migrations return with the first
+release (core.md §6).
 
 ### 7.5 Scratch, add, update, upgrade
 
@@ -4178,8 +4094,8 @@ both nudges, and `a.Body` and `b.Body` with the same fields are two types.
 Everything else is the same term wherever it is written: `let q = 1 m` has
 one hash at the root and in any block. The other side: renaming or moving
 a stamped definition re-hashes it, which `:rename` and `:move` do (§7.2),
-and the library's `astro.G` is not the hash the root prelude's `G` had
-(§7.4 says how a migrated store keeps the old one reachable).
+and the library's `astro.G` is not the hash a root `G` of the same text
+has.
 
 **Printing.** A name prints as Unison prints it: the shortest spelling that
 resolves back to the same label in the current scope, trying in order the
@@ -4290,9 +4206,7 @@ prelude change rebind names behind the user's back. Now:
   and so is a type, constructor or field label it has never had (`added
   data linalg.Cov2`, its constructor and fields with it; a type label the
   codebase already has is left as it is); a name whose binding is still the
-  one it was seeded with (its history is that one entry, or, in a migrated
-  store, that entry after the references earlier libraries gave the name,
-  which the migrations recorded: `Eval.Prelude.stdlibMoved`) and whose
+  one it was seeded with (its history is that one entry) and whose
   shipped version differs is `updated`, and its dependents are upgraded as
   `:update` does; a name the user rebound or unnamed is `kept` (the user's
   wins). "Never touched" is read off the history because the codebase does
@@ -4305,14 +4219,11 @@ prelude change rebind names behind the user's back. Now:
   are available everywhere. `si.metre` and the other spelled-out names are
   units defined as them (`unit metre = m`), which the prefixed units are
   written from.
-- **The library before.** The library as format 4 seeded it, everything
-  under `std`, is kept as `Eval.Prelude.stdlib4Source` (the old root
-  prelude, `preludeSource`, inside `namespace std`, with the record `Cov2`
-  and the filter steps after it). The format 3 to 4 migration seeds it,
-  the 4 to 5 migration recognises its labels by its hashes and finds each
-  one's new home (`Eval.Prelude.stdlibHomes`: `std.km` is `si.km`, `std.h`
-  is `time.h`), and the tests check that it still has the hashes the root
-  prelude had.
+- **No library before.** Only the current library is in the build. The
+  library as format 4 seeded it, everything under `std`, was kept as a
+  frozen copy for the migrations; it was entered by the current
+  elaborator, so it did not keep the hashes it was kept for, and it went
+  with them (§7.4).
 
 - **The built-in types.** `std` begins with `structural data Bool = False |
   True`, `structural data Pair a b = Pair a b` and `structural data List a =
@@ -4326,8 +4237,7 @@ prelude change rebind names behind the user's back. Now:
   `Cons 1 Nil` are the constructors. The larger tuples' types (`(a, b, c)`)
   are known to the compiler but named by no library.
 
-Consequences: the store's format is 6 (a format-5 store is re-hashed, a
-format-4 one re-seeded and a format-3 one goes through 4, §7.4); the loader
+Consequences: the store's format is 6 (an older store is refused, §7.4); the loader
 enters no prelude, so an empty store really is empty; the test suite's
 "session with the prelude" became "a seeded session", the same thing by
 another route.
@@ -4352,12 +4262,13 @@ included), 901 in all:
 | `imperial` | `inch ft yd mile lb oz lbf psi mph`, exact by the 1959 yard and pound (`lbf = lb * physics.g0`, `psi = lbf / inch^2`) | 9 | no |
 
 Rules the seed is checked against, each by a test: no name is ambiguous
-among the six default-used namespaces, for each kind of label; and every
-name that was bare before the split stays bare, as the same kind (a unit
-still a unit, a scale still a scale), except the ones moved on purpose to
-a namespace no stored use reaches (`Eval.Prelude.stdlibMovedOut`): `AU`,
-`G`, `GM_earth`, `GM_sun`, `M_earth`, `M_sun`, `R_earth`, `c`, `planck`,
-`k_B`, `N_A`, `e_charge` and `g0`. Base units stay primitives, available
+among the six default-used namespaces, for each kind of label; and the
+names moved on purpose to a namespace no stored use reaches
+(`Eval.Prelude.stdlibMovedOut`), `AU`, `G`, `GM_earth`, `GM_sun`,
+`M_earth`, `M_sun`, `R_earth`, `c`, `planck`, `k_B`, `N_A`, `e_charge`
+and `g0`, are not bare. (Until the migrations were retired, a test also
+checked every other name bare before the split against the format-4
+library, §7.4.) Base units stay primitives, available
 everywhere, and a `data` type's dimension (`Num [N]`) names a unit through
 the scope like any expression.
 
@@ -4391,8 +4302,8 @@ What the build settled that the plan left open:
 
 Writing `km` as `kilo * metre` instead of `10^3 * m`, and the hour as `60 *
 min`, re-hashed every prefixed unit and the hour; this is accepted while the
-language is in design, and the format 4 to 5 migration re-seeds a store,
-keeping the user's labels and reporting what went stale (§7.4).
+language is in design. A store from before the split is refused, and is
+recreated from its export (§7.4).
 
 ## 8. Evaluation
 
@@ -4598,10 +4509,11 @@ tuned, and compilation is a later milestone.
      b)` and `{a}` for those hashes) go by hash, never by name. The library
      seeds the same three declarations and names them under `std` (§7.7);
      renaming or unnaming them changes nothing but printing. The migration
-     (§7.4) decodes old terms and type files by the old rules, rewrites the
-     built-in constructors and types to the hashes, re-hashes types then
-     terms in dependency order and remaps references, labels and the log,
-     as the format-3 migration did for `If`. Core keeps its fifteen
+     (since retired, §7.4) decoded old terms and type files by the old
+     rules, rewrote the built-in constructors and types to the hashes,
+     re-hashed types then terms in dependency order and remapped
+     references, labels and the log, as the format-3 migration did for
+     `If`. Core keeps its fifteen
      constructors (core.md §5): what left was the built-in alternative of
      the constructor reference and three forms of the type language, not
      term constructors. Mutually recursive types stay open.

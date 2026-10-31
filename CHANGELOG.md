@@ -729,3 +729,26 @@
   anonymous root keep their bytes; any other slot is an appended shape tag
   3 or type tag 0x29 (§6.1). Lint's type application is now
   capture-avoiding.
+- The store migrations are retired (design §7.4, core.md §6). A store
+  opens only at format 6; a store of format 1 to 5 is refused, untouched,
+  with "this codebase is format N; it predates format 6 and cannot be
+  opened: recreate it (with the previous eval, `:export` it and `:load`
+  the file into a new codebase)", and so is `--merge`
+  from or into one. A newer format keeps its message. Until the language
+  is released, a format change refuses older stores rather than migrating
+  them: the 4 to 5 step recognised old library labels by the hashes of a
+  frozen format-4 library that the current elaborator re-entered, so after
+  axis sets stage 1 it no longer matched old stores although its tests
+  passed. Removed: `migrate1to2` to `migrate5to6`, `retireBuiltins`,
+  `seedStoreWith`, the merge's "migrated in place" notes, `Seed`'s
+  `moved`, `homes`, `library4` and `moved4` (`Seed` is now a newtype over
+  the library), `Eval.Prelude.preludeSource`, `stdlib4Source`,
+  `stdlib4Codebase`, `stdlib4Moved`, `stdlibHomes`, `stdlibMoved` and the
+  frozen tables only they used, and `Eval.Hash.decodeStoredV` and
+  `decodeTypeDefV` with the retired tags they read (0x04, 0x08, 0x20,
+  0x24, 0x25, constructors by name); a log's `unit` and `scale` lines
+  name a label only (format 1 wrote a hash, which flagged every name
+  bound to it). `:stdlib upgrade` updates a name
+  when its history has exactly one entry, with no allowance for migrated
+  history; `stdlibUpgrade` lost its moved-references argument. Hashes,
+  the encoding and the library are unchanged.
