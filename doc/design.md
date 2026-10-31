@@ -2672,7 +2672,9 @@ never add (`20 degC + 5 degC` is refused), whatever their frames.
 `Num δ`: the same run-time value, a magnitude in base units with its display
 hint (§3.2.12), under a different type. `m : Unit m`, `km : Unit m`,
 `deltaF : Unit K`; `:type km` prints `Unit m`. A unit is a first-class value,
-passed, stored and returned like any other (`\u -> 3 u`).
+passed, stored and returned like any other; a function that
+puts one after a literal needs a signature (U4), `per :: forall d. Unit d ->
+Num d` with `per u = 3 u`.
 
 **U2. Unit arithmetic.** `*`, `/` and `^k` (a literal `k`) each have exactly
 two readings, chosen by the operand types: two amounts give an amount, as
@@ -2870,8 +2872,9 @@ per spacecraft) are deferred (§11).
 **F8. The quantity rule for charts** (U4). Any expression of type `Chart c`,
 or a moving chart, after a literal builds a point, so chart parameters,
 applied moving charts and local chart values need no declaration:
-`\c -> 3 c : forall c. Chart c -> Point c`. The `chart` keyword is still what
-mints a frame.
+`pt :: forall c. Chart c -> Point c` with `pt c = 3 c`; without the signature
+the parameter could be a unit or a chart, which U4 refuses as ambiguous. The
+`chart` keyword is still what mints a frame.
 
 **F9. Printing and encoding.** `:type 20 degC` is `Point degC`, `:type degC`
 is `Chart degC`, `:type [1, 2, 3] lvlh` is `Point lvlh`; a point prints as it
