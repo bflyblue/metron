@@ -130,7 +130,8 @@ algebra =
     )
   , ("inChart", "\\c v -> rotationOf c @ v")
   , ("along", "\\c v -> transpose (rotationOf c) @ v")
-  , ("rotateVec", "\\r v -> r @ v")
+  , -- r v, written so that r is known to be a matrix
+    ("rotateVec", "\\r v -> transpose (transpose r) @ v")
   , -- r p rᵀ, written so that both operands are known to be matrices
     ("rotateCov", "\\r p -> r @ transpose (r @ transpose p)")
   ]

@@ -1913,6 +1913,12 @@ turnedChartTests =
             "forall n a d s d1. Chart (Vec n d) a -> Tensor (n : s) d1 -> Tensor (a : s) d1"
         typeOfTextP "rotateCov"
           @?= Right "forall n m d d1. Mat n m d -> Mat m m d1 -> Mat n n [d^2 d1]"
+        typeOfTextP "rotateVec"
+          @?= Right
+            "forall n m d s d1. Mat n m d -> Tensor (m : s) d1 -> Tensor (n : s) [d d1]"
+        typeOfTextP "along"
+          @?= Right
+            "forall n a d s d1. Chart (Vec n d) a -> Tensor (a : s) d1 -> Tensor (n : s) d1"
         runLinesP
           ( frame
               ++ [ encloses
