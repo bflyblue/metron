@@ -5242,6 +5242,20 @@ affineTests =
               at = pointOf [(Hash "x", e1), (Hash "y", e2)]
               z = mulM 24 x y
            in within caseLimit (abs (at x * at y - midpoint z) <= radius z)
+    , testProperty "the integer square root under sqrt is the floor of the root"
+        $ \(Positive a) (NonNegative k) ->
+          -- a long integer, as an uncertain value's endpoints become
+          let n = (a :: Integer) * 7 ^ (k `mod` 400 :: Int)
+              s = floor (fst (sqrtApprox 0 (fromInteger n))) :: Integer
+           in within caseLimit (s * s <= n && n < (s + 1) * (s + 1))
+    , -- A generated case that once took ten seconds: the integer square
+      -- root started Newton's method from n itself, one step per halving
+      -- of a numerator thousands of bits long.
+      localOption (mkTimeout 3_000_000)
+        . testCase "sqrt of a long rational is fast"
+        $ case evalText "sqrt ((7 / cos (-4 rad))^2)" of
+          Right [v] -> T.isPrefixOf "10.70919959526478302" v @? T.unpack v
+          other -> assertFailure (show other)
     , testProperty "sqrt, recip, exp and log enclose their true values"
         $ \(Positive n) (Positive d) e1 (Small k) ->
           let r = fromIntegral (n :: Int) / fromIntegral (d :: Int) :: Rational

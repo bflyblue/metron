@@ -23,7 +23,10 @@
   refused where they are written, and `outer`, `dot` and `wedge` refuse a
   result past it, instead of wrapping machine integers.
 - Every QuickCheck case has a ten-second limit and prints its program when
-  it runs out; every test has a five-minute backstop.
+  it runs out; every test has a five-minute backstop. The case it caught,
+  `sqrt` of a value with long rational endpoints taking ten seconds, was
+  the integer square root starting Newton's method from `n`; it now starts
+  near the root.
 
 - Units are syntax rather than first-class values. Ordinary `*` and `/`
   insert an implicit `1` for declared unit operands; other value positions

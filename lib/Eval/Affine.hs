@@ -90,6 +90,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Core (Hash (..), NudgeKind (..))
 import Eval.Encode (sint, text, varint)
+import GHC.Num (integerLog2)
 
 -- Types -----------------------------------------------------------------------------
 
@@ -447,7 +448,10 @@ tolerance p v = 10 ^^ precisionExponent p v
 -- | Floor of the square root of a non-negative integer.
 isqrt :: Integer -> Integer
 isqrt 0 = 0
-isqrt n = go n
+-- Newton's method from a power of two above the root: starting from n
+-- itself took one step per halving, thousands of big divisions for the
+-- long rationals an uncertain value's endpoints become.
+isqrt n = go (2 ^ (integerLog2 n `div` 2 + 1))
  where
   go x =
     let y = (x + n `div` x) `div` 2
