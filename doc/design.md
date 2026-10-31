@@ -727,8 +727,34 @@ number, and `slack ≥ 0` is an anonymous leftover radius. Each `eᵢ` has a nam
 
 The guarantee is: the true value lies in `mid ± (Σ_bound |cᵢ| + slack)` up to a
 random error of standard deviation `√(Σ_stat cᵢ²)`. Both kinds propagate through
-arithmetic by exactly the same rules; they differ only when a value is collapsed
-for printing, comparison, budget or covariance. This is affine arithmetic in the
+linear arithmetic by exactly the same rules. A non-linear operation's remainder
+keeps them apart (decided by the owner): the part that comes from bound nudges
+alone is a bound, as before, and any part that involves a statistical nudge is
+statistical, never a bound. A statistical nudge has no hard limit, so a
+remainder computed as if it lay in `[-1, 1]` would turn a σ into a certainty:
+`n*n` for `n = 0 ±σ 1` must not be `0.5 ± 0.5`, and `(n*n) < 2` must not be
+`true`.
+
+- **Products** are moment-matched for independent Gaussian nudges. With `x =
+  x₀ + Σ aᵢeᵢ` and `y = y₀ + Σ bⱼeⱼ`, the quadratic part over statistical
+  nudges has mean `Σ aᵢbᵢ`, which moves the midpoint, and variance
+  `(Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²`, carried by a fresh statistical nudge: `n*n` is
+  `1 ±σ 1.414…`, a chi-square's mean 1 and variance 2. A cross term of a
+  bound and a statistical nudge is statistical, with the bound nudge at its
+  worst, `|e| ≤ 1`. Parts whose correlation is unknown add their standard
+  deviations rather than their variances, which over-states and never
+  under-states.
+- **Other non-linear functions** (`recip`, `sqrt`, `exp`, `sin`, …) take the
+  statistical part to second order (the delta method of the GUM): the mean
+  moves by `f''(m)·σ²/2` and a fresh statistical nudge carries
+  `|f''(m)|·σ²/√2`; the bound part's remainder stays rigorous.
+- **What a statistical result means.** It is an approximation to the first
+  two moments, as GUM propagation is, not a bound; it prints with `±σ`, and a
+  comparison that depends on it is decided at the stated sigma (§3.2.9).
+  Only bound nudges and slack give guarantees.
+
+Otherwise the kinds differ only when a value is collapsed for printing,
+comparison, budget or covariance. This is affine arithmetic in the
 sense of Comba and Stolfi, with a hashed naming scheme for the noise symbols and a
 kind tag so that 1σ inputs are never printed as certainties.
 
