@@ -7301,6 +7301,32 @@ namespaceTests =
               ]
           )
           "`x` is both `a.x` and `b.x`; write one of them"
+    , testCase
+        "a command's name the uses offer as several: :view shows each, a query takes its kind"
+        $ do
+          let hashOf p = runLinesP [":hash " <> p]
+          -- A type in one namespace and a term in another: both, types first,
+          -- each after its full path.
+          runLinesP [":view TT"]
+            @?= Right ["-- time.TT", "space TT = Num s", "-- si.TT", "TT = tera * 1 T"]
+          -- A query about a definition takes the one term among them.
+          runLinesP [":hash TT"] @?= hashOf "si.TT"
+          runLinesP [":history TT"] @?= runLinesP [":history si.TT"]
+          -- Two terms: :view shows both, a query lists them.
+          runLinesP [":use physics", ":view h"]
+            @?= Right
+              [ "stored use physics"
+              , "-- physics.h"
+              , "physics.h = 6.62607015e-34 J * s"
+              , "-- time.h"
+              , "time.h = 60 min"
+              ]
+          expectError
+            (runLinesP [":use physics", ":hash h"])
+            "`h` is both `physics.h` and `time.h`; write one of them"
+          -- One match is as before, and none is unknown.
+          runLinesP [":view UTC"] @?= Right ["space UTC = Num s"]
+          expectError (runLinesP [":view nosuch"]) "unknown name `nosuch`"
     , testCase "an absolute .name picks the root's"
         $ runLinesP
           [ "let period a = a"
@@ -9563,8 +9589,8 @@ partFTests =
         runLinesP
           ( inertial
               ++ [ ":view ITS90"
-                 , -- by its path: si.TT is the teratesla
-                   ":view time.TT"
+                 , -- TT is also si.TT, the teratesla: both show
+                   ":view TT"
                  , ":view UTC"
                  , ":view GCRS"
                  , ":type [1, 2, 3] eci .- [0, 0, 0] eci"
@@ -9575,7 +9601,10 @@ partFTests =
           )
           @?= Right
             [ "space ITS90 = Num K"
+            , "-- time.TT"
             , "space TT = Num s"
+            , "-- si.TT"
+            , "TT = tera * 1 T"
             , "space UTC = Num s"
             , "space GCRS = Vec 3 m"
             , "Vec GCRS m"

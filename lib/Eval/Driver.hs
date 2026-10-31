@@ -582,26 +582,33 @@ command session src = \case
               (map (short cb) (historicalNamesOf (Reference h' Nothing) cb) ++ cycleNames h')
         | h' <- hs
         ]
-  ["history", n] -> keep $ case historyOf (argIn cb n) cb of
-    [] -> Left ("unknown name `" <> n <> "`")
-    r : rs -> pure ((showReference r <> "  (current)") : map showReference rs)
-  ["view", n] ->
-    keep
-      $ let full = argIn ecb n
-         in case lookupName full ecb of
-              -- A chart's right-hand side, `step at origin`, is not an
-              -- expression, so it is viewed with its keyword (design §3.8).
-              Just r ->
-                (: [])
-                  <$> definitionLine
-                    spelling
-                    scope
-                    ecb
-                    (if isChartName full ecb then "chart " else "")
-                    (short ecb full)
-                    r
-              Nothing -> viewData spelling scope cb full
-  ["dependents", n] -> keep $ withName n $ \r -> pure (map (short cb) (dependents (argIn cb n) r.hash cb))
+  ["history", n] -> keep $ do
+    full <- argFor (\p -> not (null (historyOf p cb))) cb n
+    case historyOf full cb of
+      [] -> Left ("unknown name `" <> n <> "`")
+      r : rs -> pure ((showReference r <> "  (current)") : map showReference rs)
+  -- A name the uses offer as several shows each, after a comment naming
+  -- its path, types first (design §7.3).
+  ["view", n] -> keep $ case argPaths scope ecb n of
+    [full] -> viewOne full
+    fulls -> case [(full, ls) | full <- fulls, Right ls <- [viewOne full]] of
+      [] -> Left ("unknown name `" <> n <> "`")
+      views -> pure (concat [("-- " <> full) : ls | (full, ls) <- views])
+   where
+    viewOne full = case lookupName full ecb of
+      -- A chart's right-hand side, `step at origin`, is not an
+      -- expression, so it is viewed with its keyword (design §3.8).
+      Just r ->
+        (: [])
+          <$> definitionLine
+            spelling
+            scope
+            ecb
+            (if isChartName full ecb then "chart " else "")
+            (short ecb full)
+            r
+      Nothing -> viewData spelling scope cb full
+  ["dependents", n] -> keep $ withName n $ \full r -> pure (map (short cb) (dependents full r.hash cb))
   -- An alias of a unit or chart is one too; an alias of a namespace aliases
   -- every label under it (design §7.6).
   ["alias", new, old]
@@ -824,10 +831,26 @@ command session src = \case
       n of
       Found full -> full
       _ -> n
-  withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName (argIn cb n) cb)
-  withExprName n k =
-    let full = argIn ecb n
-     in maybe (Left ("unknown name `" <> n <> "`")) (k full) (lookupName full ecb)
+  withName = withNameIn cb
+  withExprName = withNameIn ecb
+  withNameIn c n k = do
+    full <- argFor (\p -> isJust (lookupName p c)) c n
+    maybe (Left ("unknown name `" <> n <> "`")) (k full) (lookupName full c)
+  {- A name a query about one definition takes: of the paths it may mean
+  (design §7.6), the one that is such a definition; several are listed. -}
+  argFor present c n = case argPaths scope c n of
+    [full] -> Right full
+    fulls -> case filter present fulls of
+      [full] -> Right full
+      [] -> Left ("unknown name `" <> n <> "`")
+      several ->
+        Left
+          ( "`"
+              <> n
+              <> "` is both "
+              <> T.intercalate " and " (map (\f -> "`" <> f <> "`") several)
+              <> "; write one of them"
+          )
   cycleNames h' = case lookupTerm h' cb of
     Just (Cycle hints _) ->
       [ T.intercalate
@@ -865,11 +888,22 @@ command session src = \case
 the uses, or absolute with a leading dot (design §7.6).
 -}
 argPath :: S.Scope -> Codebase -> Text -> Text
-argPath scope c n
-  | Just p <- T.stripPrefix "." n = p
+argPath scope c n = case argPaths scope c n of
+  [full] -> full
+  _ -> n
+
+{- | Every full path a name given to a command may mean: one, or, when the
+uses offer it as several (a type in one namespace and a term in another,
+@time.TT@ and @si.TT@, or two terms), each of them, types first and then by
+path. A name that nothing offers is itself.
+-}
+argPaths :: S.Scope -> Codebase -> Text -> [Text]
+argPaths scope c n
+  | Just p <- T.stripPrefix "." n = [p]
   | otherwise = case qualifyWith c.uses known scope n of
-      Found full -> full
-      _ -> n
+      Found full -> [full]
+      Ambiguous fulls -> sortOn (\p -> (not (isLabel TypeLabel c p), p)) fulls
+      NotFound -> [n]
  where
   known x =
     isLabel TermLabel c x

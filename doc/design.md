@@ -4411,7 +4411,12 @@ Inspection
 :history name      refs the name has pointed at, newest first
 :view name         pretty-print the term with refs rendered as in 7.2; for a type, its declaration;
                    a chart with its keyword, `chart degC on ITS90 at 273.15 K`, a space as
-                   `space ITS90 = Num K` (3.6, 3.10)
+                   `space ITS90 = Num K` (3.6, 3.10); a name the uses offer as several
+                   shows each after a `-- full.path` line, types first and then by path
+                   (`:view TT` shows `time.TT`, a space, and `si.TT`, the teratesla).
+                   :hash, :history, :core, :lint and :dependents take the one definition
+                   among them, and list them when there are several:
+                   "`h` is both `physics.h` and `time.h`; write one of them"
 :core name         print the Typed Core (5.3) with every annotation
 :lint name         re-run lint on a stored definition and print its type(s)
 :dependents name   definitions whose terms reference the current ref of name

@@ -924,3 +924,10 @@
   (`std`'s list and pair functions, `linalg`'s `Cov2` functions and
   `rotation`, `astro.velocityIn`, `astro.stateFrom`), and any term that
   converts a point with `to`. Store format 11.
+- A name given to `:view` that the uses offer as several, across label
+  kinds or within one, shows every match after a `-- full.path` line, types
+  first and then by path, instead of "unknown name": `:view TT` shows the
+  space `time.TT` and the unit `si.TT`. `:hash`, `:history`, `:core`,
+  `:lint` and `:dependents` take the one definition among the matches, and
+  name them all when there are several ("`h` is both `physics.h` and
+  `time.h`; write one of them").
