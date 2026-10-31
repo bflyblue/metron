@@ -126,13 +126,11 @@ renderForallIn :: Spelling -> Scheme -> Text
 renderForallIn = renderForallWith showHash
 
 {- | A signature as it is written back (design §4.8): 'renderForallWith'.
-The test of the names a variable could not take is no longer consulted,
-since a bound variable shadows a unit of its name; it stays for the
-store's call until that is updated.
+A bound variable shadows a unit of its name, so no name is avoided.
 -}
 renderSignature ::
-  Spelling -> (Text -> Bool) -> (Hash -> Text) -> Scheme -> Text
-renderSignature spelling _ typeName = renderForallWith typeName spelling
+  Spelling -> (Hash -> Text) -> Scheme -> Text
+renderSignature spelling typeName = renderForallWith typeName spelling
 
 {- | Names for the variables of a @forall@, by kind as 'prettyNames' gives
 them, each skipping the names taken and every name already given.

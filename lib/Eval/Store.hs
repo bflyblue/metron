@@ -58,7 +58,7 @@ import Eval.Dimension (Spelling (..))
 import Eval.Hash
 import Eval.Parser (parseType)
 import Eval.Prelude (stdlibCodebase)
-import Eval.Resolve (queryScheme, renderResolveError, storeTerm, typeVariable)
+import Eval.Resolve (queryScheme, renderResolveError, storeTerm)
 import Eval.Syntax (Use (..), renderUse, rootScope)
 import Eval.TCore (signatureHolds)
 import Eval.Type (Scheme, TypeDef (..), renderSignature)
@@ -470,7 +470,6 @@ signatureLogText :: Codebase -> Scheme -> Text
 signatureLogText cb =
   renderSignature
     Ascii
-    (typeVariable rootScope cb)
     (\h -> maybe (showHash h) ("." <>) (typeNameOf h cb))
 
 {- | A signature line read back: the type parsed and converted at the root,
