@@ -1449,8 +1449,17 @@ offset, and then to the component. The index's length is the rank of `t`,
 written `Vec (rank s)` (§4.1), so inside `f` the index is an ordinary vector
 and `i.0`, `i.1` are ordinary projections with the usual static bound. Like
 `vmap` it evaluates each result only when that component is read, takes the
-result's dimension from the function, and gives the result no display unit of
-its own. `vimap` stays the vector form with a scalar position; `timap` is the
+result's dimension from the function's type, and gives the result no display
+unit of its own.
+
+**Mapping is lazy, its dimension typed.** `vmap`, `vzipWith` and `timap` read
+the result's dimension off their own type as instantiated where they are used
+(§8), never off a component: `(vmap (\x -> 1/x) [0, 2]).1` is `0.5`, since
+the division by zero in the other component is never forced, and a map over
+an empty tensor has the dimension the function gives, `vmap (\x -> x * m)
+(noise 0)` is `Vec 0 m` and `dot` of it with itself `0 m^2`. Inside a
+polymorphic function the dimension is the caller's, passed as a type-level
+argument. `vimap` stays the vector form with a scalar position; `timap` is the
 general one. A diagonal mask:
 
 ```
@@ -5127,7 +5136,8 @@ unreachable for linted terms and are reported as internal errors.
   redesign. Dictionaries are values too: a record of monomorphic primitives.
 - Type abstractions and applications are erased except where a value's
   runtime shape or dimension comes from a type alone: the element type of an
-  empty tensor literal (§3.3). An abstraction over a
+  empty tensor literal, and the instantiated type of `vmap`, `vzipWith` and
+  `timap`, which gives their result's dimension (§3.3). An abstraction over a
   length, shape or dimension variable that its body needs there, or passes
   on in a type application, waits for its argument, and each application
   supplies it, resolved under the arguments in force where it is written;

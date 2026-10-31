@@ -367,8 +367,13 @@ eval cfg rt = go
           (Just u, _) -> asUnit (UnitNamed u) v
           (_, Just s) -> asChart (UnitNamed s) v
           _ -> Right v
-    TPrimApp prim _ args ->
-      runPrim cfg rt prim (zipWith (\i a -> go tenv (child i) env a) [0 ..] args)
+    TPrimApp prim ty args ->
+      runPrim
+        cfg
+        rt
+        prim
+        (resolveType tenv ty)
+        (zipWith (\i a -> go tenv (child i) env a) [0 ..] args)
     TLit (LTensor (dims, rs)) _ -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
     -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
     -- A boolean is data like any other: @if@ is a case on its constructor.
@@ -566,8 +571,9 @@ lookupEnv i env = case (i, env) of
 -- Types at run time ---------------------------------------------------------------
 
 {- | Whether a term's run time needs the argument of a type-level variable
-(design §8): the element type of an empty pack, or an argument passed on
-to another abstraction. Only lengths, shapes and dimensions
+(design §8): the element type of an empty pack, the instantiated type of
+a mapping primitive, whose result's dimension it gives, or an argument
+passed on to another abstraction. Only lengths, shapes and dimensions
 are ever needed; a variable of another kind never is.
 -}
 neededAtRuntime :: VarId -> Kind -> TTerm n -> Bool
@@ -577,7 +583,7 @@ neededAtRuntime v k body = k `elem` [KLen, KShape, KDim] && go body
   go = \case
     TVr _ -> False
     TRef{} -> False
-    TPrimApp _ _ args -> any go args
+    TPrimApp prim ty args -> (prim `elem` typedPrims && mentions ty) || any go args
     TLit{} -> False
     TLam _ _ b -> go b
     TApp f a -> go f || go a
@@ -594,6 +600,10 @@ neededAtRuntime v k body = k `elem` [KLen, KShape, KDim] && go body
     TTyApp b a -> mentions (TData selfType [a]) || go b
     TCycle _ _ bodies -> any go (vecToList bodies)
   mentions t = v `elem` map fst (freeVars t)
+
+-- | The primitives whose result's dimension comes from their type.
+typedPrims :: [Text]
+typedPrims = ["vmap", "vzipWith", "timap"]
 
 -- | A type under the type-level arguments in force.
 resolveType :: TyEnv -> Type -> Type
@@ -840,10 +850,11 @@ hintProduct p = combine (hintMul p)
 {- | Run a saturated primitive. Arguments are in source order and are forced
 only as the primitive needs them; elementwise operations stay lazy per
 element. Dimensions follow the rules of design §4.3, display units those
-of §3.2.12, magnitudes those of §3.2.
+of §3.2.12, magnitudes those of §3.2. The type is the primitive's, as
+instantiated where it is used, under the type-level arguments in force.
 -}
-runPrim :: Config -> Runtime -> Text -> [Thunk] -> Thunk
-runPrim cfg rt prim args = case (prim, args) of
+runPrim :: Config -> Runtime -> Text -> Type -> [Thunk] -> Thunk
+runPrim cfg rt prim ty args = case (prim, args) of
   -- A base unit is a unit (design §3.10, U1).
   (unit, [])
     | Just b <- baseUnit unit ->
@@ -1207,12 +1218,10 @@ runPrim cfg rt prim args = case (prim, args) of
     (dims, d, _, buf) <- tensor =<< a
     let results =
           V.map (apply cfg rt fv . Right . VTensor [] d Nothing . V.singleton) buf
-    -- The result dimension is a property of the function; read it off the
-    -- first element, or keep the input's for an empty tensor.
-    outDim <-
-      if V.null results
-        then Right d
-        else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
+    -- The result's dimension is the function's result's, which the
+    -- instantiated type says: no element is forced to find it, and an
+    -- empty tensor has one too.
+    outDim <- resultDim
     Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
   -- The positions of a vector as exact dimensionless values; the argument's
   -- elements are not forced.
@@ -1233,10 +1242,7 @@ runPrim cfg rt prim args = case (prim, args) of
             (\x y -> apply cfg rt fv (element d1 x) >>= \g -> apply cfg rt g (element d2 y))
             xs
             ys
-    outDim <-
-      if V.null results
-        then Right d1
-        else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
+    outDim <- resultDim
     Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
   -- vmap that first passes each component's multi-index, read off its
   -- row-major offset, as a vector of exact dimensionless naturals as long
@@ -1258,10 +1264,7 @@ runPrim cfg rt prim args = case (prim, args) of
                   >>= \g -> apply cfg rt g (Right (VTensor [] d Nothing (V.singleton x)))
             )
             buf
-    outDim <-
-      if V.null results
-        then Right d
-        else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
+    outDim <- resultDim
     Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
   -- Conversion: the value, displayed in the unit's terms. A unit expression
   -- without a display unit of its own (a bare number) clears the hint.
@@ -1396,6 +1399,13 @@ runPrim cfg rt prim args = case (prim, args) of
           )
  where
   p = precisionOf cfg
+  -- The dimension of the result the instantiated type gives.
+  resultDim = case finalResult ty of
+    TTensor _ d -> Right (runtimeDim d)
+    _ -> Left (Internal (prim <> ": a result that is not a tensor"))
+  finalResult = \case
+    TFun _ r -> finalResult r
+    r -> r
   -- A chart's absolute frame (design §3.8). The origin is stored from the
   -- base origin along the base axes: the parent's origin plus the amount it
   -- was given at, which is along the parent's axes and so turned by the

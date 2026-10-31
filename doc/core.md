@@ -267,7 +267,9 @@ constructors' types enforce the structural ones; tests pin the rest.
   The evaluator ignores every type form except the length, shape and
   dimension arguments that a value's runtime shape or dimension comes from
   alone: the element type of an empty `TPack`, which Typed Core keeps even
-  with no elements (design §8).
+  with no elements, and the instantiated type of a mapping primitive
+  (`vmap`, `vzipWith`, `timap`), whose result's dimension it gives without
+  forcing a component (design §8).
 
 ### What the hash depends on
 

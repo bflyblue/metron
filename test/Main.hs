@@ -996,6 +996,26 @@ endToEndTests =
         -- inside a function it is the caller's to fix
         evalText "\\x -> []" @?= Right ["<function>"]
         runLines [":type []"] @?= Right ["forall s d. Tensor (0 : s) d"]
+    , testCase
+        "mapping takes its result's dimension from its type, forcing no element" $ do
+        -- lazy: the other component's division by zero is never forced
+        evalText "(vmap (\\x -> 1 / x) [0, 2]).1" @?= Right ["0.5"]
+        evalText "(vzipWith (\\a b -> a / b) [1, 1] [0, 2]).1" @?= Right ["0.5"]
+        evalText "(timap (\\i x -> 1 / x) [0, 2]).1" @?= Right ["0.5"]
+        -- empty: the function's dimension, not the input's
+        evalText "vmap (\\x -> x * m) (noise 0)" @?= Right ["[] m"]
+        evalText "let e = vmap (\\x -> x * m) (noise 0) in dot e e" @?= Right ["0 m^2"]
+        evalText "vzipWith (\\a b -> a * b) ([] :: Vec 0 m) ([] :: Vec 0 s)"
+          @?= Right ["[] m s"]
+        evalText "timap (\\i x -> x * m) (noise 0)" @?= Right ["[] m"]
+        -- inside a polymorphic function, the caller's dimension
+        runLines
+          [ "let f g xs = vmap g xs"
+          , "dot (f (\\x -> x * m) (noise 0)) (f (\\x -> x * s) (noise 0))"
+          ]
+          @?= Right ["0 m s"]
+        runLines ["let h v = vmap (\\x -> x * 1 kg) v", "h (noise 0)"]
+          @?= Right ["[] kg"]
     ]
 
 -- Codebase, scratch and versioning -------------------------------------------------
