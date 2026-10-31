@@ -3501,6 +3501,9 @@ partUTests =
           @?= Right ["3 degC", "3 degF", "pt = \\c -> 3 c"]
         -- Used where it is made, a parameter's type is known: no signature.
         runLinesP ["(\\u -> 3 u) km", "(\\c -> 3 c) degC"] @?= Right ["3 km", "3 degC"]
+        -- An ascription in the definition reads it too.
+        runLinesP ["let f u = 3 (u :: Unit m)", "f km", ":view f"]
+          @?= Right ["3 km", "f = \\u -> 3 u"]
     , testCase "U5: unit operators bind before numbers" $ do
         runLinesP
           ["9.81 m/s^2", "5 km/h", "9.81 m s^-2", "6 m / 2 s", "let x = 2", "6 m / x"]
