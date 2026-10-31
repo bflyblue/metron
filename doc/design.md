@@ -2936,9 +2936,28 @@ dimension and, by the owner's decision, §3.9 decision 7's root chart that names
 own axes: a root
 chart is a translated child of its space's base and has the base's axes, so
 two translated roots on one space (`eci`, a lab bench) have one set of axes
-and convert with `to`, and two on different spaces never meet. The library
-declares `Time` in `time` (`JD`, `MJD`, `J2000`, `unix`), `Temperature` in `temperature` (`degC`,
-`degF`, `degR`, `kelvin`) and `Pressure` in `si` (`gauge`).
+and convert with `to`, and two on different spaces never meet.
+
+**Naming spaces** (decided by the owner). A space is named after the
+reference system that pins it down, as astronomy names ICRS, GCRS and ITRS,
+never after the bare quantity: `Time` or `Temperature` reads as the one global
+time, when a space is one of possibly many. The library declares:
+
+- `TT` in `time` (Terrestrial Time), with `JD`, `MJD` and `J2000` (J2000.0 is
+  JD 2451545.0 TT).
+- `UTC` in `time`, with `unix`, which counts UTC seconds without leap
+  seconds. There is no chart between `TT` and `UTC`: they differ by a
+  constant plus the leap seconds, so the map is not affine and is an ordinary
+  function over a leap-second table, not a `to`. A `unix` instant and a `J2000`
+  one are different spaces, so mixing them is a kind error, not a silent error
+  of about 69 s.
+- `ITS90` in `temperature` (the International Temperature Scale of 1990),
+  with `kelvin`, `degC`, `degF` and `degR`.
+
+`si.gauge` and its space are removed: absolute pressure is an amount with a
+natural zero, and a gauge chart's 101325 Pa is a convention, so a user who
+wants one declares it. User spaces follow the same rule, `space GCRS = Vec 3
+m`, `chart eci on GCRS`.
 
 **F3. Frames.** A frame is the type-level identity of a chart: which origin
 and which axes, with no numbers. Every chart has one. Whether a declaration
