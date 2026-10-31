@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Statistical nudges propagate to first order only, and a σ never becomes a
+  bound: non-linear remainders and domain checks use the bound enclosure,
+  a remainder that multiplies a statistical nudge is a fresh statistical
+  nudge, and second-order statistical terms are measured against the
+  first-order σ instead of carried. Over `:set nonlinear` percent (default
+  1) a value is marked non-linear: it prints with a warning, `:budget` names
+  the operation, and comparisons, `floor`/`ceil`/`round`, `mid` and `sd`
+  refuse it. `n*n` for `n = 0 ±σ 1` is no longer `0.5 ± 0.5`, and
+  `(n*n) < 2` is no longer `true`.
+
 - Correctness fixes from review. Division refuses a denominator whose
   enclosure reaches zero before anything cancels (`x/x` and `0/x` with
   `x = 1 ± 1` are a division by zero, as `1/x` is), and only named nudges

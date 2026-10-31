@@ -756,6 +756,50 @@ apart (decided by the owner).
   evaluate the expression many times and report quantiles, the GUM's
   Supplement 1 method (§11).
 
+*As built* (`Eval.Affine`):
+
+- **The bound enclosure.** Every non-linear remainder and every domain check
+  uses the bound enclosure `mid ± (Σ_bound |cᵢ| + slack)` only: the
+  remainders of `mul`, `recip`, `sqrt`, `exp`, `log`, the circular and
+  hyperbolic functions, `abs`, the Rodrigues series and `expm`'s norm bound,
+  and the refusals of division, `sqrt`, `log`, `asin` and `atan2`, a chart's
+  step and the pivots of `det` and `inverse`. So `1 / (1 ±σ 1)` is no
+  division by zero: it is `1 ±σ 1`, marked non-linear by `recip`.
+- **Three parts of a remainder.** Bound by bound is a fresh bound nudge, as
+  before, with the midpoint's rounding. A part that is first order in a
+  statistical nudge but scaled by a bound one, a product's `Bₓ·S_y`, or a
+  function's slope changing across the bound enclosure, is a fresh
+  **statistical** nudge whose σ takes the bound part at its worst
+  (`rB(x)·σ(y) + rB(y)·σ(x)` for a product, the slope's largest change over
+  the bound enclosure times σ for a function, plus the slope's own
+  approximation error times σ). Decided here: it is statistical because it
+  multiplies a statistical nudge, and it is not counted as non-linearity,
+  since given the bound unknowns it is still Gaussian, only of uncertain
+  width. Statistical by statistical is second order and is not carried.
+- **The measure.** A product measures `√((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²)` against
+  the first-order σ; a function measures `|f''(m)|·σ`, read as half the
+  change of `f'` from `m − σ` to `m + σ`, against `|f'(m)|`, unbounded when
+  either point leaves the domain (`recip`, `sqrt`, `log`) or when `f'(m) =
+  0` (`cos` at 0). `abs` is linear unless its kink lies within σ of the bound
+  enclosure, then unbounded. The measure is kept squared and exact, rounded
+  up to three digits, and a value keeps the largest measure, with its
+  operation, of everything it was computed from (`Skew`); a value exactly
+  zero after cancellation, such as `n*n − n*n`, is equal whatever it went
+  through.
+- **The threshold** is `:set nonlinear` in percent, default 1, and is
+  applied where a value is used, not where it is computed: printing adds
+  "(non-linear: mul, second-order term 7.1% of the first-order σ; a mean and
+  a σ do not describe it)"; `:budget` adds the same line; a comparison, and
+  `floor`, `ceil` and `round`, which are comparisons with the integers,
+  refuse; and `mid` and `sd` refuse, so that `sd (n*n)` is not a
+  misleading `0`. `bound` still answers: the bound part is rigorous. A
+  value whose first-order σ is zero after such a step, `n*n`, prints its
+  midpoint without the `…` that would promise every digit (§3.2.10):
+  `5 (non-linear: mul, …)` for `n*n + 5`.
+- **Rounding to integers** is decided as a comparison is, at the stated
+  sigma: `floor (2.5 ±σ 0.17)` cannot be decided at sigma 3, where it was
+  once decided by treating σ as a radius.
+
 Otherwise the kinds differ only when a value is collapsed for printing,
 comparison, budget or covariance. This is affine arithmetic in the
 sense of Comba and Stolfi, with a hashed naming scheme for the noise symbols and a
@@ -978,6 +1022,10 @@ cannot decide comparison at sigma 3: the difference is 1e-5 ± 3e-21 ±σ 4e-6
 
 So a comparison that depends on statistical inputs is decided at a stated
 confidence, never silently, and a comparison with only bound inputs is rigorous.
+A difference marked non-linear (§3.2) is never decided, since a mean and a σ
+do not describe it: "cannot decide comparison at sigma 3: the difference is
+marked non-linear by mul". `floor`, `ceil` and `round` are comparisons with
+the integers and are decided the same way.
 `a == b` is true if `a - b` is exactly zero after cancellation (so `x == x` holds
 for affine `x`), false if decided non-zero, undecidable otherwise. There is no
 third truth value; error never leaks into control flow silently. Refining by
@@ -4302,6 +4350,8 @@ Namespaces (7.6)
 Session
 :set precision n   significant digits printed; working precision is n + 4 (3.2.8)
 :set sigma k       confidence multiplier for comparisons on statistical values (3.2.9)
+:set nonlinear p   percent of the first-order σ a second-order statistical term may reach
+                   before a value is marked non-linear (3.2); default 1
 :prefer [unit]     print values of the unit's dimension in it (3.2.12); alone, list preferences
 :unprefer unit     remove that preference
 :set unicode on    pretty-print with unicode spellings (2.8); off (the default) for ASCII

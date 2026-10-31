@@ -93,15 +93,24 @@ data Config = Config
   , sigma :: Int
   , unicode :: Bool
   -- ^ print with the unicode spellings of design §2.8 (@:set unicode on@, §7.3)
+  , nonlinear :: Rational
+  {- ^ the fraction of a value's first-order σ its second-order statistical
+  term may reach before the value is marked non-linear (design §3.2,
+  @:set nonlinear@, in percent)
+  -}
   }
   deriving stock (Show)
 
 defaultConfig :: Config
-defaultConfig = Config{precision = 20, sigma = 3, unicode = False}
+defaultConfig = Config{precision = 20, sigma = 3, unicode = False, nonlinear = 1 / 100}
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
 precisionOf :: Config -> Precision
 precisionOf cfg = cfg.precision + 4
+
+-- | How comparisons are decided under a configuration (design §3.2.9).
+decideOf :: Config -> Decide
+decideOf cfg = Decide{sigma = cfg.sigma, nonlinear = cfg.nonlinear}
 
 {- | What the evaluator needs from the codebase: the Typed Core behind a
 reference, and whether a reference was declared a display unit.
@@ -433,7 +442,12 @@ eval cfg rt = go
           pRows <- chunksOf n <$> sequence (V.toList es)
           lrows <-
             arith
-              (choleskyRows "±σ needs a symmetric covariance" cfg.sigma (precisionOf cfg) pRows)
+              ( choleskyRows
+                  "±σ needs a symmetric covariance"
+                  (decideOf cfg)
+                  (precisionOf cfg)
+                  pRows
+              )
           let noise j = unitNoise k (originOf site l j)
               component i =
                 ( \vi ->
@@ -901,12 +915,17 @@ runPrim cfg rt prim ty args = case (prim, args) of
   -- §3.2.10), each exact but sd: the midpoint, the bound radius
   -- Σ_bound |cᵢ| + slack, and the standard deviation √(Σ_stat cᵢ²), exact
   -- when the variance is a square and otherwise an enclosure of the root.
-  ("mid", [a]) -> elementwise1 (Exact . midpoint) a
+  -- A value marked non-linear has no mean and σ that describe it (design
+  -- §3.2), so mid and sd refuse it; its bound is still rigorous.
+  ("mid", [a]) -> do
+    (dims, d, hint, buf) <- tensor =<< a
+    Right
+      (VTensor dims d hint (V.map (>>= described "mid" (Right . Exact . midpoint)) buf))
   ("bound", [a]) -> elementwise1 (\x -> Exact (collapse x).bound) a
   ("sd", [a]) -> do
     (dims, d, hint, buf) <- tensor =<< a
     let root x = arith (sqrtM p (Exact (collapse x).variance))
-    Right (VTensor dims d hint (V.map (>>= root) buf))
+    Right (VTensor dims d hint (V.map (>>= described "sd" root) buf))
   ("emul", [a, b]) -> elementwise2 (pureOp (mulM p)) dimMul (combine (hintMul p)) a b
   ("ediv", [a, b]) ->
     elementwise2
@@ -991,9 +1010,9 @@ runPrim cfg rt prim ty args = case (prim, args) of
     x <- bool =<< a
     if x then Right (VBool True) else VBool <$> (bool =<< b)
   ("not", [a]) -> VBool . not <$> (bool =<< a)
-  ("floor", [a]) -> dimensionless (arith . floorM) a
-  ("ceil", [a]) -> dimensionless (arith . ceilM) a
-  ("round", [a]) -> dimensionless (arith . roundM) a
+  ("floor", [a]) -> dimensionless (arith . floorM (decideOf cfg) p) a
+  ("ceil", [a]) -> dimensionless (arith . ceilM (decideOf cfg) p) a
+  ("round", [a]) -> dimensionless (arith . roundM (decideOf cfg) p) a
   -- Elementary functions (design §3.2.2). Their arguments are dimensionless
   -- by type, except sqrt, which halves the dimension.
   ("sqrt", [a]) -> do
@@ -1039,7 +1058,8 @@ runPrim cfg rt prim ty args = case (prim, args) of
     case dims of
       [n, n'] | n == n' -> do
         rows <- matrixRows n buf
-        l <- arith (choleskyRows "cholesky needs a symmetric matrix" cfg.sigma p rows)
+        l <-
+          arith (choleskyRows "cholesky needs a symmetric matrix" (decideOf cfg) p rows)
         d2 <-
           maybe
             (Left (Internal "cholesky of a dimension that is not a square"))
@@ -1400,6 +1420,18 @@ runPrim cfg rt prim ty args = case (prim, args) of
           )
  where
   p = precisionOf cfg
+  -- An accessor of a mean or a σ, refusing a value marked non-linear.
+  described what f x = case nonLinearAt cfg.nonlinear x of
+    Just sk ->
+      Left
+        ( Eval.Eval.Domain
+            ( what
+                <> " of a value marked non-linear by "
+                <> sk.operation
+                <> ": a mean and a σ do not describe it (design §3.2)"
+            )
+        )
+    Nothing -> f x
   -- The dimension of the result the instantiated type gives.
   resultDim = case finalResult ty of
     TTensor _ d -> Right (runtimeDim d)
@@ -1534,7 +1566,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
   compareWith decide a b = do
     x <- ordered =<< a
     y <- ordered =<< b
-    VBool . decide <$> arith (compareM cfg.sigma p x y)
+    VBool . decide <$> arith (compareM (decideOf cfg) p x y)
   -- Tensors of one shape (lint agrees), data or points: the equality
   -- instances of design §4.2. Tensors are equal when every component is
   -- decided equal (design §3.2.9).
@@ -1545,14 +1577,14 @@ runPrim cfg rt prim ty args = case (prim, args) of
       (VTensor _ _ _ xs, VTensor _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
-        and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
+        and <$> mapM (\(u, v) -> arith (equalM (decideOf cfg) p u v)) (zip xs' ys')
       (VData c xs, VData c' ys)
         | c == c' && length xs == length ys -> and <$> zipWithM equal xs ys
         | otherwise -> Right False
       (VPoint _ _ _ xs, VPoint _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
-        and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
+        and <$> mapM (\(u, v) -> arith (equalM (decideOf cfg) p u v)) (zip xs' ys')
       _ ->
         Left
           (Internal "==: operands are not both tensors, both data or both points")
@@ -1637,7 +1669,7 @@ pivotIn from column =
     [] -> Nothing
     cands -> Just (snd (maximum cands))
  where
-  excludesZero x = midpoint x - radius x > 0 || midpoint x + radius x < 0
+  excludesZero x = midpoint x - boundRadius x > 0 || midpoint x + boundRadius x < 0
 
 singular :: Text -> [Magnitude] -> ArithError
 singular what column
@@ -1711,7 +1743,7 @@ to Rodrigues' formula @I + f(t) A + g(t) A²@ with @f = sin θ / θ@ and
 antisymmetric matrix is a single plane when @n ≤ 3@; beyond, an exact @A@
 is checked exactly and an uncertain one takes the series. When @S@ is
 exactly zero this is @exp B@. When it is not but its bound @σ@ (the
-∞-norm of @|midpoint| + radius@, which bounds @‖S‖₂@ for a symmetric
+∞-norm of @|midpoint| + bound radius@, which bounds @‖S‖₂@ for a symmetric
 matrix) is below @10^−p@, as it is when @B@ was built antisymmetric
 through a product whose two entries got two fresh nudges (@θ * (b ∧ a) /
 norm c@), then @‖exp (A + S) − exp A‖₂ ≤ e^σ − 1 ≤ 2σ@ (@exp (τA)@ is
@@ -1719,7 +1751,7 @@ orthogonal, and the logarithmic norm of @A + S@ is at most @σ@), and every
 entry gets @2σ@ as a fresh nudge of its own.
 
 /Otherwise/, the series with scaling and squaring. @β@ is the ∞-norm (the
-largest row sum) of @|midpoint| + radius@, an exact rational that bounds
+largest row sum) of @|midpoint| + bound radius@, an exact rational that bounds
 @‖B‖∞@ for every matrix in the enclosure; it is submultiplicative and
 bounds every entry. With @s@ the least power for which @β' = β / 2ˢ ≤ 1/2@
 and @A = B / 2ˢ@ (exact scaling), the sum of @Aᵏ / k!@ for @k < K@ is
@@ -1753,7 +1785,7 @@ matrixExp p n b
       ]
     | (i, row) <- zip [0 :: Int ..] m
     ]
-  normBound m = maximum (0 : [sum [abs (midpoint x) + radius x | x <- row] | row <- m])
+  normBound m = maximum (0 : [sum [abs (midpoint x) + boundRadius x | x <- row] | row <- m])
   -- Rodrigues
   anti =
     [ [scaleM (1 / 2) (subM (at i j) (at j i)) | j <- [0 .. n - 1]]
@@ -1927,7 +1959,7 @@ zero. A negative step reverses the chart's direction and is allowed.
 invertibleStep :: Magnitude -> Either EvalError ()
 invertibleStep step
   | step == Exact 0 = Left (ChartStep Nothing "its step is zero")
-  | abs (midpoint step) <= radius step =
+  | abs (midpoint step) <= boundRadius step =
       Left (ChartStep Nothing "its step's enclosure reaches zero")
   | otherwise = Right ()
 
@@ -2050,12 +2082,12 @@ different or decided different at the stated sigma as a comparison is
 the enclosures cannot tell apart passes.
 -}
 choleskyRows ::
-  Text -> Int -> Precision -> [[Magnitude]] -> Either ArithError [[Magnitude]]
-choleskyRows what sigma p a = mapM_ symmetric pairs >> go 0 []
+  Text -> Decide -> Precision -> [[Magnitude]] -> Either ArithError [[Magnitude]]
+choleskyRows what decide p a = mapM_ symmetric pairs >> go 0 []
  where
   n = length a
   pairs = [(i, j) | i <- [0 .. n - 1], j <- [i + 1 .. n - 1]]
-  symmetric (i, j) = case compareM sigma p ((a !! i) !! j) ((a !! j) !! i) of
+  symmetric (i, j) = case compareM decide p ((a !! i) !! j) ((a !! j) !! i) of
     Right ord
       | ord /= EQ ->
           Left

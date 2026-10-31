@@ -450,11 +450,26 @@ command session src = \case
           [ "precision " <> tshow cfg.precision
           , "sigma " <> tshow cfg.sigma
           , "unicode " <> (if cfg.unicode then "on" else "off")
+          , "nonlinear " <> T.pack (show (round (100 * cfg.nonlinear) :: Integer))
           ]
       )
   ["set", "precision", n] ->
     setting n (\k -> cfg{precision = k}) "precision must be a non-negative integer"
   ["set", "sigma", n] -> setting n (\k -> cfg{sigma = k}) "sigma must be a non-negative integer"
+  -- The threshold, in percent of the first-order σ, over which a value is
+  -- marked non-linear (design §3.2).
+  ["set", "nonlinear", n] ->
+    setting
+      n
+      ( \k ->
+          Config
+            { precision = cfg.precision
+            , sigma = cfg.sigma
+            , unicode = cfg.unicode
+            , nonlinear = fromIntegral k / 100
+            }
+      )
+      "nonlinear must be a non-negative integer, a percentage"
   -- Output spelling (design §2.8, §7.3).
   ["set", "unicode", "on"] -> Right (session{config = cfg{unicode = True}}, [])
   ["set", "unicode", "off"] -> Right (session{config = cfg{unicode = False}}, [])
@@ -525,7 +540,14 @@ command session src = \case
     (h, v) <- evalOf rest
     case displayParts (inputPrinter h) cfg.precision session.preferred v of
       Right (_, xs, units) ->
-        pure (renderBudget (inputNamer h) cfg.precision units (foldr addM (Exact 0) xs))
+        pure
+          ( renderBudget
+              (inputNamer h)
+              cfg.precision
+              cfg.nonlinear
+              units
+              (foldr addM (Exact 0) xs)
+          )
       Left (Internal _) -> Left "budget: not a number"
       Left err -> Left (renderEvalError err)
   -- The covariance view (design §3.5): Σ cᵢcᵢᵀ over the statistical nudges of
@@ -1500,6 +1522,7 @@ printerFor cfg scope cb =
     , fieldNames = \h i arity -> map (fmap S.lastSegment) (fieldNamesOf h i arity cb)
     , spelling = spellingOf cfg
     , unitName = shortestName scope cb
+    , nonlinear = cfg.nonlinear
     }
 
 -- | The spelling output uses (design §7.3, @:set unicode@).

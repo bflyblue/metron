@@ -4128,15 +4128,18 @@ displayTests =
   testGroup
     "display units"
     [ testCase ":set unicode prints the unicode spellings, which read back" $ do
-        runLinesP [":set"] @?= Right ["precision 20", "sigma 3", "unicode off"]
+        runLinesP [":set"]
+          @?= Right ["precision 20", "sigma 3", "unicode off", "nonlinear 1"]
         runLinesP [":set unicode on", ":set", ":set unicode off", ":set"]
           @?= Right
             [ "precision 20"
             , "sigma 3"
             , "unicode on"
+            , "nonlinear 1"
             , "precision 20"
             , "sigma 3"
             , "unicode off"
+            , "nonlinear 1"
             ]
         case runLinesP [":set unicode maybe"] of
           Left err -> T.isInfixOf "unicode is on or off" err @? T.unpack err
@@ -4334,7 +4337,7 @@ affineTests =
         -- clear of zero, proportional forms still cancel
         evalText "let x = 2 ± 1.5 in (3 * x) / x" @?= Right ["3"]
     , testCase "equal slack is not a shared unknown, so it does not cancel" $ do
-        let anonymous = Affine 2 Map.empty 1
+        let anonymous = Affine 2 Map.empty 1 Nothing
         case divM 24 anonymous anonymous of
           Right (Exact q) -> assertFailure ("cancelled to " <> show q)
           Right q -> radius q > 0 @? show q
@@ -4374,7 +4377,79 @@ affineTests =
           evalText "6.67430e-11 ±σ 1.5e-15" @?= Right ["6.67430e-11 ±σ 1.5e-15"]
           evalText "(6.67430e-11 ±σ 1.5e-15) * (2 ± 0.1)"
             @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12)"]
-          evalText "(1 ±σ 0.1) * (1 ±σ 0.1)" @?= Right ["1.00 ±σ 0.14 (bound 0.01)"]
+          -- σ by σ is second order: measured, never a bound (design §3.2)
+          evalText "(1 ±σ 0.1) * (1 ±σ 0.1)"
+            @?= Right
+              [ "1.00 ±σ 0.14 (non-linear: mul, second-order term 7.1% of the first-order σ; a mean and a σ do not describe it)"
+              ]
+    , testCase "a statistical part non-linear through n*n is marked, never a bound" $ do
+        let marked op r = case r of
+              Right [v] ->
+                T.isInfixOf ("(non-linear: " <> op <> ", ") v
+                  && not (T.isInfixOf "0.5 ± 0.5" v)
+                  @? T.unpack v
+              other -> assertFailure (show other)
+            refused what r = case r of
+              Left err -> T.isInfixOf what err @? T.unpack err
+              Right v -> assertFailure (show v)
+        marked "mul" (evalText "let n = 0 ±σ 1 in n * n")
+        refused
+          "the difference is marked non-linear by mul"
+          (evalText "let n = 0 ±σ 1 in (n * n) < 2")
+        refused
+          "sd of a value marked non-linear by mul"
+          (evalText "let n = 0 ±σ 1 in sd (n * n)")
+        refused
+          "mid of a value marked non-linear by mul"
+          (evalText "let n = 0 ±σ 1 in mid (n * n)")
+        -- what does not depend on its statistical part is still decided
+        evalText "let n = 0 ±σ 1 in (n * n) == (n * n)" @?= Right ["true"]
+        evalText "let n = 0 ±σ 1 in bound (n * n)" @?= Right ["0"]
+        -- the mark propagates
+        marked "mul" (evalText "let n = 0 ±σ 1 in n * n + 5")
+        -- a σ of zero after a non-linear step prints as no certainty
+        evalText "let n = 0 ±σ 1 in n * n + 5"
+          @?= Right
+            [ "5 (non-linear: mul, second-order term unbounded; a mean and a σ do not describe it)"
+            ]
+        evalText "let n = 0 ±σ 1 in n * n"
+          @?= Right
+            [ "0 (non-linear: mul, second-order term unbounded; a mean and a σ do not describe it)"
+            ]
+        marked "mul" (evalText "let n = 0 ±σ 1 in sqrt (n * n + 5)")
+        -- :budget names the operation
+        expecting (runLines [":budget let n = 0 ±σ 1 in n * n"]) $ \out ->
+          any (T.isInfixOf "non-linear: mul, second-order term unbounded") out @? show out
+    , testCase "a small relative σ stays first order and unmarked" $ do
+        let g = "(6.67430e-11 ±σ 1.5e-15)"
+        evalText ("sqrt " <> g) @?= Right ["8.169639e-6 ±σ 9.2e-11"]
+        evalText (g <> " * " <> g) @?= Right ["4.45463e-21 ±σ 1.4e-25"]
+        evalText ("sin (" <> g <> " * 1 rad)") @?= Right ["6.67430e-11 ±σ 1.5e-15"]
+        evalText "sqrt (100 ±σ 1)" @?= Right ["10.00 ±σ 0.05"]
+        -- the delta method's second-order term, |f''|·σ² against |f'|·σ
+        evalText "exp (0 ±σ 0.1)"
+          @?= Right
+            [ "1.0 ±σ 0.1 (non-linear: exp, second-order term 10% of the first-order σ; a mean and a σ do not describe it)"
+            ]
+        evalText "sqrt (100 ±σ 10)"
+          @?= Right
+            [ "10.0 ±σ 0.5 (non-linear: sqrt, second-order term 5% of the first-order σ; a mean and a σ do not describe it)"
+            ]
+        -- the threshold is a setting
+        runLines [":set nonlinear 10", "(1 ±σ 0.1) * (1 ±σ 0.1)"]
+          @?= Right ["1.00 ±σ 0.14"]
+    , testCase "a statistical coefficient is never a hard limit" $ do
+        -- no division by zero: the bound enclosure excludes zero
+        evalText "1 / (1 ±σ 1)"
+          @?= Right
+            [ "1 ±σ 1 (non-linear: recip, second-order term unbounded; a mean and a σ do not describe it)"
+            ]
+        evalText "abs (1 ±σ 0.1)" @?= Right ["1.0 ±σ 0.1"]
+        -- integer rounding is a comparison, decided at the stated sigma
+        evalText "floor (2.5 ±σ 0.1)" @?= Right ["2"]
+        case evalText "floor (2.5 ±σ 0.17)" of
+          Left err -> T.isInfixOf "straddles a rounding boundary" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "mid, bound and sd take an enclosure apart" $ do
         let parts x = map (\f -> evalP (f <> " (" <> x <> ")")) ["mid", "bound", "sd"]
         parts "1 ± 0.1" @?= [Right ["1"], Right ["0.1"], Right ["0"]]
@@ -5282,7 +5357,7 @@ affineTests =
   pointOf :: [(Hash, Double)] -> Magnitude -> Rational
   pointOf es = \case
     Exact r -> r
-    m@(Affine mid _ _) -> mid + sum [c * eOf n | (c, n) <- nudges m]
+    m@(Affine mid _ _ _) -> mid + sum [c * eOf n | (c, n) <- nudges m]
    where
     eOf n = case n.origin of
       Tagged _ _ -> 0
