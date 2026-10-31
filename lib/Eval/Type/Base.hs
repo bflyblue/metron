@@ -54,6 +54,11 @@ type VarId = Int
 
 data Type
   = TTensor Shape Dim
+  | {- | a unit of a dimension (design §3.10, U1): a newtype around @Num
+    δ@, the same magnitude and display hint under a type of its own, so
+    that a unit and an amount never mix
+    -}
+    TUnit Dim
   | -- | a point of the affine space over  d@ (design §3.6)
     TPoint Shape Dim
   | {- | a chart for writing and printing points (design §3.6, §3.8): its
@@ -164,6 +169,7 @@ shapeOfDims = foldr (\k -> SCons (LLit k) AAnon) SNil
 applyType :: Subst -> Type -> Type
 applyType s = \case
   TTensor sh d -> TTensor (applyShape s sh) (applyDim s d)
+  TUnit d -> TUnit (applyDim s d)
   TPoint sh d -> TPoint (applyShape s sh) (applyDim s d)
   TScale sh r d -> TScale (applyShape s sh) (applyAxis s r) (applyDim s d)
   TData h as -> TData h (map (applyArg s) as)
@@ -236,6 +242,7 @@ substOnce m = go
  where
   go = \case
     TTensor sh d -> TTensor (shape sh) (dim d)
+    TUnit d -> TUnit (dim d)
     TPoint sh d -> TPoint (shape sh) (dim d)
     TScale sh r d -> TScale (shape sh) (axis r) (dim d)
     TData h as -> TData h (map arg as)
@@ -282,6 +289,7 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
  where
   go = \case
     TTensor sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
+    TUnit d -> [(v, KDim) | v <- dimVars d]
     TPoint sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
     TScale sh r d -> shape sh ++ axis r ++ [(v, KDim) | v <- dimVars d]
     TData _ as -> concatMap argVars as

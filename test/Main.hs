@@ -38,10 +38,18 @@ import Eval.Dimension (
   renderDimArgIn,
   renderDimIn,
  )
+import Eval.Dimension qualified as Dimension
 import Eval.Driver
 import Eval.Eval
 import Eval.Hash
-import Eval.Infer (TypeError (..), elaborateClosed)
+import Eval.Infer (
+  Annotations (..),
+  TypeError (..),
+  elaborateClosed,
+  noAnnotations,
+  readingsOf,
+  rewriteReadings,
+ )
 import Eval.Lexer hiding (TNum, TProj)
 import Eval.Lexer qualified as L
 import Eval.Parser
@@ -117,6 +125,7 @@ main =
         , annotationTests
         , forallTests
         , dimensionSyntaxTests
+        , readingTests
         ]
     )
 
@@ -3228,6 +3237,153 @@ axisSlotTests =
     _ <- first ("lint: " <>) (lintClosed look tt)
     pure schemes
 
+{- | The readings of design §3.10 (U2, U4, U6, U7), on Core whose stored
+definitions are typed by hand: a unit @km : Unit m@, @hr : Unit s@, an
+amount @len : Num m@ and a chart @cK : Chart (Num K)@. Arithmetic,
+powers and a unit's declaration choose a reading statically; a quantity
+or a @to@ marker is resolved by the types and written into the term.
+-}
+readingTests :: TestTree
+readingTests =
+  testGroup
+    "readings: units are a type"
+    [ testCase "two units give a unit, two amounts an amount" $ do
+        typed (ref km *. ref km)
+          @?= Right [Forall [] (TUnit (Dimension.dimPow 2 metre))]
+        typed (ref km /. ref hr)
+          @?= Right [Forall [] (TUnit (Dimension.dimDiv metre second))]
+        typed (Pow (ref hr) (-2))
+          @?= Right [Forall [] (TUnit (Dimension.dimPow (-2) second))]
+        typed (ref len *. ref len)
+          @?= Right [Forall [] (numD (Dimension.dimPow 2 metre))]
+        typed (ref len /. num 2) @?= Right [Forall [] (numD metre)]
+    , testCase "an amount and a unit together are refused, never converted" $ do
+        expectLeft
+          (typed (ref len *. ref km))
+          "an amount and a unit together: * takes two amounts or two units"
+        expectLeft
+          (typed (num 3 /. ref hr))
+          "an amount and a unit together: / takes two amounts or two units"
+        -- + and - take amounts only.
+        expectLeft (typed (ref km +. ref km)) "a unit where an amount goes"
+    , testCase "an operand's type chooses when it becomes known"
+        $
+        -- The parameter is a unit once the lambda is applied to one.
+        typed (App (Lam "u" (Var FZ *. Var FZ)) (ref km))
+          @?= Right [Forall [] (TUnit (Dimension.dimPow 2 metre))]
+    , testCase "unknown at generalisation, arithmetic takes the amounts' reading" $ do
+        fmap (map renderScheme) (typed (Lam "a" (Lam "b" (Var (FS FZ) *. Var FZ))))
+          @?= Right ["Num d -> Tensor s d1 -> Tensor s (d*d1)"]
+        fmap (map renderScheme) (typed (Lam "u" (Pow (Var FZ) 2)))
+          @?= Right ["Num d -> Num (d^2)"]
+        -- A let generalises its square as one of amounts, so it does not
+        -- take a unit afterwards.
+        expectLeft
+          (typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref km))))
+          "a unit where an amount goes"
+    , testCase "a quantity after a unit is scale, after a chart pointOn" $ do
+        readings (PrimApp (q 0) [num 3, ref km]) @?= Right (Map.singleton (q 0) "scale")
+        readings (PrimApp (q 0) [num 20, ref cK])
+          @?= Right (Map.singleton (q 0) "pointOn")
+        -- Written in, the term stands alone: no marker, and its own types.
+        let written t = rewriteReadings <$> readings t <*> pure t
+        alphaEq (PrimApp "scale" [num 3, ref km])
+          <$> written (PrimApp (q 0) [num 3, ref km])
+          @?= Right True
+        alphaEq (PrimApp "pointOn" [ref cK, num 20])
+          <$> written (PrimApp (q 0) [num 20, ref cK])
+          @?= Right True
+        typed (PrimApp "scale" [num 3, ref km]) @?= Right [Forall [] (numD metre)]
+        fmap
+          (map renderScheme)
+          (typed (PrimApp "scale" [Lit (LTensor ([2], [1, 2])), ref km]))
+          @?= Right ["Vec 2 m"]
+        fmap (map renderScheme) (typed (PrimApp "pointOn" [ref cK, num 20]))
+          @?= Right ["Point (Num K)"]
+    , testCase "a quantity after anything else is refused by its type" $ do
+        expectLeft
+          (readings (PrimApp (q 0) [num 2, PrimApp "pi" []]))
+          "`pi` is Num, not a unit or a chart: write the `*`"
+        expectLeft
+          (readings (PrimApp (q 0) [num 2, ref len]))
+          "is Num m, not a unit or a chart: write the `*`"
+    , testCase
+        "a quantity unknown at generalisation is ambiguous; a signature reads it"
+        $ do
+          let per = Lam "u" (PrimApp (q 0) [num 3, Var FZ])
+          expectLeft
+            (readings per)
+            "ambiguous: what follows this literal could be a unit or a chart"
+          -- The signature as an ascription of the body, as a definition's is.
+          let marker = signatureMarker ""
+              sig =
+                Forall
+                  [(1, KDim)]
+                  (TFun (TUnit (Dimension.dimVar 1)) (numD (Dimension.dimVar 1)))
+              annots = Annotations (\_ _ _ -> Nothing) (Map.singleton marker (sig, []))
+          first (.message) (readingsOf annots look (PrimApp marker [per]))
+            @?= Right (Map.singleton (q 0) "scale")
+          -- Its use in the same term reads it too.
+          readings (App per (ref km)) @?= Right (Map.singleton (q 0) "scale")
+    , testCase "to converts to a unit or a chart, by its target" $ do
+        readings (PrimApp (toM 0) [ref len, ref km])
+          @?= Right (Map.singleton (toM 0) "to")
+        -- Or by its value, when that says which.
+        readings (Lam "u" (PrimApp (toM 0) [ref len, Var FZ]))
+          @?= Right (Map.singleton (toM 0) "to")
+        expectLeft
+          (readings (PrimApp (toM 0) [ref len, ref len]))
+          "an amount after `to`, which takes a unit or a chart"
+        expectLeft
+          (readings (Lam "x" (Lam "u" (PrimApp (toM 0) [Var (FS FZ), Var FZ]))))
+          "ambiguous: `to` here could take a unit or a chart"
+    , testCase "a unit's declaration takes an amount or a unit" $ do
+        typed (PrimApp "unit" [ref km]) @?= Right [Forall [] (TUnit metre)]
+        typed (PrimApp "unit" [ref len *. num 60]) @?= Right [Forall [] (TUnit metre)]
+        typed (PrimApp "unit" [ref km /. ref hr])
+          @?= Right [Forall [] (TUnit (Dimension.dimDiv metre second))]
+        expectLeft
+          (typed (PrimApp "unit" [Lit (LTensor ([2], [1, 2]))]))
+          "a unit is one number"
+    , testCase "Unit is a type: printed, encoded and decoded" $ do
+        renderType (TUnit metre) @?= "Unit m"
+        renderType (TUnit (Dimension.dimDiv metre second)) @?= "Unit (m/s)"
+        renderType (TUnit dimOne) @?= "Unit"
+        renderType (TFun (TUnit (Dimension.dimVar 1)) (numD (Dimension.dimVar 1)))
+          @?= "Unit d -> Num d"
+        let def = TypeDef [(0, KDim)] [[TUnit (Dimension.dimVar 0)]] structuralLabel
+        decodeTypeDef (encodeTypeDef def) @?= Right def
+    ]
+ where
+  km = Hash (BS.replicate 32 0xb1)
+  hr = Hash (BS.replicate 32 0xb2)
+  len = Hash (BS.replicate 32 0xb3)
+  cK = Hash (BS.replicate 32 0xb4)
+  metre = dimFromAtoms [(Base Dimension.L, 1)]
+  second = dimFromAtoms [(Base Dimension.T, 1)]
+  kelvin = dimFromAtoms [(Base Dimension.Θ, 1)]
+  stored =
+    [ (km, TUnit metre)
+    , (hr, TUnit second)
+    , (len, numD metre)
+    , (cK, TScale SNil AAnon kelvin)
+    ]
+  look =
+    TypeLookup (\k -> (\ty -> [Forall [] ty]) <$> lookup k stored) (const Nothing)
+  ref k = Ref k Nothing ""
+  q = readingMarkerName "quantity"
+  toM = readingMarkerName "to"
+  readings tm = first (.message) (readingsOf noAnnotations look tm)
+  typed tm = do
+    (schemes, tt) <- first (.message) (elaborateClosed look tm)
+    _ <- first ("lint: " <>) (lintClosed look tt)
+    pure schemes
+  expectLeft :: (Show a) => Either Text a -> Text -> Assertion
+  expectLeft r needle = case r of
+    Left err ->
+      (needle `T.isInfixOf` err) @? T.unpack ("expected " <> needle <> " in: " <> err)
+    Right x -> assertFailure ("expected an error, got " <> show x)
+
 propertyTests :: TestTree
 propertyTests =
   testGroup
@@ -3279,6 +3435,7 @@ generatorProperty =
     TData _ _ -> "data"
     TFun _ _ -> "function"
     TPoint _ _ -> "Point"
+    TUnit _ -> "Unit"
     TScale{} -> "Chart"
     TupleT _ -> "tuple"
     ListT _ -> "list"

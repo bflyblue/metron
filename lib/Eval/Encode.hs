@@ -93,6 +93,8 @@ encType :: Type -> Builder
 encType = \case
   TTensor sh d -> word8 0x21 <> encShape sh <> encDim d
   TPoint sh d -> word8 0x22 <> encShape sh <> encDim d
+  -- A unit (design §3.10, U1): appended.
+  TUnit d -> word8 0x2A <> encDim d
   -- A chart's root slot (design §3.9): anonymous keeps the old bytes; any
   -- other slot is the appended tag 0x29.
   TScale sh AAnon d -> word8 0x23 <> encShape sh <> encDim d

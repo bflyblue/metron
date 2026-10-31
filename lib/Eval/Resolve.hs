@@ -1153,7 +1153,8 @@ enterData scope cb decl = do
       | otherwise = go (Set.insert n.text seen) ns
 
 builtinTypeNames :: [Text]
-builtinTypeNames = ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale"]
+builtinTypeNames =
+  ["Bool", "Num", "Unit", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale"]
 
 data DataEnv = DataEnv
   { codebase :: Codebase
@@ -1219,6 +1220,7 @@ tyType env t = case t.node of
     | Map.member n env.params -> TVar <$> useParam env t n KType
     | n == "Bool" -> pure boolT
     | n == "Num" -> pure numT
+    | n == "Unit" -> pure (TUnit dimOne)
     | n `elem` builtinTypeNames -> bad t ("`" <> n <> "` needs its arguments")
     | otherwise -> applied env t n []
   S.TyApp hd args
@@ -1230,6 +1232,8 @@ tyType env t = case t.node of
         bad t ("parameter `" <> hd.text <> "` takes no arguments")
     | otherwise -> case (hd.text, args) of
         ("Num", [d]) -> TTensor SNil <$> tyDim env d
+        -- A unit takes its dimension as Num does (design §3.10, U1).
+        ("Unit", [d]) -> TUnit <$> tyDim env d
         ("Vec", [n]) -> (\l -> TTensor (position l SNil) dimOne) <$> tyLen env n
         ("Vec", [n, d]) -> (\l -> TTensor (position l SNil)) <$> tyLen env n <*> tyDim env d
         ("Mat", [m, n]) ->

@@ -176,6 +176,7 @@ positionsOf = \case
   TScale sh _ _ -> shape sh
   TData _ as -> concatMap arg as ++ [(l, x) | (ALen l, Just x) <- withCompanions as]
   TFun a b -> positionsOf a ++ positionsOf b
+  TUnit _ -> []
   TVar _ -> []
  where
   shape = \case
@@ -254,6 +255,7 @@ baseSymbolsOf :: Type -> Set.Set Text
 baseSymbolsOf = \case
   TTensor _ d -> dim d
   TPoint _ d -> dim d
+  TUnit d -> dim d
   TScale _ _ d -> dim d
   TData _ as -> foldMap arg as
   TFun a b -> baseSymbolsOf a <> baseSymbolsOf b
@@ -335,6 +337,9 @@ renderWithNamed typeName spelling axes names prec = \case
   -- space names its root's axes after it (design §3.9), when they are
   -- named or a variable that prints; a scalar chart has no axes to name.
   TPoint sh d -> paren (prec > 10) ("Point " <> over sh d)
+  -- A unit (design §3.10, U1) takes its dimension as `Num` does: `Unit m`,
+  -- `Unit (m/s)`, and `Unit` alone when dimensionless.
+  TUnit d -> paren (prec > 10 && not (isDimOne d)) ("Unit" <> dim d)
   TScale SNil _ d -> paren (prec > 10) ("Chart " <> over SNil d)
   TScale sh r d ->
     paren (prec > 10) ("Chart " <> over sh d <> maybe "" (" " <>) (rootText r))

@@ -21,6 +21,9 @@ module Eval.Desugar (
   ascriptionMarker,
   signatureMarker,
   ascriptionPath,
+  isQuantityMarker,
+  isToMarker,
+  readingMarkerName,
   unmarked,
   Resolution (..),
   Resolved (..),
@@ -60,10 +63,30 @@ data Provenance = Provenance
   the marker that stands for it in a term desugared for checking them
   ('desugarMarked')
   -}
+  , readings :: Int
+  {- ^ the quantities and @to@s whose reading is left to the types
+  (design §3.10, U4, U6) met so far, which number their markers
+  -}
   }
 
 emptyProvenance :: Provenance
-emptyProvenance = Provenance Map.empty Map.empty []
+emptyProvenance = Provenance Map.empty Map.empty [] 0
+
+{- | The marker of a quantity whose reading the types choose (design §3.10,
+U4): @scale lit u@ after a unit, @pointOn c lit@ after a chart. Numbered,
+so that inference names each marker's reading and 'Eval.Infer.rewriteReadings'
+writes it in; a term with a marker is never stored.
+-}
+isQuantityMarker :: Text -> Bool
+isQuantityMarker = T.isPrefixOf "§quantity:"
+
+-- | The marker of a @to@ whose reading the types choose (design §3.10, U6).
+isToMarker :: Text -> Bool
+isToMarker = T.isPrefixOf "§to:"
+
+-- | The @k@th marker of a kind, @quantity@ or @to@.
+readingMarkerName :: Text -> Int -> Text
+readingMarkerName kind k = "§" <> kind <> ":" <> T.pack (show k)
 
 -- | The span of a Core node, and the hint for an error there, if any.
 provenanceAt :: Path -> Provenance -> Maybe (S.Span, Maybe Text)
