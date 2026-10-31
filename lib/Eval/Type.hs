@@ -73,9 +73,12 @@ import Eval.Type.Base
 
 {- | Print a type with variables named by kind in order of appearance: @a b c@
 for types, @n m k@ for lengths, @s s1 s2@ for shapes, @d d1 d2@ for
-dimensions (design §4.5). Rank zero, one and two tensors print as @Num@,
-@Vec@ and @Mat@; a dimension follows as their last argument unless it is
-@1@, bare when it is one name and in parentheses otherwise (design §4.1).
+dimensions (design §4.5), as @:type@ names them ('forallNames'): each name
+used once, and a name the type prints as a base symbol skipped, so that an
+error's @Mat n k m@ never reads a length as metres. Rank zero, one and two
+tensors print as @Num@, @Vec@ and @Mat@; a dimension follows as their last
+argument unless it is @1@, bare when it is one name and in parentheses
+otherwise (design §4.1).
 -}
 renderType :: Type -> Text
 renderType = renderTypeIn Ascii
@@ -85,7 +88,8 @@ renderScheme (Forall _ t) = renderType t
 
 -- | 'renderType' in a chosen spelling: @Num (m/s²) → Num m@ in unicode.
 renderTypeIn :: Spelling -> Type -> Text
-renderTypeIn spelling t = renderWith spelling (prettyNames (freeVars t)) 0 t
+renderTypeIn spelling t =
+  renderWith spelling (forallNames (baseSymbolsOf t) (freeVars t)) 0 t
 
 renderSchemeIn :: Spelling -> Scheme -> Text
 renderSchemeIn spelling (Forall _ t) = renderTypeIn spelling t

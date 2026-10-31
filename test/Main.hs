@@ -8737,6 +8737,17 @@ dimensionSyntaxTests =
             , "Point (Num s) -> {Point (Num s)}"
             , "Chart (Num K) -> Q (Chart (Num K))"
             ]
+    , testCase "an error names variables as :type does, never as a unit" $ do
+        -- A length variable beside metres is not called m.
+        expectError
+          ( runLinesP
+              [ multiline
+                  [ "f :: forall n k. Mat n k -> Mat n k m"
+                  , "let f a = a / 1 s"
+                  ]
+              ]
+          )
+          "`f`'s definition has type `Tensor s1 d -> Tensor s1 (d/s)`, not as general as its signature `Mat n k -> Mat n k m`"
     , testCase ":type's output reads back as a signature equal to itself" $ do
         let defs =
               [ ("astro.stateFrom", [])

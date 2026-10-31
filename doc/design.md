@@ -3002,13 +3002,14 @@ decision left open:
   signatures written both ways (`Num [m]`/`Num m`, `Point [K]`/`Point (Num
   K)`, `Num [m]`/`Num km` in an ascription), are identical; only the `sig`
   lines' text differs.
-- **Errors name variables without dodging units.** `:type`, `:ls` and the
-  `sig` line skip a name the type prints as a base symbol (`forall s1 d.
-  Tensor s1 d -> Tensor s1 (s*d)`), but an error's types are named plainly,
-  so with the brackets gone one can read ambiguously: "not as general as
-  its signature `Mat n m m -> Mat n m m`", a length `m` beside metres. Not
-  changed here; the fix is for error printing to name variables as `:type`
-  does.
+- **Errors name variables as `:type` does.** `:type`, `:ls` and the `sig`
+  line skip a name the type prints as a base symbol (`forall s1 d. Tensor
+  s1 d -> Tensor s1 (s*d)`). An error's types were named plainly, so with
+  the brackets gone one could read ambiguously: "not as general as its
+  signature `Mat n m -> Mat n m m`", a length `m` beside metres. Error
+  printing (unifier errors, "not as general as its signature", lint) now
+  names variables the same way, each name once and no base symbol: `Mat n
+  k -> Mat n k m`.
 - **Found, not changed.** `:type cholesky` and `:type linalg.updateCov2` do
   not read back as signatures of themselves, before this change as after:
   the gap is the axis sets' (`det`'s, §3.9 "Known gaps"), not the
