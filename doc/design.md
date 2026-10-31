@@ -2369,7 +2369,7 @@ frame's axes. The decisions:
    `Mat a a -> …` acting along axes of `a`, which turns its run-time length
    check into a type rule (§4.3, §11); `cross`, `norm`, `dual` and the
    rotation constructors generalise over `a` with `card a ~ 3`; the `Cov2`
-   blocks become `Mat a a (d²)`, `Mat a b (d*d1)`.
+   blocks become `Mat a a (d^2)`, `Mat a b (d*d1)`.
 
 ```
 cross       : forall (a : 3). Vec a d -> Vec a d1 -> Vec a (d*d1)
@@ -2744,6 +2744,13 @@ decision left open:
   signatures written both ways (`Num [m]`/`Num m`, `Point [K]`/`Point (Num
   K)`, `Num [m]`/`Num km` in an ascription), are identical; only the `sig`
   lines' text differs.
+- **Errors name variables without dodging units.** `:type`, `:ls` and the
+  `sig` line skip a name the type prints as a base symbol (`forall s1 d.
+  Tensor s1 d -> Tensor s1 (s*d)`), but an error's types are named plainly,
+  so with the brackets gone one can read ambiguously: "not as general as
+  its signature `Mat n m m -> Mat n m m`", a length `m` beside metres. Not
+  changed here; the fix is for error printing to name variables as `:type`
+  does.
 - **Found, not changed.** `:type cholesky` and `:type linalg.updateCov2` do
   not read back as signatures of themselves, before this change as after:
   the gap is the axis sets' (`det`'s, §3.9 "Known gaps"), not the
