@@ -79,54 +79,58 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
 
+{- | Every test has a five-minute limit as a backstop to 'caseLimit', which
+times each generated case but not the generator itself: the whole suite
+normally runs in seconds, so a test that reaches it has hung.
+-}
 main :: IO ()
 main =
   defaultMain
-    ( testGroup
-        "eval"
-        [ coreTests
-        , evalTests
-        , tcoreTests
-        , lexerTests
-        , parserTests
-        , desugarTests
-        , hashTests
-        , prettyTests
-        , endToEndTests
-        , codebaseTests
-        , typeTests
-        , soundnessTests
-        , productTests
-        , contractionTests
-        , sliceTests
-        , rotationTests
-        , turnedChartTests
-        , movingChartTests
-        , axisSlotTests
-        , namedAxesTests
-        , propertyTests
-        , unitTests
-        , lintRegressionTests
-        , preludeTests
-        , displayTests
-        , affineTests
-        , storeTests
-        , dataTests
-        , itTests
-        , respellTests
-        , replTests
-        , namespaceTests
-        , editTests
-        , stdlibTests
-        , annotationTests
-        , forallTests
-        , dimensionSyntaxTests
-        , readingTests
-        , partUTests
-        , partFTests
-        , roleTests
-        ]
-    )
+    . localOption (mkTimeout 300_000_000)
+    $ testGroup
+      "eval"
+      [ coreTests
+      , evalTests
+      , tcoreTests
+      , lexerTests
+      , parserTests
+      , desugarTests
+      , hashTests
+      , prettyTests
+      , endToEndTests
+      , codebaseTests
+      , typeTests
+      , soundnessTests
+      , productTests
+      , contractionTests
+      , sliceTests
+      , rotationTests
+      , turnedChartTests
+      , movingChartTests
+      , axisSlotTests
+      , namedAxesTests
+      , propertyTests
+      , unitTests
+      , lintRegressionTests
+      , preludeTests
+      , displayTests
+      , affineTests
+      , storeTests
+      , dataTests
+      , itTests
+      , respellTests
+      , replTests
+      , namespaceTests
+      , editTests
+      , stdlibTests
+      , annotationTests
+      , forallTests
+      , dimensionSyntaxTests
+      , readingTests
+      , partUTests
+      , partFTests
+      , roleTests
+      ]
 
 -- Term-building helpers -------------------------------------------------
 
