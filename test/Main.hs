@@ -79,54 +79,58 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
 
+{- | Every test has a five-minute limit as a backstop to 'caseLimit', which
+times each generated case but not the generator itself: the whole suite
+normally runs in seconds, so a test that reaches it has hung.
+-}
 main :: IO ()
 main =
   defaultMain
-    ( testGroup
-        "eval"
-        [ coreTests
-        , evalTests
-        , tcoreTests
-        , lexerTests
-        , parserTests
-        , desugarTests
-        , hashTests
-        , prettyTests
-        , endToEndTests
-        , codebaseTests
-        , typeTests
-        , soundnessTests
-        , productTests
-        , contractionTests
-        , sliceTests
-        , rotationTests
-        , turnedChartTests
-        , movingChartTests
-        , axisSlotTests
-        , namedAxesTests
-        , propertyTests
-        , unitTests
-        , lintRegressionTests
-        , preludeTests
-        , displayTests
-        , affineTests
-        , storeTests
-        , dataTests
-        , itTests
-        , respellTests
-        , replTests
-        , namespaceTests
-        , editTests
-        , stdlibTests
-        , annotationTests
-        , forallTests
-        , dimensionSyntaxTests
-        , readingTests
-        , partUTests
-        , partFTests
-        , roleTests
-        ]
-    )
+    . localOption (mkTimeout 300_000_000)
+    $ testGroup
+      "eval"
+      [ coreTests
+      , evalTests
+      , tcoreTests
+      , lexerTests
+      , parserTests
+      , desugarTests
+      , hashTests
+      , prettyTests
+      , endToEndTests
+      , codebaseTests
+      , typeTests
+      , soundnessTests
+      , productTests
+      , contractionTests
+      , sliceTests
+      , rotationTests
+      , turnedChartTests
+      , movingChartTests
+      , axisSlotTests
+      , namedAxesTests
+      , propertyTests
+      , unitTests
+      , lintRegressionTests
+      , preludeTests
+      , displayTests
+      , affineTests
+      , storeTests
+      , dataTests
+      , itTests
+      , respellTests
+      , replTests
+      , namespaceTests
+      , editTests
+      , stdlibTests
+      , annotationTests
+      , forallTests
+      , dimensionSyntaxTests
+      , readingTests
+      , partUTests
+      , partFTests
+      , roleTests
+      ]
 
 -- Term-building helpers -------------------------------------------------
 
@@ -942,6 +946,84 @@ endToEndTests =
         $ case evalText "1 +" of
           Left err -> T.isInfixOf "1:4" err @? T.unpack err
           Right _ -> assertFailure "expected an error"
+    , testCase "a dimension's exponent is an unbounded integer, never wrapped" $ do
+        runLines [":type 1 m^18446744073709551616"]
+          @?= Right ["Num (m^18446744073709551616)"]
+        evalText "1 m^18446744073709551616" @?= Right ["1 m^18446744073709551616"]
+        evalText "(1 m^18446744073709551616) / (1 m^18446744073709551616)"
+          @?= Right ["1"]
+        runLines [":type 1 m^-18446744073709551617"]
+          @?= Right ["Num (1/m^18446744073709551617)"]
+    , testCase "a length, count or position past the component limit is refused" $ do
+        let refused src = case evalText src of
+              Left err ->
+                T.isInfixOf "a tensor has at most 10000000 components" err @? T.unpack err
+              Right out -> assertFailure (show out)
+        refused "noise 18446744073709551616"
+        refused "gauss 10000001"
+        refused "[1, 2].18446744073709551616"
+        refused "contract 0 18446744073709551616 [1, 2; 3, 4]"
+        refused "slice 0 18446744073709551616 [1, 2; 3, 4]"
+        refused "f :: Vec 18446744073709551616 -> Num\nlet f v = 1"
+        refused "g :: forall (a : 18446744073709551616). Vec a -> Vec a\nlet g v = v"
+        -- a product of tensors each within the limit can exceed it
+        refused "let v = noise 4000 in outer v v"
+        refused "let v = noise 4000 in wedge v v"
+        refused "let v = noise 4000 in dot (outer v [1]) (outer [1] v)"
+        evalText "let v = noise 3000 in (outer v v).1.2" @?= Right ["0 ± 1"]
+    , testCase "an empty tensor takes its element type from context" $ do
+        -- an ascription
+        evalText "([] :: Vec 0 m)" @?= Right ["[] m"]
+        evalText "dot ([] :: Vec 0 m) ([] :: Vec 0 m)" @?= Right ["0 m^2"]
+        evalText "transpose ([] :: Mat 0 3 m)" @?= Right ["[; ; ] m"]
+        -- unification with another operand, inside a polymorphic function
+        evalText "let v = ([] :: Vec 0 m) in dot v (if true then v else [])"
+          @?= Right ["0 m^2"]
+        runLines ["let g v = dot v (if true then v else [])", "g ([] :: Vec 0 kg)"]
+          @?= Right ["0 kg^2"]
+        -- a signature
+        runLines ["e :: Vec 0 m", "let e = []", "dot e e"] @?= Right ["0 m^2"]
+        -- a definition left open, each use choosing
+        runLines ["let z = []", ":type z", "(z :: Vec 0 m) .* (z :: Vec 0 s)"]
+          @?= Right ["forall s d. Tensor (0 : s) d", "[] m s"]
+    , testCase "an empty tensor nothing fixes is a type error, not an internal one" $ do
+        let ambiguous r = case r of
+              Left err ->
+                T.isInfixOf "ambiguous: nothing fixes the shape or dimension" err
+                  && not (T.isInfixOf "internal error" err)
+                  @? T.unpack err
+              Right out -> assertFailure (show out)
+        ambiguous (evalText "[]")
+        ambiguous (evalText "(1, [])")
+        ambiguous (evalText "dot ([] :: Vec 0 m) []")
+        ambiguous (runLines ["let e = []", "e"])
+        -- inside a function it is the caller's to fix
+        evalText "\\x -> []" @?= Right ["<function>"]
+        runLines [":type []"] @?= Right ["forall s d. Tensor (0 : s) d"]
+        -- a value that never consults its open dimension is built without it
+        runLines ["data Box d = Empty | Full (Num d)", "Empty", ":type Empty"]
+          @?= Right ["Empty", "forall d. Box d"]
+    , testCase
+        "mapping takes its result's dimension from its type, forcing no element"
+        $ do
+          -- lazy: the other component's division by zero is never forced
+          evalText "(vmap (\\x -> 1 / x) [0, 2]).1" @?= Right ["0.5"]
+          evalText "(vzipWith (\\a b -> a / b) [1, 1] [0, 2]).1" @?= Right ["0.5"]
+          evalText "(timap (\\i x -> 1 / x) [0, 2]).1" @?= Right ["0.5"]
+          -- empty: the function's dimension, not the input's
+          evalText "vmap (\\x -> x * m) (noise 0)" @?= Right ["[] m"]
+          evalText "let e = vmap (\\x -> x * m) (noise 0) in dot e e" @?= Right ["0 m^2"]
+          evalText "vzipWith (\\a b -> a * b) ([] :: Vec 0 m) ([] :: Vec 0 s)"
+            @?= Right ["[] m s"]
+          evalText "timap (\\i x -> x * m) (noise 0)" @?= Right ["[] m"]
+          -- inside a polymorphic function, the caller's dimension
+          runLines
+            [ "let f g xs = vmap g xs"
+            , "dot (f (\\x -> x * m) (noise 0)) (f (\\x -> x * s) (noise 0))"
+            ]
+            @?= Right ["0 m s"]
+          runLines ["let h v = vmap (\\x -> x * 1 kg) v", "h (noise 0)"]
+            @?= Right ["[] kg"]
     ]
 
 -- Codebase, scratch and versioning -------------------------------------------------
@@ -2814,7 +2896,26 @@ withElaborated src e k = case desugarClosed noResolver e of
     Right r -> k t r
 
 forProgram :: Source -> (S.Expr -> Property) -> Property
-forProgram src = forAllShow src.programs showProgram
+forProgram src = timedForAllShow src.programs showProgram
+
+{- | How long one generated case may take, in microseconds: far above what
+any case normally costs (the whole suite runs in seconds), so that a
+pathologically slow case fails, with its input printed, instead of
+hanging the suite.
+-}
+caseLimit :: Int
+caseLimit = 10_000_000
+
+{- | 'forAllShow' with 'caseLimit' on every case. The limit sits inside the
+quantifier, so a case that runs out of time still prints its input.
+-}
+timedForAllShow ::
+  (Testable p) => Gen a -> (a -> String) -> (a -> p) -> Property
+timedForAllShow gen shown k = forAllShow gen shown (within caseLimit . k)
+
+-- | 'timedForAllShow' printing the input with 'show'.
+timedForAll :: (Show a, Testable p) => Gen a -> (a -> p) -> Property
+timedForAll gen = timedForAllShow gen show
 
 -- | The invariants of core.md §9 over programs from one source.
 pipelineProperties :: Source -> [TestTree]
@@ -3565,7 +3666,7 @@ inference saw, not what the generator meant.
 -}
 generatorProperty :: Property
 generatorProperty =
-  forAllShow
+  timedForAllShow
     genProgram
     (\(ty, e) -> T.unpack (renderType ty) <> "\n" <> showProgram e)
     $ \(ty, e) ->
@@ -3661,7 +3762,7 @@ polyLets = \case
   TPrimApp _ _ as -> sum (map polyLets as)
   TPow b _ -> polyLets b
   TUncertain _ _ x e -> polyLets x + polyLets e
-  TPack _ ts -> sum (map polyLets ts)
+  TPack _ _ ts -> sum (map polyLets ts)
   TProj t _ -> polyLets t
   TTyLam _ _ b -> polyLets b
   TTyApp b _ -> polyLets b
@@ -3681,7 +3782,7 @@ annotations = \case
       ++ concat [map snd (vecToList bs) ++ annotations b | TAlt _ bs b <- alts]
   TPow b _ -> annotations b
   TUncertain _ _ x e -> annotations x ++ annotations e
-  TPack _ ts -> concatMap annotations ts
+  TPack _ _ ts -> concatMap annotations ts
   TProj t _ -> annotations t
   TTyLam _ _ b -> annotations b
   TTyApp b arg -> (case arg of AType t -> [t]; _ -> []) ++ annotations b
@@ -4027,15 +4128,18 @@ displayTests =
   testGroup
     "display units"
     [ testCase ":set unicode prints the unicode spellings, which read back" $ do
-        runLinesP [":set"] @?= Right ["precision 20", "sigma 3", "unicode off"]
+        runLinesP [":set"]
+          @?= Right ["precision 20", "sigma 3", "unicode off", "nonlinear 1"]
         runLinesP [":set unicode on", ":set", ":set unicode off", ":set"]
           @?= Right
             [ "precision 20"
             , "sigma 3"
             , "unicode on"
+            , "nonlinear 1"
             , "precision 20"
             , "sigma 3"
             , "unicode off"
+            , "nonlinear 1"
             ]
         case runLinesP [":set unicode maybe"] of
           Left err -> T.isInfixOf "unicode is on or off" err @? T.unpack err
@@ -4224,6 +4328,41 @@ affineTests =
         evalText "let x = 5 ± 0.1 in x - x" @?= Right ["0"]
         evalText "let x = 5 ± 0.1 in x + 2 * x - 3 * x" @?= Right ["0"]
         evalText "let y = 1 ± 0.1 in y / y" @?= Right ["1"]
+    , testCase "a denominator that may be zero is refused before anything cancels" $ do
+        evalText "let x = 1 ± 1 in 1 / x" @?= Left "error: division by zero"
+        evalText "let x = 1 ± 1 in x / x" @?= Left "error: division by zero"
+        evalText "let x = 1 ± 1 in 0 / x" @?= Left "error: division by zero"
+        evalText "let x = 1 ± 1 in (3 * x) / x" @?= Left "error: division by zero"
+        evalText "let x = 1 ± 2 in x / x" @?= Left "error: division by zero"
+        -- clear of zero, proportional forms still cancel
+        evalText "let x = 2 ± 1.5 in (3 * x) / x" @?= Right ["3"]
+    , testCase "equal slack is not a shared unknown, so it does not cancel" $ do
+        let anonymous = Affine 2 Map.empty 1 Nothing
+        case divM 24 anonymous anonymous of
+          Right (Exact q) -> assertFailure ("cancelled to " <> show q)
+          Right q -> radius q > 0 @? show q
+          Left err -> assertFailure (show err)
+        -- named nudges beside slack: the slack keeps it from cancelling
+        let named = uncertain Bound (Tagged "s" 0) (Exact 2) (Exact (1 / 2))
+            withSlack = addM named anonymous
+        case divM 24 withSlack withSlack of
+          Right (Exact q) -> assertFailure ("cancelled to " <> show q)
+          Right q -> radius q > 0 @? show q
+          Left err -> assertFailure (show err)
+        divM 24 (scaleM 3 named) named @?= Right (Exact 3)
+    , testCase "remainders of different operand lists never share a nudge" $ do
+        -- [1, 12] and [1/11, 2] once ran together as the same bytes
+        let remainder operands = enclose "op" 24 operands 1 (Exact 0)
+            a = remainder [Exact 1, Exact 12]
+            b = remainder [Exact (1 / 11), Exact 2]
+        map fst (nudges a) @?= [1]
+        subM a b /= Exact 0 @? "the remainders cancelled"
+        radius (subM a b) @?= 2
+        -- the same operation twice is still one unknown
+        subM a (remainder [Exact 1, Exact 12]) @?= Exact 0
+        -- an operand's kind and its count are part of the identity
+        let x = uncertain Bound (Tagged "s" 0) (Exact 1) (Exact (1 / 2))
+        subM (remainder [x]) (remainder [x, Exact 0]) /= Exact 0 @? "count"
     , testCase "declared bounds print as mid ± r" $ do
         evalText "5 ± 0.1" @?= Right ["5.0 ± 0.1"]
         evalText "(5 ± 0.1) * (5 ± 0.1)" @?= Right ["25 ± 1"]
@@ -4238,7 +4377,79 @@ affineTests =
           evalText "6.67430e-11 ±σ 1.5e-15" @?= Right ["6.67430e-11 ±σ 1.5e-15"]
           evalText "(6.67430e-11 ±σ 1.5e-15) * (2 ± 0.1)"
             @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12)"]
-          evalText "(1 ±σ 0.1) * (1 ±σ 0.1)" @?= Right ["1.00 ±σ 0.14 (bound 0.01)"]
+          -- σ by σ is second order: measured, never a bound (design §3.2)
+          evalText "(1 ±σ 0.1) * (1 ±σ 0.1)"
+            @?= Right
+              [ "1.00 ±σ 0.14 (non-linear: mul, second-order term 7.1% of the first-order σ; a mean and a σ do not describe it)"
+              ]
+    , testCase "a statistical part non-linear through n*n is marked, never a bound" $ do
+        let marked op r = case r of
+              Right [v] ->
+                T.isInfixOf ("(non-linear: " <> op <> ", ") v
+                  && not (T.isInfixOf "0.5 ± 0.5" v)
+                  @? T.unpack v
+              other -> assertFailure (show other)
+            refused what r = case r of
+              Left err -> T.isInfixOf what err @? T.unpack err
+              Right v -> assertFailure (show v)
+        marked "mul" (evalText "let n = 0 ±σ 1 in n * n")
+        refused
+          "the difference is marked non-linear by mul"
+          (evalText "let n = 0 ±σ 1 in (n * n) < 2")
+        refused
+          "sd of a value marked non-linear by mul"
+          (evalText "let n = 0 ±σ 1 in sd (n * n)")
+        refused
+          "mid of a value marked non-linear by mul"
+          (evalText "let n = 0 ±σ 1 in mid (n * n)")
+        -- what does not depend on its statistical part is still decided
+        evalText "let n = 0 ±σ 1 in (n * n) == (n * n)" @?= Right ["true"]
+        evalText "let n = 0 ±σ 1 in bound (n * n)" @?= Right ["0"]
+        -- the mark propagates
+        marked "mul" (evalText "let n = 0 ±σ 1 in n * n + 5")
+        -- a σ of zero after a non-linear step prints as no certainty
+        evalText "let n = 0 ±σ 1 in n * n + 5"
+          @?= Right
+            [ "5 (non-linear: mul, second-order term unbounded; a mean and a σ do not describe it)"
+            ]
+        evalText "let n = 0 ±σ 1 in n * n"
+          @?= Right
+            [ "0 (non-linear: mul, second-order term unbounded; a mean and a σ do not describe it)"
+            ]
+        marked "mul" (evalText "let n = 0 ±σ 1 in sqrt (n * n + 5)")
+        -- :budget names the operation
+        expecting (runLines [":budget let n = 0 ±σ 1 in n * n"]) $ \out ->
+          any (T.isInfixOf "non-linear: mul, second-order term unbounded") out @? show out
+    , testCase "a small relative σ stays first order and unmarked" $ do
+        let g = "(6.67430e-11 ±σ 1.5e-15)"
+        evalText ("sqrt " <> g) @?= Right ["8.169639e-6 ±σ 9.2e-11"]
+        evalText (g <> " * " <> g) @?= Right ["4.45463e-21 ±σ 1.4e-25"]
+        evalText ("sin (" <> g <> " * 1 rad)") @?= Right ["6.67430e-11 ±σ 1.5e-15"]
+        evalText "sqrt (100 ±σ 1)" @?= Right ["10.00 ±σ 0.05"]
+        -- the delta method's second-order term, |f''|·σ² against |f'|·σ
+        evalText "exp (0 ±σ 0.1)"
+          @?= Right
+            [ "1.0 ±σ 0.1 (non-linear: exp, second-order term 10% of the first-order σ; a mean and a σ do not describe it)"
+            ]
+        evalText "sqrt (100 ±σ 10)"
+          @?= Right
+            [ "10.0 ±σ 0.5 (non-linear: sqrt, second-order term 5% of the first-order σ; a mean and a σ do not describe it)"
+            ]
+        -- the threshold is a setting
+        runLines [":set nonlinear 10", "(1 ±σ 0.1) * (1 ±σ 0.1)"]
+          @?= Right ["1.00 ±σ 0.14"]
+    , testCase "a statistical coefficient is never a hard limit" $ do
+        -- no division by zero: the bound enclosure excludes zero
+        evalText "1 / (1 ±σ 1)"
+          @?= Right
+            [ "1 ±σ 1 (non-linear: recip, second-order term unbounded; a mean and a σ do not describe it)"
+            ]
+        evalText "abs (1 ±σ 0.1)" @?= Right ["1.0 ±σ 0.1"]
+        -- integer rounding is a comparison, decided at the stated sigma
+        evalText "floor (2.5 ±σ 0.1)" @?= Right ["2"]
+        case evalText "floor (2.5 ±σ 0.17)" of
+          Left err -> T.isInfixOf "straddles a rounding boundary" err @? T.unpack err
+          Right v -> assertFailure (show v)
     , testCase "mid, bound and sd take an enclosure apart" $ do
         let parts x = map (\f -> evalP (f <> " (" <> x <> ")")) ["mid", "bound", "sd"]
         parts "1 ± 0.1" @?= [Right ["1"], Right ["0.1"], Right ["0"]]
@@ -4482,6 +4693,20 @@ affineTests =
           @?= Left "error: sqrt of a value that may be negative"
         typeOfTextP "covariance" @?= Right "forall n d. Vec n d -> Mat n n (d^2)"
         typeOfTextP "cholesky" @?= Right "forall n a d. Mat n a (d^2) -> Mat n a d"
+    , testCase "cholesky and ±σ refuse a matrix that is provably not symmetric" $ do
+        evalP "cholesky [1, 100; 0, 1]"
+          @?= Left "error: cholesky needs a symmetric matrix: entries .0.1 and .1.0 differ"
+        evalP "[0, 0] ±σ [1, 100; 0, 1]"
+          @?= Left "error: ±σ needs a symmetric covariance: entries .0.1 and .1.0 differ"
+        evalP "cholesky [4, 0, 1; 0, 4, 0; 2, 0, 4]"
+          @?= Left "error: cholesky needs a symmetric matrix: entries .0.2 and .2.0 differ"
+        -- enclosures that do not overlap
+        evalP "cholesky [4, 2 ± 0.1; 3, 3]"
+          @?= Left "error: cholesky needs a symmetric matrix: entries .0.1 and .1.0 differ"
+        -- enclosures that may be equal pass
+        evalP "cholesky [4, 2 ± 0.1; 2, 3]"
+          @?= Right ["[2, 0; 1, 1.4142135623730950488…]"]
+        evalP "[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2" @?= Right ["[0 ±σ 1, 0.0 ±σ 1.0] m"]
     , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
         runLinesP
           [ "let w = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"
@@ -5091,7 +5316,21 @@ affineTests =
               -- only when a == b; either way the check must hold).
               at = pointOf [(Hash "x", e1), (Hash "y", e2)]
               z = mulM 24 x y
-           in abs (at x * at y - midpoint z) <= radius z
+           in within caseLimit (abs (at x * at y - midpoint z) <= radius z)
+    , testProperty "the integer square root under sqrt is the floor of the root"
+        $ \(Positive a) (NonNegative k) ->
+          -- a long integer, as an uncertain value's endpoints become
+          let n = (a :: Integer) * 7 ^ (k `mod` 400 :: Int)
+              s = floor (fst (sqrtApprox 0 (fromInteger n))) :: Integer
+           in within caseLimit (s * s <= n && n < (s + 1) * (s + 1))
+    , -- A generated case that once took ten seconds: the integer square
+      -- root started Newton's method from n itself, one step per halving
+      -- of a numerator thousands of bits long.
+      localOption (mkTimeout 3_000_000)
+        . testCase "sqrt of a long rational is fast"
+        $ case evalText "sqrt ((7 / cos (-4 rad))^2)" of
+          Right [v] -> T.isPrefixOf "10.70919959526478302" v @? T.unpack v
+          other -> assertFailure (show other)
     , testProperty "sqrt, recip, exp and log enclose their true values"
         $ \(Positive n) (Positive d) e1 (Small k) ->
           let r = fromIntegral (n :: Int) / fromIntegral (d :: Int) :: Rational
@@ -5107,7 +5346,7 @@ affineTests =
               inside z t = lo z <= t && t <= hi z
               squares z = lo z * lo z <= v && v <= hi z * hi z
               approx t = toRational (t :: Double)
-           in counterexample (show (r, v))
+           in within caseLimit . counterexample (show (r, v))
                 $ either (const False) squares (sqrtM 24 x)
                   && either (const False) (`inside` recip v) (recipM 24 x)
                   && near (expM 24 x) (approx (exp (fromRational v)))
@@ -5118,7 +5357,7 @@ affineTests =
   pointOf :: [(Hash, Double)] -> Magnitude -> Rational
   pointOf es = \case
     Exact r -> r
-    m@(Affine mid _ _) -> mid + sum [c * eOf n | (c, n) <- nudges m]
+    m@(Affine mid _ _ _) -> mid + sum [c * eOf n | (c, n) <- nudges m]
    where
     eOf n = case n.origin of
       Tagged _ _ -> 0
@@ -5164,7 +5403,7 @@ storeTests =
     "store"
     [ testProperty
         "the storage encoding round-trips every generated program, hints included"
-        $ forAll (snd <$> genProgram)
+        $ timedForAll (snd <$> genProgram)
         $ \e -> case desugarClosed noResolver e of
           Left _ -> discard
           Right (t, _) -> case decodeStored (encodeStored t) of
@@ -9041,7 +9280,7 @@ dimensionSyntaxTests =
     "dimension syntax"
     [ testProperty "a printed dimension reads back as itself, in both spellings"
         $ checkCoverage
-        $ forAll genWrittenDim
+        $ timedForAll genWrittenDim
         $ \d ->
           let atoms = dimAtoms d
               downs = [k | (_, k) <- atoms, k < 0]
@@ -9253,6 +9492,65 @@ partFTests =
               "[0, -1, 0]"
           ]
           @?= Right (replicate 6 "true")
+    , testCase "a chart whose step may be zero is refused by name" $ do
+        let session =
+              [ "unit zero = 0 m"
+              , "unit fuzz = 0 m ± 1 m"
+              , "unit wobble = 1 m ± 2 m"
+              , "unit two = 2 m"
+              , "space Length = Num m"
+              , "chart origin on Length"
+              , "chart collapsed on origin step zero"
+              , "chart fuzzy on origin step fuzz"
+              , "chart wide on origin step wobble"
+              , "chart under on collapsed step two"
+              , "chart root on Length step zero"
+              ]
+            refused use = runLines (session ++ [use])
+        refused "1 collapsed == 2 collapsed"
+          @?= Left "error: chart collapsed has no invertible coordinates: its step is zero"
+        refused "1 fuzzy"
+          @?= Left
+            "error: chart fuzzy has no invertible coordinates: its step's enclosure reaches zero"
+        refused "1 wide"
+          @?= Left
+            "error: chart wide has no invertible coordinates: its step's enclosure reaches zero"
+        -- a chart on it inherits the refusal, which names the culprit
+        refused "1 under"
+          @?= Left "error: chart collapsed has no invertible coordinates: its step is zero"
+        refused "1 root"
+          @?= Left "error: chart root has no invertible coordinates: its step is zero"
+    , testCase "a negative step reverses a chart's direction"
+        $ runLines
+          [ "unit back = -1 m"
+          , "unit kback = -1000 m"
+          , "space Length = Num m"
+          , "chart origin on Length"
+          , "chart flipped on origin step back"
+          , "chart far on origin at 5 m step kback"
+          , "3 flipped"
+          , "(3 flipped) to origin"
+          , "(3 origin) to flipped"
+          , "(3 flipped) .- (1 flipped)"
+          , "((3 flipped) .- (1 flipped)) to m"
+          , "(1 origin) .- (3 flipped)"
+          , "(3 flipped) .+ 1 m"
+          , "(2 far) to origin"
+          , "(2 far) to flipped"
+          , "((2 far) to origin) == (-1995 origin)"
+          ]
+          @?= Right
+            [ "3 flipped"
+            , "-3 origin"
+            , "-3 flipped"
+            , "2 back"
+            , "-2 m"
+            , "4 m"
+            , "2 flipped"
+            , "-1995 origin"
+            , "1995 flipped"
+            , "true"
+            ]
     , testCase
         "restricted frame types print signatures that preserve their constraints"
         $ do

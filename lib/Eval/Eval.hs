@@ -42,14 +42,19 @@ module Eval.Eval (
   eval,
   evalClosed,
   evalAt,
+  evalDefinition,
+  neededAtRuntime,
+  TyEnv,
   apply,
   scalar,
   render,
 ) where
 
 import Control.Monad (foldM, when, zipWithM)
+import Data.Bifunctor (first)
 import Data.List (nub, transpose)
 import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
@@ -61,7 +66,23 @@ import Eval.Builtin
 import Eval.Core
 import Eval.Dimension
 import Eval.TCore
-import Eval.Type (Len (..), Space (..), TypeDef, conText, spaceLens)
+import Eval.Type (
+  Arg (..),
+  Kind (..),
+  Len (..),
+  Shape (..),
+  Space (..),
+  Type (..),
+  TypeDef,
+  VarId,
+  conText,
+  freeVars,
+  selfType,
+  spaceLens,
+  substOnce,
+  varArg,
+  pattern TTensor,
+ )
 
 {- | Evaluation parameters: the number of significant digits printed, the
 number of standard deviations a comparison must clear to be decided (design
@@ -72,15 +93,24 @@ data Config = Config
   , sigma :: Int
   , unicode :: Bool
   -- ^ print with the unicode spellings of design §2.8 (@:set unicode on@, §7.3)
+  , nonlinear :: Rational
+  {- ^ the fraction of a value's first-order σ its second-order statistical
+  term may reach before the value is marked non-linear (design §3.2,
+  @:set nonlinear@, in percent)
+  -}
   }
   deriving stock (Show)
 
 defaultConfig :: Config
-defaultConfig = Config{precision = 20, sigma = 3, unicode = False}
+defaultConfig = Config{precision = 20, sigma = 3, unicode = False, nonlinear = 1 / 100}
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
 precisionOf :: Config -> Precision
 precisionOf cfg = cfg.precision + 4
+
+-- | How comparisons are decided under a configuration (design §3.2.9).
+decideOf :: Config -> Decide
+decideOf cfg = Decide{sigma = cfg.sigma, nonlinear = cfg.nonlinear}
 
 {- | What the evaluator needs from the codebase: the Typed Core behind a
 reference, and whether a reference was declared a display unit.
@@ -97,7 +127,7 @@ data Runtime = Runtime
   , shared :: Hash -> Maybe Thunk
   {- ^ the value of a definition (not a cycle member) evaluated once and
   shared by every reference to it, when the caller keeps such a table:
-  @evalAt cfg rt h t@ under the same 'Config' and this runtime, so that an
+  @evalDefinition cfg rt h t@ under the same 'Config' and this runtime, so that an
   expensive value (a turned chart's rotation, design §3.8) is computed once
   per evaluation rather than once per reference. Pure, so sharing changes
   no result; 'Nothing' evaluates the definition afresh
@@ -113,6 +143,11 @@ data EvalError
   | UnknownRef Hash
   | BadCycleIndex Int
   | Unsupported Text
+  | {- | a chart whose step's enclosure reaches zero, so that its
+    coordinates are not invertible (design §3.10, F6): the chart's name,
+    once a reference to it gives one, and what is wrong with the step
+    -}
+    ChartStep (Maybe Text) Text
   | -- | Unreachable for linted terms.
     Internal Text
   deriving stock (Eq, Show)
@@ -147,7 +182,7 @@ for the hint to be used).
 and magnitude of a single power of it.
 -}
 data UnitFactor = UnitFactor
-  {atom :: UnitAtom, power :: Int, unitDim :: Dim, unitFactor :: Magnitude}
+  {atom :: UnitAtom, power :: Integer, unitDim :: Dim, unitFactor :: Magnitude}
   deriving stock (Eq, Show)
 
 data UnitHint = UnitHint
@@ -266,6 +301,10 @@ data Value
     it is, inside a tuple or a record as at the top
     -}
     VUnit Value
+  | {- | a polymorphic value waiting for the argument of its type-level
+    variable (design §8); only a type application consumes one
+    -}
+    VTyAbs VarId Kind (Arg -> Thunk)
 
 -- | A boolean: @True@ or @False@ of the built-in @Bool@ ("Eval.Builtin").
 pattern VBool :: Bool -> Value
@@ -282,73 +321,105 @@ asBool = \case
 {- | A function value: a body under one binder, closed over its environment
 and its site.
 -}
-data Closure = forall n. Closure Site (Env n) (TTerm (S n))
+data Closure = forall n. Closure TyEnv Site (Env n) (TTerm (S n))
+
+{- | The type-level arguments in force at a point of a term, by the
+variables of that term's abstractions (design §8). Types are erased except
+where a value's runtime shape or dimension comes from them alone: an
+empty tensor literal, and the result of a mapping primitive. A variable
+with no argument here is unconstrained, and any instance is a valid one.
+-}
+type TyEnv = Map VarId Arg
 
 -- | Evaluate a closed term that belongs to no definition.
 evalClosed :: Config -> Runtime -> TTerm Z -> Thunk
 evalClosed cfg rt = evalAt cfg rt (Hash mempty)
 
--- | Evaluate a closed term as the body of the definition with the given hash.
+{- | Evaluate a closed term as the body of the definition with the given
+hash, for its value: abstractions over type-level variables still
+unapplied at the top are applied to the variables themselves, which
+nothing constrains.
+-}
 evalAt :: Config -> Runtime -> Hash -> TTerm Z -> Thunk
-evalAt cfg rt h = eval cfg rt (Site h []) VNil
+evalAt cfg rt h t = instantiated =<< evalDefinition cfg rt h t
+ where
+  instantiated = \case
+    VTyAbs v k f -> instantiated =<< f (varArg k v)
+    x -> Right x
 
-eval :: Config -> Runtime -> Site -> Env n -> TTerm n -> Thunk
+{- | Evaluate a closed term as the definition with the given hash, as a
+reference to it sees it: polymorphic definitions stay abstractions, which
+each use applies to its type-level arguments.
+-}
+evalDefinition :: Config -> Runtime -> Hash -> TTerm Z -> Thunk
+evalDefinition cfg rt h = eval cfg rt Map.empty (Site h []) VNil
+
+eval :: Config -> Runtime -> TyEnv -> Site -> Env n -> TTerm n -> Thunk
 eval cfg rt = go
  where
   p = precisionOf cfg
 
-  go :: Site -> Env m -> TTerm m -> Thunk
-  go site env = \case
+  go :: TyEnv -> Site -> Env m -> TTerm m -> Thunk
+  go tenv site env = \case
     TVr i -> lookupEnv i env
     TRef h mi (Hint written) -> case rt.typedOf h of
       Nothing -> Left (UnknownRef h)
       Just t -> do
-        v <- case mi of
-          Nothing -> fromMaybe (go (Site h []) VNil t) (rt.shared h)
+        -- A chart whose step may be zero is named by its reference. A
+        -- definition is its own term: its type-level variables are its own.
+        v <- first (namedChart (rt.chartName h mi written)) $ case mi of
+          Nothing -> fromMaybe (go Map.empty (Site h []) VNil t) (rt.shared h)
           Just i -> case t of
-            TCycle _ _ bodies -> case vecIndex i (cycleMembers h VNil bodies) of
-              Just member -> member
-              Nothing -> Left (BadCycleIndex i)
+            TCycle vars _ bodies -> cycleMember h i vars bodies
             _ -> Left (BadCycleIndex i)
         -- A declared unit is its own display unit (design §3.2.12).
         case (rt.unitName h mi written, rt.chartName h mi written) of
           (Just u, _) -> asUnit (UnitNamed u) v
           (_, Just s) -> asChart (UnitNamed s) v
           _ -> Right v
-    TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
+    TPrimApp prim ty args ->
+      runPrim
+        cfg
+        rt
+        prim
+        (resolveType tenv ty)
+        (zipWith (\i a -> go tenv (child i) env a) [0 ..] args)
     TLit (LTensor (dims, rs)) _ -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
     -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
     -- A boolean is data like any other: @if@ is a case on its constructor.
-    TCon c _ args -> Right (VData c (zipWith (\i a -> go (child i) env a) [0 ..] args))
+    TCon c _ args -> Right (VData c (zipWith (\i a -> go tenv (child i) env a) [0 ..] args))
     TCase sc _ alts ->
-      go (child 0) env sc >>= \case
+      go tenv (child 0) env sc >>= \case
         VData c fields ->
           case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
-            (i, TAlt _ bs body) : _ -> go (child i) (vecAppend (attach bs fields) env) body
+            (i, TAlt _ bs body) : _ -> go tenv (child i) (vecAppend (attach bs fields) env) body
             [] -> Left (Internal ("case: no alternative for " <> conText c))
         _ -> Left (Internal "case: the scrutinee is not data")
-    TLam _ _ body -> Right (VClosure (Closure (child 0) env body))
+    TLam _ _ body -> Right (VClosure (Closure tenv (child 0) env body))
     TApp f a -> do
-      fv <- go (child 0) env f
-      v <- apply cfg rt fv (go (child 1) env a)
+      fv <- go tenv (child 0) env f
+      v <- apply cfg rt fv (go tenv (child 1) env a)
       -- A moving chart applied is an instant of it (design §3.8), named
       -- after it with the arguments it was applied to.
       Right $ case (v, instantOf site [] (TApp f a)) of
         (VChart c, Just (n, args)) ->
           VChart
-            c{name = Just (UnitNamed n), applied = Applied [go s env x | (s, x) <- args]}
+            c
+              { name = Just (UnitNamed n)
+              , applied = Applied [go tenv s env x | (s, x) <- args]
+              }
         _ -> v
-    TLet _ _ e body -> go (child 1) (VCons (go (child 0) env e) env) body
+    TLet _ _ e body -> go tenv (child 1) (VCons (go tenv (child 0) env e) env) body
     TPow t n -> do
-      v <- go (child 0) env t
+      v <- go tenv (child 0) env t
       (x, d, hint) <- scalarFull v
       r <- arith (powM p x n)
       Right $ case v of
         -- A power of a unit is a unit (design §3.10, U2).
         VUnit _ ->
           VUnit
-            (num (dimPow (fromIntegral n) d) (unitHintPow p (fromIntegral n) =<< hint) r)
-        _ -> num (dimPow (fromIntegral n) d) (hintPow p (fromIntegral n) =<< hint) r
+            (num (dimPow n d) (unitHintPow p n =<< hint) r)
+        _ -> num (dimPow n d) (hintPow p n =<< hint) r
     -- Fresh unit nudges, one per component (design §3.2.5).
     TNoise k l n ->
       let count = fromInteger n
@@ -362,14 +433,21 @@ eval cfg rt = go
     -- One independent nudge per component, the component index in its
     -- identity (design §3.4); a scalar uncertainty applies to every component.
     TUncertain k l x e -> do
-      (dims, d, hint, xs) <- tensor =<< go (child 0) env x
-      (edims, _, _, es) <- tensor =<< go (child 1) env e
+      (dims, d, hint, xs) <- tensor =<< go tenv (child 0) env x
+      (edims, _, _, es) <- tensor =<< go tenv (child 1) env e
       case (dims, edims) of
         -- v ±σ P: v + cholesky P · gauss n, one statistical nudge per
         -- component, identified by this site (design §3.5).
         ([n], [en, _]) | en == n -> do
           pRows <- chunksOf n <$> sequence (V.toList es)
-          lrows <- arith (choleskyRows (precisionOf cfg) pRows)
+          lrows <-
+            arith
+              ( choleskyRows
+                  "±σ needs a symmetric covariance"
+                  (decideOf cfg)
+                  (precisionOf cfg)
+                  pRows
+              )
           let noise j = unitNoise k (originOf site l j)
               component i =
                 ( \vi ->
@@ -392,11 +470,14 @@ eval cfg rt = go
     -- shape the other components have, so an error in one component is
     -- only raised when that component is used. The first component's
     -- display unit is kept.
-    TPack _ ts ->
-      let results = zipWith (\i t -> tensor =<< go (child i) env t) [0 ..] ts
+    -- With none, the element type alone says what the stack holds.
+    TPack _ ty ts ->
+      let results = zipWith (\i t -> tensor =<< go tenv (child i) env t) [0 ..] ts
           known = [(dims, d, hint) | Right (dims, d, hint, _) <- results]
        in case (results, known) of
-            ([], _) -> Right (VTensor [0] dimOne Nothing V.empty)
+            ([], _) -> case resolveType tenv ty of
+              TTensor sh d -> Right (VTensor (0 : runtimeShape sh) (runtimeDim d) Nothing V.empty)
+              _ -> Left (Internal "an empty pack of non-tensors")
             (_, (dims, d, hint) : _) ->
               let block = \case
                     Right (_, _, _, buf) -> buf
@@ -406,7 +487,7 @@ eval cfg rt = go
             (Right _ : _, []) -> Left (Internal "unreachable: a tensor with no shape")
     -- Slice out component i: a view, not a copy.
     TProj t i -> do
-      v <- go (child 0) env t
+      v <- go tenv (child 0) env t
       case v of
         VTensor dims d hint buf -> slice dims (\rest -> VTensor rest d hint) buf
         -- A coordinate of a point (design §3.10, F5): the amount along one
@@ -421,9 +502,24 @@ eval cfg rt = go
               let stride = product rest
                in Right (mk rest (V.slice (i * stride) stride buf))
         _ -> Left (Internal ("projection ." <> tshow i <> " out of range"))
-    -- Erasure.
-    TTyLam _ _ b -> go site env b
-    TTyApp b _ -> go site env b
+    -- An abstraction over a type-level variable waits for its argument
+    -- only if the body's runtime needs it; otherwise the body is evaluated
+    -- once, shared by every application (design §8).
+    TTyLam v k b ->
+      let erased = go tenv site env b
+       in Right
+            ( VTyAbs
+                v
+                k
+                ( if neededAtRuntime v k b
+                    then \a -> go (Map.insert v a tenv) site env b
+                    else const erased
+                )
+            )
+    TTyApp b a ->
+      go tenv site env b >>= \case
+        VTyAbs _ _ f -> f (resolveArg tenv a)
+        _ -> Left (Internal "type application to a value that is not polymorphic")
     -- A cycle is not itself a value; it is reached through @TRef h (Just i)@.
     TCycle{} -> Left (BadCycleIndex (-1))
    where
@@ -443,10 +539,25 @@ eval cfg rt = go
   -- Knot-tying: every member is evaluated in an environment that already
   -- contains all the members. 'vecMap' and 'vecAppend' inspect only the
   -- spine, so the recursion is productive.
-  cycleMembers :: Hash -> Env m -> Vec k (TTerm (Plus k m)) -> Vec k Thunk
-  cycleMembers h env bodies = members
+  cycleMembers :: TyEnv -> Hash -> Vec k (TTerm (Plus k Z)) -> Vec k Thunk
+  cycleMembers tenv h bodies = members
    where
-    members = vecMapIndexed (\i -> go (Site h [i]) (vecAppend members env)) bodies
+    members = vecMapIndexed (\i -> go tenv (Site h [i]) (vecAppend members VNil)) bodies
+
+  -- A member of a cycle, abstracted over the cycle's type-level variables
+  -- as its stored scheme is (every member's lists them all, in order).
+  -- The members are evaluated once for every application only when some
+  -- body needs the arguments at run time.
+  cycleMember ::
+    Hash -> Int -> [(VarId, Kind)] -> Vec k (TTerm (Plus k Z)) -> Thunk
+  cycleMember h i vars bodies = abstract vars Map.empty
+   where
+    needed = any (\(v, k) -> any (neededAtRuntime v k) (vecToList bodies)) vars
+    shared = member Map.empty
+    member tenv = fromMaybe (Left (BadCycleIndex i)) (vecIndex i (cycleMembers tenv h bodies))
+    abstract vs tenv = case vs of
+      [] -> if needed then member tenv else shared
+      (v, k) : rest -> Right (VTyAbs v k (\a -> abstract rest (Map.insert v a tenv)))
 
 {- | The identity of a declared nudge (design §3.2.4): where it sits, unless
 it carries a tag.
@@ -472,10 +583,80 @@ lookupEnv i env = case (i, env) of
   (FZ, VCons x _) -> x
   (FS j, VCons _ xs) -> lookupEnv j xs
 
+-- Types at run time ---------------------------------------------------------------
+
+{- | Whether a term's run time needs the argument of a type-level variable
+(design §8): the element type of an empty pack, the instantiated type of
+a mapping primitive, whose result's dimension it gives, or an argument
+passed on to another abstraction. Only lengths, shapes and dimensions
+are ever needed; a variable of another kind never is.
+-}
+neededAtRuntime :: VarId -> Kind -> TTerm n -> Bool
+neededAtRuntime v k body = k `elem` [KLen, KShape, KDim] && go body
+ where
+  go :: TTerm m -> Bool
+  go = \case
+    TVr _ -> False
+    TRef{} -> False
+    TPrimApp prim ty args -> (prim `elem` typedPrims && mentions ty) || any go args
+    TLit{} -> False
+    TLam _ _ b -> go b
+    TApp f a -> go f || go a
+    TLet _ _ e b -> go e || go b
+    TCon _ _ args -> any go args
+    TCase s _ alts -> go s || any (\(TAlt _ _ b) -> go b) alts
+    TPow t _ -> go t
+    TNoise{} -> False
+    TUncertain _ _ a b -> go a || go b
+    TPack _ ty [] -> mentions ty
+    TPack _ _ ts -> any go ts
+    TProj t _ -> go t
+    TTyLam _ _ b -> go b
+    TTyApp b a -> mentions (TData selfType [a]) || go b
+    TCycle _ _ bodies -> any go (vecToList bodies)
+  mentions t = v `elem` map fst (freeVars t)
+
+-- | The primitives whose result's dimension comes from their type.
+typedPrims :: [Text]
+typedPrims = ["vmap", "vzipWith", "timap"]
+
+-- | A type under the type-level arguments in force.
+resolveType :: TyEnv -> Type -> Type
+resolveType tenv
+  | Map.null tenv = id
+  | otherwise = substOnce tenv
+
+-- | A type application's argument under the arguments in force where it is written.
+resolveArg :: TyEnv -> Arg -> Arg
+resolveArg tenv a
+  | Map.null tenv = a
+  | otherwise = case substOnce tenv (TData selfType [a]) of
+      TData _ [a'] -> a'
+      _ -> a
+
+{- | The lengths of a shape at run time. A variable still in it is
+unconstrained, so any instance is a valid one: an unknown shape is @[]@,
+and an unknown length its offset alone.
+-}
+runtimeShape :: Shape -> [Int]
+runtimeShape = \case
+  SNil -> []
+  SCons l _ rest -> lenOf l : runtimeShape rest
+  SVar _ -> []
+ where
+  lenOf = \case
+    LLit k -> k
+    LVar _ k -> k
+    LRank _ k -> k
+
+-- | A dimension at run time: an unconstrained variable is dimensionless.
+runtimeDim :: Dim -> Dim
+runtimeDim d = dimFromAtoms [(a, k) | (a@(Base _), k) <- dimAtoms d]
+
 -- | Apply a function value to an argument thunk.
 apply :: Config -> Runtime -> Value -> Thunk -> Thunk
 apply cfg rt f arg = case f of
-  VClosure (Closure site env body) -> eval cfg rt site (VCons arg env) body
+  VClosure (Closure tenv site env body) -> eval cfg rt tenv site (VCons arg env) body
   _ -> Left (Internal "application of a non-function")
 
 arith :: Either ArithError a -> Either EvalError a
@@ -570,7 +751,7 @@ mkHintAs cancelling p factors = do
           either
             (const Nothing)
             (Just . mulM p acc)
-            (powM p u.unitFactor (fromIntegral u.power))
+            (powM p u.unitFactor u.power)
       )
       (Exact 1)
       kept
@@ -606,7 +787,7 @@ mergeAtoms = foldl merge
 hintInv :: Precision -> UnitHint -> Maybe UnitHint
 hintInv p a = mkHint p [u{power = negate u.power} | u <- a.atoms]
 
-hintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
+hintPow :: Precision -> Integer -> UnitHint -> Maybe UnitHint
 hintPow p k a = mkHint p [u{power = u.power * k} | u <- a.atoms]
 
 {- | The hint of unit arithmetic (design §3.10, U2): the operands' hints
@@ -619,7 +800,7 @@ unitHintMul p a b = unitHint p (a.atoms ++ b.atoms)
 unitHintDiv :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
 unitHintDiv p a b = unitHint p (a.atoms ++ [u{power = negate u.power} | u <- b.atoms])
 
-unitHintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
+unitHintPow :: Precision -> Integer -> UnitHint -> Maybe UnitHint
 unitHintPow p k a = unitHint p [u{power = u.power * k} | u <- a.atoms]
 
 {- | A unit's hint from its factors as written (design §3.10, U8, U9).
@@ -684,10 +865,11 @@ hintProduct p = combine (hintMul p)
 {- | Run a saturated primitive. Arguments are in source order and are forced
 only as the primitive needs them; elementwise operations stay lazy per
 element. Dimensions follow the rules of design §4.3, display units those
-of §3.2.12, magnitudes those of §3.2.
+of §3.2.12, magnitudes those of §3.2. The type is the primitive's, as
+instantiated where it is used, under the type-level arguments in force.
 -}
-runPrim :: Config -> Runtime -> Text -> [Thunk] -> Thunk
-runPrim cfg rt prim args = case (prim, args) of
+runPrim :: Config -> Runtime -> Text -> Type -> [Thunk] -> Thunk
+runPrim cfg rt prim ty args = case (prim, args) of
   -- A base unit is a unit (design §3.10, U1).
   (unit, [])
     | Just b <- baseUnit unit ->
@@ -733,12 +915,17 @@ runPrim cfg rt prim args = case (prim, args) of
   -- §3.2.10), each exact but sd: the midpoint, the bound radius
   -- Σ_bound |cᵢ| + slack, and the standard deviation √(Σ_stat cᵢ²), exact
   -- when the variance is a square and otherwise an enclosure of the root.
-  ("mid", [a]) -> elementwise1 (Exact . midpoint) a
+  -- A value marked non-linear has no mean and σ that describe it (design
+  -- §3.2), so mid and sd refuse it; its bound is still rigorous.
+  ("mid", [a]) -> do
+    (dims, d, hint, buf) <- tensor =<< a
+    Right
+      (VTensor dims d hint (V.map (>>= described "mid" (Right . Exact . midpoint)) buf))
   ("bound", [a]) -> elementwise1 (\x -> Exact (collapse x).bound) a
   ("sd", [a]) -> do
     (dims, d, hint, buf) <- tensor =<< a
     let root x = arith (sqrtM p (Exact (collapse x).variance))
-    Right (VTensor dims d hint (V.map (>>= root) buf))
+    Right (VTensor dims d hint (V.map (>>= described "sd" root) buf))
   ("emul", [a, b]) -> elementwise2 (pureOp (mulM p)) dimMul (combine (hintMul p)) a b
   ("ediv", [a, b]) ->
     elementwise2
@@ -758,6 +945,7 @@ runPrim cfg rt prim args = case (prim, args) of
       _ -> do
         (d1, dim1, h1, xs) <- tensor va
         (d2, dim2, h2, ys) <- tensor vb
+        allocation (d1 ++ d2)
         Right
           ( VTensor
               (d1 ++ d2)
@@ -772,7 +960,8 @@ runPrim cfg rt prim args = case (prim, args) of
     (dr, dim2, h2, ys) <- tensor =<< b
     case (reverse dl, dr) of
       (n : d1rev, n' : d2)
-        | n == n' ->
+        | n == n' -> do
+            allocation (reverse d1rev ++ d2)
             let d1 = reverse d1rev
                 stride2 = product d2
                 rows = product d1
@@ -783,13 +972,13 @@ runPrim cfg rt prim args = case (prim, args) of
                           [ mulM p <$> (xs V.! (i * n + c)) <*> (ys V.! (c * stride2 + j))
                           | c <- [0 .. n - 1]
                           ]
-             in Right
-                  ( VTensor
-                      (d1 ++ d2)
-                      (dimMul dim1 dim2)
-                      (combine (hintMul p) h1 h2)
-                      (V.generate (rows * stride2) element)
-                  )
+            Right
+              ( VTensor
+                  (d1 ++ d2)
+                  (dimMul dim1 dim2)
+                  (combine (hintMul p) h1 h2)
+                  (V.generate (rows * stride2) element)
+              )
       _ -> Left (Internal "dot: operand shapes do not contract")
   ("div", [a, b]) -> do
     va <- a
@@ -821,9 +1010,9 @@ runPrim cfg rt prim args = case (prim, args) of
     x <- bool =<< a
     if x then Right (VBool True) else VBool <$> (bool =<< b)
   ("not", [a]) -> VBool . not <$> (bool =<< a)
-  ("floor", [a]) -> dimensionless (arith . floorM) a
-  ("ceil", [a]) -> dimensionless (arith . ceilM) a
-  ("round", [a]) -> dimensionless (arith . roundM) a
+  ("floor", [a]) -> dimensionless (arith . floorM (decideOf cfg) p) a
+  ("ceil", [a]) -> dimensionless (arith . ceilM (decideOf cfg) p) a
+  ("round", [a]) -> dimensionless (arith . roundM (decideOf cfg) p) a
   -- Elementary functions (design §3.2.2). Their arguments are dimensionless
   -- by type, except sqrt, which halves the dimension.
   ("sqrt", [a]) -> do
@@ -869,7 +1058,8 @@ runPrim cfg rt prim args = case (prim, args) of
     case dims of
       [n, n'] | n == n' -> do
         rows <- matrixRows n buf
-        l <- arith (choleskyRows p rows)
+        l <-
+          arith (choleskyRows "cholesky needs a symmetric matrix" (decideOf cfg) p rows)
         d2 <-
           maybe
             (Left (Internal "cholesky of a dimension that is not a square"))
@@ -908,23 +1098,24 @@ runPrim cfg rt prim args = case (prim, args) of
     (_, dim2, h2, ys) <- tensor =<< b
     case da of
       [n] ->
-        Right
-          ( VTensor
-              [n, n]
-              (dimMul dim1 dim2)
-              (combine (hintMul p) h1 h2)
-              ( V.generate
-                  (n * n)
-                  ( \k ->
-                      let (j, i) = k `divMod` n
-                       in (\x y x' y' -> subM (mulM p x y) (mulM p x' y'))
-                            <$> (xs V.! j)
-                            <*> (ys V.! i)
-                            <*> (xs V.! i)
-                            <*> (ys V.! j)
-                  )
-              )
-          )
+        allocation [n, n]
+          >> Right
+            ( VTensor
+                [n, n]
+                (dimMul dim1 dim2)
+                (combine (hintMul p) h1 h2)
+                ( V.generate
+                    (n * n)
+                    ( \k ->
+                        let (j, i) = k `divMod` n
+                         in (\x y x' y' -> subM (mulM p x y) (mulM p x' y'))
+                              <$> (xs V.! j)
+                              <*> (ys V.! i)
+                              <*> (xs V.! i)
+                              <*> (ys V.! j)
+                    )
+                )
+            )
       _ -> Left (Internal "wedge of non-vectors")
   -- 3D Hodge star of a bivector: (⋆M) = (M₁₂, M₂₀, M₀₁).
   ("star", [a]) -> do
@@ -1048,12 +1239,10 @@ runPrim cfg rt prim args = case (prim, args) of
     (dims, d, _, buf) <- tensor =<< a
     let results =
           V.map (apply cfg rt fv . Right . VTensor [] d Nothing . V.singleton) buf
-    -- The result dimension is a property of the function; read it off the
-    -- first element, or keep the input's for an empty tensor.
-    outDim <-
-      if V.null results
-        then Right d
-        else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
+    -- The result's dimension is the function's result's, which the
+    -- instantiated type says: no element is forced to find it, and an
+    -- empty tensor has one too.
+    outDim <- resultDim
     Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
   -- The positions of a vector as exact dimensionless values; the argument's
   -- elements are not forced.
@@ -1074,10 +1263,7 @@ runPrim cfg rt prim args = case (prim, args) of
             (\x y -> apply cfg rt fv (element d1 x) >>= \g -> apply cfg rt g (element d2 y))
             xs
             ys
-    outDim <-
-      if V.null results
-        then Right d1
-        else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
+    outDim <- resultDim
     Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
   -- vmap that first passes each component's multi-index, read off its
   -- row-major offset, as a vector of exact dimensionless naturals as long
@@ -1099,10 +1285,7 @@ runPrim cfg rt prim args = case (prim, args) of
                   >>= \g -> apply cfg rt g (Right (VTensor [] d Nothing (V.singleton x)))
             )
             buf
-    outDim <-
-      if V.null results
-        then Right d
-        else (\(_, d', _) -> d') <$> (scalarFull =<< V.head results)
+    outDim <- resultDim
     Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
   -- Conversion: the value, displayed in the unit's terms. A unit expression
   -- without a display unit of its own (a bare number) clears the hint.
@@ -1237,6 +1420,25 @@ runPrim cfg rt prim args = case (prim, args) of
           )
  where
   p = precisionOf cfg
+  -- An accessor of a mean or a σ, refusing a value marked non-linear.
+  described what f x = case nonLinearAt cfg.nonlinear x of
+    Just sk ->
+      Left
+        ( Eval.Eval.Domain
+            ( what
+                <> " of a value marked non-linear by "
+                <> sk.operation
+                <> ": a mean and a σ do not describe it (design §3.2)"
+            )
+        )
+    Nothing -> f x
+  -- The dimension of the result the instantiated type gives.
+  resultDim = case finalResult ty of
+    TTensor _ d -> Right (runtimeDim d)
+    _ -> Left (Internal (prim <> ": a result that is not a tensor"))
+  finalResult = \case
+    TFun _ r -> finalResult r
+    r -> r
   -- A chart's absolute frame (design §3.8). The origin is stored from the
   -- base origin along the base axes: the parent's origin plus the amount it
   -- was given at, which is along the parent's axes and so turned by the
@@ -1244,6 +1446,7 @@ runPrim cfg rt prim args = case (prim, args) of
   -- lazy, to be computed once when first used ('chartFrame'), and so are
   -- the kinematics ('chartMotion').
   mkChart frameH movingF (stepM, d, stepHint) odims amount parentChart gens spinM = do
+    invertibleStep stepM
     let n = V.length amount
     -- R_parent a: the amount along the base axes.
     along <- case parentChart >>= (.rotation) of
@@ -1363,7 +1566,7 @@ runPrim cfg rt prim args = case (prim, args) of
   compareWith decide a b = do
     x <- ordered =<< a
     y <- ordered =<< b
-    VBool . decide <$> arith (compareM cfg.sigma p x y)
+    VBool . decide <$> arith (compareM (decideOf cfg) p x y)
   -- Tensors of one shape (lint agrees), data or points: the equality
   -- instances of design §4.2. Tensors are equal when every component is
   -- decided equal (design §3.2.9).
@@ -1374,14 +1577,14 @@ runPrim cfg rt prim args = case (prim, args) of
       (VTensor _ _ _ xs, VTensor _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
-        and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
+        and <$> mapM (\(u, v) -> arith (equalM (decideOf cfg) p u v)) (zip xs' ys')
       (VData c xs, VData c' ys)
         | c == c' && length xs == length ys -> and <$> zipWithM equal xs ys
         | otherwise -> Right False
       (VPoint _ _ _ xs, VPoint _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
-        and <$> mapM (\(u, v) -> arith (equalM cfg.sigma p u v)) (zip xs' ys')
+        and <$> mapM (\(u, v) -> arith (equalM (decideOf cfg) p u v)) (zip xs' ys')
       _ ->
         Left
           (Internal "==: operands are not both tensors, both data or both points")
@@ -1408,6 +1611,26 @@ runPrim cfg rt prim args = case (prim, args) of
 sumM :: [Magnitude] -> Magnitude
 sumM = foldl' addM (Exact 0)
 
+{- | Whether a tensor of these lengths may be allocated: at most
+'componentLimit' components, counted without overflow (design §3.3). A
+product whose operands are each within the limit can exceed it.
+-}
+allocation :: [Int] -> Either EvalError ()
+allocation dims
+  | n > componentLimit =
+      Left
+        ( Eval.Eval.Domain
+            ( "the result would have "
+                <> tshow n
+                <> " components: a tensor has at most "
+                <> tshow componentLimit
+                <> " components"
+            )
+        )
+  | otherwise = Right ()
+ where
+  n = product (map toInteger dims)
+
 -- Index arithmetic ----------------------------------------------------------------------
 
 {- | The literal index positions of @contract@, @permute@ or @slice@: a number or a
@@ -1420,7 +1643,11 @@ positions t = do
   mapM natural xs
  where
   natural = \case
-    Exact r | denominator r == 1, r >= 0 -> Right (fromIntegral (numerator r))
+    Exact r
+      | denominator r == 1
+      , r >= 0
+      , numerator r < componentLimit ->
+          Right (fromInteger (numerator r))
     _ -> Left (Internal "an index position is not a literal natural number")
 
 -- | The row-major strides of a shape.
@@ -1442,7 +1669,7 @@ pivotIn from column =
     [] -> Nothing
     cands -> Just (snd (maximum cands))
  where
-  excludesZero x = midpoint x - radius x > 0 || midpoint x + radius x < 0
+  excludesZero x = midpoint x - boundRadius x > 0 || midpoint x + boundRadius x < 0
 
 singular :: Text -> [Magnitude] -> ArithError
 singular what column
@@ -1516,7 +1743,7 @@ to Rodrigues' formula @I + f(t) A + g(t) A²@ with @f = sin θ / θ@ and
 antisymmetric matrix is a single plane when @n ≤ 3@; beyond, an exact @A@
 is checked exactly and an uncertain one takes the series. When @S@ is
 exactly zero this is @exp B@. When it is not but its bound @σ@ (the
-∞-norm of @|midpoint| + radius@, which bounds @‖S‖₂@ for a symmetric
+∞-norm of @|midpoint| + bound radius@, which bounds @‖S‖₂@ for a symmetric
 matrix) is below @10^−p@, as it is when @B@ was built antisymmetric
 through a product whose two entries got two fresh nudges (@θ * (b ∧ a) /
 norm c@), then @‖exp (A + S) − exp A‖₂ ≤ e^σ − 1 ≤ 2σ@ (@exp (τA)@ is
@@ -1524,7 +1751,7 @@ orthogonal, and the logarithmic norm of @A + S@ is at most @σ@), and every
 entry gets @2σ@ as a fresh nudge of its own.
 
 /Otherwise/, the series with scaling and squaring. @β@ is the ∞-norm (the
-largest row sum) of @|midpoint| + radius@, an exact rational that bounds
+largest row sum) of @|midpoint| + bound radius@, an exact rational that bounds
 @‖B‖∞@ for every matrix in the enclosure; it is submultiplicative and
 bounds every entry. With @s@ the least power for which @β' = β / 2ˢ ≤ 1/2@
 and @A = B / 2ˢ@ (exact scaling), the sum of @Aᵏ / k!@ for @k < K@ is
@@ -1558,7 +1785,7 @@ matrixExp p n b
       ]
     | (i, row) <- zip [0 :: Int ..] m
     ]
-  normBound m = maximum (0 : [sum [abs (midpoint x) + radius x | x <- row] | row <- m])
+  normBound m = maximum (0 : [sum [abs (midpoint x) + boundRadius x | x <- row] | row <- m])
   -- Rodrigues
   anti =
     [ [scaleM (1 / 2) (subM (at i j) (at j i)) | j <- [0 .. n - 1]]
@@ -1725,6 +1952,23 @@ cross3 p a b
        in Right (V.fromList [x 1 2, x 2 0, x 0 1])
   | otherwise = Left (Internal "a spin is a three-vector")
 
+{- | A chart's coordinates are its amounts divided by its step (design
+§3.10, F6), so the step must be invertible: its enclosure must exclude
+zero. A negative step reverses the chart's direction and is allowed.
+-}
+invertibleStep :: Magnitude -> Either EvalError ()
+invertibleStep step
+  | step == Exact 0 = Left (ChartStep Nothing "its step is zero")
+  | abs (midpoint step) <= boundRadius step =
+      Left (ChartStep Nothing "its step's enclosure reaches zero")
+  | otherwise = Right ()
+
+-- | Name a chart whose step may be zero after the reference that reached it.
+namedChart :: Maybe Text -> EvalError -> EvalError
+namedChart name = \case
+  ChartStep Nothing why | Just _ <- name -> ChartStep name why
+  err -> err
+
 {- | The coordinates of a point on the chart it was written on (design
 §3.10, F6): its coordinates on its frame, the step divided out.
 -}
@@ -1786,6 +2030,7 @@ render = \case
           _ -> T.unwords (conText c : parts)
       )
   VClosure _ -> Right "<function>"
+  VTyAbs{} -> Right "<polymorphic value>"
   VUnit v -> ("unit " <>) <$> render v
  where
   magnitude = \case
@@ -1829,11 +2074,37 @@ covarianceMatrix d hint as bs =
 {- | Cholesky–Banachiewicz on enclosures (design §3.5): @L Lᵀ = P@ with @L@
 lower triangular. A pivot whose enclosure reaches zero or below means the
 matrix may not be positive definite, which is a domain error.
+
+It reads only the lower triangle, so the matrix is checked symmetric
+first: a pair @m.i.j@, @m.j.i@ that is provably unequal, exact and
+different or decided different at the stated sigma as a comparison is
+(design §3.2.9), is refused by its entries, after the given text. A pair
+the enclosures cannot tell apart passes.
 -}
-choleskyRows :: Precision -> [[Magnitude]] -> Either ArithError [[Magnitude]]
-choleskyRows p a = go 0 []
+choleskyRows ::
+  Text -> Decide -> Precision -> [[Magnitude]] -> Either ArithError [[Magnitude]]
+choleskyRows what decide p a = mapM_ symmetric pairs >> go 0 []
  where
   n = length a
+  pairs = [(i, j) | i <- [0 .. n - 1], j <- [i + 1 .. n - 1]]
+  symmetric (i, j) = case compareM decide p ((a !! i) !! j) ((a !! j) !! i) of
+    Right ord
+      | ord /= EQ ->
+          Left
+            ( Eval.Affine.Domain
+                ( what
+                    <> ": entries ."
+                    <> tshow i
+                    <> "."
+                    <> tshow j
+                    <> " and ."
+                    <> tshow j
+                    <> "."
+                    <> tshow i
+                    <> " differ"
+                )
+            )
+    _ -> Right ()
   go i done
     | i == n = Right done
     | otherwise = do

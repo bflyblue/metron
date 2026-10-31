@@ -24,7 +24,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Normalize (NormalizationMode (NFC), normalize)
 import Data.Void (Void)
-import Eval.Core (NudgeKind (..))
+import Eval.Core (NudgeKind (..), componentLimit)
 import Eval.Syntax (Pos (..), Span (..))
 import Text.Megaparsec hiding (Pos, Token, Tokens)
 import Text.Megaparsec.Char
@@ -345,9 +345,21 @@ otherwise the dot is composition. Named positions (@.x@, @.pos@) are a
 future sugar defined at the desugaring layer (design §2.10), not lexemes.
 -}
 projection :: Lexer Token
-projection = try $ do
-  _ <- char '.'
-  TProj . read . T.unpack <$> takeWhile1P (Just "digit") isDigit
+projection = do
+  ds <- try (char '.' *> takeWhile1P (Just "digit") isDigit)
+  -- A position is a machine integer: one past any tensor is refused, not
+  -- wrapped.
+  let i = read (T.unpack ds) :: Integer
+  if i >= componentLimit
+    then
+      fail
+        ( "projection ."
+            <> show i
+            <> " is out of range: a tensor has at most "
+            <> show componentLimit
+            <> " components"
+        )
+    else pure (TProj (fromInteger i))
 
 {- | @._@: a wildcard axis, as in @m._.0@ (column 0) and @t._._.2@. The
 @_@ must not start an identifier: @x._y@ stays the composition of @x@ and

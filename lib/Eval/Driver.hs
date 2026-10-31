@@ -67,11 +67,14 @@ import Eval.Type (
   Scheme (..),
   Type (..),
   TypeDef (..),
+  VarId,
   dataConstructors,
   defaultAxes,
+  freeVars,
   renderForallIn,
   renderScheme,
   renderTypeDef,
+  selfType,
   varArg,
  )
 import Eval.Update
@@ -311,11 +314,45 @@ evalChecked ::
   S.Expr ->
   Either Text (Hash, Value, LastExpr)
 evalChecked cfg scope cb src e = do
-  (term, typed, _, linted) <- checkExpr scope cb src e
+  (term, typed, scheme, linted) <- checkExpr scope cb src e
+  case scheme of
+    Just sc
+      | not (null (openInValue sc typed)) ->
+          Left
+            ( S.renderSpanError
+                (Just src)
+                e.span
+                ( "ambiguous: nothing fixes the shape or dimension of this value, of type "
+                    <> renderScheme sc
+                    <> "; give an empty tensor a type, as in ([] :: Vec 0 m)"
+                )
+            )
+    _ -> Right ()
   let h = hashTerm term
   v <-
     either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cfg cb) h typed)
   pure (h, v, LastExpr term linted typed cb)
+
+{- | The length, shape and dimension variables an expression leaves open in
+its value, outside any function, that its evaluation needs (design §3.3).
+Nothing fixes them, so a value that needs one, an empty tensor alone
+(@[]@ is @Tensor (0 : s) d@), has no shape or dimension to be built or
+printed with. Inside a function they are the function's to receive, and
+a value that never consults one, a constructor with no fields of a type
+with a dimension parameter, is built without it. The typed term is the
+expression's, abstracted over the scheme's variables.
+-}
+openInValue :: Scheme -> TTerm Z -> [VarId]
+openInValue (Forall vs t) typed =
+  [v | (v, k) <- vs, v `elem` inValue t, neededAtRuntime v k typed]
+ where
+  inValue = \case
+    TFun _ _ -> []
+    TData _ as -> concatMap inArg as
+    ty -> map fst (freeVars ty)
+  inArg = \case
+    AType ty -> inValue ty
+    a -> map fst (freeVars (TData selfType [a]))
 
 {- | The runtime for one evaluation under a configuration. Every definition's
 value is shared by all the references to it in that evaluation: a lazy
@@ -334,7 +371,7 @@ runtimeOf cfg cb = rt
       , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
       }
-  values = LazyMap.mapWithKey (\h (_, t) -> evalAt cfg rt h t) cb.derived
+  values = LazyMap.mapWithKey (\h (_, t) -> evalDefinition cfg rt h t) cb.derived
 
 {- | Desugar, typecheck, elaborate and lint an expression against a codebase.
 Returns the Core, the Typed Core, the inferred type and the types lint
@@ -413,11 +450,26 @@ command session src = \case
           [ "precision " <> tshow cfg.precision
           , "sigma " <> tshow cfg.sigma
           , "unicode " <> (if cfg.unicode then "on" else "off")
+          , "nonlinear " <> T.pack (show (round (100 * cfg.nonlinear) :: Integer))
           ]
       )
   ["set", "precision", n] ->
     setting n (\k -> cfg{precision = k}) "precision must be a non-negative integer"
   ["set", "sigma", n] -> setting n (\k -> cfg{sigma = k}) "sigma must be a non-negative integer"
+  -- The threshold, in percent of the first-order σ, over which a value is
+  -- marked non-linear (design §3.2).
+  ["set", "nonlinear", n] ->
+    setting
+      n
+      ( \k ->
+          Config
+            { precision = cfg.precision
+            , sigma = cfg.sigma
+            , unicode = cfg.unicode
+            , nonlinear = fromIntegral k / 100
+            }
+      )
+      "nonlinear must be a non-negative integer, a percentage"
   -- Output spelling (design §2.8, §7.3).
   ["set", "unicode", "on"] -> Right (session{config = cfg{unicode = True}}, [])
   ["set", "unicode", "off"] -> Right (session{config = cfg{unicode = False}}, [])
@@ -488,7 +540,14 @@ command session src = \case
     (h, v) <- evalOf rest
     case displayParts (inputPrinter h) cfg.precision session.preferred v of
       Right (_, xs, units) ->
-        pure (renderBudget (inputNamer h) cfg.precision units (foldr addM (Exact 0) xs))
+        pure
+          ( renderBudget
+              (inputNamer h)
+              cfg.precision
+              cfg.nonlinear
+              units
+              (foldr addM (Exact 0) xs)
+          )
       Left (Internal _) -> Left "budget: not a number"
       Left err -> Left (renderEvalError err)
   -- The covariance view (design §3.5): Σ cᵢcᵢᵀ over the statistical nudges of
@@ -1463,6 +1522,7 @@ printerFor cfg scope cb =
     , fieldNames = \h i arity -> map (fmap S.lastSegment) (fieldNamesOf h i arity cb)
     , spelling = spellingOf cfg
     , unitName = shortestName scope cb
+    , nonlinear = cfg.nonlinear
     }
 
 -- | The spelling output uses (design §7.3, @:set unicode@).
@@ -1478,6 +1538,11 @@ renderEvalError = \case
   UnknownRef h -> "error: unknown reference " <> showHash h
   BadCycleIndex i -> "error: bad cycle index " <> T.pack (show i)
   Unsupported msg -> "not implemented: " <> msg
+  ChartStep name why ->
+    "error: "
+      <> maybe "a chart" ("chart " <>) name
+      <> " has no invertible coordinates: "
+      <> why
 
 {- | Evaluate a preference text (@km/h@) to the unit it names and the exact
 dimension it applies to. It must be a scalar with a display unit.

@@ -771,6 +771,21 @@ headApp path ctx hd x args = case lookupCtx x ctx of
             [a]
               | S.Num n <- a.node
               , denominator n == 1
+              , n >= 0
+              , numerator n > componentLimit ->
+                  failWith
+                    ( BadSpecialForm
+                        a.span
+                        ( x
+                            <> " "
+                            <> T.pack (show (numerator n))
+                            <> ": a tensor has at most "
+                            <> T.pack (show componentLimit)
+                            <> " components"
+                        )
+                    )
+              | S.Num n <- a.node
+              , denominator n == 1
               , n >= 0 ->
                   asks (\r -> Noise k r.owner (numerator n))
             _ ->
@@ -860,46 +875,64 @@ literal naturals, two distinct ones for @contract@, a permutation of
 @0 .. k-1@ for @permute@.
 -}
 indexProblem :: Text -> [Maybe Lit] -> Maybe (Int, Text)
-indexProblem name lits = case (name, lits) of
-  ("contract", li : lj : _) -> case (natural li, natural lj) of
-    (Nothing, _) -> Just (0, notNatural)
-    (_, Nothing) -> Just (1, notNatural)
-    (Just i, Just j)
-      | i == j ->
-          Just
-            ( 1
-            , "contract pairs two different positions, not position "
-                <> tshowI i
-                <> " with itself: contract i j t, with i and j distinct"
-            )
-      | otherwise -> Nothing
-  ("permute", lp : _) -> case lp of
-    Just (LTensor ([k], rs))
-      | k >= 1
-      , all isNatural rs
-      , all ((`elem` rs) . fromIntegral) [0 .. k - 1] ->
-          Nothing
-      | k >= 1 ->
+indexProblem name lits
+  -- Positions are machine integers: one no tensor could have is refused
+  -- rather than wrapped.
+  | (i, r) : _ <-
+      [ (i, numerator r)
+      | (i, Just (LTensor (_, rs))) <- zip [0 ..] lits
+      , r <- rs
+      , isNatural r
+      , numerator r >= componentLimit
+      ] =
+      Just
+        ( i
+        , "position "
+            <> tshowI r
+            <> " is out of range: a tensor has at most "
+            <> tshowI componentLimit
+            <> " components"
+        )
+  | otherwise = case (name, lits) of
+      ("contract", li : lj : _) -> case (natural li, natural lj) of
+        (Nothing, _) -> Just (0, notNatural)
+        (_, Nothing) -> Just (1, notNatural)
+        (Just i, Just j)
+          | i == j ->
+              Just
+                ( 1
+                , "contract pairs two different positions, not position "
+                    <> tshowI i
+                    <> " with itself: contract i j t, with i and j distinct"
+                )
+          | otherwise -> Nothing
+      ("permute", lp : _) -> case lp of
+        Just (LTensor ([k], rs))
+          | k >= 1
+          , all isNatural rs
+          , all ((`elem` rs) . fromIntegral) [0 .. k - 1] ->
+              Nothing
+          | k >= 1 ->
+              Just
+                ( 0
+                , "permute "
+                    <> renderList rs
+                    <> " is not a permutation of 0 .. "
+                    <> tshowI (k - 1)
+                    <> ": each position from 0 to "
+                    <> tshowI (k - 1)
+                    <> " must appear exactly once"
+                )
+        _ ->
           Just
             ( 0
-            , "permute "
-                <> renderList rs
-                <> " is not a permutation of 0 .. "
-                <> tshowI (k - 1)
-                <> ": each position from 0 to "
-                <> tshowI (k - 1)
-                <> " must appear exactly once"
+            , "permute takes a literal vector of natural numbers, a permutation of 0 .. k-1 with k ≥ 1: permute [1, 0] t"
             )
-    _ ->
-      Just
-        ( 0
-        , "permute takes a literal vector of natural numbers, a permutation of 0 .. k-1 with k ≥ 1: permute [1, 0] t"
-        )
-  ("slice", lk : li : _) -> case (natural lk, natural li) of
-    (Nothing, _) -> Just (0, sliceNotNatural)
-    (_, Nothing) -> Just (1, sliceNotNatural)
-    _ -> Nothing
-  _ -> Nothing
+      ("slice", lk : li : _) -> case (natural lk, natural li) of
+        (Nothing, _) -> Just (0, sliceNotNatural)
+        (_, Nothing) -> Just (1, sliceNotNatural)
+        _ -> Nothing
+      _ -> Nothing
  where
   notNatural =
     "the positions of contract must be literal natural numbers: contract i j t, as in contract 0 1 t"

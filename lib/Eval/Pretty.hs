@@ -26,7 +26,7 @@ module Eval.Pretty (
 import Control.Applicative ((<|>))
 import Data.Char (intToDigit, isAlphaNum)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -116,7 +116,13 @@ renderMagnitude scale = \case
         sigma = sigmaOf (scale + 4) c
         lastDigit = decimalExponent c.mid - scale + 1
      in if sigma == 0 && c.bound < 10 ^^ lastDigit
-          then renderDecimal scale True c.mid
+          then
+            -- A first-order σ of zero after a non-linear statistical step
+            -- (design §3.2) is no certainty: the midpoint alone, without
+            -- the ellipsis that promises every digit.
+            if isJust (skewOf m)
+              then renderDecimal scale False c.mid
+              else renderDecimal scale True c.mid
           else
             if sigma == 0
               then uncertainAt c.mid c.bound "±"
@@ -196,10 +202,12 @@ data Printer = Printer
   , spelling :: Spelling
   , unitName :: Text -> Text
   -- ^ how the full name of a unit or chart prints (design §7.6)
+  , nonlinear :: Rational
+  -- ^ the threshold over which a value prints marked non-linear (design §3.2)
   }
 
 {- | A printer that knows no field names, for callers without a codebase:
-records print positionally, in ASCII.
+records print positionally, in ASCII, with the default threshold.
 -}
 plainPrinter :: RefNamer -> Printer
 plainPrinter namer =
@@ -208,7 +216,26 @@ plainPrinter namer =
     , fieldNames = \_ _ n -> replicate n Nothing
     , spelling = Ascii
     , unitName = id
+    , nonlinear = 1 / 100
     }
+
+{- | A measure of non-linearity (design §3.2): the operation, and its
+second-order statistical term as a percentage of the first-order σ.
+-}
+skewText :: Skew -> Text
+skewText sk =
+  sk.operation
+    <> ", second-order term "
+    <> maybe
+      "unbounded"
+      (\r -> renderRadius (100 * fst (sqrtApprox 4 r)) <> "% of the first-order σ")
+      sk.ratioSq
+
+-- | The warning a value prints with when a component is marked non-linear.
+nonLinearNote :: Rational -> [Magnitude] -> Text
+nonLinearNote threshold ms = case mapMaybe (nonLinearAt threshold) ms of
+  [] -> ""
+  sk : _ -> " (non-linear: " <> skewText sk <> "; a mean and a σ do not describe it)"
 
 {- | Print a value. A tensor with a display unit whose dimension matches
 prints its magnitudes in that unit (design §3.2.12); otherwise in SI base
@@ -230,6 +257,8 @@ renderValueWith printer scale prefs showMagnitude = \case
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
+  -- Unreachable: a polymorphic value is instantiated before it is printed.
+  VTyAbs{} -> Right "<polymorphic value>"
   -- Tuples as written; a list by walking its spine.
   VData (TupleC _) fields -> do
     parts <- mapM (>>= recur) fields
@@ -260,11 +289,15 @@ renderValueWith printer scale prefs showMagnitude = \case
     xs <- sequence (V.toList buf)
     pure $ case (chartName s, coordinatesOn (scale + 4) s xs) of
       (Just named, Right steps) ->
-        renderNested showMagnitude dims steps <> " " <> named
+        renderNested showMagnitude dims steps
+          <> " "
+          <> named
+          <> nonLinearNote printer.nonlinear steps
       _ ->
         renderNested showMagnitude dims xs
           <> unitSuffix d
           <> " (point)"
+          <> nonLinearNote printer.nonlinear xs
   VChart s ->
     Right $ case chartName s of
       Just named -> "chart " <> named
@@ -292,6 +325,7 @@ renderValueWith printer scale prefs showMagnitude = \case
     pure
       ( renderNested showMagnitude dims scaled
           <> (if T.null units then "" else " " <> units)
+          <> nonLinearNote printer.nonlinear scaled
       )
  where
   recur = renderValueWith printer scale prefs showMagnitude
@@ -369,7 +403,7 @@ displayParts printer scale prefs = \case
   renderHint h =
     T.unwords
       [ atomNameWith printer.unitName u.atom
-          <> (if u.power == 1 then "" else exponentText printer.spelling (toInteger u.power))
+          <> (if u.power == 1 then "" else exponentText printer.spelling u.power)
       | u <- filter ((> 0) . (.power)) h.atoms ++ filter ((< 0) . (.power)) h.atoms
       ]
 
@@ -379,7 +413,7 @@ or the midpoint, every nudge with its kind and origin, and the slack.
 renderExact :: RefNamer -> Int -> Magnitude -> Text
 renderExact namer scale = \case
   Exact r -> renderRational scale r
-  m@(Affine mid _ slack) ->
+  m@(Affine mid _ slack _) ->
     renderRational scale mid
       <> T.concat
         [ " + " <> renderRational 6 c <> "·e[" <> renderNudge namer n <> "]"
@@ -408,8 +442,8 @@ originName namer = \case
 then every nudge with its contribution and share, largest first. Bound
 nudges share the bound radius, statistical nudges the variance.
 -}
-renderBudget :: RefNamer -> Int -> Text -> Magnitude -> [Text]
-renderBudget namer scale units m = case m of
+renderBudget :: RefNamer -> Int -> Rational -> Text -> Magnitude -> [Text]
+renderBudget namer scale threshold units m = case m of
   Exact _ -> [renderMagnitude scale m <> suffix, "exact"]
   _ ->
     let c = collapse m
@@ -422,12 +456,18 @@ renderBudget namer scale units m = case m of
                   Stat -> percent (coeff * coeff) c.variance <> " of σ²"
           ]
         slackRow = case m of
-          Affine _ _ s
+          Affine _ _ s _
             | s > 0 ->
                 [("bound", "slack", renderRadius s <> suffix, percent s c.bound <> " of bound")]
           _ -> []
+        -- The operation that marked it, which no nudge holds (design §3.2).
+        marked = case nonLinearAt threshold m of
+          Just sk ->
+            ["  non-linear: " <> skewText sk <> "; a mean and a σ do not describe it"]
+          Nothing -> []
      in (renderMagnitude scale m <> suffix)
           : table (("kind", "source", "contribution", "share") : rows ++ slackRow)
+          ++ marked
  where
   suffix = if T.null units then "" else " " <> units
   percent part whole

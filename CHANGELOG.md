@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- Statistical nudges propagate to first order only, and a σ never becomes a
+  bound: non-linear remainders and domain checks use the bound enclosure,
+  a remainder that multiplies a statistical nudge is a fresh statistical
+  nudge, and second-order statistical terms are measured against the
+  first-order σ instead of carried. Over `:set nonlinear` percent (default
+  1) a value is marked non-linear: it prints with a warning, `:budget` names
+  the operation, and comparisons, `floor`/`ceil`/`round`, `mid` and `sd`
+  refuse it. `n*n` for `n = 0 ±σ 1` is no longer `0.5 ± 0.5`, and
+  `(n*n) < 2` is no longer `true`.
+
+- Correctness fixes from review. Division refuses a denominator whose
+  enclosure reaches zero before anything cancels (`x/x` and `0/x` with
+  `x = 1 ± 1` are a division by zero, as `1/x` is), and only named nudges
+  cancel, never equal slack. Nudge ids hash a tagged, length-delimited
+  encoding of the whole operation, so operand lists such as `[1, 12]` and
+  `[1/11, 2]` no longer share a remainder. A chart whose step may be zero is
+  refused by name ("chart collapsed has no invertible coordinates");
+  negative steps are allowed. `cholesky` and `v ±σ P` refuse a matrix with a
+  provably unequal pair `m.i.j`, `m.j.i`, naming the entries.
+- `[]` takes its element type from context (an ascription, a signature,
+  unification); Typed Core's `TPack` keeps its element type, and the
+  evaluator passes the type-level arguments a value's runtime shape or
+  dimension needs. A prompt value that leaves one open is a type error
+  ("ambiguous: nothing fixes the shape or dimension …"). `vmap`, `vzipWith`
+  and `timap` read their result's dimension off their type, so elements
+  stay lazy and an empty result has the function's dimension.
+- Dimension exponents are unbounded integers (`1 m^18446744073709551616`).
+  Lengths, counts and index positions past ten million components are
+  refused where they are written, and `outer`, `dot` and `wedge` refuse a
+  result past it, instead of wrapping machine integers.
+- Every QuickCheck case has a ten-second limit and prints its program when
+  it runs out; every test has a five-minute backstop. The case it caught,
+  `sqrt` of a value with long rational endpoints taking ten seconds, was
+  the integer square root starting Newton's method from `n`; it now starts
+  near the root.
+
 - Units are syntax rather than first-class values. Ordinary `*` and `/`
   insert an implicit `1` for declared unit operands; other value positions
   require explicit amounts. Quantity grouping is unchanged, and charts

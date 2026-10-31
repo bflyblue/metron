@@ -49,7 +49,7 @@ data DimAtom
 {- | A normalised dimension: atoms with non-zero integer exponents. The
 dimensionless dimension is the empty map.
 -}
-newtype Dim = Dim (Map DimAtom Int)
+newtype Dim = Dim (Map DimAtom Integer)
   deriving stock (Eq, Ord, Show)
 
 dimOne :: Dim
@@ -61,7 +61,7 @@ dimBase b = Dim (Map.singleton (Base b) 1)
 dimVar :: Int -> Dim
 dimVar v = Dim (Map.singleton (DVar v) 1)
 
-dimFromAtoms :: [(DimAtom, Int)] -> Dim
+dimFromAtoms :: [(DimAtom, Integer)] -> Dim
 dimFromAtoms = Dim . Map.filter (/= 0) . Map.fromListWith (+)
 
 dimMul :: Dim -> Dim -> Dim
@@ -73,18 +73,18 @@ dimInv (Dim a) = Dim (Map.map negate a)
 dimDiv :: Dim -> Dim -> Dim
 dimDiv a b = dimMul a (dimInv b)
 
-dimPow :: Int -> Dim -> Dim
+dimPow :: Integer -> Dim -> Dim
 dimPow 0 _ = dimOne
 dimPow k (Dim a) = Dim (Map.map (* k) a)
 
 -- | The @k@-th root, when every exponent is divisible by @k@.
-dimRoot :: Int -> Dim -> Maybe Dim
+dimRoot :: Integer -> Dim -> Maybe Dim
 dimRoot k (Dim a)
   | k == 0 = Nothing
   | all ((== 0) . (`mod` k)) (Map.elems a) = Just (Dim (Map.map (`div` k) a))
   | otherwise = Nothing
 
-dimAtoms :: Dim -> [(DimAtom, Int)]
+dimAtoms :: Dim -> [(DimAtom, Integer)]
 dimAtoms (Dim a) = Map.toList a
 
 dimVars :: Dim -> [Int]
@@ -226,9 +226,9 @@ atomRank = \case
   DVar v -> 8 + v
 
 -- | An atom with its exponent, the exponent 1 left out.
-atomText :: Spelling -> (Int -> Text) -> (DimAtom, Int) -> Text
+atomText :: Spelling -> (Int -> Text) -> (DimAtom, Integer) -> Text
 atomText spelling varName (a, k) =
-  name <> (if k == 1 then "" else exponentText spelling (toInteger k))
+  name <> (if k == 1 then "" else exponentText spelling k)
  where
   name = case a of
     Base b -> baseSymbol b

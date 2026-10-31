@@ -1383,8 +1383,11 @@ infer look p ctx = \case
     (tb, b') <- infer look (0 : p) ctx b
     d <- freshDim
     unify (0 : p) (numD d) tb
-    pure (numD (dimPow (fromIntegral n) d), TPow b' n)
-  Noise k l n -> pure (vecT (LLit (fromIntegral n)), TNoise k l n)
+    pure (numD (dimPow n d), TPow b' n)
+  Noise k l n
+    | n > componentLimit ->
+        failAt p ("a tensor has at most " <> tshow componentLimit <> " components")
+    | otherwise -> pure (vecT (LLit (fromInteger n)), TNoise k l n)
   -- x ± e over any shape (design §3.4): the uncertainty is a scalar applied
   -- to every component, or a tensor of the value's shape; in both cases one
   -- independent nudge per component.
@@ -1442,7 +1445,8 @@ infer look p ctx = \case
         ts
     -- The new leading position's axes come from use, as a literal's do.
     ax <- freshAxis
-    pure (TTensor (SCons (LLit (length ts)) ax elemShape) elemDim, TPack ax ts')
+    pure
+      (TTensor (SCons (LLit (length ts)) ax elemShape) elemDim, TPack ax elemT ts')
   Proj t i -> do
     (tt0, t') <- infer look (0 : p) ctx t
     tt <- resolve tt0
@@ -1613,7 +1617,7 @@ zonk s = go
     TPow b n -> TPow (go b) n
     TNoise k l n -> TNoise k l n
     TUncertain k l x e -> TUncertain k l (go x) (go e)
-    TPack ax ts -> TPack (applyAxis s ax) (map go ts)
+    TPack ax ty ts -> TPack (applyAxis s ax) (applyType s ty) (map go ts)
     TProj t i -> TProj (go t) i
     TTyLam v k b -> TTyLam v k (go b)
     TTyApp b arg -> TTyApp (go b) (applyArg s arg)

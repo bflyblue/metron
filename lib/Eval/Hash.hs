@@ -443,9 +443,12 @@ decType =
       traverse
         ( const
             ( byte >>= \case
-                0 ->
-                  (\b k -> (Base (toEnum (fromIntegral b)), fromIntegral k)) <$> byte <*> decSint
-                1 -> (\v k -> (DVar (fromIntegral v), fromIntegral k)) <$> decVarint <*> decSint
+                0 -> do
+                  b <- byte
+                  case lookup b (zip [0 ..] [minBound .. maxBound]) of
+                    Just base -> (Base base,) <$> decSint
+                    Nothing -> failDec ("unknown base dimension " <> T.pack (show b))
+                1 -> (\v k -> (DVar (fromIntegral v), k)) <$> decVarint <*> decSint
                 k -> failDec ("unknown dimension atom " <> T.pack (show k))
             )
         )

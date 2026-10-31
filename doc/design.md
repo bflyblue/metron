@@ -756,6 +756,50 @@ apart (decided by the owner).
   evaluate the expression many times and report quantiles, the GUM's
   Supplement 1 method (§11).
 
+*As built* (`Eval.Affine`):
+
+- **The bound enclosure.** Every non-linear remainder and every domain check
+  uses the bound enclosure `mid ± (Σ_bound |cᵢ| + slack)` only: the
+  remainders of `mul`, `recip`, `sqrt`, `exp`, `log`, the circular and
+  hyperbolic functions, `abs`, the Rodrigues series and `expm`'s norm bound,
+  and the refusals of division, `sqrt`, `log`, `asin` and `atan2`, a chart's
+  step and the pivots of `det` and `inverse`. So `1 / (1 ±σ 1)` is no
+  division by zero: it is `1 ±σ 1`, marked non-linear by `recip`.
+- **Three parts of a remainder.** Bound by bound is a fresh bound nudge, as
+  before, with the midpoint's rounding. A part that is first order in a
+  statistical nudge but scaled by a bound one, a product's `Bₓ·S_y`, or a
+  function's slope changing across the bound enclosure, is a fresh
+  **statistical** nudge whose σ takes the bound part at its worst
+  (`rB(x)·σ(y) + rB(y)·σ(x)` for a product, the slope's largest change over
+  the bound enclosure times σ for a function, plus the slope's own
+  approximation error times σ). Decided here: it is statistical because it
+  multiplies a statistical nudge, and it is not counted as non-linearity,
+  since given the bound unknowns it is still Gaussian, only of uncertain
+  width. Statistical by statistical is second order and is not carried.
+- **The measure.** A product measures `√((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²)` against
+  the first-order σ; a function measures `|f''(m)|·σ`, read as half the
+  change of `f'` from `m − σ` to `m + σ`, against `|f'(m)|`, unbounded when
+  either point leaves the domain (`recip`, `sqrt`, `log`) or when `f'(m) =
+  0` (`cos` at 0). `abs` is linear unless its kink lies within σ of the bound
+  enclosure, then unbounded. The measure is kept squared and exact, rounded
+  up to three digits, and a value keeps the largest measure, with its
+  operation, of everything it was computed from (`Skew`); a value exactly
+  zero after cancellation, such as `n*n − n*n`, is equal whatever it went
+  through.
+- **The threshold** is `:set nonlinear` in percent, default 1, and is
+  applied where a value is used, not where it is computed: printing adds
+  "(non-linear: mul, second-order term 7.1% of the first-order σ; a mean and
+  a σ do not describe it)"; `:budget` adds the same line; a comparison, and
+  `floor`, `ceil` and `round`, which are comparisons with the integers,
+  refuse; and `mid` and `sd` refuse, so that `sd (n*n)` is not a
+  misleading `0`. `bound` still answers: the bound part is rigorous. A
+  value whose first-order σ is zero after such a step, `n*n`, prints its
+  midpoint without the `…` that would promise every digit (§3.2.10):
+  `5 (non-linear: mul, …)` for `n*n + 5`.
+- **Rounding to integers** is decided as a comparison is, at the stated
+  sigma: `floor (2.5 ±σ 0.17)` cannot be decided at sigma 3, where it was
+  once decided by treating σ as a radius.
+
 Otherwise the kinds differ only when a value is collapsed for printing,
 comparison, budget or covariance. This is affine arithmetic in the
 sense of Comba and Stolfi, with a hashed naming scheme for the noise symbols and a
@@ -780,6 +824,15 @@ x - x        = (0.85 - 0.85) + (0.05 - 0.05)·e₁ = 0            exactly
 
 No nudge is created. Slack combines worst-case: it adds under `+` and `-`, and
 scales by `|k|` under multiplication by exact `k`.
+
+A quotient of proportional forms is exact for the same reason: `x / x` is
+`1` and `(3 * x) / x` is `3`, because the same named nudges are the same
+unknowns. Two conditions come first. The denominator's enclosure must
+exclude zero: with `x = 1 ± 1`, `x / x` and `0 / x` are a division by zero,
+as `1 / x` is, since some value in the enclosure is zero. And only named
+nudges cancel: slack is anonymous, so two forms with equal slack are not
+one unknown, and a denominator with slack takes the general path, a
+product with the reciprocal (§3.2.2).
 
 #### 3.2.2 Nonlinear operations add one fresh nudge
 
@@ -828,7 +881,15 @@ of what created it.
   ids and coefficients, working precision)`. Two evaluations of `sin 1` at the same
   precision produce the same nudge, so `sin 1 - sin 1 = 0`. This is correct: the
   approximation error of a deterministic algorithm on identical input is the same
-  error.
+  error. The hash is over a tagged, length-delimited encoding of the whole
+  operation: the builtin's name, the precision, the number of operands, and
+  each operand with a tag for its kind (exact, or affine with its midpoint,
+  its nudges' ids and coefficients, and its slack) and every field
+  length-prefixed, rationals as numerator and denominator. Two different
+  operations never encode to the same bytes: operand lists `[1, 12]` and
+  `[1/11, 2]` written end to end as text would, and their remainders would
+  then cancel to an exact zero. Declared nudges' ids below use the same
+  encoding. Nudge ids live only in values, never in the store.
 - **Declared uncertainty** (`±`, `±σ`, `noise`, `gauss`): `id = hash(kind, hash of
   the enclosing top-level definition, path to the node inside it, component index,
   midpoint)`. Re-evaluating the same `±` with the same inputs gives the same
@@ -961,6 +1022,10 @@ cannot decide comparison at sigma 3: the difference is 1e-5 ± 3e-21 ±σ 4e-6
 
 So a comparison that depends on statistical inputs is decided at a stated
 confidence, never silently, and a comparison with only bound inputs is rigorous.
+A difference marked non-linear (§3.2) is never decided, since a mean and a σ
+do not describe it: "cannot decide comparison at sigma 3: the difference is
+marked non-linear by mul". `floor`, `ceil` and `round` are comparisons with
+the integers and are decided the same way.
 `a == b` is true if `a - b` is exactly zero after cancellation (so `x == x` holds
 for affine `x`), false if decided non-zero, undecidable otherwise. There is no
 third truth value; error never leaks into control flow silently. Refining by
@@ -1163,6 +1228,29 @@ vector and a row from a matrix by the same rule. Rank-polymorphic contraction
 polymorphic in the whole shape, or (`contract`, `permute`) has a signature
 computed from literal index positions written at the call, the way a
 projection's position is, so unification stays first-order.
+
+**The empty literal.** `[]` is a tensor of length zero whose element type
+comes from context, as any literal's does: an ascription, `([] :: Vec 0 m)`
+or `([] :: Mat 0 3 m)`, unification with another operand, `dot ([] :: Vec 0
+m) ([] :: Vec 0 m)` is `0 m^2`, or a signature. Typed Core keeps a pack's
+element type even with no elements (`TPack`), and an empty pack is built
+from it (§8). A definition may leave it open, `let e = []` is `forall s d.
+Tensor (0 : s) d`, each use choosing; an expression at the prompt whose
+value leaves open, outside any function, a length, shape or dimension that
+building it needs has no value to build, and is refused as a type error
+(`Empty` of `data Box d = Empty | Full (Num d)` needs none, and is
+built): "ambiguous: nothing fixes the
+shape or dimension of this value, of type Tensor (0 : s) d; give an empty
+tensor a type, as in ([] :: Vec 0 m)".
+
+**Size.** A tensor has at most ten million components (`componentLimit`).
+Lengths, counts and index positions are machine integers, so one written
+past the limit (`noise 18446744073709551616`, `Vec 18446744073709551616` in
+a signature, a projection `.18446744073709551616`, a position of `contract`
+or `slice`) is refused where it is written, never wrapped, and a product
+whose operands are each within the limit but whose result is not (`outer`,
+`dot`, `wedge`) is refused when it runs: "the result would have 16000000
+components: a tensor has at most 10000000 components".
 
 Tensors are **homogeneous**: all components share one dimension. A position is
 `Vec 3 m`, a velocity `Vec 3 (m/s)`, a rotation `Mat 3 3 1`. A six-element state
@@ -1411,8 +1499,17 @@ offset, and then to the component. The index's length is the rank of `t`,
 written `Vec (rank s)` (§4.1), so inside `f` the index is an ordinary vector
 and `i.0`, `i.1` are ordinary projections with the usual static bound. Like
 `vmap` it evaluates each result only when that component is read, takes the
-result's dimension from the function, and gives the result no display unit of
-its own. `vimap` stays the vector form with a scalar position; `timap` is the
+result's dimension from the function's type, and gives the result no display
+unit of its own.
+
+**Mapping is lazy, its dimension typed.** `vmap`, `vzipWith` and `timap` read
+the result's dimension off their own type as instantiated where they are used
+(§8), never off a component: `(vmap (\x -> 1/x) [0, 2]).1` is `0.5`, since
+the division by zero in the other component is never forced, and a map over
+an empty tensor has the dimension the function gives, `vmap (\x -> x * m)
+(noise 0)` is `Vec 0 m` and `dot` of it with itself `0 m^2`. Inside a
+polymorphic function the dimension is the caller's, passed as a type-level
+argument. `vimap` stays the vector form with a scalar position; `timap` is the
 general one. A diagonal mask:
 
 ```
@@ -1559,6 +1656,14 @@ so `v ± P` with a matrix is a type error.
 ordinary function on a homogeneous vector, exact in the coefficients, and
 `cholesky : Mat n n (d^2) -> Mat n n d` is its inverse on positive-definite
 matrices (it fails with a domain error when a pivot's enclosure reaches zero).
+Both `cholesky` and `v ±σ P` read only the lower triangle, so they first
+check that the matrix is symmetric: a pair `P.i.j`, `P.j.i` that is
+provably unequal, exact and different or decided different at the stated
+sigma as a comparison is (§3.2.9), is refused by its entries.
+`cholesky [1, 100; 0, 1]` fails with "cholesky needs a symmetric matrix:
+entries .0.1 and .1.0 differ", and `[0, 0] ±σ [1, 100; 0, 1]` with "±σ
+needs a symmetric covariance: …". A pair whose enclosures may be equal
+passes, and the lower entry is the one used.
 The REPL view `:covariance e` prints the covariance of a vector, or the variance
 of a number, followed by the **bound box**: each component's rigorous radius
 from the bound nudges, which has no variance and is reported beside it:
@@ -1672,6 +1777,17 @@ degC .+ 9 deltaF` are both `25 degC`. Points on two frames do not mix:
 Rankine and kelvin are one frame, so `491.67 degR .- 0 kelvin` is `273.15 K`
 with no `to`. A chart's step and origin may themselves be approximate, in
 which case a point written on it carries their nudges like any other value.
+
+**A step must be invertible.** A point prints with its step divided out
+(F6), so a chart whose step may be zero has no coordinates: every point on
+it would be the origin, and `1 c == 2 c` would hold. A step whose enclosure
+reaches zero, exactly zero or uncertain across it (`step fuzz` with `unit
+fuzz = 0 m ± 1 m`), is refused when the chart is used, naming it: "chart
+collapsed has no invertible coordinates: its step is zero". A chart on such
+a chart inherits the refusal, which names the parent. A **negative step** is
+allowed and reverses the chart's direction: with `unit back = -1 m`, `chart
+flipped on origin step back` writes `3 flipped` for `-3 origin`, and `(3
+flipped) .- (1 flipped)` is `2 back`, that is `-2 m`.
 
 **Printing.** A point prints as its coordinates on the chart it was written
 on, the step divided out, followed by the chart's name: `25 degC`, `2451545
@@ -3113,7 +3229,8 @@ form for all of them.
 A dimension `δ` is represented as a normalised map from atoms (a base dimension
 `B ∈ {L, M, T, I, Θ, N, J}` or a dimension variable `d`) to non-zero integer
 exponents. `1` is the empty map. Two dimensions are equal iff their maps are
-equal.
+equal. Exponents are unbounded integers, never machine integers that wrap:
+`:type 1 m^18446744073709551616` is `Num (m^18446744073709551616)`.
 
 A shape is unified element-wise: two closed shapes must have the same rank and
 unify position by position, the lengths and then the name slots; a shape
@@ -3905,7 +4022,8 @@ Elaboration does three things:
 
 - **Explicit polymorphism.** Each generalised variable of a scheme becomes a
   `TyLam`, `DimLam` or `LenLam`; each use of a polymorphic definition becomes the
-  matching applications. Dimension and length arguments are erased at runtime but
+  matching applications. Dimension and length arguments are erased at runtime,
+  except where a value's shape or dimension comes from them alone (§8), and
   guide the compiler (and make the pretty-printer's `:type` output exact).
 - **Overload resolution.** An overloaded `PrimApp "mul" [a, b]` whose constraint
   was solved is rewritten in place to `PrimApp mul@Num×Num [a, b]`,
@@ -4232,6 +4350,8 @@ Namespaces (7.6)
 Session
 :set precision n   significant digits printed; working precision is n + 4 (3.2.8)
 :set sigma k       confidence multiplier for comparisons on statistical values (3.2.9)
+:set nonlinear p   percent of the first-order σ a second-order statistical term may reach
+                   before a value is marked non-linear (3.2); default 1
 :prefer [unit]     print values of the unit's dimension in it (3.2.12); alone, list preferences
 :unprefer unit     remove that preference
 :set unicode on    pretty-print with unicode spellings (2.8); off (the default) for ASCII
@@ -5066,8 +5186,19 @@ unreachable for linted terms and are reported as internal errors.
   buffer is boxed because elements are exact rationals and later affine forms;
   an unboxed buffer is a specialisation for a future strict numeric mode, not a
   redesign. Dictionaries are values too: a record of monomorphic primitives.
-- `TyLam`, `DimLam`, `LenLam` and their applications are erased: the interpreter
-  steps through them without allocating.
+- Type abstractions and applications are erased except where a value's
+  runtime shape or dimension comes from a type alone: the element type of an
+  empty tensor literal, and the instantiated type of `vmap`, `vzipWith` and
+  `timap`, which gives their result's dimension (§3.3). An abstraction over a
+  length, shape or dimension variable that its body needs there, or passes
+  on in a type application, waits for its argument, and each application
+  supplies it, resolved under the arguments in force where it is written;
+  closures capture those arguments. Every other abstraction evaluates its
+  body once, shared by all its applications, so a polymorphic value is not
+  recomputed per use. A variable that nothing applies, at the top of an
+  expression or never used, is unconstrained, and the evaluator takes any
+  instance of it (an empty shape, length zero, dimensionless); the prompt
+  refuses a value whose type leaves one open (§3.3), so that never prints.
 - `DictLam` is an ordinary lambda over a dictionary value; `DictApp` applies it.
   A monomorphic `PrimApp mul@Mat×Vec [a, b]` is a direct call with its arguments
   as thunks, forced as the primitive needs them. There is no dispatch on value
