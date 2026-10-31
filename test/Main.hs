@@ -996,7 +996,7 @@ codebaseTests =
           ls ": {a} -> Num" @?= Right ["length : forall a. {a} -> Num"]
           -- unification both ways: the query's d is one variable, cross has two
           ls ": Vec 3 d -> Vec 3 d -> Vec 3 [d^2]"
-            @?= Right ["cross : forall d d1. Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"]
+            @?= Right ["cross : forall (a : 3) d d1. Vec a d -> Vec a d1 -> Vec a [d d1]"]
           ls "Rect : Num [m] -> Num [m] -> b"
             @?= Right ["Rect : Num [m] -> Num [m] -> Shape"]
           ls "nothing-like-this" @?= Right ["nothing matches"]
@@ -1269,7 +1269,8 @@ typeTests =
         typeOfText "dot"
           @?= Right "forall n d s d1. Vec n d -> Tensor (n : s) d1 -> Tensor s [d d1]"
         typeOfText "transpose" @?= Right "forall n m d. Mat n m d -> Mat m n d"
-        typeOfTextP "cross" @?= Right "forall d d1. Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
+        typeOfTextP "cross"
+          @?= Right "forall (a : 3) d d1. Vec a d -> Vec a d1 -> Vec a [d d1]"
     , testCase "indices, vzipWith and vimap (design §3.3)" $ do
         typeOfText "indices" @?= Right "forall n d. Vec n d -> Vec n"
         typeOfText "vzipWith"
@@ -1902,7 +1903,7 @@ turnedChartTests =
     , testCase "a covariance and a Cov2 block through inChart are R P Rᵀ" $ do
         let pm = "[[4, 1, 0], [1, 9, 0], [0, 0, 1]]"
         typeOfTextP "inChart"
-          @?= Right "forall n d s d1. Chart (Vec n d) -> Tensor s d1 -> Tensor s d1"
+          @?= Right "forall n a d s d1. Chart (Vec n d) a -> Tensor s d1 -> Tensor s d1"
         runLinesP
           ( frame
               ++ [ encloses
@@ -2038,7 +2039,7 @@ movingChartTests =
             )
             @?= Right
               [ "chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w"
-              , "Point [s] -> Chart (Vec 3 [m])"
+              , "forall (a : 3) b. Point [s] -> Chart (Vec a [m]) b"
               , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
               , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
               , "chart (spinner (1000 unix))"
@@ -2490,7 +2491,7 @@ rotationTests =
           @?= Right ["[4, 3; 2, 1] km"]
         evalP "transformBy [[0, 1], [1, 0]] (5 km)" @?= Right ["5 km"]
         typeOfTextP "transformBy"
-          @?= Right "forall n s d. Mat n n -> Tensor s d -> Tensor s d"
+          @?= Right "forall n a s d. Mat n a -> Tensor s d -> Tensor s d"
         typeOfTextP "transformBy (expm (rotz (10 deg))) ([1, 2, 3] m)"
           @?= Right "Vec 3 [m]"
     , testCase "transformBy refuses an axis of another length, at run time" $ do
@@ -2502,15 +2503,18 @@ rotationTests =
           "every axis must have length n: the matrix is 2 × 2 and the tensor's lengths are [2, 3]"
     , testCase "the constructors' types" $ do
         typeOfTextP "e1" @?= Right "Vec 3"
-        typeOfTextP "rotx" @?= Right "Num [rad] -> Mat 3 3"
-        typeOfTextP "roty" @?= Right "Num [rad] -> Mat 3 3"
-        typeOfTextP "rotz" @?= Right "Num [rad] -> Mat 3 3"
+        typeOfTextP "rotx" @?= Right "forall (a : 3). Num [rad] -> Mat a a"
+        typeOfTextP "roty" @?= Right "forall (a : 3). Num [rad] -> Mat a a"
+        typeOfTextP "rotz" @?= Right "forall (a : 3). Num [rad] -> Mat a a"
         typeOfTextP "dual"
-          @?= Right "forall s d. Tensor (3 : s) d -> Tensor (3 : 3 : s) d"
-        typeOfTextP "axisAngle" @?= Right "forall d. Vec 3 d -> Num [rad] -> Mat 3 3"
-        typeOfTextP "rotation" @?= Right "forall d d1. Vec 3 d -> Vec 3 d1 -> Mat 3 3"
+          @?= Right
+            "forall (a : 3) s d (b : 3) (c : 3). Tensor (a : s) d -> Tensor (b : c : s) d"
+        typeOfTextP "axisAngle"
+          @?= Right "forall (a : 3) d (b : 3) (c : 3). Vec a d -> Num [rad] -> Mat b c"
+        typeOfTextP "rotation"
+          @?= Right "forall d d1 (a : 3) (b : 3). Vec 3 d -> Vec 3 d1 -> Mat a b"
         typeOfTextP "euler313"
-          @?= Right "Num [rad] -> Num [rad] -> Num [rad] -> Mat 3 3"
+          @?= Right "forall (a : 3). Num [rad] -> Num [rad] -> Num [rad] -> Mat a a"
     , testCase "rotz is θ (e2 ∧ e1): ∧ turns its second vector toward its first" $ do
         evalP "e1 /\\ e2" @?= Right ["[0, 1, 0; -1, 0, 0; 0, 0, 0]"]
         evalP "rotz (90 deg) == pi / 2 * (e2 /\\ e1)" @?= Right ["true"]
@@ -2815,7 +2819,9 @@ axisSlotTests =
     [ testCase "a named axis set does not unify with anonymous axes"
         $ typed (prim2 "add" (ref lvlhV) (Noise Bound (Owner "") 3))
           @?= Left
-            ( "expected Vec 3, got Vec 3: the axes of "
+            ( "expected Vec "
+                <> showHash lvlh
+                <> ", got Vec 3: the axes of "
                 <> showHash lvlh
                 <> " against anonymous axes"
             )
@@ -2833,7 +2839,11 @@ axisSlotTests =
     , testCase "two named axis sets do not unify"
         $ typed (prim2 "add" (ref lvlhV) (ref eciV))
           @?= Left
-            ( "expected Vec 3, got Vec 3: the axes of "
+            ( "expected Vec "
+                <> showHash lvlh
+                <> ", got Vec "
+                <> showHash eci
+                <> ": the axes of "
                 <> showHash lvlh
                 <> " against the axes of "
                 <> showHash eci
@@ -3152,7 +3162,7 @@ lintRegressionTests =
     "lint regressions"
     [ testCase "instantiation renames quantified variables simultaneously" $ do
         typeOfTextP "\\a b -> a >< b"
-          @?= Right "forall d d1. Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
+          @?= Right "forall (a : 3) d d1. Vec a d -> Vec a d1 -> Vec a [d d1]"
         evalP "[1, 0, 0] m >< ([0, 1, 0] m / s)" @?= Right ["[0, 0, 1] m^2 s^-1"]
         evalText "[1, 2] m ⊙ [3, 4] s" @?= Right ["[3, 8] m s"]
     , testCase "a stored polymorphic definition instantiates at several dimensions"
@@ -3168,7 +3178,7 @@ lintRegressionTests =
         "a let does not generalise variables a pending product constraint ties to the scope"
         $ do
           typeOfText "\\k -> let g = \\v -> k * v in g [1, 2]"
-            @?= Right "forall d. Num d -> Vec 2 d"
+            @?= Right "forall d (a : 2). Num d -> Vec a d"
           case evalText "((\\k -> let g = \\v -> k * v in g [1, 2]) 3) + [1, 2, 3]" of
             Left err -> T.isInfixOf "lengths differ" err @? T.unpack err
             Right v -> assertFailure (show v)
@@ -3820,7 +3830,7 @@ affineTests =
         evalP "cholesky [[1, 2], [2, 1]]"
           @?= Left "error: sqrt of a value that may be negative"
         typeOfTextP "covariance" @?= Right "forall n d. Vec n d -> Mat n n [d^2]"
-        typeOfTextP "cholesky" @?= Right "forall n d. Mat n n [d^2] -> Mat n n d"
+        typeOfTextP "cholesky" @?= Right "forall n a d. Mat n a [d^2] -> Mat n a d"
     , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
         runLinesP
           [ "let w = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"
@@ -4101,11 +4111,12 @@ affineTests =
               turn = "{[0, -1, 0; 1, 0, 0; 0, 0, 0]}"
           typeOfTextP "mkChart3"
             @?= Right
-              "forall d s. Num d -> Tensor s d -> Chart (Tensor s d) -> Chart (Tensor s d)"
+              "forall d s a. Num d -> Tensor s d -> Chart (Tensor s d) a -> Chart (Tensor s d) a"
           typeOfTextP "mkChart4"
             @?= Right
-              "forall d n. Num d -> Vec n d -> Chart (Vec n d) -> {Mat n n} -> Chart (Vec n d)"
-          typeOfTextP "rotationOf" @?= Right "forall n d. Chart (Vec n d) -> Mat n n"
+              "forall d n a b. Num d -> Vec n d -> Chart (Vec n d) a -> {Mat b b} -> Chart (Vec n d) a"
+          typeOfTextP "rotationOf"
+            @?= Right "forall n a d b. Chart (Vec n d) a -> Mat b n"
           -- The origin is an amount in the parent; points are amounts from the
           -- base origin, so a difference across the tree is a plain difference.
           runLinesP
@@ -7996,16 +8007,14 @@ forallTests =
                   ["keep :: forall (a : 3) d. Vec a d -> Vec a d", "let keep v = v"]
               ]
         afterSetup setup [":type keep", "keep ([1, 2, 3] m)"]
-          @?= Right ["forall d. Vec 3 d -> Vec 3 d", "[1, 2, 3] m"]
+          @?= Right ["forall (a : 3) d. Vec a d -> Vec a d", "[1, 2, 3] m"]
         expectError (afterSetup setup ["keep [1, 2]"]) "lengths differ: 3 and 2"
-        -- The known gap of stage 2a: a binder prints plain, so a sized one
-        -- is written back as its literal and reads back with anonymous axes,
-        -- not axes of its own. The signature still holds and still refuses
-        -- a Vec 2, but :export and :load, the sig log line and an unchanged
-        -- :edit narrow it. Stage 2b's sized printing is to make this break.
+        -- A sized binder prints sized (stage 2b), so :export and :load and
+        -- an unchanged :edit keep its axes of their own (the sig log line
+        -- across a reload is in storeTests).
         s <- sessionOf (setup ++ [":add"])
         source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
-        ("keep :: forall d. Vec 3 d -> Vec 3 d\n" `T.isInfixOf` source)
+        ("keep :: forall (a : 3) d. Vec a d -> Vec a d\n" `T.isInfixOf` source)
           @? T.unpack source
         reloaded <-
           either
@@ -8016,11 +8025,13 @@ forallTests =
               Just (Forall vs _) -> [v | (v, KAxis) <- vs]
               Nothing -> [-1]
         axesOf s @?= [0]
-        axesOf reloaded @?= []
+        axesOf reloaded @?= [0]
+        reloaded.codebase.signatures @?= s.codebase.signatures
         expectError (linesIn reloaded ["keep [1, 2]"]) "lengths differ: 3 and 2"
         file <- editFileOf s []
-        (_, outs) <- edited EditCodebase file s
-        outs @?= ["signed keep"]
+        (after, outs) <- edited EditCodebase file s
+        outs @?= ["nothing changed"]
+        after.codebase.signatures @?= s.codebase.signatures
         -- The size is a length, so the binder is not a type.
         expectError
           (runLinesP [multiline ["f :: forall (a : 3). a -> a", "let f x = x"]])
@@ -8195,11 +8206,16 @@ forallTests =
                   , "pair :: forall a b. a -> b -> (a, b)"
                   , "let pair x y = (x, y)"
                   , "let ident x = x"
+                  , "keep :: forall (a : 3) d. Vec a d -> Vec a d"
+                  , "let keep v = v"
                   ]
               , ":add"
               ]
           logText <- TIO.readFile (dir </> "names.log")
           (" sig same forall s d. Tensor s d -> Tensor s d\n" `T.isInfixOf` logText)
+            @? T.unpack logText
+          -- A sized binder prints sized (design §3.9, decision 6).
+          (" sig keep forall (a : 3) d. Vec a d -> Vec a d\n" `T.isInfixOf` logText)
             @? T.unpack logText
           (" sig pair forall a b. a -> b -> (a, b)\n" `T.isInfixOf` logText)
             @? T.unpack logText
@@ -8214,7 +8230,7 @@ forallTests =
               , "forall a b. a -> b -> (a, b)"
               , "forall a. a -> a"
               ]
-          userSignatures loaded.codebase @?= ["ident", "pair", "same"]
+          userSignatures loaded.codebase @?= ["ident", "keep", "pair", "same"]
     ]
 
 -- | What @:ls --types@ lists of the library's declarations of the built-in types.

@@ -106,21 +106,99 @@ are named by the given function. Variables are named by kind as
 'renderType' names them, each name used once, but a bound variable shadows
 a unit of its name within its type, so a name the type prints otherwise
 is skipped: the base symbols of its dimensions
-(@forall s1 d. Tensor s1 d -> Tensor s1 [s d]@). An axis variable prints
-as nothing (§3.9, stage 1) and is not bound.
+(@forall s1 d. Tensor s1 d -> Tensor s1 [s d]@).
+
+An axis variable (§3.9, decision 6) beside a length variable is one
+binder with it and prints as that length (@forall n d. Vec n d -> …@);
+beside a literal length it is a sized binder and prints by its name,
+@forall (a : 3) d. Vec a d -> …@; otherwise, as a chart's root or as a
+second axis set beside a length that already has one, it is a binder of
+its own and prints by its name.
 -}
 renderForallWith :: (Hash -> Text) -> Spelling -> Scheme -> Text
 renderForallWith typeName spelling (Forall _ t) =
-  let vs = [(v, k) | (v, k) <- freeVars t, k /= KAxis]
+  let (absorbed, sized) = axisRoles t
+      vs = [(v, k) | (v, k) <- freeVars t, not (k == KAxis && Map.member v absorbed)]
       names = forallNames (baseSymbolsOf t) vs
-      body = renderWithNamed typeName spelling names 0 t
+      axes =
+        AxisNames
+          (Map.restrictKeys names (Set.fromList [v | (v, KAxis) <- vs]))
+          absorbed
+      body = renderWithNamed typeName spelling axes names 0 t
+      binder v = case Map.lookup v sized of
+        Just k -> "(" <> name v <> " : " <> T.pack (show k) <> ")"
+        Nothing -> name v
+      name v = Map.findWithDefault "?" v names
    in if null vs
         then body
-        else
-          "forall "
-            <> T.unwords [Map.findWithDefault "?" v names | (v, _) <- vs]
-            <> ". "
-            <> body
+        else "forall " <> T.unwords [binder v | (v, _) <- vs] <> ". " <> body
+
+{- | The part each axis variable of a type plays in its printing (design
+§3.9, decision 6), from the first position it appears at: one binder with
+the length variable beside it, when that length has no axis variable of
+its own yet; a sized binder, of the literal length beside it; or, left out
+of both, a binder of its own.
+-}
+axisRoles :: Type -> (Map VarId VarId, Map VarId Int)
+axisRoles t =
+  fst
+    (foldl step ((Map.empty, Map.empty), (Set.empty, Set.empty)) (positionsOf t))
+ where
+  step acc@((absorbed, sized), (decided, partnered)) = \case
+    (l, AVar x)
+      | Set.member x decided -> acc
+      | LVar v _ <- l
+      , Set.notMember v partnered ->
+          ( (Map.insert x v absorbed, sized)
+          , (Set.insert x decided, Set.insert v partnered)
+          )
+      | LLit k <- l ->
+          ((absorbed, Map.insert x k sized), (Set.insert x decided, partnered))
+      | otherwise -> ((absorbed, sized), (Set.insert x decided, partnered))
+    _ -> acc
+
+-- | Every position of a type, a length and its axes, in order.
+positionsOf :: Type -> [(Len, Axis)]
+positionsOf = \case
+  TTensor sh _ -> shape sh
+  TPoint sh _ -> shape sh
+  TScale sh _ _ -> shape sh
+  TData _ as -> concatMap arg as ++ [(l, x) | (ALen l, Just x) <- withCompanions as]
+  TFun a b -> positionsOf a ++ positionsOf b
+  TVar _ -> []
+ where
+  shape = \case
+    SCons l a rest -> (l, a) : shape rest
+    _ -> []
+  arg = \case
+    AType t -> positionsOf t
+    AShape sh -> shape sh
+    _ -> []
+
+{- | A declared type's arguments as written, the axis arguments left out,
+each length with its companion's axes (design §3.9): the @j@-th axis
+argument goes with the @j@-th length.
+-}
+withCompanions :: [Arg] -> [(Arg, Maybe Axis)]
+withCompanions as = go [a | a <- as, not (isAxisArg a)] [x | AAxis x <- as]
+ where
+  go (ALen l : rest) (x : xs) = (ALen l, Just x) : go rest xs
+  go (a : rest) xs = (a, Nothing) : go rest xs
+  go [] _ = []
+
+{- | How the name slots of positions print (design §3.9): the axis
+variables that print by a name of their own, and those that are one
+binder with a length variable. A named set prints as its type's name,
+in place of the length.
+-}
+data AxisNames = AxisNames
+  { own :: Map VarId Text
+  , absorbed :: Map VarId VarId
+  }
+
+-- | No axis variable prints: every slot but a named one prints its length.
+noAxisNames :: AxisNames
+noAxisNames = AxisNames Map.empty Map.empty
 
 -- | 'renderForallWith', declared types by their short hashes.
 renderForallIn :: Spelling -> Scheme -> Text
@@ -148,7 +226,7 @@ forallNames taken vs = snd (foldl pick (taken, Map.empty) vs)
     KLen -> ["n", "m", "k", "l", "p", "q"] ++ numbered "n"
     KShape -> "s" : numbered "s"
     KDim -> "d" : numbered "d"
-    KAxis -> []
+    KAxis -> ["a", "b", "c", "e", "f", "g", "h"] ++ numbered "a"
   numbered p = [p <> T.pack (show i) | i <- [1 :: Int ..]]
 
 -- | The base symbols a type's dimensions print with.
@@ -196,7 +274,7 @@ canonicalScheme (Forall _ t) =
    in Forall [(i, k) | (i, (_, k)) <- zip [0 ..] vs] (substOnce renaming t)
 
 renderWith :: Spelling -> Map VarId Text -> Int -> Type -> Text
-renderWith = renderWithNamed showHash
+renderWith spelling = renderWithNamed showHash spelling noAxisNames
 
 renderArg :: Arg -> Text
 renderArg = \case
@@ -204,7 +282,7 @@ renderArg = \case
   ALen l -> renderLen (idNames (lenVars l)) l
   AShape sh -> renderShapeList (idNames (shapeVars sh)) sh
   ADim d -> renderDimWith (\v -> "d" <> T.pack (show v)) d
-  -- The name slot prints as nothing until named axes exist (design §3.9).
+  -- A type application's name slot prints as nothing (design §3.9).
   AAxis _ -> ""
  where
   shapeVars = \case
@@ -217,15 +295,15 @@ renderArg = \case
     LRank v _ -> [(v, KShape)]
 
 renderWithNamed ::
-  (Hash -> Text) -> Spelling -> Map VarId Text -> Int -> Type -> Text
-renderWithNamed typeName spelling names prec = \case
+  (Hash -> Text) -> Spelling -> AxisNames -> Map VarId Text -> Int -> Type -> Text
+renderWithNamed typeName spelling axes names prec = \case
   -- The built-in types print by their hash, whatever names them (design §4.1).
   BoolT -> "Bool"
   TupleT ts ->
     "("
-      <> T.intercalate ", " (map (renderWithNamed typeName spelling names 0) ts)
+      <> T.intercalate ", " (map (renderWithNamed typeName spelling axes names 0) ts)
       <> ")"
-  ListT t -> "{" <> renderWithNamed typeName spelling names 0 t <> "}"
+  ListT t -> "{" <> renderWithNamed typeName spelling axes names 0 t <> "}"
   -- As an argument of a declared type, a tensor with a shape or dimension is parenthesised.
   TTensor sh d
     | prec > 10
@@ -235,32 +313,54 @@ renderWithNamed typeName spelling names prec = \case
   -- A scalar point is `Point [K]`; a point over a vector space, `Point (Vec 3 [m])`.
   TPoint SNil d -> "Point" <> dim d
   TPoint sh d -> "Point (" <> tensor sh <> dim d <> ")"
+  -- A chart over a vector space names its root's axes after it (design
+  -- §3.9), when they are named or a variable that prints; a scalar
+  -- chart has no axes to name.
   TScale SNil _ d -> "Chart" <> dim d
-  TScale sh _ d -> "Chart (" <> tensor sh <> dim d <> ")"
+  TScale sh r d ->
+    let rooted = maybe "" (" " <>) (rootText r)
+     in paren
+          (prec > 10 && not (T.null rooted))
+          ("Chart (" <> tensor sh <> dim d <> ")" <> rooted)
   -- A declared type prints by its short hash here; the driver replaces that
   -- with the current name (design §7.2), so inference needs no name table.
-  -- An axis argument, a length's companion, prints as nothing (design §3.9).
+  -- An axis argument, a length's companion, prints with its length (design
+  -- §3.9).
   TData h as0 ->
-    let as = filter (not . isAxisArg) as0
+    let as = withCompanions as0
      in paren
           (prec > 10 && not (null as))
-          (T.unwords (typeName h : map (argWith names) as))
+          (T.unwords (typeName h : map argWith as))
   TFun a b ->
     paren
       (prec > 0)
-      ( renderWithNamed typeName spelling names 1 a
+      ( renderWithNamed typeName spelling axes names 1 a
           <> arrowText spelling
-          <> renderWithNamed typeName spelling names 0 b
+          <> renderWithNamed typeName spelling axes names 0 b
       )
   TVar v -> Map.findWithDefault ("t" <> T.pack (show v)) v names
  where
   paren b s = if b then "(" <> s <> ")" else s
-  -- The axes of a position print as nothing in stage 1 (design §3.9).
+  -- A position prints its length, unless its axes are named or print by
+  -- a binder's name (design §3.9, decision 6).
+  position bare (l, a) = case a of
+    ANamed h -> typeName h
+    AVar x
+      | Map.notMember x axes.absorbed
+      , Just n <- Map.lookup x axes.own ->
+          n
+    _ -> (if bare then renderLenBare else renderLen) names l
+  rootText = \case
+    ANamed h -> Just (typeName h)
+    AVar x
+      | Just v <- Map.lookup x axes.absorbed -> Just (renderLenBare names (LVar v 0))
+      | otherwise -> Map.lookup x axes.own
+    AAnon -> Nothing
   tensor = \case
     SNil -> "Num"
-    SCons n _ SNil -> "Vec " <> renderLen names n
-    SCons m _ (SCons n _ SNil) -> "Mat " <> renderLen names m <> " " <> renderLen names n
-    sh -> "Tensor " <> renderShapeList names sh
+    SCons n a SNil -> "Vec " <> position False (n, a)
+    SCons m a (SCons n b SNil) -> "Mat " <> position False (m, a) <> " " <> position False (n, b)
+    sh -> "Tensor " <> renderShapeWith (position True) names sh
   -- A lone dimension variable prints bare (@Num d@); anything else in
   -- brackets (@Num [m s^-2]@, @Num [d d1]@).
   dim d
@@ -268,14 +368,15 @@ renderWithNamed typeName spelling names prec = \case
     | [(DVar v, 1)] <- dimAtoms d = " " <> dimName v
     | otherwise = " " <> renderDimIn spelling dimName d
   dimName v = Map.findWithDefault ("d" <> T.pack (show v)) v names
-  argWith ns = \case
-    AType t -> renderWithNamed typeName spelling ns 11 t
-    ALen l -> renderLen ns l
-    AShape sh -> renderShapeList ns sh
-    ADim d
+  argWith = \case
+    (AType t, _) -> renderWithNamed typeName spelling axes names 11 t
+    (ALen l, Just x) -> position False (l, x)
+    (ALen l, Nothing) -> renderLen names l
+    (AShape sh, _) -> renderShapeWith (position True) names sh
+    (ADim d, _)
       | [(DVar v, 1)] <- dimAtoms d -> dimName v
       | otherwise -> renderDimIn spelling dimName d
-    AAxis _ -> ""
+    (AAxis _, _) -> ""
 
 -- | An argument that fills an axis parameter, a length's companion.
 isAxisArg :: Arg -> Bool
@@ -306,17 +407,21 @@ renderLenBare names = \case
 
 -- | @[2, 3]@ for a closed shape, @(n + 1 : s)@ when it ends in a variable.
 renderShapeList :: Map VarId Text -> Shape -> Text
-renderShapeList names sh = case (tailVar sh, lens sh) of
-  (Nothing, ls) -> "[" <> T.intercalate ", " (map (renderLenBare names) ls) <> "]"
+renderShapeList names = renderShapeWith (renderLenBare names . fst) names
+
+-- | 'renderShapeList', each position printed by the given function.
+renderShapeWith :: ((Len, Axis) -> Text) -> Map VarId Text -> Shape -> Text
+renderShapeWith position names sh = case (tailVar sh, lens sh) of
+  (Nothing, ls) -> "[" <> T.intercalate ", " (map position ls) <> "]"
   (Just v, []) -> shapeName v
   (Just v, ls) ->
     "("
-      <> T.intercalate " : " (map (renderLenBare names) ls ++ [shapeName v])
+      <> T.intercalate " : " (map position ls ++ [shapeName v])
       <> ")"
  where
   lens = \case
     SNil -> []
-    SCons l _ rest -> l : lens rest
+    SCons l a rest -> (l, a) : lens rest
     SVar _ -> []
   tailVar = \case
     SNil -> Nothing
@@ -475,6 +580,7 @@ renderTypeDef spelling name conNames fieldNames def =
     renderWithNamed
       (\h -> if h == selfType then name else showHash h)
       spelling
+      noAxisNames
       names
   -- A record, when every field is named; else positional.
   constructor c labels fields = case sequence (take (length fields) (labels ++ repeat Nothing)) of
