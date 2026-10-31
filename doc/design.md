@@ -2702,7 +2702,8 @@ converted: "`s` is a unit; write `1 s`". `+` and `-` on units are refused.
 When an operand's type is not yet known the choice is a pending constraint,
 solved when it is known, as `Rank` and `Append` are (§4.2); one still unsolved
 when a definition is generalised takes the amount reading. Both readings are
-the same operation at run time, so the choice is static only.
+the same operation at run time, so the choice is static only. (Replaced by
+roles, U9.)
 
 **U3. A unit's name is the unit.** In an expression a unit's name is the
 `Unit`, everywhere; no position reads it as an amount. `x / s` and
@@ -2760,6 +2761,45 @@ and its origin an amount (`chart degF on Temperature at 459.67 deltaF step delta
 prints as the unit expression of its hint, with `*`, `/` and `^` as a type's
 dimension is written (§4.1), so that it reads back as unit arithmetic: `km`,
 `km/h`, `kg*m/s^2`. Amounts print as before, `9.81 m s^-2`.
+
+**U9. Roles: one quantity type** (decided by the owner, revising U1 and U2;
+to be built after part F). A unit and an amount are the same kind of thing in
+two roles: physically a unit is a quantity (`km` is 1000 m), and at run time
+both are a magnitude with a display hint. The role becomes a type parameter
+in place of a separate type and the arithmetic dispatch:
+
+```
+Quantity r δ        -- r : Role, Amount or Unit
+Num δ   = Quantity Amount δ
+Unit δ  = Quantity Unit δ
+```
+
+- **A new kind `Role`** with two constants, `Amount` and `Unit`. Tensors are
+  amounts: `Tensor σ δ` as written means the `Amount` role, and a unit is
+  always a scalar (a tensor literal of units stays refused). How the role
+  sits in the encoding (a slot on `Tensor`, or a separate scalar form) is the
+  builder's choice, so long as `Num δ`, `Unit δ` and `Tensor σ δ` read and
+  print as today and the general form `Quantity r δ` reads back.
+- **Operations that treat both roles alike are polymorphic in the role** and
+  require it to match: `(*) : Quantity r δ -> Quantity r δ₁ -> Quantity r
+  (δ·δ₁)` (with the existing scalar-times-tensor form for amounts), `(/)`
+  likewise, `(^k) : Quantity r δ -> Quantity r (δ^k)`. Unification settles
+  the role; there is no dispatch constraint and no defaulting for
+  arithmetic. `x / s` is refused because `Amount` does not unify with
+  `Unit`, with U2's hint.
+- **Operations that need one role fix it:** `+`, `-`, negation, comparison
+  and equality take amounts; `scale : Num 1 -> Unit δ -> Num δ` (the quantity
+  rule's unit reading) and `to`'s display reading take a unit on the right.
+- **Functions over either role come free.** `\a b -> a * b` generalises to
+  `forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d·d1)`, and
+  `sq :: forall d. Unit d -> Unit (d^2)` with `sq u = u * u` is an instance
+  of its stored term's type, so it is accepted with nothing stored for the
+  reading. This removes the gap recorded in §4.6.
+- **Unchanged:** the quantity rule and `to` still choose between a unit and
+  a chart on their right with U4's and U6's dispatch, since a chart is a
+  different thing; U3, U5, U7 and U8 stand. A cancelled unit prints its units
+  as written, `km/m` and `km/km`, never `1 (a unit)`, so that it reads back
+  as a `Unit`.
 
 **Part U, as built.** As decided, with these details the decision left
 open. Until part F lands, the chart readings are today's: U4's builds
