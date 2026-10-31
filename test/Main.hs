@@ -109,6 +109,7 @@ main =
         , editTests
         , stdlibTests
         , annotationTests
+        , forallTests
         ]
     )
 
@@ -8058,7 +8059,19 @@ annotationTests =
           let names = R.namesOf seeded
           R.highlight names "area :: Shape -> Num [m^2]"
             @?= "area :: Shape -> " <> type' "Num" <> " [" <> unit' "m" <> "^2]"
-          R.highlight names "(x :: Num d)" @?= "(x :: " <> type' "Num" <> " d)"
+          R.highlight names "(x :: forall d. Num d)"
+            @?= "(x :: " <> keyword' "forall" <> " d. " <> type' "Num" <> " d)"
+          -- A bound s in brackets is the variable, an unbound one the second.
+          R.highlight names "f :: forall s. Tensor s [s] -> Num [s]"
+            @?= "f :: "
+              <> keyword' "forall"
+              <> " s. "
+              <> type' "Tensor"
+              <> " s [s] -> "
+              <> type' "Num"
+              <> " [s]"
+          R.highlight names "len :: Num [s]"
+            @?= "len :: " <> type' "Num" <> " [" <> unit' "s" <> "]"
           R.highlight names "(3 m :: Num [m]) + 1 m"
             @?= "(3 "
               <> unit' "m"
@@ -8217,6 +8230,275 @@ annotationTests =
             , "even 4"
             ]
             @?= Right ["true"]
+    ]
+
+-- | Required @forall@ (design §3.9 decision 6, §4.8): stage 2a.
+forallTests :: TestTree
+forallTests =
+  testGroup
+    "forall"
+    [ testCase "a variable must be bound: an unbound name is unknown" $ do
+        case runLinesP [multiline ["f :: a -> a", "let f x = x"]] of
+          Left err -> do
+            ( "unknown name `a` in a type; bind it with forall if it is a variable"
+                `T.isInfixOf` err
+              )
+              @? T.unpack err
+            ("  f :: a -> a\n       ^\n" `T.isInfixOf` err) @? T.unpack err
+          Right outs -> assertFailure (show outs)
+        expectError
+          (runLinesP ["(1 :: a)"])
+          "unknown name `a` in a type; bind it with forall if it is a variable"
+        expectError
+          (runLinesP [multiline ["g :: forall n. Vec n d -> Vec n d", "let g v = v"]])
+          "unknown name `d` in a type"
+        -- A body's ascription without a signature to bind its name.
+        expectError
+          (runLinesP ["let h x = (x :: a)"])
+          "unknown name `a` in a type; bind it with forall if it is a variable"
+        -- Units, base units and types are names, as before.
+        runLinesP
+          [ multiline ["g :: Num [km] -> Num [m]", "let g x = x"]
+          , ":type g"
+          ]
+          @?= Right ["Num [m] -> Num [m]"]
+        runLinesP ["j :: Num [s] -> Num [s]", ":scratch"]
+          @?= Right ["pending: j :: Num [s] -> Num [s]"]
+    , testCase "binders: the unicode spelling, and what a binder may not be" $ do
+        runLinesP [multiline ["f :: ∀ a. a -> a", "let f x = x"], ":type f"]
+          @?= Right ["forall a. a -> a"]
+        expectError
+          (runLinesP [multiline ["f :: forall a a. a -> a", "let f x = x"]])
+          "`a` is bound twice"
+        expectError
+          (runLinesP [multiline ["f :: forall A. A -> A", "let f x = x"]])
+          "`A` cannot be a type variable; a variable is a lowercase name"
+        expectError
+          (runLinesP ["data T = T (forall a. a)"])
+          "unexpected forall"
+        -- An unused binder binds nothing.
+        runLinesP [multiline ["f :: forall a b. a -> a", "let f x = x"], ":type f"]
+          @?= Right ["forall a. a -> a"]
+    , testCase "a sized binder is that many axes: Vec 3 is accepted, Vec 2 refused" $ do
+        let setup =
+              [ multiline
+                  ["keep :: forall (a : 3) d. Vec a d -> Vec a d", "let keep v = v"]
+              ]
+        afterSetup setup [":type keep", "keep ([1, 2, 3] m)"]
+          @?= Right ["forall d. Vec 3 d -> Vec 3 d", "[1, 2, 3] m"]
+        expectError (afterSetup setup ["keep [1, 2]"]) "lengths differ: 3 and 2"
+        -- The known gap of stage 2a: a binder prints plain, so a sized one
+        -- is written back as its literal and reads back with anonymous axes,
+        -- not axes of its own. The signature still holds and still refuses
+        -- a Vec 2, but :export and :load, the sig log line and an unchanged
+        -- :edit narrow it. Stage 2b's sized printing is to make this break.
+        s <- sessionOf (setup ++ [":add"])
+        source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
+        ("keep :: forall d. Vec 3 d -> Vec 3 d\n" `T.isInfixOf` source)
+          @? T.unpack source
+        reloaded <-
+          either
+            (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
+            pure
+            (sessionP [source, ":add"])
+        let axesOf sess = case Map.lookup "keep" sess.codebase.signatures of
+              Just (Forall vs _) -> [v | (v, KAxis) <- vs]
+              Nothing -> [-1]
+        axesOf s @?= [0]
+        axesOf reloaded @?= []
+        expectError (linesIn reloaded ["keep [1, 2]"]) "lengths differ: 3 and 2"
+        file <- editFileOf s []
+        (_, outs) <- edited EditCodebase file s
+        outs @?= ["signed keep"]
+        -- The size is a length, so the binder is not a type.
+        expectError
+          (runLinesP [multiline ["f :: forall (a : 3). a -> a", "let f x = x"]])
+          "is used both as a length and as a type"
+        -- A definition of another length does not hold of it.
+        expectError
+          ( runLinesP
+              [ multiline
+                  ["two :: forall (a : 3) d. Vec a d -> Vec a d", "let two v = v + [1, 2] m"]
+              ]
+          )
+          "not as general as its signature"
+    , testCase "a binder named like a unit shadows it within its type only" $ do
+        -- s is the shape variable in the signature, the second in the body.
+        let setup =
+              [ multiline
+                  [ "same :: forall s d. Tensor s d -> Tensor s d"
+                  , "let same x = x + x"
+                  , "secs :: Num [s] -> Num [s]"
+                  , "let secs x = x + 1 s"
+                  ]
+              ]
+        afterSetup setup [":type same", ":type secs", "same ([1, 2] s)", "secs (2 s)"]
+          @?= Right
+            [ "forall s d. Tensor s d -> Tensor s d"
+            , "Num [s] -> Num [s]"
+            , "[2, 4] s"
+            , "3 s"
+            ]
+        -- Bound, the s in brackets is the variable, not the second.
+        expectError
+          ( runLinesP
+              [multiline ["wrong :: forall s. Num [s] -> Num [s]", "let wrong x = x + 1 s"]]
+          )
+          "`wrong`'s definition has type `Num [s] -> Num [s]`, not as general as its signature `Num d -> Num d`"
+        -- Both read back, through :export and :load.
+        s <- sessionOf (setup ++ [":add"])
+        source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
+        ("same :: forall s d. Tensor s d -> Tensor s d\n" `T.isInfixOf` source)
+          @? T.unpack source
+        ("secs :: Num [s] -> Num [s]\n" `T.isInfixOf` source) @? T.unpack source
+        reloaded <-
+          either
+            (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
+            pure
+            (sessionP [source, ":add"])
+        reloaded.codebase.signatures @?= s.codebase.signatures
+    , testCase "a signature's variables scope over its body's ascriptions" $ do
+        -- The ascription's a is the signature's.
+        runLinesP
+          [ multiline ["f :: forall a. a -> a", "let f x = (x :: a)"]
+          , ":type f"
+          , "f (3 m)"
+          , multiline
+              ["v2 :: forall n d. Vec n d -> Vec n d", "let v2 x = (x :: Vec n d) + x"]
+          , ":type v2"
+          , multiline
+              ["w :: forall (a : 3) d. Vec a d -> Vec a d", "let w x = (x :: Vec a d)"]
+          , "w ([1, 2, 3] m)"
+          ]
+          @?= Right
+            [ "forall a. a -> a"
+            , "3 m"
+            , "forall n d. Vec n d -> Vec n d"
+            , "[1, 2, 3] m"
+            ]
+        -- Without the scope, (x :: b) only narrows; with it, b is the
+        -- signature's b, so the definition's a and b would be one.
+        expectError
+          (runLinesP [multiline ["g :: forall a b. a -> b -> a", "let g x y = (x :: b)"]])
+          "`g`'s definition has type `a -> a -> a`, not as general as its signature `a -> b -> a`"
+        expectError
+          ( runLinesP
+              [multiline ["p :: forall a b. a -> b -> (a, b)", "let p x y = (x, (y :: a))"]]
+          )
+          "not as general as its signature `a -> b -> (a, b)`"
+        -- An ascription's own forall shadows the signature's variable.
+        runLinesP
+          [ multiline ["q :: forall a b. a -> b -> b", "let q x y = (y :: forall a. a)"]
+          , ":type q"
+          ]
+          @?= Right ["forall a b. a -> b -> b"]
+        -- A variable at another kind than the signature's.
+        expectError
+          (runLinesP [multiline ["k :: forall a. a -> a", "let k x = (x :: Vec a)"]])
+          "is used both as a type and as a length"
+        -- In a cycle: pong's ascription makes its a and b one.
+        expectError
+          ( runLinesP
+              [ multiline
+                  [ "let ping x y = if true then (x, y) else pong x y"
+                  , "pong :: forall a b. a -> b -> (a, b)"
+                  , "let pong x y = ping x (y :: a)"
+                  ]
+              ]
+          )
+          "`pong`'s definition has type `a -> a -> (a, a)`"
+        runLinesP
+          [ multiline
+              [ "let ping x y = if true then (x, y) else pong x y"
+              , "pong :: forall a b. a -> b -> (a, b)"
+              , "let pong x y = ping (x :: a) (y :: b)"
+              ]
+          , ":type pong"
+          ]
+          @?= Right ["forall a b. a -> b -> (a, b)"]
+        -- Only a signature given with the definition scopes over it.
+        expectError
+          ( afterSetup
+              [multiline ["f :: forall a. a -> a", "let f x = x"], ":add"]
+              ["let f x = (x :: a)"]
+          )
+          "unknown name `a` in a type"
+    , testCase ":type, :ls, :view, :edit and :export print forall" $ do
+        s <-
+          sessionOf
+            [ multiline
+                [ "let ident x = x"
+                , "twin :: forall a b. a -> b -> (a, b)"
+                , "let twin x y = (x, y)"
+                ]
+            , ":add"
+            ]
+        -- :view shows a definition's term, :edit its signature too.
+        linesIn s [":type ident", ":ls ident", ":ls twin", ":view twin", ":edit twin"]
+          @?= Right
+            [ "forall a. a -> a"
+            , "ident : forall a. a -> a"
+            , "twin : forall a b. a -> b -> (a, b)"
+            , "twin = \\x -> \\y -> (x, y)"
+            , "twin :: forall a b. a -> b -> (a, b)"
+            , "let twin = \\x -> \\y -> (x, y)"
+            ]
+        -- A type with no variables prints as before.
+        linesIn s [":type 3 m", ":type \\x -> x + 1 m"]
+          @?= Right ["Num [m]", "Num [m] -> Num [m]"]
+        source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
+        ("twin :: forall a b. a -> b -> (a, b)\nlet twin = " `T.isInfixOf` source)
+          @? T.unpack source
+        reloaded <-
+          either
+            (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
+            pure
+            (sessionP [source, ":add"])
+        reloaded.codebase.signatures @?= s.codebase.signatures
+        -- Errors print types as before.
+        expectError
+          (linesIn s ["twin 1 2 + 1"])
+          "expected Tensor s d, got (Num, Num)"
+    , testCase
+        ":ls : type queries stay implicit: unknown lowercase names are variables"
+        $ do
+          let ls q = runLinesP [":ls --all : " <> q]
+          ls "{a} -> Num" @?= Right ["std.length : forall a. {a} -> Num"]
+          -- forall in a query binds, as in a signature.
+          ls "forall a. {a} -> Num" @?= Right ["std.length : forall a. {a} -> Num"]
+    , testCase
+        "a sig line writes forall, reads back across a reload; an old one still replays"
+        $ withTempStore
+        $ \dir -> do
+          s <-
+            persistLines
+              dir
+              [ multiline
+                  [ "same :: forall s d. Tensor s d -> Tensor s d"
+                  , "let same x = x + x"
+                  , "pair :: forall a b. a -> b -> (a, b)"
+                  , "let pair x y = (x, y)"
+                  , "let ident x = x"
+                  ]
+              , ":add"
+              ]
+          logText <- TIO.readFile (dir </> "names.log")
+          (" sig same forall s d. Tensor s d -> Tensor s d\n" `T.isInfixOf` logText)
+            @? T.unpack logText
+          (" sig pair forall a b. a -> b -> (a, b)\n" `T.isInfixOf` logText)
+            @? T.unpack logText
+          -- A line written before forall was required, without it.
+          appendFile (dir </> "names.log") "0 sig ident a -> a\n"
+          (loaded, notes) <- reload dir
+          notes @?= []
+          Map.delete "ident" loaded.codebase.signatures @?= s.codebase.signatures
+          linesIn loaded [":type same", ":type pair", ":type ident"]
+            @?= Right
+              [ "forall s d. Tensor s d -> Tensor s d"
+              , "forall a b. a -> b -> (a, b)"
+              , "forall a. a -> a"
+              ]
+          userSignatures loaded.codebase @?= ["ident", "pair", "same"]
     ]
 
 -- | What @:ls --types@ lists of the library's declarations of the built-in types.
