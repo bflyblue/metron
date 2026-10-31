@@ -3600,14 +3600,14 @@ Nothing in the language is overloaded except equality. Every product is its own
 operator with one type (core.md, "Operators across ranks"):
 
 ```
-(*) (⊗)  outer : Tensor s1 δ1 -> Tensor s2 δ2 -> Tensor (s1 ++ s2) (δ1·δ2)   -- tensor product; scalar scaling is the rank-zero case
+(*) (⊗)  outer : Tensor s1 δ1 -> Tensor s2 δ2 -> Tensor (s1 ++ s2) (δ1·δ2)   -- tensor product; scalar scaling is the rank-zero case; two units too (U9, below)
 (·) (@)  dot   : Tensor (s1 ++ [n]) δ1 -> Tensor (n : s2) δ2 -> Tensor (s1 ++ s2) (δ1·δ2)   -- contracting product: dot, Mat·Vec, Mat·Mat
 (∧) (/\) wedge : Vec n δ1 -> Vec n δ2 -> Mat n n (δ1·δ2)                       -- antisymmetrised outer product; the general binary product of vectors
 (⋆)      star  : Mat 3 3 δ -> Vec 3 δ                                          -- 3D Hodge dual
 (×) (><) cross : Vec 3 δ1 -> Vec 3 δ2 -> Vec 3 (δ1·δ2)                         -- prelude: cross a b = star (wedge a b)
 (⊙) (.*) emul  : Tensor s δ1 -> Tensor s δ2 -> Tensor s (δ1·δ2)               -- elementwise
 (⊘) (./) ediv  : Tensor s δ1 -> Tensor s δ2 -> Tensor s (δ1/δ2)
-(/) (÷)  div   : Tensor s δ1 -> Num δ2 -> Tensor s (δ1/δ2)                     -- division by a scalar
+(/) (÷)  div   : Tensor s δ1 -> Num δ2 -> Tensor s (δ1/δ2)                     -- division by a scalar; a unit by a unit too (U9, below)
 ```
 
 `dot`'s contracted positions, the left's last and the right's first, are one
@@ -3627,12 +3627,14 @@ can:
 
 At a generalisation point a constraint whose variables are all about to be
 quantified cannot wait any longer and is **defaulted**: the unknown-rank left
-operand is taken to be a scalar for `outer` (so `\k v -> k * v` gets
-`Num -> Tensor s -> Tensor s`) and a vector for `dot`. This is the one place the
-type system guesses, it guesses the common case, and it is the rule that
-dictionary passing will later remove: when data constructors exist, an
-unresolved constraint becomes a parameter of the definition instead of a
-default, and `\k v -> k * v` becomes polymorphic in the rank of `k`.
+operand is taken to be a scalar for `outer` (so `\k v -> 2 * k * v`,
+whose role is an amount's, gets `Num -> Tensor s -> Tensor s`) and a
+vector for `dot`. This is the one place the type system guesses, it
+guesses the common case, and it is the rule that dictionary passing will
+later remove: when data constructors exist, an unresolved constraint
+becomes a parameter of the definition instead of a default, and `\k v ->
+2 * k * v` becomes polymorphic in the rank of `k`. A role still open makes
+both operands scalar instead (below, and §3.10, U9).
 
 **Ranks.** A length `rank s + k` (§4.1) unifies with another length by
 binding a variable outright wherever it can, because a rank says exactly how

@@ -10,8 +10,9 @@ here (design §4.2):
 
 * The products and equality have deferred constraints, and at a let or at
   the top level an unsolved one is defaulted: the left operand of @*@
-  becomes a scalar, the left operand of @\@@ a vector, an unknown @==@ type
-  @Num@. The generator tracks whether inference can see the rank of each
+  becomes a scalar, and both operands of a @*@ or @/@ whose role nothing
+  fixes (design §3.10, U9), the left operand of @\@@ a vector, an unknown
+  @==@ type @Num@. The generator tracks whether inference can see the rank of each
   expression it builds ('pinned'), and wraps an operand whose rank it
   cannot see and whose intended type is not the default (@e + 0 [m]@,
   @e && true@).
@@ -158,6 +159,11 @@ data Helper
     §3.10, U9)
     -}
     HScale
+  | {- | @\\k v -> 1 * k * v@ : Num d -> Tensor s d1 -> Tensor s [d1 d]: the
+    literal fixes the role to an amount's, and the product's unknown-rank
+    left operand defaults to a scalar (design §4.2)
+    -}
+    HScaleAmount
   | -- | @\\x f -> f x@
     HApplyTo
   | -- | @\\f g x -> f (g x)@
@@ -180,6 +186,8 @@ helperDef = \case
   HConst -> (["x", "y"], var "x")
   HFirst -> (["v"], mk (S.Proj (var "v") 0))
   HScale -> (["k", "v"], binop S.Outer (var "k") (var "v"))
+  HScaleAmount ->
+    (["k", "v"], binop S.Outer (binop S.Outer (mk (S.Num 1)) (var "k")) (var "v"))
   HApplyTo -> (["x", "f"], app (var "f") (var "x"))
   HCompose -> (["f", "g", "x"], app (var "f") (app (var "g") (var "x")))
   HEq -> (["a", "b"], binop S.Eq (var "a") (var "b"))
@@ -214,6 +222,9 @@ helperUse h t = case h of
   HScale -> do
     ([], d) <- asTensor t
     Just ((\d1 -> [numD d1, numD (dimDiv d d1)]) <$> genDim, ByArg 1)
+  HScaleAmount -> do
+    (ls, d) <- asTensor t
+    Just ((\d1 -> [numD d1, tensor ls (dimDiv d d1)]) <$> genDim, ByArg 1)
   HApplyTo -> Just ((\a -> [a, TFun a t]) <$> genArgType, Never)
   HCompose ->
     Just ((\a b -> [TFun b t, TFun a b, a]) <$> genArgType <*> genArgType, Never)
@@ -626,10 +637,13 @@ funProds sc a b n =
            | la == lb
            ]
         -- (* e) is \x -> x * e: x is a left operand nobody pins, so only
-        -- when it is meant to be a scalar.
+        -- when it is meant to be a scalar; e is pinned when it is a tensor,
+        -- which fixes the role to an amount's (design §3.10, U9).
         ++ [ ( 1
-             , (\e -> mk (S.SectionL S.Outer e.expr))
-                 <$> gen sc (tensor lb (dimDiv db da)) half
+             , do
+                 let te = tensor lb (dimDiv db da)
+                 e <- gen sc te half
+                 pure (mk (S.SectionL S.Outer (if null lb then e else pin te e).expr))
              )
            | null la
            ]
@@ -703,9 +717,13 @@ tensorProds sc ls d n =
         let (l1, l2) = splitAt i ls
             ta = tensor l1 d1
         a0 <- gen sc ta half
-        b <- gen sc (tensor l2 (dimDiv d d1)) half
-        -- An unseen left rank defaults to a scalar.
+        let tb = tensor l2 (dimDiv d d1)
+        b0 <- gen sc tb half
+        -- An unseen left rank defaults to a scalar, and so do both operands
+        -- when neither shows its role (design §3.10, U9): a tensor operand
+        -- is pinned, which makes it an amount.
         let a = if null l1 then a0 else pin ta a0
+            b = if null l2 then b0 else pin tb b0
         pure (G (binop S.Outer a.expr b.expr) (a.pinned && b.pinned))
     )
   , (2, vmapProd)
@@ -890,7 +908,10 @@ instanceOf (Forall vs pat) target = case matchType pat target (Map.empty, []) of
   matchType p t st = case (p, t) of
     (TVar v, _) | quantified v -> bindArg v (AType t) st
     (TFun a b, TFun c d) -> matchType a c st >>= matchType b d
-    (TTensor sa da, TTensor sb db) -> second ((da, db) :) <$> matchShape sa sb st
+    -- A quantity of a role variable is an amount at an amount (design
+    -- §3.10, U9).
+    (TQty ra sa da, TQty rb sb db) ->
+      second ((da, db) :) <$> (matchRole ra rb st >>= matchShape sa sb)
     (BoolT, BoolT) -> Just st
     _ -> Nothing
   matchShape p sh st = case (p, sh) of
@@ -901,6 +922,10 @@ instanceOf (Forall vs pat) target = case matchType pat target (Map.empty, []) of
   matchLen p l st = case (p, l) of
     (LVar v k, LLit j) | quantified v, j >= k -> bindArg v (ALen (LLit (j - k))) st
     (LLit a, LLit b) | a == b -> Just st
+    _ -> Nothing
+  matchRole p r st = case p of
+    RVar v | quantified v -> bindArg v (ARole r) st
+    _ | p == r -> Just st
     _ -> Nothing
   matchAxis p a st = case p of
     AVar v | quantified v -> bindArg v (AAxis a) st

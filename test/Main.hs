@@ -3820,6 +3820,21 @@ roleTests =
         expectError
           (runLinesP ["(3 :: Quantity Num)"])
           "a role is Amount or Unit, or a variable"
+    , testCase
+        "a quantity of a product of an open role is a unit's, with no signature"
+        $ do
+          -- Under part U this was ambiguous; the open role after a literal can
+          -- only be a unit's.
+          runLinesP ["let f u = 3 (u * u)", ":type f", "f km", "f (km/h)"]
+            @?= Right ["forall d. Unit d -> Num (d^2)", "3 km^2", "3 km^2 h^-2"]
+          s <-
+            either
+              (assertFailure . T.unpack)
+              pure
+              (sessionP ["let f u = 3 (u * u)", ":add"])
+          file <- editFileOf s ["f"]
+          (_, outs) <- edited (EditName "f") file s
+          outs @?= ["nothing changed"]
     , testCase "Quantity r d survives a reload of the store" $ withTempStore $ \dir -> do
         _ <-
           persistLines
