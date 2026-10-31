@@ -8029,9 +8029,9 @@ forallTests =
         reloaded.codebase.signatures @?= s.codebase.signatures
         expectError (linesIn reloaded ["keep [1, 2]"]) "lengths differ: 3 and 2"
         file <- editFileOf s []
-        (after, outs) <- edited EditCodebase file s
+        (edited', outs) <- edited EditCodebase file s
         outs @?= ["nothing changed"]
-        after.codebase.signatures @?= s.codebase.signatures
+        edited'.codebase.signatures @?= s.codebase.signatures
         -- The size is a length, so the binder is not a type.
         expectError
           (runLinesP [multiline ["f :: forall (a : 3). a -> a", "let f x = x"]])
