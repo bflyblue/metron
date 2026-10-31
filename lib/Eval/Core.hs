@@ -443,6 +443,10 @@ primArity = \case
   "pointAdd" -> Just 2
   "pointSub" -> Just 2
   "toScale" -> Just 2
+  -- Units (design §3.10): the quantity rule after a unit, and a unit's
+  -- declaration. Both names are keywords, so no source names them.
+  "scale" -> Just 2
+  "unit" -> Just 1
   "cholesky" -> Just 1
   "covariance" -> Just 1
   "crossCovariance" -> Just 2

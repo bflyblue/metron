@@ -831,3 +831,27 @@
   differ by m/s". Values print as before. Store format 7, since `sig` lines
   are text; an older store is refused, to be recreated from an `:export`
   with its dimensions respelled. No hash changed.
+- Error messages name type variables as `:type` does, each name once and
+  never a base symbol: "not as general as its signature `Mat n k -> Mat n
+  k m`", not `Mat n m m`.
+- Units are a type (design §3.10, part U). A unit is a value of type `Unit
+  δ`: `:type km` is `Unit m`, and a unit is passed, stored and returned like
+  any value. `*`, `/` and `^k` read two amounts or two units by their
+  operands' types, a pending constraint solved when they are known and the
+  amounts' reading at generalisation; an amount and a unit together are
+  refused, "`s` is a unit; write `1 s`", and `+` and `-` on units too. A
+  unit's name is the unit everywhere: `x / 1 s`, not `x / s`. The quantity
+  rule is type-directed, `scale lit u` after a unit and `pointOn c lit`
+  after a chart; `2 pi` is refused by its type, and a parameter after a
+  literal is read by the definition's signature
+  (`per :: forall d. Unit d -> Num d` with `per u = 3 u`), the reading
+  written into the stored term. After a literal the quantity takes the
+  whole unit expression, `9.81 m/s^2` being `9.81 (m/s^2)` and `x / 1 km/h`
+  `x / (1 (km/h))`, while a number or another name ends it (`6 m / 2 s`,
+  `6 m / x`). `to` takes a unit or a chart, by type. `unit name = e` takes
+  an amount (`unit min = 60 s`) or a unit (`unit N = kg*m/s^2`); a chart's
+  step and `:prefer` take units. A unit prints as its unit expression,
+  `km/h`, `kg*m/s^2` (`kg·m/s²` in unicode), even inside a tuple or a
+  record; amounts print as before. The library is respelled (`60 s`, `1 deg
+  / 60`, `5/9 * 1 K`, `kilo * 1 metre`, `s^-1`, the constants as
+  quantities), so every term naming a unit re-hashes. Store format 8.

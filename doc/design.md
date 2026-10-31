@@ -395,7 +395,8 @@ projection `v.0`, `m.1.2` (§2.10), never a function taking a computed index.
 
 ### 2.6 The quantity rule
 
-A number literal followed by one or more *unit atoms* denotes a product:
+A number or vector literal followed by one or more atoms is a **quantity**
+(built as §3.10, U4 and U5, decide):
 
 ```
 quantity ::= number unitatom+
@@ -403,36 +404,45 @@ quantity ::= number unitatom+
 unitatom ::= atom [ '^' [ '-' ] natural ]
 ```
 
-A unit atom is a unit name, or a parenthesised **unit expression**: base and
-declared units (§3.2.12), numbers, and those combined with `*`, `/`, `^` and
-juxtaposition. Nothing else may follow a literal without an operator. Two
-literals side by side, `5 4 3` or `2 [1, 2]`, are a parse error; a name that is
-not a unit, `5 a` for a matrix `a`, `2 pi`, or `5 m` under a binder `\m ->`, is
-a desugaring error that says "`a` is not a unit: write the `*`". The parser
-produces a `Scale` node and the desugarer, which knows which names are units,
-checks it. The rule exists for units, not arithmetic: `5 * 4 * 3` and `5 * a`
-are clearer written out, and `5 a` reads as a quantity to anyone who sees it. The whole quantity binds like an
-application. Examples:
+What the literal is followed by is read by its type. A unit (`Unit δ`,
+§3.10) makes the amount `scale lit u : Tensor σ δ`; a chart makes the point
+`pointOn c lit` (§3.6); anything else is refused, "`pi` is a Num, not a unit or
+a chart: write the `*`". Juxtaposed atoms multiply, `9.81 m s^-2` being
+`9.81 (m*s^-2)`. Two literals side by side, `5 4 3` or `2 [1, 2]`, are a
+parse error. The rule exists for units, not arithmetic: `5 * 4 * 3` and `5
+* a` are clearer written out. The whole quantity binds like an application.
+
+**Unit operators bind before numbers.** After a literal the quantity takes
+the whole unit expression: in a chain of `*` and `/` it takes in each
+following factor that is a declared unit's name (§3.2.12, a base unit or a
+name declared with `unit`), with or without a power. A number ends it, and so
+does any other name. The parser leaves the chain as it is and the desugarer,
+which knows which names are declared units, regroups it; names decide only
+the grouping, and the types decide what each operator means (U2).
 
 | Written | Means |
 |---|---|
-| `3 m` | `3 * m` |
-| `3 m^2 kg` | `3 * m^2 * kg` |
-| `9.81 m/s^2` | `(9.81 * m) / (s^2)` |
-| `5 km/h` | `(5 * km) / h` |
-| `[1, 0, 0] km` | `[1, 0, 0] * km` |
-| `3 (m/s)` | `3 * (m / s)` |
-| `5 a`, `2 pi`, `3 f x` | errors: not units |
+| `3 m` | `scale 3 m` |
+| `3 m^2 kg` | `3 (m^2*kg)` |
+| `9.81 m/s^2` | `9.81 (m/s^2)` |
+| `5 km/h` | `5 (km/h)` |
+| `9.81 m s^-2` | `9.81 (m*s^-2)`, as values print, so they read back |
+| `[1, 0, 0] km` | `scale [1, 0, 0] km` |
+| `3 (m/s)` | `3 (m/s)` |
+| `6 m / 2 s` | `(6 m) / (2 s)`: a number ends the quantity |
+| `6 m / x` | `(6 m) / x`: `x` is not a declared unit |
+| `x / 1 km/h` | `x / (1 (km/h))` |
+| `20 degC` | `pointOn degC 20` |
+| `5 a`, `2 pi`, `3 f x` | errors: not units or charts |
 
-The rule applies only to a literal on the left and units on the right. A
-variable needs an explicit operator on either side: `x * km`, `5 * a`.
-
-The rule is a parse-time rewrite to `*`. Core (§5.1) never sees it.
-
-Stage 3 (§3.10, U4 and U5) changes the rule: it becomes type-directed (a
-literal followed by a `Unit` is an amount, followed by a `Chart` a point),
-and after a literal the quantity takes the whole unit expression, so
-`9.81 m/s^2` is `9.81 (m/s^2)`. This section describes the rule as built.
+A unit's name is the unit (§3.10, U3), so a variable needs an explicit
+operator and a unit written as an amount is one of it: `x * 1 km`, `x / 1
+s`; `x * km` is refused, "`km` is a unit; write `1 km`". After a literal,
+any atom is read by its type, a parameter too, but a parameter's type is
+not known when its definition is generalised: `\u -> 3 u` is refused as
+ambiguous, and `per :: forall d. Unit d -> Num d` with `per u = 3 u` reads
+`scale`. The reading is written into the term, so Core (§5.1) holds `scale`
+or `pointOn` and never the rule.
 
 Inside an application there is no such grouping: `f 3 m` applies `f` to `3`
 and then to `m`, exactly as `f x y` would, so a quantity in argument position
@@ -488,7 +498,7 @@ binary     ::= operator-precedence parse over 'unary' using the table in 2.5,
 unary      ::= '-' unary | 'sqrt' unary | power
 power      ::= app [ '^' [ '-' ] natural ]
 app        ::= quantity | atom atom*
-quantity   ::= number unitatom+ | vector unitatom+
+quantity   ::= number unitatom+ | vector unitatom+          -- the desugarer regroups a * and / chain after it (2.6)
 unitatom   ::= atom [ '^' [ '-' ] natural ]
 atom       ::= primary postfix*
 postfix    ::= '.' projection | '.' name                -- glued: a component, or a record field (2.10)
@@ -541,7 +551,7 @@ so a plain keyboard is never a barrier, and the pretty-printer can emit either.
 | `″` `′` | `arcsec` `arcmin` | postfix units |
 | `₀` `₁` … | `_0` `_1` … | subscripts inside identifiers only |
 
-Rules: superscripts bind as `^` does, so `3 m²` is `3 * m^2` by the quantity rule.
+Rules: superscripts bind as `^` does, so `3 m²` is `3 (m^2)` by the quantity rule.
 A superscript is only a power when it follows an atom without a space; `x ²` is an
 error. `°` and the arc marks attach to the preceding number without a space and
 are unit atoms, so `45° + 30′` works.
@@ -569,8 +579,8 @@ in surface notation.
 | `(+ 1)`, `(2 *)` | `\x -> x + 1`, `\x -> 2 * x` |
 | `vmap sqrt v`, `foldr add 0 xs` | `vmap (\x -> sqrt x) v`, … : a primitive used as a value is eta-expanded to its arity, because Core primitives are saturated (§5.1). The pretty-printer eta-reduces these for display |
 | `f ∘ g` | `\x -> f (g x)` |
-| `3 m²`, `3 m s⁻²` | `3 * m^2`, `3 * m * s^-2` (quantity rule) |
-| `45°` | `45 * deg` |
+| `3 m²`, `3 m s⁻²` | `3 (m^2)`, `3 (m*s^-2)` (quantity rule) |
+| `45°` | `45 deg` |
 | `√e` | `sqrt e` |
 | `a + b`, `a * b`, `a · b`, … | `add a b`, `outer a b`, `dot a b`, … (every operator is a saturated application of the primitive of the same name; the names work prefix and in backticks) |
 | `a ± e`, `a ±σ e` | also spelled `within a e`, `sigma a e` |
@@ -1013,36 +1023,37 @@ is an error that asks for `1 rad` or `45 deg`, angular velocity `rad/s` and
 frequency `Hz` are different types that cannot be added or confused by a factor
 of 2π, and `sr = rad^2` makes the photometric units honest. The price is that an
 angle must be divided out where the SI quietly drops it: arc length is
-`r * θ / rad` and angular velocity from a speed is `v / r * rad`, the same
-bookkeeping every other dimension already asks for. Everything else is prelude
+`r * θ / 1 rad` and angular velocity from a speed is `v / r * 1 rad`, the
+same bookkeeping every other dimension already asks for. The base units are
+units, of type `Unit m` and so on (§3.10, part U). Everything else is prelude
 source written in the language itself and therefore hashed, viewable and
 rebindable:
 
 ```
-let N  = kg m / s^2
-let J  = N m
-let W  = J / s
-let Pa = N / m^2
-let km = 1000 m
-let g  = kg / 1000              -- the one wrinkle: the base unit carries a prefix
+unit N  = kg*m/s^2              -- a unit from a unit
+unit J  = N*m
+unit W  = J/s
+unit Pa = N/m^2
+unit km = 1000 m                -- a unit from an amount, its size
+unit g  = 1 kg / 1000           -- the one wrinkle: the base unit carries a prefix
 ```
 
 The prelude, now the standard library split by domain into namespaces (§7.7), ships: in `si`, the 22 derived SI units (N, J, W, Pa, Hz, C, V, Ω, F, S, T, H,
 Wb, lm, lx, Bq, Gy, Sv, kat, with `sr = rad^2` in `angle`), each also under
 its name (`newton`, `joule`, …), the 24 SI prefixes as numbers (`kilo`,
 `milli`, …) applied to every base and derived unit plus `L` and `g` (`unit
-km = kilo * metre`, `mm`, `µs`, `kPa`, `GHz`, …); and the accepted units
+km = kilo * 1 metre`, `mm`, `µs`, `kPa`, `GHz`, …); and the accepted units
 iapetus needs: `min hr day year` (Julian, 365.25 day; `h` is the hour's
 symbol) in `time`, `AU` in `astro`, `deg arcmin arcsec` in `angle`, `L`, `t`
 in `si`. The prefix table is generated by `Eval.Prelude`, not typed by hand.
 
 Measured constants are library definitions (`astro.G`, reached with `:use astro`) **with `±σ`** taken from CODATA
 standard uncertainties, so uncertainty is present by default, carries the
-statistical kind, and `:budget` can name it: `G = (6.67430e-11 ±σ 1.5e-15) m^3
-/ (kg s^2)` (CODATA 2018). The masses are derived, `M_earth = GM_earth / G` and
+statistical kind, and `:budget` can name it: `G = (6.67430e-11 ±σ 1.5e-15) *
+1 m^3 kg^-1 s^-2` (CODATA 2018). The masses are derived, `M_earth = GM_earth / G` and
 `M_sun = GM_sun / G`, from the exact IAU nominal `GM` values, so their
 uncertainty is G's and the budget says so (`5.97217e24 ±σ 1.3e20 kg`). Angles:
-`unit deg = pi / 180 * rad`, `arcmin`, `arcsec`, so `90 deg` prints as itself
+`unit deg = pi / 180 * 1 rad`, `arcmin`, `arcsec`, so `90 deg` prints as itself
 and `sin (90 deg)` is `1.00000000000000000000…`. CODATA publishes 1σ values, which are not hard bounds;
 shipping them under `±` would let a 68% band print as a certainty, so the prelude
 never does that. Exact-by-definition constants (`c`, `h`, `k_B`, `N_A`, `e_charge` in `physics`
@@ -1063,12 +1074,13 @@ named units with exponents, a scale factor and a dimension. Where display units
 come from:
 
 - A definition declared with `unit` instead of `let` is a display unit:
-  `unit km = 1000 * m`. The declaration is a property of the **name**, label-level
-  metadata in the codebase like the binding itself, not part of the term or its
-  hash. Two names may share one hash and differ here: `unit dozen = 12` and
-  `let eggs = 12` are one term, `3 dozen` prints as `3 dozen` and `eggs + 1` is
-  `13`, and `Bq` and `Hz` are both `1/s` yet each prints as written. What makes
-  this possible is that every reference in Core carries the name the author
+  `unit km = 1000 m`. Its term is a unit, `Unit m` (§3.10, U7): the
+  declaration makes its body, an amount or a unit, a unit, so `unit dozen =
+  12` and `let eggs = 12` are two terms, a `Unit` and a `Num`. That it is
+  its own display unit is a property of the **name**, label-level metadata
+  in the codebase like the binding itself, not part of the hash: `Bq` and
+  `Hz` are one term, `s^-1`, yet each prints as written. What makes this
+  possible is that every reference in Core carries the name the author
   wrote as a hint, ignored by the hash like a binder's name but kept in the store,
   and the evaluator asks whether *that* name is a unit. A `let` that rebinds a
   unit name (`let g = 9.81 m/s^2`) makes it a quantity; `:alias` of a unit makes
@@ -1084,12 +1096,17 @@ come from:
   names keep the order they were written in, so `1 V * 1 A` prints as `1 V A`.
   Units of one dimension that meet with opposite signs cancel, with their
   factor folded into the number: `2 m * 90 deg / rad` is `3.14… m`, `3 h / min`
-  is `180`, `(2 km)^2 / m` is `4000 km`.
+  is `180`, `(2 km)^2 / 1 m` is `4000 km`. (After a literal the quantity takes
+  in the units that follow it, §2.6, so `90 deg / rad` is `90 (deg/rad)`,
+  whose units cancel when the quantity is taken.) Unit arithmetic itself
+  cancels nothing: the unit `km/m` prints as `km/m` (§3.10, U8).
 - `+` and `-` take the **smaller** of their operands' units, so that the result
   does not depend on operand order: `5 km + 3 m` and `3 m + 5 km` are both
   `5003 m`. Projection, packing, negation, `abs`, `norm`, `transpose`
   and `⋆` keep the unit; every other operation drops it.
-- `x to u` replaces the display unit with `u`'s. `to` is shape-polymorphic.
+- `x to u` replaces the display unit with `u`'s; `u` is a unit (§3.10, U6),
+  `x to km/h`, never an amount. `to` is shape-polymorphic. `:prefer` takes a
+  unit too.
 
 The rule for which unit a result prints in, in order: an explicit `to` wins;
 otherwise a declared **preference** for the value's exact dimension
@@ -1222,7 +1239,7 @@ Stage 4 of §3.9 generalises the rotation constructors over one axis set.)
   vector turns `b` toward `a`: `(e1 ∧ e2) @ e1 = −e2`. So the generator
   of the turn from `a` toward `b` is `b ∧ a`, and `rotz θ = θ (e2 ∧ e1)`,
   `rotx θ = θ (e3 ∧ e2)`, `roty θ = θ (e1 ∧ e3)`, each of the angle divided
-  by `rad` (the constructors write `(θ to rad) / rad`, which fixes the
+  by `1 rad` (the constructors write `(θ to rad) / 1 rad`, which fixes the
   argument to an angle). `expm (rotz (90 deg))` turns `e1` to `e2`: the
   right-hand rule. `⋆` keeps its sign (`⋆ (e1 ∧ e2) = e3`, so `cross` is
   unchanged), and so `⋆ (rotz θ) = −θ e3`.
@@ -1603,7 +1620,7 @@ given as an amount from the base origin:
 
 ```
 unit  deltaC = K                        -- the Celsius step is the kelvin
-unit  deltaF = 5/9 * K                  -- the Fahrenheit step
+unit  deltaF = 5/9 * 1 K                -- the Fahrenheit step
 chart degC  = K  at 273.15 K             -- 0 °C is 273.15 K from absolute zero
 chart degF  = deltaF at 459.67 deltaF    -- 0 °F is 459.67 Fahrenheit steps from it
 chart J2000 = day at 2451545 day         -- an epoch: a point on the time line
@@ -1846,8 +1863,8 @@ Euler, axis-angle and quaternion forms are sugar and carry their conventions
 in their names:
 
 ```
-rotz θ         = θ / rad * (e2 ∧ e1)  -- rotx, roty likewise; the right-hand rule: rotz (90 deg) turns x toward y
-axisAngle n θ  = dual (θ / rad * (-n) / norm n)   -- 3D: the axis is the dual of the plane
+rotz θ         = θ / 1 rad * (e2 ∧ e1)  -- rotx, roty likewise; the right-hand rule: rotz (90 deg) turns x toward y
+axisAngle n θ  = dual (θ / 1 rad * (-n) / norm n)   -- 3D: the axis is the dual of the plane
 rotation a b   = the bivector taking a to b, angle atan2 (norm (a × b)) (a · b)
 fromQuaternion q = the logarithm of the rotor, for input only
 ```
@@ -2213,7 +2230,7 @@ hands, meet:
   "every axis" over axis sets, so since §3.9's stage 2b its matrix has
   anonymous axes.
 - Built, in `linalg`: `e1 e2 e3 : Vec 3`; `rotx`, `roty`, `rotz : Num
-  rad -> Mat 3 3` (`rotz θ = θ / rad * (e2 ∧ e1)`, since `a ∧ b` turns
+  rad -> Mat 3 3` (`rotz θ = θ / 1 rad * (e2 ∧ e1)`, since `a ∧ b` turns
   `b` toward `a`; `expm (rotz (90 deg)) @ [1, 0, 0]` encloses `[0, 1,
   0]`); `dual : Tensor (3 : s) d -> Tensor (3 : 3 : s) d`, the inverse of
   `⋆`; `axisAngle : Vec 3 d -> Num rad -> Mat 3 3`; `rotation : Vec 3 d
@@ -2253,10 +2270,10 @@ hands, meet:
   declared origin velocity, as the spin is declared, would add.
 - *A declared spin is not checked* against the rotation it goes with (it
   would need the derivative of `expm B(t)`).
-- *A chart value bound by `let`* (`let c = ecef t0`) is a chart for the
+- *A chart value bound by `let`* (`let c = ecef t0`) was a chart for the
   library functions (`velocityIn c st`, `rotationOf c`) but not for `to`
-  or the quantity rule, which pick a chart by its declared name: write `p
-  to ecef t0`, or the primitives `toScale p c` and `pointOn c x`.
+  or the quantity rule, which picked a chart by its declared name. Closed
+  by §3.10's part U: they read the type, so `3 c` and `p to c` work.
 - Whether `eci` is a library definition or a primitive root (none is
   shipped yet: a user's `chart eci = m at [0, 0, 0] m` is a root like any
   chart without a parent).
@@ -2641,7 +2658,7 @@ still stored in base form.
   free axes of their own (`rotation`, `dual`, `axisAngle`) until stage 4
   generalises them.
 
-### 3.10 Units, spaces and frames (stage 3 of §3.9; design)
+### 3.10 Units, spaces and frames (stage 3 of §3.9; part U built, part F design)
 
 Decided by the owner, 2026-10-31. This is stage 3 of §3.9, revised: a point
 is typed by its *frame* (`Point lvlh`, `Point degC`), not by its axes as
@@ -2743,6 +2760,117 @@ and its origin an amount (`chart degF on Temperature at 459.67 deltaF step delta
 prints as the unit expression of its hint, with `*`, `/` and `^` as a type's
 dimension is written (§4.1), so that it reads back as unit arithmetic: `km`,
 `km/h`, `kg*m/s^2`. Amounts print as before, `9.81 m s^-2`.
+
+**Part U, as built.** As decided, with these details the decision left
+open. Until part F lands, the chart readings are today's: U4's builds
+`pointOn` on `Chart σ δ` and gives `Point σ δ`, and U6's keeps `toScale`.
+
+- **The pending reading.** One constraint, `Dispatch`, solved as `Append`
+  and `Rank` are, whenever a type it waits on becomes known. Arithmetic
+  (`*` as `outer`, `/` as `div`, `^k`) takes the units' reading when any of
+  its operands or its result is a `Unit`, the amounts' when any is another
+  known type, and refuses a `Unit` with a tensor; at generalisation it
+  takes the amounts' reading. Its shapes and dimensions are made with the
+  primitive's type, before its operands', so that dimensions solve as
+  before and no scheme changes its spelling. A quantity is read by what
+  follows its literal or by its result (an amount is `scale`, a point
+  `pointOn`), a `to` by its target or by its value or result (a tensor is
+  the display unit's, a point `toScale`); either still open at
+  generalisation is refused as ambiguous, asking for a signature.
+- **Readings are written into the term.** Where the spelling decides, the
+  desugarer writes the primitive: `scale` when what follows the literal is
+  unit arithmetic on declared units' names alone (`km`, `(km/h)`, and
+  what U5 groups), `pointOn` for a declared chart or an applied moving
+  chart, `to` and `toScale` likewise. Anything else is a marker,
+  `§quantity:k:def` or `§to:k:def`, named by its definition so that a
+  cycle's members never share one. Before a definition is hashed its
+  markers are resolved by inference with its signature as an ascription
+  of its body (each member's, in a cycle) and the signatures of the names
+  it uses, and the reading is written in: `per u = 3 u` under `per ::
+  forall d. Unit d -> Num d` stores `scale 3 u`, which then infers alone,
+  as a stored term must (§4.6), and whose source, `per = \u -> 3 u` with
+  the signature written back beside it, reads back. A definition's own
+  ascriptions do not take part: they are not in its term, so its printed
+  source would not read back, and `let f u = 3 (u :: Unit m)` is refused
+  as ambiguous. An expression at the prompt, which is not stored, is read
+  with its ascriptions too. No stored term holds a marker; the library
+  seeds in one pass, since its quantities are all spelled.
+- **A `let`-bound chart works with `to` and the quantity rule**, which now
+  read its type: `let c = degF` then `3 c` and `20 degC to c` (the known gap
+  of §3.8 closed).
+- **Arithmetic's reading is static only**, as decided, and not written
+  in: a function of units made by arithmetic alone, `sq u = u * u`, takes
+  the amounts' reading, so `sq :: forall d. Unit d -> Unit (d^2)` is
+  refused as not as general as its signature. Recorded in §4.6.
+- **A unit's declaration is its own term.** `unit name = e` desugars to the
+  primitive `unit e`, `Num δ -> Unit δ` or `Unit δ -> Unit δ` by `e`'s
+  type, the identity at run time (its reading static, like arithmetic's).
+  So `unit dozen = 12` and `let eggs = 12` are two terms now, a `Unit` and
+  a `Num` (§3.2.12 said one); an alias still shares its unit's term, and
+  `Bq` and `Hz` share `s^-1`. That the name is its own display unit stays
+  label-level. A unit's declaration prints, in `:view` and `:edit`, as its
+  body.
+- **`scale` and `unit` are Core primitives**, named by keywords so that no
+  source names them: `scale : Tensor σ 1 -> Unit δ -> Tensor σ δ`, `unit`
+  as above. No Core constructor was added. `Unit δ` encodes as the
+  appended type tag `0x2A`; `Unit` is a reserved type name, written and
+  printed as `Num` is (`Unit m`, `Unit (m/s)`, and `Unit` alone when
+  dimensionless).
+- **U5's chain.** The desugarer flattens a left-associated chain of the
+  level-7 operators (`*`, `·`/`@`, `∧`, `⊙`, `⊘`, `/`), not looking into
+  parentheses below its top; only `*` and `/` extend a quantity, and only by
+  a declared unit's name, bare or qualified, with or without a power. A
+  parenthesised unit expression after the quantity is not taken in: write
+  `1 (m^3/(kg*s^2))` or juxtapose, `1 m^3 kg^-1 s^-2`. A quantity in
+  parentheses is whole, so `(6 m) / s` is refused. A quantity under a
+  unary minus extends, `-9.81 m/s^2`. A `let`-bound unit (`let v =
+  km/h`) is a unit by type, so `5 v` works, but not a declared unit, so
+  `9.81 m/v` ends the quantity before it.
+- **A negative quantity of a constant is one term**, `-3 K` being `scale
+  (-3) K` as `-3` is the literal; the printer writes the primitive `neg`
+  applied to a constant quantity as `neg (2 K)` so that it reads back.
+- **Run time.** A unit is a `VUnit` around its number, kept apart only so
+  that it prints as a unit wherever it is, in a tuple, a list or a record
+  as at the top. Unit arithmetic keeps its hint as written, nothing
+  cancelled (`km/m` stays `km/m`); `scale` cancels units of one dimension as
+  a product does, so `90 deg / rad` is `1.57…`. Equality and ordering on
+  units are refused ("no equality on Unit m"), and a tensor literal of
+  units is refused, its elements being amounts.
+- **Printing (U8).** Units with positive powers in the order written,
+  joined by `*` (`·` in unicode), then `/` and those with negative powers,
+  in parentheses when there are several (`m/(s^2*K)`); with only negative
+  powers, `s^-1` (`s⁻¹`), since `1/s` would be an amount over a unit. A
+  unit whose units all cancelled (`km/km`) prints as the amount of one of
+  it, marked: `1 (a unit)`. `:view` writes a quantity's unit bare when it
+  is one declared unit or a chain of them that U5 takes in (`9.81 m /
+  s^2`), in parentheses otherwise (`3 (u / s)`); every library namespace's
+  `:edit` file reads back to its hashes.
+- **`to` and `:prefer` take units.** `x to 1 km` is refused, "an amount
+  after `to`, which takes a unit or a chart"; a dimensionless value shows a
+  plain number with a unit that has no units left, `to dozen/dozen`.
+  `:prefer 1 km` is refused, "a preference is a unit, not an amount".
+- **Messages.** An amount and a unit under `*` or `/`: "an amount and a
+  unit together: / takes two amounts or two units", with the hint "`s` is
+  a unit; write `1 s`" when one side is a unit's name; a unit where an
+  amount goes, with "`h` is a unit; where an amount is meant, write `1 h`"
+  on the unit's name (and, after `to`, "the unit after `to` has the
+  dimension of the value before it"); "units do not add: this is Unit m,
+  and + and - take amounts"; a quantity of something else: "`pi` is a Num,
+  not a unit or a chart: write the `*`" ("a function, …" for a function;
+  the name when it is a reference or a primitive, "this" for a local or a
+  constructor); the hint "`u` is not a declared unit, so the quantity ends
+  before it; if it is a unit, write 9.81 (m/u)"; and the two ambiguities.
+- **The library**, respelled beyond U7's examples: `Hz` and `Bq` as
+  `s^-1`, `g` as `1 kg / 1000`, `L` as `(1 m / 10)^3`, `t` as `1000 kg`,
+  every prefixed unit as `kilo * 1 metre`, `oz` as `1 lb / 16`, `eV` as
+  `e_charge * 1 V`, `pc` as `648000 / pi * 1 AU`, `turn` as `2 * pi * 1
+  rad`, the constants as quantities (`299792458 m/s`, `6.02214076e23
+  mol^-1`, `G` as `(6.67430e-11 ±σ 1.5e-15) * 1 m^3 kg^-1 s^-2`), and
+  `rotx`, `roty`, `rotz`, `axisAngle` and `rotation` dividing by `1 rad`.
+- **Hashes and the store.** Every term that names a unit moved: a
+  quantity is `scale` where it was `*`, and a unit's declaration wraps its
+  body. The structural and linear-algebra functions, the SI prefixes and
+  `velocityIn` and `stateFrom` kept theirs. The store is format 8.
 
 #### Part F: spaces and frames
 
@@ -3026,9 +3154,11 @@ rotation's rows are, written and printed after a vector chart's type,
 prints for a scalar point and `Point (Vec eci m)` for a position on a
 chart whose root is `eci`.
 
-Stage 3 (§3.10) adds to these: `Unit δ`, the type of units; `Point c` and
-`Chart c` over a frame `c` in place of `Point σ δ` and `Chart σ δ`; the type
-functions `Diff c` and `Axes c`; and the kinds `Space` and `Frame s`.
+`Unit δ` is the type of units (§3.10, part U, built): `τ ::= … | Unit δ`,
+written and printed as `Num` is, `Unit m`, `Unit (m/s)`, and `Unit` alone when
+dimensionless. Stage 3's part F (§3.10) will add `Point c` and `Chart c` over
+a frame `c` in place of `Point σ δ` and `Chart σ δ`, the type functions
+`Diff c` and `Axes c`, and the kinds `Space` and `Frame s`.
 
 **Dimension syntax** (decided by the owner; replaces the bracket form).
 A dimension is an ordinary type argument, not a bracketed one. Square
@@ -3114,13 +3244,14 @@ decision left open:
   signatures written both ways (`Num [m]`/`Num m`, `Point [K]`/`Point (Num
   K)`, `Num [m]`/`Num km` in an ascription), are identical; only the `sig`
   lines' text differs.
-- **Errors name variables without dodging units.** `:type`, `:ls` and the
-  `sig` line skip a name the type prints as a base symbol (`forall s1 d.
-  Tensor s1 d -> Tensor s1 (s*d)`), but an error's types are named plainly,
-  so with the brackets gone one can read ambiguously: "not as general as
-  its signature `Mat n m m -> Mat n m m`", a length `m` beside metres. Not
-  changed here; the fix is for error printing to name variables as `:type`
-  does.
+- **Errors name variables as `:type` does.** `:type`, `:ls` and the `sig`
+  line skip a name the type prints as a base symbol (`forall s1 d. Tensor
+  s1 d -> Tensor s1 (s*d)`). An error's types were named plainly, so with
+  the brackets gone one could read ambiguously: "not as general as its
+  signature `Mat n m -> Mat n m m`", a length `m` beside metres. Error
+  printing (unifier errors, "not as general as its signature", lint) now
+  names variables the same way, each name once and no base symbol: `Mat n
+  k -> Mat n k m`.
 - **Found, not changed.** `:type cholesky` and `:type linalg.updateCov2` do
   not read back as signatures of themselves, before this change as after:
   the gap is the axis sets' (`det`'s, §3.9 "Known gaps"), not the
@@ -3366,18 +3497,22 @@ products of §4.2 with multiplying dimensions. `det` is on dimensionless
 matrices of any size until the length-as-exponent relation `Num (d^n)`
 exists (§4.6). Display
 units, the prelude and `to` with a display hint are the remaining pieces of
-roadmap item 2.
+roadmap item 2. Units are a type (§3.10, part U): a base unit is a `Unit`,
+and `*`, `/`, `^`, the quantity rule and `to` each read their operands'
+types, below.
 
 ```
 literal     : Num 1
-m           : Num m           kg : Num kg      s : Num s      (etc.)
+m           : Unit m          kg : Unit kg     s : Unit s     (etc.: a base unit is a unit, 3.10)
 (+) (-)     : Num d -> Num d -> Num d                    (and Vec, Mat instances)
-(*)         : Num d1 -> Num d2 -> Num (d1*d2)            (and the table)
-(/)         : Num d1 -> Num d2 -> Num (d1/d2)          (and the table)
+(*)         : Num d1 -> Num d2 -> Num (d1*d2)            (and the table; Unit d1 -> Unit d2 -> Unit (d1*d2), by the operands' types, 3.10)
+(/)         : Num d1 -> Num d2 -> Num (d1/d2)            (and the table; Unit d1 -> Unit d2 -> Unit (d1/d2), 3.10)
 (== /=)     : Num d -> Num d -> Bool                     (and Vec, Mat)
 (< <= > >=) : Num d -> Num d -> Bool
 (&& ||)     : Bool -> Bool -> Bool          not : Bool -> Bool
-to          : Num d -> Num d -> Num d                    (and Vec, Mat)
+to          : Tensor s d -> Unit d -> Tensor s d         -- a display unit (3.2.12, 3.10 U6); toScale for a chart, below
+scale       : Tensor s 1 -> Unit d -> Tensor s d         -- the quantity rule after a unit, `3 km`, `[1, 0, 0] (km/h)` (2.6, 3.10 U4)
+unit        : Num d -> Unit d  |  Unit d -> Unit d      -- a unit's declaration made a unit, by its body's type (3.10 U7)
 (±) (±σ)    : Num d -> Num d -> Num d                    (and Vec, Mat)
 sqrt        : Num (d^2) -> Num d
 abs         : Num d -> Num d
@@ -3389,10 +3524,10 @@ sin cos tan : Num rad -> Num 1
 asin acos atan : Num 1 -> Num rad
 sinh cosh tanh exp log : Num 1 -> Num 1
 atan2       : Num d -> Num d -> Num rad
-mkScale     : Axes A -> Num d -> Tensor s d -> Chart s d          -- the minted axes, step, origin; s along A, root A, or anonymous if scalar (3.6, 3.9)
-mkChart3    : Num d -> Tensor s d -> Chart s d -> Chart s d                  -- step, origin in the parent, parent; the parent's axes and root (3.8)
-mkChart4    : Axes A -> Num d -> Vec n d -> Chart [n] d -> {Mat n n} -> Chart [n·A] d    -- and the generators, each antisymmetric, dimensionless, applied in order, over axes of their own; the parent's root (3.8, 3.9)
-mkChart5    : Axes A -> Num d -> Vec 3 d -> Chart [3] d -> {Mat 3 3} -> Vec 3 (rad/s) -> Chart [3·A] d   -- and the spin along its own axes, the radian stripped (3.8)
+mkScale     : Axes A -> Unit d -> Tensor s d -> Chart s d         -- the minted axes, step, origin; s along A, root A, or anonymous if scalar (3.6, 3.9)
+mkChart3    : Unit d -> Tensor s d -> Chart s d -> Chart s d                 -- step, origin in the parent, parent; the parent's axes and root (3.8)
+mkChart4    : Axes A -> Unit d -> Vec n d -> Chart [n] d -> {Mat n n} -> Chart [n·A] d    -- and the generators, each antisymmetric, dimensionless, applied in order, over axes of their own; the parent's root (3.8, 3.9)
+mkChart5    : Axes A -> Unit d -> Vec 3 d -> Chart [3] d -> {Mat 3 3} -> Vec 3 (rad/s) -> Chart [3·A] d   -- and the spin along its own axes, the radian stripped (3.8)
 rotationOf  : Chart (Vec (n·a) d) r -> Mat (n·r) (n·a) 1   -- the absolute rotation, rows along the root; computed once per chart; exactly I when not turned (3.8, 3.9)
 spinOf      : Chart (Vec (3·a) d) r -> Vec (3·r) (1/s)    -- the absolute angular velocity, root axes; exactly 0 when nothing spins (3.8)
 originVelocityOf : Chart (Vec (3·a) d) r -> Vec (3·r) (d/s)   -- the velocity of the origin, root axes; exactly 0 when nothing above spins (3.8)
@@ -3411,7 +3546,7 @@ timap       : (Vec (rank s) -> Num d1 -> Num d2) -> Tensor s d1 -> Tensor s d2  
 x ± e, x ±σ e : Tensor s d -> Num d | Tensor s d -> Tensor s d   -- per component (3.4)
 v ±σ P      : Vec n d -> Mat n n (d^2) -> Vec n d       -- a vector with covariance P (3.5)
 pi e        : Num 1
-e ^ n       : Num d -> Num (d^n)            -- special form, n an integer literal
+e ^ n       : Num d -> Num (d^n)            -- special form, n an integer literal; Unit d -> Unit (d^n) for a unit (3.10)
 noise n     : Vec n 1                        -- special form, n a natural literal
 gauss n     : Vec n 1                        -- special form, n a natural literal
 det         : Mat (n·a) (n·b) 1 -> Num 1    -- a plain primitive, any n; dimensionless only; rows and columns may be two axis sets (4.6, 3.9)
@@ -3437,7 +3572,7 @@ Which slots are shared is listed in §3.9 under "Stage 1, as built" and
 "Stage 2b, as built".
 
 The circular functions take an angle and their inverses return one (§3.2.11):
-`rad` is a base unit and `deg = pi / 180 * rad`, so `sin (90 deg)` type-checks,
+`rad` is a base unit and `deg = pi / 180 * 1 rad`, so `sin (90 deg)` type-checks,
 `sin (1 m)` fails, and so does `sin 1`, with a message that asks for `1 rad` or
 `45 deg`. `atan2 : Num d -> Num d -> Num rad` accepts any one dimension for
 its two arguments. The hyperbolic functions, `exp` and `log` take plain numbers.
@@ -3510,7 +3645,19 @@ Num (m/s^2)
 - A signature (§4.8) is checked after inference, not used during it, so
   there is no polymorphic recursion: inside a cycle a member's recursive
   uses see its one monomorphic type, whatever its signature says, and a
-  definition that needs its own signature to check does not check.
+  definition that needs its own signature to check does not check. The one
+  exception is a reading (§3.10): a quantity or a `to` whose reading the
+  types choose is first inferred with the definition's signature as an
+  ascription of its body, and the reading found is written into the term,
+  which is then inferred alone as before (`per u = 3 u` under `per ::
+  forall d. Unit d -> Num d` stores `scale 3 u`). The definition's own
+  ascriptions do not take part, since they are not in its term.
+- Arithmetic's reading is not written into the term, since both are one
+  operation at run time (§3.10, U2): inferred alone, `*`, `/` and `^` on
+  parameters take the amounts' reading, so a function of units built by
+  arithmetic alone, `sq u = u * u` under `sq :: forall d. Unit d -> Unit
+  (d^2)`, is refused as not as general as its signature. One whose result
+  is used as a unit, `3 (u * u)`, reads the units' reading from that use.
 - `^` requires a literal exponent, because `x ^ y` with a runtime `y` has no static
   dimension. `sqrt` covers the `1/2` case; a `cbrt` can follow.
 - `det` is on dimensionless matrices only. Its natural type, `Mat n n d -> Num
@@ -3565,9 +3712,13 @@ Instead the desugarer returns the Core term together with a *provenance table*: 
 map from a path into the term (the sequence of child positions from the root) to
 the surface span that produced that node, the same idea as a source map. The
 table also carries *hints*: advice the desugarer attaches to a span while it
-still sees the syntax, printed under a type error that lands there. The one
-hint so far: a literal argument followed by a unit name (`Rect 3 m 4 m`) is two
-arguments, and the error says to write `(3 m)` (§2.6).
+still sees the syntax, printed under a type error that lands there. The
+hints: a literal argument followed by a unit name (`Rect 3 m 4 m`) is two
+arguments, and the error says to write `(3 m)` (§2.6); a unit's name where
+an amount goes, or beside an amount under `*` or `/`, "`s` is a unit; write
+`1 s`" (§3.10, U3); and a name that ends a quantity, "`u` is not a declared
+unit, so the quantity ends before it; if it is a unit, write 9.81 (m/u)"
+(U5).
 
 - Inference tracks the current path as it walks the term, and every constraint it
   emits records the path of the node that generated it. A failed unification
@@ -3877,8 +4028,10 @@ Rules:
 - `App` therefore only ever applies a user function (a lambda, a `Ref`, a
   variable), never a primitive.
 - The quantity rule and the `let f x = …` sugar are gone; `3 m` is
-  `PrimApp "mul" [Lit 3, Ref #m]` after name resolution of `m` to the prelude
-  definition, and `let f x = e` is `Lam "x" e`.
+  `PrimApp "scale" [Lit 3, PrimApp "m" []]`, `3 km` the same over `Ref #km`,
+  and `20 degC` `PrimApp "pointOn" [Ref #degC, Lit 20]`; where the spelling
+  does not decide, inference does and the reading is written in before the
+  term is hashed (§3.10). `let f x = e` is `Lam "x" e`.
 - Free names are resolved to `Ref`s pointing at the hash the name has *at the
   time of definition* (§7).
 - Within a `Cycle`, member `j` is referenced from inside body `i` as a variable
@@ -4240,7 +4393,7 @@ Inspection
 :names #hash       every name that points at the hash (current or historical)
 :history name      refs the name has pointed at, newest first
 :view name         pretty-print the term with refs rendered as in 7.2; for a type, its declaration;
-                   a chart with its keyword, `chart degC = K at 273.15 * K` (3.6)
+                   a chart with its keyword, `chart degC = K at 273.15 K` (3.6)
 :core name         print the Typed Core (5.3) with every annotation
 :lint name         re-run lint on a stored definition and print its type(s)
 :dependents name   definitions whose terms reference the current ref of name
@@ -4580,7 +4733,7 @@ eval --merge OTHER       merge the store at OTHER into this one, leaving OTHER a
 A codebase on disk is a directory:
 
 ```
-format             "eval codebase 7": the store's format version
+format             "eval codebase 8": the store's format version
 terms/<hex hash>   one term per file: the canonical encoding of 6.1 with each
                    binder's name hint after its tag and each reference's written
                    name after it, so :view keeps the author's names and units are
@@ -4712,20 +4865,24 @@ never leaves a name pointing at a missing term. A term that fails to decode,
 fails to typecheck, or is named but missing is reported as a note at start and
 skipped; the rest loads.
 
-**Formats.** A store opens only at the format this build writes, 7. A
+**Formats.** A store opens only at the format this build writes, 8. A
 store of an older format is refused, and nothing in it is touched: "this
-codebase is format N; it predates format 7 and cannot be opened: recreate
-it (with the previous eval, `:export` it, respell the dimensions in its
+codebase is format N; it predates format 8 and cannot be opened: recreate
+it (with the previous eval, `:export` it, respell its quantities for units
+as a type, 60 * s as 60 s and x / s as x / 1 s, and the dimensions in its
 types, Num [m s^-1] as Num (m/s), and `:load` the file into a new
 codebase)". A newer format, or a format file that
-says anything else, is refused as not a store of format 7. Earlier builds
+says anything else, is refused as not a store of format 8. Earlier builds
 migrated each older format in place on open, a chain of steps: written
 names after references (format 2), `Case` and `Con` for `If` and the
 boolean literal (3), the library seeded into the store under `std` (4), the
 library split by domain (5), and `Bool`, tuples and lists as declared types
 (6). Those migrations are retired. Format 7 changed no hash: its `sig` lines,
 which are text, write dimensions as type arguments (§4.1), so an older
-log's bracketed signatures would not read back. While the language is still in design, a
+log's bracketed signatures would not read back. Format 8 holds units as a
+type (§3.10, part U): a quantity is `scale` where it was `*`, a unit's
+declaration wraps its body, and the library is respelled, so every term
+that names a unit has another hash. While the language is still in design, a
 migration claimed more than it did: the 4 to 5 step recognised the old
 library's labels by the hashes of a "frozen" copy of the format-4 library,
 but that copy was entered by the current elaborator, so when the
@@ -4978,7 +5135,7 @@ prelude change rebind names behind the user's back. Now:
   `std.map` have the hashes the root prelude gave `N`, `min` and `map`
   (`map` until format 6 made lists a declared type, which re-hashed
   everything that uses booleans, tuples or lists), and `si.km`, written
-  `kilo * metre`, has its own. One with a `±` is
+  `kilo * 1 metre`, has its own. One with a `±` is
   stamped with its full path (§3.2.4), so `astro.G`, and `astro.M_earth`
   and `astro.M_sun` built on it, have hashes of their own too.
 - **Nothing is special afterwards.** The library is names in the database.
@@ -5059,7 +5216,7 @@ included), 904 in all:
 |---|---|---|---|
 | `std` | the types `Bool` (`False True`), `Pair` and `List` (`Nil Cons`), the compiler's own declarations; the structural functions `fst snd map filter foldr foldl length reverse zip range` | 17 | yes |
 | `linalg` | `ε levi cross trace vimap`; the rotations `e1 e2 e3 rotx roty rotz dual axisAngle rotation euler313` (§3.3), `inChart` (§3.8) and `along rotateVec rotateCov` (§3.9); the record `Cov2` with its fields `rr rv vv`, and `jointCovariance propagateCov2 innovationCov2 gain2 updateCov2 inChartCov2` (§3.7, §3.8) | 29 | yes |
-| `si` | the spelled-out base units `metre second kilogram ampere mole candela radian`; the 24 prefixes as plain numbers, `quetta` to `quecto` (`let kilo = 10^3`); the 22 coherent derived and accepted units by symbol (`N J W Pa Hz C V Ω F S T H Wb lm lx Bq Gy Sv kat g L t`), each with its name as an alias on the same term (`newton`, …, `ohm`, …, `gram`, `litre`, `tonne`); the chart `gauge`; the 699 prefixed units, each written from the prefix's name (`unit km = kilo * metre`, `unit kPa = kilo * Pa`), with `kohm` and the other prefixed ohms aliases of `kΩ` | 800 | yes |
+| `si` | the spelled-out base units `metre second kilogram ampere mole candela radian`; the 24 prefixes as plain numbers, `quetta` to `quecto` (`let kilo = 10^3`); the 22 coherent derived and accepted units by symbol (`N J W Pa Hz C V Ω F S T H Wb lm lx Bq Gy Sv kat g L t`), each with its name as an alias on the same term (`newton`, …, `ohm`, …, `gram`, `litre`, `tonne`); the chart `gauge`; the 699 prefixed units, each written from the prefix's name (`unit km = kilo * 1 metre`, `unit kPa = kilo * 1 Pa`), with `kohm` and the other prefixed ohms aliases of `kΩ` | 800 | yes |
 | `time` | `min hr day week year`, with `h` an alias of `hr` (`unit hr = 60 * min`); the charts (time scales) `JD MJD J2000 unix`, written with `chart` | 10 | yes |
 | `angle` | `deg arcmin arcsec turn sr`, with `steradian` an alias of `sr` | 6 | yes |
 | `temperature` | the charts (temperature scales) `degC degF degR kelvin`, written with `chart`, the steps `deltaC deltaF` | 6 | yes |
@@ -5083,7 +5240,7 @@ What the build settled that the plan left open:
 - **`kelvin` is the absolute temperature scale** (`0 kelvin to degC`), as
   it was, so `K` has no spelled-out unit name in `si`: a name is one label,
   and two default namespaces offering `kelvin` would be an error. The
-  prefixed kelvins are written from the symbol (`unit mK = milli * K`).
+  prefixed kelvins are written from the symbol (`unit mK = milli * 1 K`).
 - **`in` is a keyword**, so the inch is `inch`.
 - **The prefixes are powers of ten** (`kilo = 10^3`), not literals: a term
   is its content, so `let kilo = 1000` would be the same hash as a user's
@@ -5109,7 +5266,9 @@ What the build settled that the plan left open:
 Writing `km` as `kilo * metre` instead of `10^3 * m`, and the hour as `60 *
 min`, re-hashed every prefixed unit and the hour; this is accepted while the
 language is in design. A store from before the split is refused, and is
-recreated from its export (§7.4).
+recreated from its export (§7.4). Units as a type (§3.10, part U) re-hashed
+every unit and every quantity again: `km` is now `kilo * 1 metre`, the hour
+`60 min`.
 
 ## 8. Evaluation
 
@@ -5300,7 +5459,8 @@ tuned, and compilation is a later milestone.
      signatures and ascriptions, with sized binders and scoped variables,
      and printed by `:type`, `:ls` and written-back signatures (sized
      printing waits for 2b). Layer 1, the `axes x y z` sugar, can be
-     built any time.
+     built any time. Stage 3 (§3.10): part U, units as a type, built
+     (format 8); part F, spaces and frames, designed.
    - *Precision refinement for undecidable comparisons.* Re-entering
      evaluation at a higher precision cuts across the evaluator's
      architecture (§3.2.9).
@@ -5638,7 +5798,7 @@ i = 45°, ω = 60°, and the chart's step is the kilometre:
 > chart eci = m at [0, 0, 0] m
 > chart pf = km at [0, 0, 0] km eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
 > :view pf
-chart pf = km at [0, 0, 0] km eci by rotz (30 * deg) then rotx (45 * deg) then rotz (60 * deg)
+chart pf = km at [0, 0, 0] km eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
 > let rp = [7000, 0, 0] pf
 > rp to eci
 [887785.38831025442775…, 5462310.6012293745031…, 4286607.0498705616718…] eci
@@ -5698,7 +5858,7 @@ illustration") at the default precision:
 > let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)
 > chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg/day
 > :view earth
-chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] * deg / day
+chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg / day
 > chart greenwich t = m at [3972.5, 0, 4990] km (earth t)
 > let t26 = 9496.5 J2000
 > [0, 0, 0] (greenwich t26) to eci

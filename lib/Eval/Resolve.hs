@@ -586,6 +586,8 @@ checkDuplicates = go Set.empty
 
 asLambda :: S.Binding -> S.Expr
 asLambda b = case b.params of
+  -- A unit's body is made a unit (design §3.10, U7).
+  [] | b.kind == S.Unit -> S.Expr b.body.span (S.UnitBody b.body)
   [] -> b.body
   _ -> S.Expr b.span (S.Lam b.params b.body)
 
@@ -602,7 +604,7 @@ enterComponent ::
   Either ResolveError Codebase
 enterComponent checking group signed cb0 = \case
   AcyclicSCC (scope, b) -> do
-    (term, prov) <-
+    (written, prov) <-
       either
         (Left . Desugar)
         Right
@@ -613,8 +615,17 @@ enterComponent checking group signed cb0 = \case
         )
     -- The axis type a chart mints is stored before the chart is checked,
     -- since its constructor's type is looked up (design §3.9, decision 1).
-    let minted = mintedBy [b.name.text] term
+    let minted = mintedBy [b.name.text] written
         cb = mintAxes minted cb0
+    -- The readings the types choose are written in before it is hashed
+    -- (design §3.10, U4, U6), its signature taking part. Not its
+    -- ascriptions: they are not in the term, so its printed source would
+    -- not read back, where a signature is written back with it.
+    term <-
+      either
+        (Left . typeErrorIn b prov)
+        Right
+        (withReadings cb [signedAs signed cb0 b.name.text] written)
     (schemes, typed) <-
       either
         (Left . typeErrorIn b prov)
@@ -717,6 +728,52 @@ scopedSignature member = \case
   scopedBase = 500000000
   scopedStride = 100000
 
+{- | A definition's term, or a cycle's, with the readings the types choose
+written in (design §3.10, U4, U6): each quantity whose literal is followed
+by something its spelling does not make a unit or a chart is @scale@ or
+@pointOn@, each such @to@ the display unit's or @toScale@. They are
+inferred with each member's signature as an ascription of its body, and
+with the signatures of the names it uses, so that @per u = 3 u@ under
+@per :: forall d. Unit d -> Num d@ reads @scale@; the term written in
+then stands alone, as a stored term must, its types its Core's, and its
+printed source reads back with the signature written beside it. A term
+with no such quantity or @to@ is returned as it is.
+-}
+withReadings ::
+  Codebase -> [Maybe Scheme] -> Term Z -> Either TypeError (Term Z)
+withReadings cb sigs term
+  | not (hasReadingMarkers term) = Right term
+  | otherwise = do
+      chosen <-
+        readingsOf
+          (Annotations (annotationsWith cb Map.empty).signatureFor ascriptions)
+          (typeLookupFor cb)
+          signedTerm
+      Right (rewriteReadings chosen term)
+ where
+  marker :: Int -> Text
+  marker i = D.signatureMarker ("§readings" <> T.pack (show i))
+  sigAt i = case drop i sigs of
+    Just sc : _ -> Just sc
+    _ -> Nothing
+  wrap :: Int -> Term n -> Term n
+  wrap i body = maybe body (const (PrimApp (marker i) [body])) (sigAt i)
+  wrapMembers :: Int -> Vec k (Term n) -> Vec k (Term n)
+  wrapMembers i = \case
+    VNil -> VNil
+    VCons b rest -> VCons (wrap i b) (wrapMembers (i + 1) rest)
+  (signedTerm, ascriptions) = case term of
+    Cycle hs bodies ->
+      ( Cycle hs (wrapMembers 0 bodies)
+      , Map.fromList [(marker i, (sc, [i])) | (i, Just sc) <- zip [0 ..] sigs]
+      )
+    _ ->
+      (wrap 0 term, Map.fromList [(marker 0, (sc, [])) | Just sc <- take 1 sigs])
+
+-- | The signature a name is to have: the group's for it, else the one it has.
+signedAs :: Map.Map Text Signed -> Codebase -> Text -> Maybe Scheme
+signedAs signed cb n = maybe (signatureOf n cb) (Just . (.scheme)) (Map.lookup n signed)
+
 {- | The check of a definition that the annotations of the input take part
 in (design §4.8): its uses of signed names see their signatures, and its
 ascriptions narrow. Only when it has any; the schemes it gives are the
@@ -804,11 +861,18 @@ enterCycle checking group signed cb sbs = do
       desugared <- vecTraverse (desugarOne ctx) members
       let bodies = vecMap fst desugared
           provs = vecToList (vecMap snd desugared)
-          cycleTerm = Cycle (vecMap (Hint . (.name.text) . snd) members) bodies
-          h = hashTerm cycleTerm
+          written = Cycle (vecMap (Hint . (.name.text) . snd) members) bodies
           -- The axis types the members' charts mint (design §3.9).
-          minted = mintedBy (map (.name.text) sorted) cycleTerm
+          minted = mintedBy (map (.name.text) sorted) written
           cbm = mintAxes minted cb
+      -- The readings the types choose, written in before the cycle is
+      -- hashed (design §3.10, U4, U6), the members' signatures taking part.
+      cycleTerm <-
+        either
+          (Left . cycleTypeError sorted provs)
+          Right
+          (withReadings cbm [signedAs signed cb b.name.text | b <- sorted] written)
+      let h = hashTerm cycleTerm
       (schemes, typed) <-
         either
           (Left . cycleTypeError sorted provs)
@@ -983,6 +1047,7 @@ freeNames = go Set.empty
     S.Record hd fs -> go bound hd <> foldMap (go bound . snd) fs
     S.Ascribe a _ -> go bound a
     S.ChartForm s o g w -> go bound s <> go bound o <> foldMap (go bound) g <> foldMap (go bound) w
+    S.UnitBody a -> go bound a
   opNames = \case
     S.Infix n -> Set.singleton n
     _ -> Set.empty
@@ -1153,7 +1218,8 @@ enterData scope cb decl = do
       | otherwise = go (Set.insert n.text seen) ns
 
 builtinTypeNames :: [Text]
-builtinTypeNames = ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale"]
+builtinTypeNames =
+  ["Bool", "Num", "Unit", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale"]
 
 data DataEnv = DataEnv
   { codebase :: Codebase
@@ -1219,6 +1285,7 @@ tyType env t = case t.node of
     | Map.member n env.params -> TVar <$> useParam env t n KType
     | n == "Bool" -> pure boolT
     | n == "Num" -> pure numT
+    | n == "Unit" -> pure (TUnit dimOne)
     | n `elem` builtinTypeNames -> bad t ("`" <> n <> "` needs its arguments")
     | otherwise -> applied env t n []
   S.TyApp hd args
@@ -1230,6 +1297,8 @@ tyType env t = case t.node of
         bad t ("parameter `" <> hd.text <> "` takes no arguments")
     | otherwise -> case (hd.text, args) of
         ("Num", [d]) -> TTensor SNil <$> tyDim env d
+        -- A unit takes its dimension as Num does (design §3.10, U1).
+        ("Unit", [d]) -> TUnit <$> tyDim env d
         ("Vec", [n]) -> (\l -> TTensor (position l SNil) dimOne) <$> tyLen env n
         ("Vec", [n, d]) -> (\l -> TTensor (position l SNil)) <$> tyLen env n <*> tyDim env d
         ("Mat", [m, n]) ->
@@ -1485,7 +1554,7 @@ unitDim env n
   | Found u <- qualifyName TermLabel env.scope env.codebase n
   , isUnitName u env.codebase
   , Just r <- lookupName u env.codebase
-  , Just (Forall [] (TTensor SNil d)) <- typeOf r env.codebase =
+  , Just (Forall [] (TUnit d)) <- typeOf r env.codebase =
       Just d
   | otherwise = Nothing
 

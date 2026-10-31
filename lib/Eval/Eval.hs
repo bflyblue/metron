@@ -248,6 +248,12 @@ data Value
   | -- | a constructor with its fields as thunks (design §8); a boolean is one, 'VBool'
     VData ConRef [Thunk]
   | VClosure Closure
+  | {- | a unit (design §3.10, U1): a newtype around a number, its magnitude
+    in base units with its display hint, which is the unit expression it
+    prints as (U8); kept apart only so that it prints as a unit wherever
+    it is, inside a tuple or a record as at the top
+    -}
+    VUnit Value
 
 -- | A boolean: @True@ or @False@ of the built-in @Bool@ ("Eval.Builtin").
 pattern VBool :: Bool -> Value
@@ -322,9 +328,15 @@ eval cfg rt = go
         _ -> v
     TLet _ _ e body -> go (child 1) (VCons (go (child 0) env e) env) body
     TPow t n -> do
-      (x, d, hint) <- scalarFull =<< go (child 0) env t
+      v <- go (child 0) env t
+      (x, d, hint) <- scalarFull v
       r <- arith (powM p x n)
-      Right (num (dimPow (fromIntegral n) d) (hintPow p (fromIntegral n) =<< hint) r)
+      Right $ case v of
+        -- A power of a unit is a unit (design §3.10, U2).
+        VUnit _ ->
+          VUnit
+            (num (dimPow (fromIntegral n) d) (unitHintPow p (fromIntegral n) =<< hint) r)
+        _ -> num (dimPow (fromIntegral n) d) (hintPow p (fromIntegral n) =<< hint) r
     -- Fresh unit nudges, one per component (design §3.2.5).
     TNoise k l n ->
       let count = fromInteger n
@@ -489,9 +501,11 @@ arith = either (Left . convert) Right
 num :: Dim -> Maybe UnitHint -> Magnitude -> Value
 num d hint r = VTensor [] d hint (V.singleton (Right r))
 
+-- | A tensor's parts; a unit's, which are a number's (design §3.10, U1).
 tensor :: Value -> Either EvalError ([Int], Dim, Maybe UnitHint, Vector Elem)
 tensor = \case
   VTensor dims d hint buf -> Right (dims, d, hint, buf)
+  VUnit v -> tensor v
   _ -> Left (Internal "expected a tensor")
 
 point :: Value -> Either EvalError ([Int], Dim, Maybe Chart, Vector Elem)
@@ -517,6 +531,7 @@ scalar v = (\(x, _, _) -> x) <$> scalarFull v
 scalarFull :: Value -> Either EvalError (Magnitude, Dim, Maybe UnitHint)
 scalarFull = \case
   VTensor [] d hint buf | V.length buf == 1 -> (,d,hint) <$> V.head buf
+  VUnit v -> scalarFull v
   _ -> Left (Internal "expected a number")
 
 bool :: Value -> Either EvalError Bool
@@ -532,6 +547,7 @@ asUnit atom = \case
   VTensor [] d _ buf | V.length buf == 1 -> do
     x <- V.head buf
     Right (VTensor [] d (Just (UnitHint [UnitFactor atom 1 d x] x d False)) buf)
+  VUnit v -> VUnit <$> asUnit atom v
   v -> Right v
 
 -- | Name a chart value after the definition it came from.
@@ -549,8 +565,15 @@ recomputed from what is left. Nothing when a factor cannot be raised to its
 power, which drops the hint.
 -}
 mkHint :: Precision -> [UnitFactor] -> Maybe UnitHint
-mkHint p factors = do
-  let kept = filter ((/= 0) . (.power)) (cancel factors)
+mkHint = mkHintAs True
+
+{- | 'mkHint', cancelling units of one dimension or not: a unit's own hint
+is its expression as written (design §3.10, U8), so @km/m@ stays @km/m@
+until a quantity of it is taken.
+-}
+mkHintAs :: Bool -> Precision -> [UnitFactor] -> Maybe UnitHint
+mkHintAs cancelling p factors = do
+  let kept = filter ((/= 0) . (.power)) (if cancelling then cancel factors else factors)
   total <-
     foldM
       ( \acc u ->
@@ -579,7 +602,11 @@ mkHint p factors = do
   groupOn key xs = [[x | x <- xs, key x == k] | k <- nub (map key xs)]
 
 hintMul :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
-hintMul p a b = mkHint p (foldl merge a.atoms b.atoms)
+hintMul p a b = mkHint p (mergeAtoms a.atoms b.atoms)
+
+-- | Two hints' atoms, a unit written in both taking the sum of its powers.
+mergeAtoms :: [UnitFactor] -> [UnitFactor] -> [UnitFactor]
+mergeAtoms = foldl merge
  where
   merge acc u
     | any ((== u.atom) . (.atom)) acc =
@@ -591,6 +618,35 @@ hintInv p a = mkHint p [u{power = negate u.power} | u <- a.atoms]
 
 hintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
 hintPow p k a = mkHint p [u{power = u.power * k} | u <- a.atoms]
+
+{- | The hint of unit arithmetic (design §3.10, U2): the operands' hints
+combined as written, nothing cancelled.
+-}
+unitHintMul :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
+unitHintMul p a b = mkHintAs False p (mergeAtoms a.atoms b.atoms)
+
+unitHintDiv :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
+unitHintDiv p a b =
+  mkHintAs False p (mergeAtoms a.atoms [u{power = negate u.power} | u <- b.atoms])
+
+unitHintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
+unitHintPow p k a = mkHintAs False p [u{power = u.power * k} | u <- a.atoms]
+
+{- | Two units combined (design §3.10, U2): their magnitudes and dimensions
+as two numbers', their hints as written.
+-}
+unitOp ::
+  (Magnitude -> Magnitude -> Either EvalError Magnitude) ->
+  (Dim -> Dim -> Dim) ->
+  (UnitHint -> UnitHint -> Maybe UnitHint) ->
+  Value ->
+  Value ->
+  Thunk
+unitOp f dimF hintF x y = do
+  (mx, dx, hx) <- scalarFull x
+  (my, dy, hy) <- scalarFull y
+  m <- f mx my
+  Right (VUnit (num (dimF dx dy) (combine hintF hx hy) m))
 
 {- | The unit a sum prints in: the smaller of its operands', so that a + b and
 b + a print alike (design §3.2.12); the left one when they are equal.
@@ -629,21 +685,42 @@ of §3.2.12, magnitudes those of §3.2.
 -}
 runPrim :: Config -> Runtime -> Text -> [Thunk] -> Thunk
 runPrim cfg rt prim args = case (prim, args) of
+  -- A base unit is a unit (design §3.10, U1).
   (unit, [])
     | Just b <- baseUnit unit ->
         Right
-          ( num
-              (dimBase b)
-              ( Just
-                  ( UnitHint
-                      [UnitFactor (UnitBase unit) 1 (dimBase b) (Exact 1)]
-                      (Exact 1)
-                      (dimBase b)
-                      False
+          ( VUnit
+              ( num
+                  (dimBase b)
+                  ( Just
+                      ( UnitHint
+                          [UnitFactor (UnitBase unit) 1 (dimBase b) (Exact 1)]
+                          (Exact 1)
+                          (dimBase b)
+                          False
+                      )
                   )
+                  (Exact 1)
               )
-              (Exact 1)
           )
+  -- A unit's declaration (U7): its size, or a unit, as a unit.
+  ("unit", [a]) ->
+    a >>= \case
+      VUnit v -> Right (VUnit v)
+      v -> Right (VUnit v)
+  -- The quantity rule after a unit (U4): the literal times the unit's
+  -- magnitude, in the unit as written, its units of one dimension
+  -- cancelled as a product's are.
+  ("scale", [a, u]) -> do
+    (dims, _, _, xs) <- tensor =<< a
+    (k, d, h) <- scalarFull =<< u
+    Right
+      ( VTensor
+          dims
+          d
+          (h >>= \hh -> mkHint p hh.atoms)
+          (V.map (fmap (\x -> mulM p x k)) xs)
+      )
   -- Sum: the left operand's display unit wins.
   ("add", [a, b]) -> elementwise2 (pureOp addM) const (combine smallerUnit) a b
   ("sub", [a, b]) -> elementwise2 (pureOp subM) const (combine smallerUnit) a b
@@ -670,15 +747,21 @@ runPrim cfg rt prim args = case (prim, args) of
   -- Tensor product: ranks add, dimensions multiply, every pair of elements
   -- multiplied.
   ("outer", [a, b]) -> do
-    (d1, dim1, h1, xs) <- tensor =<< a
-    (d2, dim2, h2, ys) <- tensor =<< b
-    Right
-      ( VTensor
-          (d1 ++ d2)
-          (dimMul dim1 dim2)
-          (combine (hintMul p) h1 h2)
-          (V.concatMap (\x -> V.map (\y -> mulM p <$> x <*> y) ys) xs)
-      )
+    va <- a
+    vb <- b
+    case (va, vb) of
+      -- Two units (design §3.10, U2).
+      (VUnit x, VUnit y) -> unitOp (\m n -> Right (mulM p m n)) dimMul (unitHintMul p) x y
+      _ -> do
+        (d1, dim1, h1, xs) <- tensor va
+        (d2, dim2, h2, ys) <- tensor vb
+        Right
+          ( VTensor
+              (d1 ++ d2)
+              (dimMul dim1 dim2)
+              (combine (hintMul p) h1 h2)
+              (V.concatMap (\x -> V.map (\y -> mulM p <$> x <*> y) ys) xs)
+          )
   -- Contracting product: the left operand's last index against the right
   -- operand's first.
   ("dot", [a, b]) -> do
@@ -706,15 +789,21 @@ runPrim cfg rt prim args = case (prim, args) of
                   )
       _ -> Left (Internal "dot: operand shapes do not contract")
   ("div", [a, b]) -> do
-    (dims, d1, h1, xs) <- tensor =<< a
-    (k, d2, h2) <- scalarFull =<< b
-    Right
-      ( VTensor
-          dims
-          (dimDiv d1 d2)
-          (combine (hintMul p) h1 (hintInv p =<< h2))
-          (V.map (\x -> x >>= \x' -> arith (divM p x' k)) xs)
-      )
+    va <- a
+    vb <- b
+    case (va, vb) of
+      -- Two units (design §3.10, U2).
+      (VUnit x, VUnit y) -> unitOp (\m n -> arith (divM p m n)) dimDiv (unitHintDiv p) x y
+      _ -> do
+        (dims, d1, h1, xs) <- tensor va
+        (k, d2, h2) <- scalarFull vb
+        Right
+          ( VTensor
+              dims
+              (dimDiv d1 d2)
+              (combine (hintMul p) h1 (hintInv p =<< h2))
+              (V.map (\x -> x >>= \x' -> arith (divM p x' k)) xs)
+          )
   ("eq", [a, b]) -> VBool <$> equal a b
   ("ne", [a, b]) -> VBool . not <$> equal a b
   ("lt", [a, b]) -> compareWith (== LT) a b
@@ -1625,6 +1714,7 @@ render = \case
           _ -> T.unwords (conText c : parts)
       )
   VClosure _ -> Right "<function>"
+  VUnit v -> ("unit " <>) <$> render v
  where
   magnitude = \case
     Exact r -> frac r

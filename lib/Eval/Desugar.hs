@@ -21,6 +21,9 @@ module Eval.Desugar (
   ascriptionMarker,
   signatureMarker,
   ascriptionPath,
+  isQuantityMarker,
+  isToMarker,
+  readingMarkerName,
   unmarked,
   Resolution (..),
   Resolved (..),
@@ -30,13 +33,13 @@ module Eval.Desugar (
   renderDesugarError,
 ) where
 
-import Control.Monad (when, zipWithM)
+import Control.Monad (foldM, when, zipWithM)
 import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
 import Control.Monad.State.Strict (StateT, gets, modify', runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -60,10 +63,30 @@ data Provenance = Provenance
   the marker that stands for it in a term desugared for checking them
   ('desugarMarked')
   -}
+  , readings :: Int
+  {- ^ the quantities and @to@s whose reading is left to the types
+  (design §3.10, U4, U6) met so far, which number their markers
+  -}
   }
 
 emptyProvenance :: Provenance
-emptyProvenance = Provenance Map.empty Map.empty []
+emptyProvenance = Provenance Map.empty Map.empty [] 0
+
+{- | The marker of a quantity whose reading the types choose (design §3.10,
+U4): @scale lit u@ after a unit, @pointOn c lit@ after a chart. Numbered,
+so that inference names each marker's reading and 'Eval.Infer.rewriteReadings'
+writes it in; a term with a marker is never stored.
+-}
+isQuantityMarker :: Text -> Bool
+isQuantityMarker = T.isPrefixOf "§quantity:"
+
+-- | The marker of a @to@ whose reading the types choose (design §3.10, U6).
+isToMarker :: Text -> Bool
+isToMarker = T.isPrefixOf "§to:"
+
+-- | The @k@th marker of a kind, @quantity@ or @to@.
+readingMarkerName :: Text -> Int -> Text
+readingMarkerName kind k = "§" <> kind <> ":" <> T.pack (show k)
 
 -- | The span of a Core node, and the hint for an error there, if any.
 provenanceAt :: Path -> Provenance -> Maybe (S.Span, Maybe Text)
@@ -239,6 +262,11 @@ record path sp = lift (modify' (\p -> p{spans = Map.insert (reverse path) sp p.s
 hintAt :: S.Span -> Text -> M ()
 hintAt sp msg = lift (modify' (\p -> p{hints = Map.insert sp msg p.hints}))
 
+-- | Advice for a type error at a span that has none yet.
+hintIfNone :: S.Span -> Text -> M ()
+hintIfNone sp msg =
+  lift (modify' (\p -> p{hints = Map.insertWith (\_ old -> old) sp msg p.hints}))
+
 lookupCtx :: Text -> Ctx n -> Maybe (Fin n)
 lookupCtx x = \case
   VNil -> Nothing
@@ -368,7 +396,17 @@ desugar path ctx e = do
         (pure (Con nilC []))
         (zip [0 ..] es)
     S.CaseOf scrut alts -> caseOf path ctx e.span scrut alts
-    S.Var x -> headApp path ctx e x []
+    S.Var x -> do
+      -- A unit's name is the unit (design §3.10, U3): where an amount was
+      -- meant, one of it is written so.
+      unit <- unitName ctx e
+      when
+        unit
+        ( hintIfNone
+            e.span
+            ("`" <> x <> "` is a unit; where an amount is meant, write `1 " <> x <> "`")
+        )
+      headApp path ctx e x []
     S.App f a -> do
       let (hd0, args) = spine e
       -- A qualified head, @orbital.period a@, is applied as a name is.
@@ -402,72 +440,108 @@ desugar path ctx e = do
       t' <- desugar (1 : path) ctx t
       f' <- desugar (2 : path) ctx f
       pure (Case c' [Alt falseC VNil f', Alt trueC VNil t'])
-    S.BinOp op a b -> case op of
-      S.PlusMinus k ->
-        asks (Uncertain k . (.owner))
-          <*> desugar (0 : path) ctx a
-          <*> desugar (1 : path) ctx b
-      -- A point moves to another scale; everything else to a display unit.
-      -- A moving chart must be applied at a time first (design §3.8).
-      S.To -> do
-        refuseMoving ctx b
-        scaleName <- isScaleName ctx b
-        prim (if scaleName then "toScale" else "to") [a, b]
-      S.PAdd -> prim "pointAdd" [a, b]
-      S.Cons ->
-        (\x r -> Con consC [x, r])
-          <$> desugar (0 : path) ctx a
-          <*> desugar (1 : path) ctx b
-      S.PSub -> prim "pointSub" [a, b]
-      S.Compose ->
-        -- f ∘ g  =  \x -> f (g x)
-        let x = fresh "c" 0
-            var = S.Expr e.span (S.Var x)
-         in desugar
+    -- A unit's declaration (design §3.10, U7): its body made a unit.
+    S.UnitBody a -> (\a' -> PrimApp "unit" [a']) <$> desugar (0 : path) ctx a
+    -- After a literal the quantity takes the whole unit expression (design
+    -- §3.10, U5): the chain of products and quotients is regrouped first.
+    S.BinOp op a b -> do
+      grouped <- regroup ctx e
+      if grouped /= e
+        then desugar path ctx grouped
+        else case op of
+          S.PlusMinus k ->
+            asks (Uncertain k . (.owner))
+              <*> desugar (0 : path) ctx a
+              <*> desugar (1 : path) ctx b
+          -- A point moves to another chart, an amount to a display unit; which,
+          -- the target's type says when its spelling does not (design §3.10,
+          -- U6). A moving chart must be applied at a time first (design §3.8).
+          S.To -> do
+            refuseMoving ctx b
+            scaleName <- isScaleName ctx b
+            unit <- staticUnit ctx b
+            -- A unit's name here is meant as a unit; one of the wrong
+            -- dimension is not to be written as an amount.
+            named <- unitName ctx b
+            when
+              named
+              (hintAt b.span "the unit after `to` has the dimension of the value before it")
+            if scaleName
+              then prim "toScale" [a, b]
+              else
+                if unit
+                  then prim "to" [a, b]
+                  else readingMarker "to" >>= \m -> prim m [a, b]
+          S.PAdd -> prim "pointAdd" [a, b]
+          S.Cons ->
+            (\x r -> Con consC [x, r])
+              <$> desugar (0 : path) ctx a
+              <*> desugar (1 : path) ctx b
+          S.PSub -> prim "pointSub" [a, b]
+          S.Compose ->
+            -- f ∘ g  =  \x -> f (g x)
+            let x = fresh "c" 0
+                var = S.Expr e.span (S.Var x)
+             in desugar
+                  path
+                  ctx
+                  (synthLam e.span x (S.Expr e.span (S.App a (S.Expr e.span (S.App b var)))))
+          S.Infix f ->
+            desugar
               path
               ctx
-              (synthLam e.span x (S.Expr e.span (S.App a (S.Expr e.span (S.App b var)))))
-      S.Infix f ->
-        desugar
-          path
-          ctx
-          (S.Expr e.span (S.App (S.Expr e.span (S.App (S.Expr a.span (S.Var f)) a)) b))
-      -- The cross product is a prelude definition, not a primitive, so its
-      -- operator resolves through the name like a backticked function.
-      S.Cross ->
-        desugar
-          path
-          ctx
-          ( S.Expr
-              e.span
-              (S.App (S.Expr e.span (S.App (S.Expr e.span (S.Var "cross")) a)) b)
-          )
-      -- Juxtaposition is for units (§2.6): 5 km, 3 (m/s), [1, 0, 0] km.
-      S.Scale -> do
-        refuseMoving ctx b
-        scaleName <- isScaleName ctx b
-        ok <- unitExpr ctx b
-        if scaleName
-          then -- 20 degC: a point on the scale (design §3.6).
-            prim "pointOn" [b, a]
-          else
-            if ok
-              then prim "outer" [a, b]
+              (S.Expr e.span (S.App (S.Expr e.span (S.App (S.Expr a.span (S.Var f)) a)) b))
+          -- The cross product is a prelude definition, not a primitive, so its
+          -- operator resolves through the name like a backticked function.
+          S.Cross ->
+            desugar
+              path
+              ctx
+              ( S.Expr
+                  e.span
+                  (S.App (S.Expr e.span (S.App (S.Expr e.span (S.Var "cross")) a)) b)
+              )
+          -- The quantity rule (design §3.10, U4): a literal and what follows it,
+          -- the whole unit expression, juxtaposed atoms multiplied. After a
+          -- unit it is the amount `scale lit u`, after a chart the point
+          -- `pointOn c lit`; the spelling decides for declared units and
+          -- charts, the types for anything else.
+          S.Scale -> do
+            let (lit, atoms) = scaleChain e
+                unitE = foldl1 (binop S.Outer) atoms
+            mapM_ (refuseMoving ctx) atoms
+            chart <- case atoms of
+              [c] -> isScaleName ctx c
+              _ -> pure False
+            unit <- staticUnit ctx unitE
+            if chart
+              then prim "pointOn" [unitE, lit]
               else
-                failWith
-                  ( BadSpecialForm
-                      b.span
-                      ( ( case b.node of
-                            S.Var x -> "`" <> x <> "` is not a unit"
-                            _ -> "this is not a unit expression"
-                        )
-                          <> ": a value next to a literal must be a unit (5 km, 3 (m/s)); write the `*`"
-                      )
-                  )
-      _ -> prim (opPrim op) [a, b]
+                if unit
+                  then prim "scale" [lit, unitE]
+                  else readingMarker "quantity" >>= \m -> prim m [lit, unitE]
+          -- An amount and a unit are not multiplied (design §3.10, U2).
+          _ | op `elem` [S.Outer, S.Div] -> do
+            mixedHint ctx e a b
+            prim (opPrim op) [a, b]
+          _ -> prim (opPrim op) [a, b]
     -- Negating a constant is a negative constant, so that `-3` and a literal
     -- negative three are one term with one hash (core.md §6: constants are
-    -- canonical). Anything else is the primitive.
+    -- canonical); so is a quantity of a constant, `-3 K` being `scale (-3)
+    -- K` as the printer writes it (design §3.10). Anything else is the
+    -- primitive.
+    S.Neg a
+      | S.BinOp S.Scale _ _ <- a.node
+      , (lit, atoms) <- scaleChain a
+      , constantLiteral lit ->
+          desugar
+            path
+            ctx
+            ( foldl
+                (binop S.Scale)
+                (S.Expr (S.Span e.span.from lit.span.to) (S.Neg lit))
+                atoms
+            )
     S.Neg a -> do
       a' <- desugar (0 : path) ctx a
       pure $ case a' of
@@ -871,40 +945,203 @@ declaresUncertainty e = case e.node of
     (hd, _ : _) | S.Var x <- hd.node -> x `elem` ["noise", "gauss", "within", "sigma"]
     _ -> False
 
-{- | Whether an expression may follow a literal under the quantity rule
-(§2.6): a base unit or a declared unit (not shadowed by a local binder),
-a number, or those combined with @*@, @/@, @^@ and juxtaposition.
+-- Units (design §3.10) -------------------------------------------------------------
+
+{- | Whether an expression is a declared unit's name: a base unit or a name
+declared with @unit@, not shadowed by a local binder, written bare or
+qualified (@5 orbital.furlong@, design §7.6). Names decide the grouping
+of a quantity (U5) and which quantities and @to@s the spelling reads
+(U4, U6); the types decide everything else.
 -}
-unitExpr :: Ctx n -> S.Expr -> M Bool
-unitExpr ctx e = case e.node of
-  S.Num _ -> pure True
+unitName :: Ctx n -> S.Expr -> M Bool
+unitName ctx e = case e.node of
   S.Var x
     | Just _ <- lookupCtx x ctx -> pure False
-    -- A base unit is a unit; a declared name is what it was declared; any
-    -- other primitive or special form (pi, sin, noise) is not; an unknown
-    -- name is let through so that the ordinary path reports it as unknown,
-    -- and so is a name two uses offer, which it reports as ambiguous.
     | otherwise ->
         ( \case
-            Nothing ->
-              isJust (baseUnit x) || (isNothing (primArity x) && x `notElem` specialNames)
-            Just (_, AAmbiguous _) -> True
+            Nothing -> isJust (baseUnit x)
             Just (_, r) -> maybe False (.isUnit) (asTerm r)
         )
           <$> resolveWritten x
-  -- A qualified unit, @5 orbital.furlong@ (design §7.6).
   S.FieldOf _ _ -> do
     e' <- qualifiedChain ctx e
     case e'.node of
-      S.Var _ -> unitExpr ctx e'
+      S.Var _ -> unitName ctx e'
       _ -> pure False
-  S.Pow u _ -> unitExpr ctx u
-  S.BinOp op a b
-    | op `elem` [S.Outer, S.Div, S.Scale] ->
-        (&&) <$> unitExpr ctx a <*> unitExpr ctx b
   _ -> pure False
+
+-- | A declared unit's name, with or without a power: what a quantity takes in.
+unitAtom :: Ctx n -> S.Expr -> M Bool
+unitAtom ctx e = case e.node of
+  S.Pow u _ -> unitName ctx u
+  _ -> unitName ctx e
+
+{- | Whether an expression is unit arithmetic on declared units' names alone,
+@km@, @km/h@, @kg*m/s^2@: a unit by its spelling, so a quantity of it is
+@scale@ and a @to@ to it the display unit's, with no reading for the
+types to choose.
+-}
+staticUnit :: Ctx n -> S.Expr -> M Bool
+staticUnit ctx e = case e.node of
+  S.Pow u _ -> staticUnit ctx u
+  S.BinOp op a b
+    | op `elem` [S.Outer, S.Div] -> (&&) <$> staticUnit ctx a <*> staticUnit ctx b
+  _ -> unitName ctx e
+
+{- | The literal of a quantity and the atoms juxtaposed after it, @9.81 m
+s^-2@ as @9.81@ and @[m, s^-2]@.
+-}
+scaleChain :: S.Expr -> (S.Expr, [S.Expr])
+scaleChain = go []
  where
-  specialNames = ["noise", "gauss", "within", "sigma"]
+  go acc x = case x.node of
+    S.BinOp S.Scale a b -> go (b : acc) a
+    _ -> (x, acc)
+
+-- | A literal of constants: a number, or a bracket literal of them.
+constantLiteral :: S.Expr -> Bool
+constantLiteral x = case x.node of
+  S.Num _ -> True
+  S.Neg y -> constantLiteral y
+  S.Vec es -> all constantLiteral es
+  _ -> False
+
+{- | Whether a binary node was written in parentheses: its span is wider than
+its operands'.
+-}
+parenthesised :: S.Expr -> Bool
+parenthesised x = case x.node of
+  S.BinOp _ a b -> x.span /= S.spanUnion a.span b.span
+  _ -> False
+
+binop :: S.Op -> S.Expr -> S.Expr -> S.Expr
+binop o a b = S.Expr (S.spanUnion a.span b.span) (S.BinOp o a b)
+
+{- | A quantity that a following unit may join (design §3.10, U5): its
+literal, its unit expression, and how to put it back, under a minus sign
+when it was written under one. Not one written in parentheses.
+-}
+quantityOf :: S.Expr -> Maybe (S.Expr, S.Expr, S.Expr -> S.Expr)
+quantityOf q = case q.node of
+  S.BinOp S.Scale _ _
+    | not (parenthesised q)
+    , (lit, atoms@(_ : _)) <- scaleChain q ->
+        Just (lit, foldl1 (binop S.Outer) atoms, id)
+  S.Neg inner
+    | inner.span.to == q.span.to
+    , Just (lit, u, back) <- quantityOf inner ->
+        Just (lit, u, \x -> S.Expr (S.spanUnion q.span x.span) (S.Neg (back x)))
+  _ -> Nothing
+
+{- | Unit operators bind before numbers (design §3.10, U5): in a chain of
+products and quotients, a quantity takes in each following factor that is
+a declared unit's name, with or without a power, so @9.81 m/s^2@ is
+@9.81 (m/s^2)@ and @x / 1 km/h@ is @x / (1 (km/h))@. A number, or any other
+name, ends it: @6 m / 2 s@, @6 m / x@. Where a name ends a quantity, a
+type error there says how to write the name into it, should it be a unit.
+-}
+regroup :: Ctx n -> S.Expr -> M S.Expr
+regroup ctx e = case top e of
+  (_, []) -> pure e
+  (first, rest) -> do
+    built <- foldM step [(Nothing, first)] rest
+    -- The whole keeps its span, parentheses and all.
+    pure (S.Expr e.span (rebuild (reverse built)).node)
+ where
+  -- The chain's first operand and the rest with their operators, not
+  -- descending into parentheses below its top.
+  top x = case x.node of
+    S.BinOp op a b | op `elem` chained -> let (h, more) = links a in (h, more ++ [(op, b)])
+    _ -> (x, [])
+  links x
+    | parenthesised x = (x, [])
+    | otherwise = top x
+  chained = [S.Outer, S.Dot, S.Wedge, S.EMul, S.EDiv, S.Div]
+  step acc (op, b) = case acc of
+    (before, q) : earlier
+      | op `elem` [S.Outer, S.Div]
+      , Just (lit, units, back) <- quantityOf q -> do
+          atom <- unitAtom ctx b
+          if atom
+            then
+              pure
+                ( (before, back (binop S.Scale lit (binop op units b)))
+                    : earlier
+                )
+            else do
+              endsAt (spanOf acc b) lit units op b
+              pure ((Just op, b) : acc)
+    _ -> pure ((Just op, b) : acc)
+  -- The span of the node the operand joins: from the chain's start.
+  spanOf acc b = S.spanUnion (snd (last acc)).span b.span
+  rebuild = \case
+    (_, x) : more -> foldl (\l (op, r) -> binop (fromMaybe S.Outer op) l r) x more
+    [] -> e
+  endsAt sp lit units op b = case (b.node, surfaceText lit, surfaceText units) of
+    (S.Var x, Just l, Just u) ->
+      hintAt
+        sp
+        ( "`"
+            <> x
+            <> "` is not a declared unit, so the quantity ends before it; if it is a unit, write "
+            <> l
+            <> " ("
+            <> u
+            <> (if op == S.Div then "/" else "*")
+            <> x
+            <> ")"
+        )
+    _ -> pure ()
+
+{- | Where a unit's name meets an amount under @*@ or @/@ (design §3.10, U2),
+the error says how to write one of it.
+-}
+mixedHint :: Ctx n -> S.Expr -> S.Expr -> S.Expr -> M ()
+mixedHint ctx e a b = do
+  ua <- unitName ctx a
+  ub <- unitName ctx b
+  sa <- staticUnit ctx a
+  sb <- staticUnit ctx b
+  let name x = case x.node of
+        S.Var n -> Just n
+        _ -> Nothing
+      advise n = hintAt e.span ("`" <> n <> "` is a unit; write `1 " <> n <> "`")
+  case (ua && not sb, ub && not sa) of
+    (True, _) | Just n <- name a -> advise n
+    (_, True) | Just n <- name b -> advise n
+    _ -> pure ()
+
+-- | A fresh marker of a reading the types choose, @quantity@ or @to@.
+readingMarker :: Text -> M Text
+readingMarker kind = do
+  -- Named by the definition too: the members of a cycle are desugared
+  -- apart, each counting from zero.
+  def <- asks (.definition)
+  k <- lift (gets (.readings))
+  lift (modify' (\p -> p{readings = k + 1}))
+  pure (readingMarkerName kind k <> ":" <> def)
+
+{- | A literal or unit expression as it reads back, for a hint: numbers,
+names, powers, products and quotients.
+-}
+surfaceText :: S.Expr -> Maybe Text
+surfaceText x = case x.node of
+  S.Num r -> Just (numberText r)
+  S.Var n -> Just n
+  S.Pow u k -> (<> ("^" <> T.pack (show k))) <$> surfaceText u
+  S.BinOp S.Outer a b -> (\l r -> l <> "*" <> r) <$> surfaceText a <*> surfaceText b
+  S.BinOp S.Div a b -> (\l r -> l <> "/" <> r) <$> surfaceText a <*> surfaceText b
+  _ -> Nothing
+ where
+  numberText r
+    | denominator r == 1 = T.pack (show (numerator r))
+    | otherwise = case [k | k <- [1 .. 20 :: Int], denominator (r * 10 ^ k) == 1] of
+        k : _ ->
+          let digits = T.pack (show (abs (numerator (r * 10 ^ k))))
+              padded = T.replicate (k + 1 - T.length digits) "0" <> digits
+              (whole, frac) = T.splitAt (T.length padded - k) padded
+           in (if r < 0 then "-" else "") <> whole <> "." <> frac
+        [] -> T.pack (show (numerator r)) <> "/" <> T.pack (show (denominator r))
 
 {- | A chart's origin as written, split into the origin and its parent when
 the last atom juxtaposed to it is a chart name (design §3.8): @[2, 0, 1] m
@@ -1219,7 +1456,7 @@ quantityHints ctx hd args = mapM_ check (zip args (drop 1 args))
     (lit, S.Var x)
       | Just shown <- literalText lit
       , Nothing <- lookupCtx x ctx -> do
-          unit <- unitExpr ctx u
+          unit <- unitName ctx u
           when unit $ do
             let msg =
                   shown

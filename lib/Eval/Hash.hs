@@ -371,6 +371,7 @@ decType =
   byte >>= \case
     0x21 -> TTensor <$> decShape <*> decDim
     0x22 -> TPoint <$> decShape <*> decDim
+    0x2A -> TUnit <$> decDim
     0x23 -> (`TScale` AAnon) <$> decShape <*> decDim
     0x29 -> TScale <$> decShape <*> decAxis <*> decDim
     0x26 -> TFun <$> ty <*> ty

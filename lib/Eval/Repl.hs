@@ -213,7 +213,7 @@ completions session prev word = case word of
       | typeOpenAt (reverse (takeWhile (/= ';') prev)) ->
           plain
             ( sorted
-                ( ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Chart"]
+                ( ["Bool", "Num", "Unit", "Vec", "Mat", "Tensor", "Point", "Chart"]
                     ++ map T.unpack (types ++ map (shortestNameOf TypeLabel session.scope cb) types)
                 )
             )
@@ -333,7 +333,8 @@ namesOf session =
   -- Each label by its full path and as the scope spells it, so that the
   -- library's `si.km` is a unit written `km` (design §7.6, §7.7).
   spelled short ns = Set.fromList ns <> Set.fromList (map (short session.scope cb) ns)
-  builtinTypes = ["Num", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale", "Bool"]
+  builtinTypes =
+    ["Num", "Unit", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale", "Bool"]
 
 -- | What a printed line is, for colour.
 data Kind

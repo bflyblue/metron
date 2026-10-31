@@ -73,9 +73,12 @@ import Eval.Type.Base
 
 {- | Print a type with variables named by kind in order of appearance: @a b c@
 for types, @n m k@ for lengths, @s s1 s2@ for shapes, @d d1 d2@ for
-dimensions (design §4.5). Rank zero, one and two tensors print as @Num@,
-@Vec@ and @Mat@; a dimension follows as their last argument unless it is
-@1@, bare when it is one name and in parentheses otherwise (design §4.1).
+dimensions (design §4.5), as @:type@ names them ('forallNames'): each name
+used once, and a name the type prints as a base symbol skipped, so that an
+error's @Mat n k m@ never reads a length as metres. Rank zero, one and two
+tensors print as @Num@, @Vec@ and @Mat@; a dimension follows as their last
+argument unless it is @1@, bare when it is one name and in parentheses
+otherwise (design §4.1).
 -}
 renderType :: Type -> Text
 renderType = renderTypeIn Ascii
@@ -85,7 +88,8 @@ renderScheme (Forall _ t) = renderType t
 
 -- | 'renderType' in a chosen spelling: @Num (m/s²) → Num m@ in unicode.
 renderTypeIn :: Spelling -> Type -> Text
-renderTypeIn spelling t = renderWith spelling (prettyNames (freeVars t)) 0 t
+renderTypeIn spelling t =
+  renderWith spelling (forallNames (baseSymbolsOf t) (freeVars t)) 0 t
 
 renderSchemeIn :: Spelling -> Scheme -> Text
 renderSchemeIn spelling (Forall _ t) = renderTypeIn spelling t
@@ -172,6 +176,7 @@ positionsOf = \case
   TScale sh _ _ -> shape sh
   TData _ as -> concatMap arg as ++ [(l, x) | (ALen l, Just x) <- withCompanions as]
   TFun a b -> positionsOf a ++ positionsOf b
+  TUnit _ -> []
   TVar _ -> []
  where
   shape = \case
@@ -250,6 +255,7 @@ baseSymbolsOf :: Type -> Set.Set Text
 baseSymbolsOf = \case
   TTensor _ d -> dim d
   TPoint _ d -> dim d
+  TUnit d -> dim d
   TScale _ _ d -> dim d
   TData _ as -> foldMap arg as
   TFun a b -> baseSymbolsOf a <> baseSymbolsOf b
@@ -331,6 +337,9 @@ renderWithNamed typeName spelling axes names prec = \case
   -- space names its root's axes after it (design §3.9), when they are
   -- named or a variable that prints; a scalar chart has no axes to name.
   TPoint sh d -> paren (prec > 10) ("Point " <> over sh d)
+  -- A unit (design §3.10, U1) takes its dimension as `Num` does: `Unit m`,
+  -- `Unit (m/s)`, and `Unit` alone when dimensionless.
+  TUnit d -> paren (prec > 10 && not (isDimOne d)) ("Unit" <> dim d)
   TScale SNil _ d -> paren (prec > 10) ("Chart " <> over SNil d)
   TScale sh r d ->
     paren (prec > 10) ("Chart " <> over sh d <> maybe "" (" " <>) (rootText r))

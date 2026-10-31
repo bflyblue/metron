@@ -135,12 +135,13 @@ primScheme name = case name of
   -- a spinning one have axes of their own, read off their first argument
   -- ('primSchemeFor'); a translated chart, in a parent of its own shape and
   -- dimension, shares its parent's axes and root (design §3.9). The origin
-  -- is an amount along the parent's axes.
+  -- is an amount along the parent's axes, the step a unit (design §3.10,
+  -- U7).
   "mkChart3" ->
     Just
       ( Forall
           [sv, dv, rv]
-          (TFun (numD d) (TFun sd (TFun (chartOf s) (chartOf s))))
+          (TFun (TUnit d) (TFun sd (TFun (chartOf s) (chartOf s))))
       )
   -- A point is stored from the base origin along the base axes, so its
   -- type is along the chart's root (design §3.9, stage 2b): the
@@ -167,7 +168,11 @@ primScheme name = case name of
   "or" -> mono (TFun boolT (TFun boolT boolT))
   "not" -> mono (TFun boolT boolT)
   "pi" -> mono numT
-  "to" -> Just (Forall [sv, dv] (TFun sd (TFun (numD d) sd)))
+  -- An amount shown in a unit (design §3.10, U6).
+  "to" -> Just (Forall [sv, dv] (TFun sd (TFun (TUnit d) sd)))
+  -- The quantity rule after a unit (design §3.10, U4): a dimensionless
+  -- literal of any shape times one unit, an amount.
+  "scale" -> Just (Forall [sv, dv] (TFun (TTensor s dimOne) (TFun (TUnit d) sd)))
   -- The wedge product is the general binary product of vectors; the 3D
   -- cross product is `star (wedge a b)` and lives in the prelude. Both
   -- vectors and the matrix are along one axis set (design §3.9).
@@ -315,8 +320,9 @@ primScheme name = case name of
           [nv, dv, d2v, xav, rv]
           (TFun (chartOf (pos n xa)) (TFun (vecA n AAnon d2) (vecA n xa d2)))
       )
+  -- A base unit is a unit (design §3.10, U1).
   _ -> case baseUnit name of
-    Just b -> mono (numD (dimBase b))
+    Just b -> mono (TUnit (dimBase b))
     Nothing -> Nothing
  where
   sv = (0, KShape)
@@ -385,14 +391,14 @@ primSchemeFor name statics = case name of
   "mkScale" -> Just $ tagged $ \_ tag ->
     Forall
       [sv, dv, rv]
-      (TFun tag (TFun (numD d) (TFun (TTensor s d) (TScale s root d))))
+      (TFun tag (TFun (TUnit d) (TFun (TTensor s d) (TScale s root d))))
   "mkChart4" -> Just $ tagged $ \h tag ->
     Forall
       [nv, dv, xav, xbv, rv]
       ( TFun
           tag
           ( TFun
-              (numD d)
+              (TUnit d)
               ( TFun
                   (vecA n xa d)
                   ( TFun
@@ -408,7 +414,7 @@ primSchemeFor name statics = case name of
       ( TFun
           tag
           ( TFun
-              (numD d)
+              (TUnit d)
               ( TFun
                   (vecA three xa d)
                   ( TFun
@@ -642,10 +648,13 @@ lint look ctx = \case
                 <> ", not an instance of "
                 <> renderScheme general
             )
-    case (primScheme name, primSchemeFor name literals) of
-      (Just general, _) -> instanceOf general
+    case (unitReading name ty, primScheme name, primSchemeFor name literals) of
+      -- Unit arithmetic and a unit's declaration (design §3.10): the
+      -- reading of units.
+      (Just check, _, _) -> check
+      (_, Just general, _) -> instanceOf general
       -- contract, permute and slice: the scheme the literal positions determine.
-      (_, Just general) -> general >>= instanceOf
+      (_, _, Just general) -> general >>= instanceOf
       _ -> lintConstrained look name ty
     chartRelation name ty literals
     let go t = \case
@@ -757,6 +766,8 @@ lint look ctx = \case
     tb <- monoOf b
     case tb of
       TTensor SNil d -> mono (TTensor SNil (dimPow (fromIntegral n) d))
+      -- A power of a unit is a unit (design §3.10, U2).
+      TUnit d -> mono (TUnit (dimPow (fromIntegral n) d))
       _ -> Left "power of a non-number"
   TNoise _ _ k -> mono (vecT (LLit (fromIntegral k)))
   TUncertain _ _ x e -> do
@@ -830,6 +841,32 @@ lint look ctx = \case
     AShape _ -> KShape
     ADim _ -> KDim
     AAxis _ -> KAxis
+
+{- | Lint's check of a primitive used at its reading of units (design §3.10,
+U2, U7), when the type it is used at is that reading: @*@ and @/@ of two
+units, and a unit's declaration from an amount or a unit. 'Nothing' when
+the type is not the reading of units, so the reading of amounts is checked.
+-}
+unitReading :: Text -> Type -> Maybe (Either Text ())
+unitReading name ty = case (name, ty) of
+  ("outer", TFun (TUnit d1) (TFun (TUnit d2) (TUnit d3))) ->
+    Just
+      ( require
+          (d3 == dimMul d1 d2)
+          "outer: a unit product's dimension is not its operands'"
+      )
+  ("div", TFun (TUnit d1) (TFun (TUnit d2) (TUnit d3))) ->
+    Just
+      ( require
+          (d3 == dimDiv d1 d2)
+          "div: a unit quotient's dimension is not its operands'"
+      )
+  ("unit", TFun (TUnit d) (TUnit d')) ->
+    Just (require (d == d') "unit: a unit declared at another dimension")
+  ("unit", TFun (TTensor SNil d) (TUnit d')) ->
+    Just (require (d == d') "unit: a unit declared at another dimension")
+  ("unit", _) -> Just (Left ("unit: declared at " <> renderType ty))
+  _ -> Nothing
 
 {- | The primitives whose types are relations rather than schemes (design
 §4.2). Inference solved or defaulted their constraints; lint re-checks the
@@ -953,6 +990,7 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (TFun a b, TFun c d) -> matchType a c m >>= matchType b d
     (TTensor a da, TTensor b db) -> matchShape a b m >>= matchDim da db
     (TPoint a da, TPoint b db) -> matchShape a b m >>= matchDim da db
+    (TUnit da, TUnit db) -> matchDim da db m
     (TScale a ra da, TScale b rb db) -> matchShape a b m >>= matchAxis ra rb >>= matchDim da db
     (TData h as, TData h' bs)
       | h == h' && length as == length bs ->

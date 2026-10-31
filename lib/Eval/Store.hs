@@ -3,7 +3,7 @@
 A store is a directory:
 
 @
-format          "eval codebase 7"
+format          "eval codebase 8"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
 names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias] | sig name type | unsig name
@@ -77,11 +77,14 @@ library as seeded labels instead of assuming a prelude entered in memory
 format 6 (storage version 4) holds @Bool@, tuples and lists as declared
 types; format 7 writes the signatures of its @sig@ lines, which are text,
 with dimensions as type arguments, @Num (m/s)@ and not @Num [m s^-1]@
-(design §4.1). A store opens only at this format: until the language is
-released, an older store is refused, not migrated (core.md §6).
+(design §4.1); format 8 holds units as a type (design §3.10, part U): a
+quantity is @scale@, a unit's declaration wraps its body, and the library
+is respelled, so every term over a unit is another. A store opens only
+at this format: until the language is released, an older store is
+refused, not migrated (core.md §6).
 -}
 formatVersion :: Int
-formatVersion = 7
+formatVersion = 8
 
 {- | The store to use: the directory given, else a @.eval@ directory found by
 walking up from the working directory, else the user store under
@@ -143,7 +146,7 @@ openStore seeding d = do
               <> tshow v
               <> "; it predates format "
               <> tshow formatVersion
-              <> " and cannot be opened: recreate it (with the previous eval, `:export` it, respell the dimensions in its types, Num [m s^-1] as Num (m/s), and `:load` the file into a new codebase)"
+              <> " and cannot be opened: recreate it (with the previous eval, `:export` it, respell its quantities for units as a type, 60 * s as 60 s and x / s as x / 1 s, and the dimensions in its types, Num [m s^-1] as Num (m/s), and `:load` the file into a new codebase)"
           _ ->
             T.pack d
               <> " is not an eval codebase of format "

@@ -21,6 +21,9 @@ module Eval.Infer (
   TypeLookup,
   elaborateClosed,
   elaborateClosedWith,
+  readingsOf,
+  rewriteReadings,
+  hasReadingMarkers,
   Annotations (..),
   noAnnotations,
   inferClosed,
@@ -40,7 +43,13 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Builtin
 import Eval.Core
-import Eval.Desugar (Path, ascriptionMarker, unmarked)
+import Eval.Desugar (
+  Path,
+  ascriptionMarker,
+  isQuantityMarker,
+  isToMarker,
+  unmarked,
+ )
 import Eval.Dimension
 import Eval.TCore
 import Eval.Type
@@ -72,6 +81,42 @@ data Constraint
     chart's lengths along the root's axes (design §3.9, stage 2b)
     -}
     Rootward Shape Axis Shape
+  | {- | a primitive with two readings, chosen by the types it is used at
+    once one of them is known (design §3.10, U2, U4, U6, U7)
+    -}
+    Dispatch Reading
+
+{- | What a 'Dispatch' chooses between. Arithmetic and a unit declaration
+have two readings that are one operation at run time, so the choice is
+static only and an unknown one takes the amount reading at
+generalisation. The quantity rule and @to@ are different operations, so
+their choice is written into the term ('rewriteReadings') and an unknown
+one at generalisation is refused as ambiguous.
+-}
+data Reading
+  = {- | @*@ or @/@ (@outer@, @div@): its operands and its result, and the
+    shapes and dimensions either reading is made of, made with the
+    primitive's type, before its operands', so that a dimension is solved
+    as it was before units were a type
+    -}
+    Arith Text Type Type Type Parts
+  | -- | @^k@: the base and the result, and the base's dimension
+    Power Integer Dim Type Type
+  | {- | a quantity whose reading the desugarer left to the types, by its
+    marker: the literal, what follows it, and the result; @scale@ for a
+    unit, @pointOn@ for a chart (U4)
+    -}
+    Quantity Text (Maybe Text) Type Type Type
+  | {- | a @to@ whose reading the desugarer left to the types, by its
+    marker: the value, the target, and the result; the display unit's
+    @to@ for a unit, @toScale@ for a chart (U6)
+    -}
+    Convert Text Type Type Type
+  | -- | a unit declaration's body, an amount or a unit, and the unit (U7)
+    UnitOf Type Type
+
+-- | The operands' and the result's shapes and the operands' dimensions.
+data Parts = Parts Shape Shape Shape Dim Dim
 
 data St = St
   { subst :: Subst
@@ -85,6 +130,10 @@ data St = St
   , typeDefs :: Hash -> Maybe TypeDef
   -- ^ the declared types, for equality on them
   , annotations :: Annotations
+  , chosen :: Map.Map Text Text
+  {- ^ the primitive each quantity or @to@ marker was resolved to
+  (design §3.10, U4, U6), by the marker's name
+  -}
   }
 
 type Infer = StateT St (Either TypeError)
@@ -116,10 +165,26 @@ elaborateClosed = elaborateClosedWith noAnnotations
 -- | 'elaborateClosed' with the annotations of the input being checked.
 elaborateClosedWith ::
   Annotations -> TypeLookup -> Term Z -> Either TypeError ([Scheme], TTerm Z)
-elaborateClosedWith annots look term = do
+elaborateClosedWith annots look term = fst <$> elaborating annots look term
+
+{- | The primitive each quantity and @to@ marker of a closed term resolves
+to (design §3.10, U4, U6), by its marker's name, from inference with the
+given annotations: a signature read as an ascription of the body it signs
+resolves the markers in it. 'rewriteReadings' writes them into the term.
+-}
+readingsOf ::
+  Annotations -> TypeLookup -> Term Z -> Either TypeError (Map.Map Text Text)
+readingsOf annots look term = snd <$> elaborating annots look term
+
+elaborating ::
+  Annotations ->
+  TypeLookup ->
+  Term Z ->
+  Either TypeError (([Scheme], TTerm Z), Map.Map Text Text)
+elaborating annots look term = do
   ((schemes, tt), st) <-
-    runStateT go (St emptySubst 0 axisBase [] look.typeDefOf annots)
-  pure (map (applyScheme st.subst) schemes, zonk st.subst tt)
+    runStateT go (St emptySubst 0 axisBase [] look.typeDefOf annots Map.empty)
+  pure ((map (applyScheme st.subst) schemes, zonk st.subst tt), st.chosen)
  where
   go = case term of
     Cycle hints bodies -> do
@@ -268,6 +333,33 @@ unify p expected actual = do
             <> ", got "
             <> renderType a
             <> ": an amount and a point; a point has no sum, multiple or unit; use .+ and .-, or to with a chart (design §3.6)"
+        )
+    (TUnit d1, TUnit d2) -> do
+      st <- get
+      case runStateT (unifyDim p d1 d2) st of
+        Right ((), st') -> put st'
+        Left (TypeError _ detail) ->
+          failAt
+            p
+            ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
+    -- A unit is not an amount (design §3.10, U3): `1 km` is the amount.
+    (TUnit _, TTensor _ _) ->
+      failAt
+        p
+        ( "expected "
+            <> renderType e
+            <> ", got "
+            <> renderType a
+            <> ": an amount where a unit goes; a unit is written by its name, km or km/h"
+        )
+    (TTensor _ _, TUnit _) ->
+      failAt
+        p
+        ( "expected "
+            <> renderType e
+            <> ", got "
+            <> renderType a
+            <> ": a unit where an amount goes; one of it is written 1 km"
         )
     _ -> failAt p ("expected " <> renderType e <> ", got " <> renderType a)
  where
@@ -589,6 +681,181 @@ solveOne p = \case
         Right ((), st') -> put st' >> pure True
         Left (TypeError _ detail) ->
           failAt p ("a point is along its chart's root: " <> detail)
+  Dispatch r -> decide p r
+
+{- | Choose a reading once the types say which (design §3.10). A unit on any
+side of @*@, @/@ or @^@ makes it unit arithmetic and any other known type
+the arithmetic of amounts; an amount and a unit together are refused,
+never converted (U2). A quantity is read by what follows its literal, or
+by its result where that already says; a @to@ by its target, or by its
+value or result. Returns whether the reading was chosen.
+-}
+decide :: Path -> Reading -> Infer Bool
+decide p = \case
+  reading@(Arith name a b r (Parts _ _ _ d1 d2)) -> do
+    ts <- mapM resolve [a, b, r]
+    let units = [() | TUnit _ <- ts]
+        amounts = [() | TTensor _ _ <- ts]
+        known = [() | t <- ts, not (isTypeVar t)]
+    case (units, amounts, known) of
+      (_ : _, _ : _, _) -> failAt p (mixed name)
+      (_ : _, _, _) -> do
+        unify (0 : p) (TUnit d1) a
+        unify (1 : p) (TUnit d2) b
+        unify p (TUnit (if name == "div" then dimDiv d1 d2 else dimMul d1 d2)) r
+        pure True
+      (_, _, _ : _) -> amountReading p reading >> pure True
+      _ -> pure False
+  reading@(Power n d b r) -> do
+    ts <- mapM resolve [b, r]
+    if any isUnit ts
+      then do
+        unify (0 : p) (TUnit d) b
+        unify p (TUnit (dimPow (fromIntegral n) d)) r
+        pure True
+      else
+        if all isTypeVar ts
+          then pure False
+          else amountReading p reading >> pure True
+  Quantity marker written lit atom res -> do
+    atom' <- resolve atom
+    res' <- resolve res
+    case (atom', res') of
+      (TUnit d, _) -> scaleReading d
+      (TScale sh r d, _) -> chartReading sh r d
+      (TVar _, TTensor _ _) -> do
+        d <- freshDim
+        unify (1 : p) (TUnit d) atom
+        scaleReading d
+      (TVar _, TPoint _ _) -> do
+        (sh, r, d) <- freshChart
+        unify (1 : p) (TScale sh r d) atom
+        chartReading sh r d
+      (TVar _, _) -> pure False
+      (other, _) ->
+        failAt
+          (1 : p)
+          ( maybe "this" (\w -> "`" <> w <> "`") written
+              <> " is "
+              <> (case other of TFun _ _ -> "a function, "; _ -> "a ")
+              <> renderType other
+              <> ", not a unit or a chart: write the `*`"
+          )
+   where
+    scaleReading d = do
+      s <- freshShape
+      unify (0 : p) (TTensor s dimOne) lit
+      unify p (TTensor s d) res
+      choose marker "scale"
+    chartReading sh r d = do
+      t <- freshShape
+      unify (0 : p) (TTensor sh dimOne) lit
+      unify p (TPoint t d) res
+      defer p (Rootward sh r t)
+      choose marker "pointOn"
+  Convert marker val tgt res -> do
+    tgt' <- resolve tgt
+    val' <- resolve val
+    res' <- resolve res
+    case (tgt', val', res') of
+      (TUnit d, _, _) -> unitTo d
+      (TScale sh r d, _, _) -> chartTo sh r d
+      (TVar _, v, w)
+        | any isAmount [v, w] -> do
+            d <- freshDim
+            unify (1 : p) (TUnit d) tgt
+            unitTo d
+        | any isPoint [v, w] -> do
+            (sh, r, d) <- freshChart
+            unify (1 : p) (TScale sh r d) tgt
+            chartTo sh r d
+        | otherwise -> pure False
+      (TTensor _ _, _, _) ->
+        failAt
+          (1 : p)
+          "an amount after `to`, which takes a unit or a chart: write the unit, as in to km or to km/h"
+      (other, _, _) ->
+        failAt (1 : p) ("`to` takes a unit or a chart, not " <> renderType other)
+   where
+    unitTo d = do
+      s <- freshShape
+      unify (0 : p) (TTensor s d) val
+      unify p (TTensor s d) res
+      choose marker "to"
+    chartTo sh r d = do
+      t <- freshShape
+      unify (0 : p) (TPoint t d) val
+      unify p (TPoint t d) res
+      defer p (Rootward sh r t)
+      choose marker "toScale"
+  UnitOf a r -> do
+    a' <- resolve a
+    case a' of
+      TUnit d -> unify p (TUnit d) r >> pure True
+      TVar _ -> pure False
+      _ -> amountReading p (UnitOf a r) >> pure True
+ where
+  isAmount = \case
+    TTensor _ _ -> True
+    _ -> False
+  isPoint = \case
+    TPoint _ _ -> True
+    _ -> False
+  freshChart = (,,) <$> freshShape <*> freshAxis <*> freshDim
+  choose marker prim = do
+    modify' (\st -> st{chosen = Map.insert marker prim st.chosen})
+    pure True
+  mixed name =
+    "an amount and a unit together: "
+      <> (if name == "div" then "/" else "*")
+      <> " takes two amounts or two units"
+
+{- | The reading of amounts, which arithmetic and a unit's declaration take
+when the types have not chosen by generalisation (design §3.10, U2): the
+types they had before units were a type, the product's shape constraint
+with them.
+-}
+amountReading :: Path -> Reading -> Infer ()
+amountReading p = \case
+  Arith "div" a b r (Parts s _ _ d1 d2) -> do
+    unify (0 : p) (TTensor s d1) a
+    unify (1 : p) (numD d2) b
+    unify p (TTensor s (dimDiv d1 d2)) r
+  Arith _ a b r (Parts s1 s2 s3 d1 d2) -> do
+    defer p (Append s1 s2 s3)
+    unify (0 : p) (TTensor s1 d1) a
+    unify (1 : p) (TTensor s2 d2) b
+    unify p (TTensor s3 (dimMul d1 d2)) r
+  Power n d b r -> do
+    unify (0 : p) (numD d) b
+    unify p (numD (dimPow (fromIntegral n) d)) r
+  UnitOf a r -> do
+    d <- freshDim
+    a' <- resolve a
+    case a' of
+      TTensor (SCons{}) _ ->
+        failAt
+          (0 : p)
+          ( "a unit is one number, not "
+              <> renderType a'
+              <> ": declare it as an amount, 60 s, or a unit, kg*m/s^2"
+          )
+      _ -> pure ()
+    unify (0 : p) (numD d) a
+    unify p (TUnit d) r
+  -- Not reached: these are refused as ambiguous instead.
+  Quantity{} -> pure ()
+  Convert{} -> pure ()
+
+isTypeVar :: Type -> Bool
+isTypeVar = \case
+  TVar _ -> True
+  _ -> False
+
+isUnit :: Type -> Bool
+isUnit = \case
+  TUnit _ -> True
+  _ -> False
 
 {- | At a generalisation point, constraints that only mention variables about
 to be quantified cannot wait: default them (design §4.2). The unknown-rank
@@ -601,6 +868,7 @@ generalised (the path given is that term's): the product around
 settle :: Path -> Vec n Scheme -> Infer ()
 settle here ctx = do
   solvePending
+  settleReadings here ctx
   s <- gets (.subst)
   let envVars = concat [map fst (freeVars (applyType s b)) | Forall _ b <- vecToList ctx]
       touchesEnv c = any (`elem` envVars) (constraintVars (applyC s c))
@@ -625,6 +893,8 @@ settle here ctx = do
     -- label a point's base-form numbers with the chart's axes.
     Charted sh _ _ -> unifyShape p sh SNil >> defer p c
     Rootward sh _ _ -> unifyShape p sh SNil >> defer p c
+    -- Settled already ('settleReadings').
+    Dispatch _ -> modify' (\st' -> st'{pending = (p, c) : st'.pending})
   solvePending
   -- Two shapes of equal but unknown rank: no type says that, and picking a
   -- rank would be a guess (design §4.2).
@@ -645,6 +915,41 @@ settle here ctx = do
   partitionWith f xs = (filter f xs, filter (not . f) xs)
   outside p = not (here `isSuffixOf` p)
 
+{- | The readings still open at a generalisation point that only mention
+variables about to be quantified (design §3.10). A quantity or a @to@ is
+refused as ambiguous: its readings are different operations, and a scheme
+cannot carry the choice. Arithmetic and a unit's declaration take the
+amount reading (U2), which may install a product's shape constraint for
+'settle' to default after.
+-}
+settleReadings :: Path -> Vec n Scheme -> Infer ()
+settleReadings here ctx = do
+  s <- gets (.subst)
+  st <- get
+  let envVars = concat [map fst (freeVars (applyType s b)) | Forall _ b <- vecToList ctx]
+      open (p, c) = case c of
+        Dispatch _ ->
+          here `isSuffixOf` p
+            && not (any (`elem` envVars) (constraintVars (applyC s c)))
+        _ -> False
+      (readings, rest) = (filter open st.pending, filter (not . open) st.pending)
+      inOrder = reverse readings
+  forM_ inOrder $ \(p, c) -> case c of
+    Dispatch Quantity{} ->
+      failAt
+        p
+        "ambiguous: what follows this literal could be a unit or a chart; give the definition a signature, as in per :: forall d. Unit d -> Num d"
+    Dispatch Convert{} ->
+      failAt
+        p
+        "ambiguous: `to` here could take a unit or a chart; give the definition a signature that says which"
+    _ -> pure ()
+  put st{pending = rest}
+  forM_ inOrder $ \(p, c) -> case c of
+    Dispatch r -> amountReading p r
+    _ -> pure ()
+  solvePending
+
 applyC :: Subst -> Constraint -> Constraint
 applyC s = \case
   Append a b c -> Append (applyShape s a) (applyShape s b) (applyShape s c)
@@ -653,6 +958,23 @@ applyC s = \case
   Rank sh l -> Rank (applyShape s sh) (applyLen s l)
   Charted sh r h -> Charted (applyShape s sh) (applyAxis s r) h
   Rootward sh r pt -> Rootward (applyShape s sh) (applyAxis s r) (applyShape s pt)
+  Dispatch r -> Dispatch $ case r of
+    Arith n a b c parts -> Arith n (ty a) (ty b) (ty c) parts
+    Power k d b c -> Power k d (ty b) (ty c)
+    Quantity m w a b c -> Quantity m w (ty a) (ty b) (ty c)
+    Convert m a b c -> Convert m (ty a) (ty b) (ty c)
+    UnitOf a b -> UnitOf (ty a) (ty b)
+ where
+  ty = applyType s
+
+-- | The types a reading is between.
+readingTypes :: Reading -> [Type]
+readingTypes = \case
+  Arith _ a b c _ -> [a, b, c]
+  Power _ _ b c -> [b, c]
+  Quantity _ _ a b c -> [a, b, c]
+  Convert _ a b c -> [a, b, c]
+  UnitOf a b -> [a, b]
 
 constraintVars :: Constraint -> [VarId]
 constraintVars = \case
@@ -662,6 +984,7 @@ constraintVars = \case
   Rank sh l -> map fst (freeVars (TTensor (SCons l AAnon sh) dimOne))
   Charted sh r _ -> map fst (freeVars (TScale sh r dimOne))
   Rootward sh r pt -> map fst (freeVars (TFun (TScale sh r dimOne) (TPoint pt dimOne)))
+  Dispatch r -> concatMap (map fst . freeVars) (readingTypes r)
 
 -- Generalisation and instantiation ---------------------------------------------------
 
@@ -742,6 +1065,7 @@ negativeOnly quantified ts =
   exponents v = \case
     TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TPoint _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TUnit d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TScale _ _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TData _ args -> concatMap argExponents args
     TFun a b -> exponents v a ++ exponents v b
@@ -833,6 +1157,23 @@ infer look p ctx = \case
     t <- case primSchemeFor name statics of
       Just (Right sc) -> fst <$> instantiate sc
       Just (Left msg) -> failAt p msg
+      -- A quantity or a `to` whose reading the types choose (design §3.10,
+      -- U4, U6): its marker is resolved by the types it meets.
+      Nothing
+        | [_, atom] <- args
+        , isQuantityMarker name || isToMarker name -> do
+            a <- freshType
+            b <- freshType
+            r <- freshType
+            defer
+              p
+              ( Dispatch
+                  ( if isQuantityMarker name
+                      then Quantity name (writtenName atom) a b r
+                      else Convert name a b r
+                  )
+              )
+            pure (TFun a (TFun b r))
       Nothing -> primType p name (length args)
     chartConstraints p name t statics
     typed <- zipWithM (\i a -> infer look (i : p) ctx a) [0 ..] args
@@ -878,9 +1219,21 @@ infer look p ctx = \case
             TFun param r -> do
               -- The circular functions are the common place to forget that
               -- angles carry a unit (design §3.2.11).
-              if name `elem` ["sin", "cos", "tan"]
-                then unifyMsg (i : p) param a (name <> " takes an angle: write 1 rad or 45 deg")
-                else unify (i : p) param a
+              a' <- resolve a
+              case a' of
+                _
+                  | name `elem` ["sin", "cos", "tan"] ->
+                      unifyMsg (i : p) param a (name <> " takes an angle: write 1 rad or 45 deg")
+                -- Units do not add (design §3.10, U2).
+                TUnit _
+                  | name `elem` ["add", "sub"] ->
+                      failAt
+                        (i : p)
+                        ( "units do not add: this is "
+                            <> renderType a'
+                            <> ", and + and - take amounts"
+                        )
+                _ -> unify (i : p) param a
               go (i + 1) r rest
             _ -> failAt p ("primitive " <> name <> " applied to too many arguments")
     result <- go (0 :: Int) t (map fst typed)
@@ -939,11 +1292,14 @@ infer look p ctx = \case
     sc@(Forall vs _) <- generalise ctx te
     (tb, body') <- infer look (1 : p) (VCons sc ctx) body
     pure (tb, TLet h sc (abstractOver vs e') body')
+  -- A power of an amount or of a unit (design §3.10, U2).
   Pow b n -> do
     (tb, b') <- infer look (0 : p) ctx b
     d <- freshDim
-    unify (0 : p) (numD d) tb
-    pure (numD (dimPow (fromIntegral n) d), TPow b' n)
+    r <- freshType
+    defer p (Dispatch (Power n d tb r))
+    r' <- resolve r
+    pure (r', TPow b' n)
   Noise k l n -> pure (vecT (LLit (fromIntegral n)), TNoise k l n)
   -- x ± e over any shape (design §3.4): the uncertainty is a scalar applied
   -- to every component, or a tensor of the value's shape; in both cases one
@@ -1112,14 +1468,35 @@ constraint between them.
 primType :: Path -> Text -> Int -> Infer Type
 primType p name argc = do
   t <- case name of
-    "outer" -> do
-      s1 <- freshShape
-      s2 <- freshShape
-      s3 <- freshShape
-      d1 <- freshDim
-      d2 <- freshDim
-      defer p (Append s1 s2 s3)
-      pure (TFun (TTensor s1 d1) (TFun (TTensor s2 d2) (TTensor s3 (dimMul d1 d2))))
+    -- Two amounts or two units (design §3.10, U2), chosen by the operands'
+    -- types: the amounts' product is relational in its shapes (§4.2).
+    _ | name `elem` ["outer", "div"] -> do
+      -- In the order the amounts' types made them, so that dimensions
+      -- solve as they did: div's shape and dimensions; outer's shapes,
+      -- then dimensions.
+      parts <-
+        if name == "div"
+          then do
+            s <- freshShape
+            Parts s s s <$> freshDim <*> freshDim
+          else
+            Parts
+              <$> freshShape
+              <*> freshShape
+              <*> freshShape
+              <*> freshDim
+              <*> freshDim
+      a <- freshType
+      b <- freshType
+      r <- freshType
+      defer p (Dispatch (Arith name a b r parts))
+      pure (TFun a (TFun b r))
+    -- A unit's declaration (U7): an amount, the unit's size, or a unit.
+    "unit" -> do
+      a <- freshType
+      r <- freshType
+      defer p (Dispatch (UnitOf a r))
+      pure (TFun a r)
     "dot" -> do
       s1 <- freshShape
       n <- freshLen 0
@@ -1199,6 +1576,65 @@ zonk s = go
     TTyApp b arg -> TTyApp (go b) (applyArg s arg)
     TCycle vs members bodies ->
       TCycle vs (vecMap (second (applyType s)) members) (vecMap go bodies)
+
+-- Readings ----------------------------------------------------------------------------
+
+{- | Write the readings inference chose ('readingsOf') into a term (design
+§3.10, U4, U6): a quantity's marker becomes @scale lit u@ or @pointOn c
+lit@, a @to@'s marker the display unit's @to@ or @toScale@. A marker with
+no reading stays, which hashing refuses as an unknown primitive.
+-}
+rewriteReadings :: Map.Map Text Text -> Term n -> Term n
+rewriteReadings chosen = go
+ where
+  go :: Term m -> Term m
+  go = \case
+    PrimApp p [a, b]
+      | Just prim <- Map.lookup p chosen ->
+          if prim == "pointOn"
+            then PrimApp prim [go b, go a]
+            else PrimApp prim [go a, go b]
+    PrimApp p as -> PrimApp p (map go as)
+    Var i -> Var i
+    Ref h i hint -> Ref h i hint
+    Lit l -> Lit l
+    Lam h b -> Lam h (go b)
+    App a b -> App (go a) (go b)
+    Let h e b -> Let h (go e) (go b)
+    Con c as -> Con c (map go as)
+    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
+    Pow t n -> Pow (go t) n
+    Noise k l n -> Noise k l n
+    Uncertain k l x e -> Uncertain k l (go x) (go e)
+    Pack ts -> Pack (map go ts)
+    Proj t i -> Proj (go t) i
+    Cycle hs bs -> Cycle hs (vecMap go bs)
+
+-- | Whether a term has a quantity or @to@ whose reading is still to choose.
+hasReadingMarkers :: Term n -> Bool
+hasReadingMarkers = \case
+  PrimApp p as -> isQuantityMarker p || isToMarker p || any hasReadingMarkers as
+  Var _ -> False
+  Ref{} -> False
+  Lit _ -> False
+  Lam _ b -> hasReadingMarkers b
+  App a b -> hasReadingMarkers a || hasReadingMarkers b
+  Let _ e b -> hasReadingMarkers e || hasReadingMarkers b
+  Con _ as -> any hasReadingMarkers as
+  Case s alts -> hasReadingMarkers s || any (\(Alt _ _ b) -> hasReadingMarkers b) alts
+  Pow t _ -> hasReadingMarkers t
+  Noise{} -> False
+  Uncertain _ _ x e -> hasReadingMarkers x || hasReadingMarkers e
+  Pack ts -> any hasReadingMarkers ts
+  Proj t _ -> hasReadingMarkers t
+  Cycle _ bs -> any hasReadingMarkers (vecToList bs)
+
+-- | The name a quantity's atom was written as, for a message.
+writtenName :: Term n -> Maybe Text
+writtenName t = case unmarked t of
+  Ref _ _ (Hint w) -> Just w
+  PrimApp n [] -> Just n
+  _ -> Nothing
 
 -- Helpers ------------------------------------------------------------------------------
 
@@ -1346,7 +1782,9 @@ with fresh variables and the two are unified, so @a -> a@ matches a query
 @Num -> Num@ and @Num m -> Num m@ matches a query @a -> a@.
 -}
 matchesQuery :: Scheme -> Scheme -> Bool
-matchesQuery query sc = case runStateT go (St emptySubst 0 axisBase [] (const Nothing) noAnnotations) of
+matchesQuery query sc = case runStateT
+  go
+  (St emptySubst 0 axisBase [] (const Nothing) noAnnotations Map.empty) of
   Right _ -> True
   Left _ -> False
  where

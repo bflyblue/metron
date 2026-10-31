@@ -154,6 +154,11 @@ data Node
     axes.
     -}
     ChartForm Expr Expr (Maybe Expr) (Maybe Expr)
+  | {- | The body of a @unit@ declaration (§3.10, U7): an amount, the
+    unit's size, or a unit, made a unit. The resolver wraps a unit's body
+    in it to desugar it; no source writes it.
+    -}
+    UnitBody Expr
   deriving stock (Eq, Show)
 
 -- | A pattern of a case alternative: one constructor deep (§2.3).

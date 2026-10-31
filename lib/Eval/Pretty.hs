@@ -35,7 +35,13 @@ import Eval.Affine hiding (Builtin)
 import Eval.Affine qualified as A
 import Eval.Builtin
 import Eval.Core
-import Eval.Dimension (Spelling (..), arrowText, exponentText, renderUnitsIn)
+import Eval.Dimension (
+  Spelling (..),
+  arrowText,
+  exponentText,
+  productText,
+  renderUnitsIn,
+ )
 import Eval.Eval
 import Eval.Lexer qualified as L
 import Eval.Syntax qualified as S
@@ -270,6 +276,18 @@ renderValueWith printer scale prefs showMagnitude = \case
           <> " at "
           <> renderNested showMagnitude s.dims (V.toList s.origin)
           <> unitSuffix s.dim
+  -- A unit prints as its unit expression, written as a type's dimension is
+  -- (design §3.10, U8), so that it reads back as unit arithmetic: `km`,
+  -- `km/h`, `kg*m/s^2`. One whose expression does not give its size (`km/km`
+  -- once its units cancel) prints as the amount of one of it, marked.
+  VUnit v -> case v of
+    VTensor [] d (Just h) buf
+      | h.dim == d
+      , not (null h.atoms)
+      , Right m <- V.head buf
+      , midpoint m == midpoint h.factor ->
+          Right (unitExpressionText printer h)
+    _ -> (<> " (a unit)") <$> recur v
   v -> do
     (dims, scaled, units) <- displayParts printer scale prefs v
     pure
@@ -294,6 +312,26 @@ renderValueWith printer scale prefs showMagnitude = \case
   unitSuffix d = case renderUnitsIn printer.spelling d of
     "" -> ""
     units -> " " <> units
+
+{- | A unit's hint as unit arithmetic (design §3.10, U8): the units with
+positive powers in the order written, joined by @*@ (@·@ in unicode),
+then @/@ and those with negative powers, grouped when there are several;
+@s^-1@ when there are only negative powers, since @1/s@ would be an
+amount over a unit.
+-}
+unitExpressionText :: Printer -> UnitHint -> Text
+unitExpressionText printer h = case (ups, downs) of
+  ([], _) -> product' [(u, k) | (u, k) <- [(u.atom, u.power) | u <- h.atoms]]
+  (_, []) -> product' ups
+  (_, [one]) -> product' ups <> "/" <> product' [one]
+  _ -> product' ups <> "/(" <> product' downs <> ")"
+ where
+  ups = [(u.atom, u.power) | u <- h.atoms, u.power > 0]
+  downs = [(u.atom, negate u.power) | u <- h.atoms, u.power < 0]
+  product' = T.intercalate (productText printer.spelling) . map factor
+  factor (atom, k) =
+    atomNameWith printer.unitName atom
+      <> (if k == 1 then "" else exponentText printer.spelling (toInteger k))
 
 -- | The current name of a unit or scale atom.
 atomNameWith :: (Text -> Text) -> UnitAtom -> Text
@@ -579,6 +617,26 @@ renderTermUnits spelling namer isUnitRef = go 0
 
   prim :: Int -> Vec m Text -> Text -> [Term m] -> Text
   prim prec ctx p args = case (binary p, args) of
+    -- A quantity reads back as one (design §3.10, U4, U5): its unit written
+    -- after the literal, bare when it is one unit or a chain of declared
+    -- units that the quantity takes in (`9.81 m / s^2`), in parentheses
+    -- otherwise (`3 (km * (m / s))`, `3 (u / s)`).
+    -- A negative number is written before the quantity, `-3 K`, which
+    -- reads back as the same term.
+    (_, [x, u])
+      | p == "scale" ->
+          let (lit, level) = case x of
+                Lit (LTensor ([], [r])) | r < 0 -> (renderRational 20 r, 8)
+                -- Below an application: raised, it is parenthesised.
+                _ -> (go 11 ctx x, 9)
+           in if unitLeaf u || isLocal u
+                then paren (prec > level) (lit <> " " <> go 9 ctx u)
+                else
+                  if unitChain u
+                    then paren (prec > 7) (lit <> " " <> go 7 ctx u)
+                    else paren (prec > level) (lit <> " (" <> go 0 ctx u <> ")")
+    -- A unit's declaration prints as its body (U7): `unit km = kilo * 1 metre`.
+    (_, [x]) | p == "unit" -> go prec ctx x
     -- Points and charts read back as they are written (design §3.6, §3.8).
     (_, [s, Lit (LTensor ([], [r]))])
       | p == "pointOn" ->
@@ -631,6 +689,9 @@ renderTermUnits spelling namer isUnitRef = go 0
       -- `-3` reads back as the constant minus three (core.md §6), so the
       -- primitive applied to a constant keeps its name.
       ("neg", [a@(Lit _)]) -> paren (prec > 10) ("neg " <> go 11 ctx a)
+      -- So does a quantity of a constant, which `-` would fold into it.
+      ("neg", [a@(PrimApp "scale" [Lit _, _])]) ->
+        paren (prec > 10) ("neg " <> go 11 ctx a)
       ("neg", [a]) -> paren (prec > 8) ("-" <> go 9 ctx a)
       -- A slice along a later axis reads back as its wildcards, `m._.0`
       -- (design §2.10); along axis 0 it keeps its name, since `m.0` is a
@@ -654,11 +715,27 @@ renderTermUnits spelling namer isUnitRef = go 0
   -- parenthesised, so that the parent stays outside it.
   origin :: Vec m Text -> Term m -> Text
   origin ctx = \case
-    PrimApp "outer" [x, u]
+    PrimApp "scale" [x, u]
       | literal x
       , unitAtom u ->
           go 11 ctx x <> " " <> go 11 ctx u
     o -> go 11 ctx o
+  -- A declared unit, or one to a power: what a quantity takes in (U5).
+  unitLeaf :: Term m -> Bool
+  unitLeaf = \case
+    Pow b _ -> unitAtom b
+    u -> unitAtom u
+  -- Units joined by * and /, each joined on the right a unit leaf: a chain
+  -- the quantity takes in when written bare.
+  unitChain :: Term m -> Bool
+  unitChain = \case
+    PrimApp op [l, r]
+      | op `elem` ["outer", "div"] -> unitLeaf r && (unitLeaf l || unitChain l)
+    _ -> False
+  isLocal :: Term m -> Bool
+  isLocal = \case
+    Var _ -> True
+    _ -> False
   literal :: Term m -> Bool
   literal = \case
     Lit (LTensor ([], [r])) -> r >= 0
