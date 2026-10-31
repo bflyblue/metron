@@ -244,7 +244,7 @@ data TyNode
 
 {- | A variable bound by @forall@, with the length it stands for when it is
 sized, @(a : 3)@ (design §3.9, decision 6), or the space it is a frame
-of, @(c : Temperature)@ or @(c : s)@ (design §3.10, F1). The contextual
+of, @(c : ITS90)@ or @(c : s)@ (design §3.10, F1). The contextual
 annotation @(n : Len)@ denotes a length with anonymous axes; a space's
 amounts are constrained by @(s : Space (Vec 3 m))@.
 -}

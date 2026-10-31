@@ -915,3 +915,35 @@
   `Quantity r d -> Unit d`. A fully cancelled unit prints its units as
   written, `km/km`, and reads back as a unit. No hash moved. Store format
   10.
+- No legacy support: eval is a proof of concept, so an old form is simply
+  gone. `scale` is no longer a keyword (`chart` is the one spelling), nor
+  `Scale` a type or `:ls --scales` a flag; the primitive `scale`, the
+  quantity rule after a unit, may now be named (`scale 3 km` is `3 km`),
+  and the primitive `toScale` is `toChart`. A chart written with `=` and a
+  bracket where a dimension goes fail as ordinary errors, without
+  respelling hints. A `sig` log line without `forall` no longer replays,
+  and the table of names that were bare before the library was split is
+  gone. A store of another format is refused with one line, "<path>: this
+  codebase is format N; this eval opens format 11". The store log writes
+  `chart <name>` for the flag, and a constructor reference is its type's
+  hash and index, without the empty name left from the built-in
+  constructors (storage version 5).
+- Spaces are named after the reference systems that pin them down (design
+  §3.10, F2): `time` declares `TT` (`JD`, `MJD`, `J2000`) and `UTC`
+  (`unix`, now `chart unix on UTC`), with no chart between them, so a
+  `unix` instant against a `J2000` one is refused as frames of two spaces;
+  `temperature` declares `ITS90` (`kelvin`, `degC`, `degF`, `degR`).
+  `si.gauge` and `space Pressure` are removed. Two frames are unified space
+  first, so frames of two spaces are reported as such rather than with
+  "convert one with `to`". Hashes moved for the library's time and
+  temperature charts and spaces, every term that references a constructor
+  (`std`'s list and pair functions, `linalg`'s `Cov2` functions and
+  `rotation`, `astro.velocityIn`, `astro.stateFrom`), and any term that
+  converts a point with `to`. Store format 11.
+- A name given to `:view` that the uses offer as several, across label
+  kinds or within one, shows every match after a `-- full.path` line, types
+  first and then by path, instead of "unknown name": `:view TT` shows the
+  space `time.TT` and the unit `si.TT`. `:hash`, `:history`, `:core`,
+  `:lint` and `:dependents` take the one definition among the matches, and
+  name them all when there are several ("`h` is both `physics.h` and
+  `time.h`; write one of them").

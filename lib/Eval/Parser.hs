@@ -219,7 +219,7 @@ unitStatement = do
   pure (SLet (Binding (spanUnion s e.span) n [] e Unit))
 
 {- | @chart name params… on parent [at origin] [step unit] [by B [then B
-…]] [spinning ω]@ (design §3.10, F10; @scale@ is the old spelling): a
+…]] [spinning ω]@ (design §3.10, F10): a
 definition whose value is a chart, marked as one. @on@ ends the
 parameters and names the parent, a space or a chart; the other clauses
 come in any order, each running to the next clause word, so no
@@ -235,18 +235,10 @@ chartStatement = do
   s <- kw KChart
   n <- name
   ps <- P.many name
-  o <- P.getOffset
-  equals <- P.optional (tok TEquals)
-  case equals of
-    Just _ ->
-      P.setOffset o
-        >> fail
-          "a chart is declared with no `=`: its parent after `on`, then its clauses, as in chart degC on Temperature at 273.15 K"
-    Nothing -> pure ()
   _ <-
     kw KOn
       P.<|> fail
-        "name its space: `chart … on Temperature`, or the chart it is on, after its parameters"
+        "name its space: `chart … on ITS90`, or the chart it is on, after its parameters"
   input <- P.getInput
   let (stmt, rest) = splitAt (statementEnd input.toks) input.toks
   clauses <- mapM (clause input) (clauseSegments stmt)
@@ -429,7 +421,7 @@ sigType = do
           _ <- tok TLParen
           n <- name
           _ <- tok (TOp ":")
-          -- A length, @(a : 3)@, or a space, @(c : Temperature)@ (design
+          -- A length, @(a : 3)@, or a space, @(c : ITS90)@ (design
           -- §3.10, F1).
           b <-
             P.choice

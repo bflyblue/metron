@@ -187,7 +187,7 @@ field in order.
 type FieldNamer = Hash -> Int -> Int -> [Maybe Text]
 
 {- | What the value printer needs beyond the value: current names for
-references (units, scales, nudge origins) and the field names of records,
+references (units, charts, nudge origins) and the field names of records,
 both from the codebase, and the spelling of unit exponents (design §7.3).
 -}
 data Printer = Printer
@@ -195,7 +195,7 @@ data Printer = Printer
   , fieldNames :: FieldNamer
   , spelling :: Spelling
   , unitName :: Text -> Text
-  -- ^ how the full name of a unit or scale prints (design §7.6)
+  -- ^ how the full name of a unit or chart prints (design §7.6)
   }
 
 {- | A printer that knows no field names, for callers without a codebase:
@@ -332,7 +332,7 @@ unitExpressionText printer h = case (ups, downs) of
     atomNameWith printer.unitName atom
       <> (if k == 1 then "" else exponentText printer.spelling (toInteger k))
 
--- | The current name of a unit or scale atom.
+-- | The current name of a unit or chart atom.
 atomNameWith :: (Text -> Text) -> UnitAtom -> Text
 atomNameWith named = \case
   UnitNamed n -> named n
@@ -814,7 +814,7 @@ binary = \case
   "or" -> Just ("||", 2, R)
   "to" -> Just ("to", 1, N)
   -- A point or an amount to a chart (design §3.10, F5, F10).
-  "toScale" -> Just ("to", 1, N)
+  "toChart" -> Just ("to", 1, N)
   "toAxes" -> Just ("to", 1, N)
   _ -> Nothing
 

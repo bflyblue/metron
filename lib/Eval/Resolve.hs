@@ -21,6 +21,7 @@ module Eval.Resolve (
   processGroup,
   enterData,
   queryScheme,
+  signatureScheme,
   typeVariable,
   signatureText,
   annotationsFor,
@@ -181,8 +182,8 @@ resolvedAt cb n = case lookupName n cb of
           ( Resolution
               (h, i)
               (isUnitName n cb)
-              (isScaleName n cb)
-              (isScaleName n cb && moving cb h i)
+              (isChartName n cb)
+              (isChartName n cb && moving cb h i)
           )
       )
   Nothing -> case lookupConName n cb of
@@ -426,7 +427,7 @@ typeVariable scope cb n =
   -- A chart's name is a unit's kin: a rescaling, whose frame is its
   -- parent's, is refused as such where a frame goes (design §3.10, F3).
   isUnit = case qualifyName TermLabel scope cb n of
-    Found u -> isUnitName u cb || isScaleName u cb
+    Found u -> isUnitName u cb || isChartName u cb
     _ -> False
 
 {- | A signature as it is written back (design §4.8): headed by its
@@ -751,7 +752,7 @@ scopedSignature member = \case
 {- | A definition's term, or a cycle's, with the readings the types choose
 written in (design §3.10, U4, U6): each quantity whose literal is followed
 by something its spelling does not make a unit or a chart is @scale@ or
-@pointOn@, each such @to@ the display unit's or @toScale@. They are
+@pointOn@, each such @to@ the display unit's or @toChart@. They are
 inferred with each member's signature as an ascription of its body, and
 with the signatures of the names it uses, so that @per u = 3 u@ under
 @per :: forall d. Unit d -> Num d@ reads @scale@; the term written in
@@ -1162,7 +1163,7 @@ markKind :: S.BindKind -> Text -> Codebase -> Codebase
 markKind kind n cb = case kind of
   S.Plain -> clearFlags n cb
   S.Unit -> markUnit n cb
-  S.ChartDecl -> markScale n cb
+  S.ChartDecl -> markChart n cb
 
 -- | The variables a pattern binds.
 patternNames :: S.Pattern -> [S.Name]
@@ -1309,7 +1310,6 @@ builtinTypeNames =
   , "Tensor"
   , "Point"
   , "Chart"
-  , "Scale"
   , "Diff"
   , "Coords"
   ]
@@ -1514,9 +1514,7 @@ tyType env t = case t.node of
         -- A point and a chart take a frame (design §3.10, F4), and so do
         -- the amounts between its points and its coordinates.
         ("Point", [a]) -> TPoint <$> tyFrame env a
-        ("Chart", [a]) -> TScale <$> tyFrame env a
-        -- The old spelling of @Chart@ (design §3.6).
-        ("Scale", [a]) -> TScale <$> tyFrame env a
+        ("Chart", [a]) -> TChart <$> tyFrame env a
         ("Diff", [a]) -> (`overType` Nothing) <$> tyFrame env a
         ("Coords", [a]) -> (`overType` Just dimOne) <$> tyFrame env a
         (n, _)
@@ -1572,7 +1570,7 @@ tyFrame env a = case a.node of
     Ambiguous fulls -> ambiguousType a n fulls
     NotFound -> case qualifyName TermLabel env.scope env.codebase n of
       Found c
-        | isScaleName c env.codebase
+        | isChartName c env.codebase
         , Just r <- lookupName c env.codebase
         , Just (Forall _ t) <- typeOf r env.codebase
         , Just (FrNamed h) <- (.slot) <$> chartTypeFrame t ->
@@ -1596,7 +1594,7 @@ tyFrame env a = case a.node of
 chartTypeFrame :: Type -> Maybe Frame
 chartTypeFrame = \case
   TFun _ r -> chartTypeFrame r
-  TScale f -> Just f
+  TChart f -> Just f
   _ -> Nothing
 
 {- | A minted frame as a type (design §3.10, F3), read off the type of the
@@ -1712,7 +1710,7 @@ argOf env k a = case k of
   KDim -> (,NoCompanion) . ADim <$> tyDim env a
   KFrame -> (\f -> (AFrame f.slot, FrameOf f)) <$> tyFrame env a
   KAxis -> bad a "an axis set cannot be written"
-  KSpace -> bad a "a space is written as a frame's: (c : Temperature)"
+  KSpace -> bad a "a space is written as a frame's: (c : ITS90)"
   KRole -> (,NoCompanion) . ARole <$> tyRole env a
 
 -- | A position of a shape: a length and its axes.
@@ -1764,7 +1762,7 @@ spaceLength sp = case sp.shape of
 
 {- | A name in a length position (design §3.10, F4): a frame's axes, as
 many as its space has, or a space's base axes. @Vec lvlh m@ is a
-three-vector along lvlh's axes, @Vec Inertial m@ along Inertial's base.
+three-vector along lvlh's axes, @Vec GCRS m@ along GCRS's base.
 -}
 namedAxes :: DataEnv -> S.TyExpr -> Text -> Kinds (Len, Axis)
 namedAxes env a n = case namedType env n of
@@ -1820,10 +1818,6 @@ tyDim env a = case a.node of
   -- `Num (m s)` reads as an application: say how to write the product.
   S.TyApp hd args
     | Just names <- mapM nameOf args -> bad a (S.juxtaposedHint (hd.text : names))
-  S.TyShape _ ->
-    bad
-      a
-      "a bracket is a shape; a dimension is written without one, like m or (m/s^2)"
   _ ->
     bad
       a
@@ -1848,9 +1842,8 @@ unitDim env n
 {- | A type written as a search query (design §7.3): every name that is not
 a built-in type, a declared type, a base unit or a unit is a variable, of
 the kind its position gives it. A query headed by @forall@ is read as a
-signature is ('signatureScheme'), which is how a signature's log line
-reads back (design §7.4); one without stays implicit, as a search pattern
-and as the log lines written before @forall@ was required.
+signature is ('signatureScheme'); one without stays implicit, a search
+pattern.
 -}
 queryScheme :: S.Scope -> Codebase -> S.TyExpr -> Either ResolveError Scheme
 queryScheme scope cb t = case t.node of
@@ -1975,7 +1968,7 @@ throughout the type, dimensions included. Kinds
 are learned from where the variables are used; a length variable stands
 for a whole axis set, its length and a companion axis variable, and a
 sized binder, @(a : 3)@, for that many axes of its own. A variable where a
-frame goes is a frame, of the space its binder names, @(c : Temperature)@
+frame goes is a frame, of the space its binder names, @(c : ITS90)@
 or @(c : s)@, or of a space of its own (design §3.10, F1).
 -}
 explicitScheme ::
@@ -2130,7 +2123,7 @@ explicitScheme scope cb outer t0 = do
                 s.span
                 ( "`"
                     <> s.text
-                    <> "` is not a space: a frame's binder names one, as in (c : Temperature)"
+                    <> "` is not a space: a frame's binder names one, as in (c : ITS90)"
                 )
             )
   frameIds f = map fst (freeVars (TPoint f))

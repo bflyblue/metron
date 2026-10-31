@@ -89,7 +89,7 @@ data Runtime = Runtime
   { typedOf :: Hash -> Maybe (TTerm Z)
   , unitName :: Hash -> Maybe Int -> Text -> Maybe Text
   -- ^ given a reference and the name written for it, the unit name it is a unit under, if any (design §3.2.12)
-  , scaleName :: Hash -> Maybe Int -> Text -> Maybe Text
+  , chartName :: Hash -> Maybe Int -> Text -> Maybe Text
   , typeDefOf :: Hash -> Maybe TypeDef
   {- ^ the declared types, for a space's amounts and a frame's parameters
   (design §3.10, F2, F7), which a chart's declaration names by its tags
@@ -184,7 +184,7 @@ data Chart = Chart
   , dim :: Dim
   , parent :: Maybe Chart
   {- ^ the chart the origin and the generators are given in; 'Nothing' is
-  the implicit base of the dimension. The chart value itself, not a hash: a
+  the base of its space (design §3.10, F2). The chart value itself, not a hash: a
   chart need not be named, and its definition's Core already refers to the
   parent's by hash
   -}
@@ -311,7 +311,7 @@ eval cfg rt = go
               Nothing -> Left (BadCycleIndex i)
             _ -> Left (BadCycleIndex i)
         -- A declared unit is its own display unit (design §3.2.12).
-        case (rt.unitName h mi written, rt.scaleName h mi written) of
+        case (rt.unitName h mi written, rt.chartName h mi written) of
           (Just u, _) -> asUnit (UnitNamed u) v
           (_, Just s) -> asChart (UnitNamed s) v
           _ -> Right v
@@ -437,7 +437,7 @@ eval cfg rt = go
     TApp g x ->
       instantOf (site{path = 0 : site.path}) ((site{path = 1 : site.path}, x) : acc) g
     TTyApp g _ -> instantOf site acc g
-    TRef h mi (Hint written) | not (null acc) -> (,acc) <$> rt.scaleName h mi written
+    TRef h mi (Hint written) | not (null acc) -> (,acc) <$> rt.chartName h mi written
     _ -> Nothing
 
   -- Knot-tying: every member is evaluated in an environment that already
@@ -1173,7 +1173,7 @@ runPrim cfg rt prim args = case (prim, args) of
   -- base, from its frame's configuration, which a chart with no parameters
   -- has one of, so the chart it was written on serves; one with parameters
   -- names it with `from`.
-  ("toScale", [pt, s]) -> do
+  ("toChart", [pt, s]) -> do
     (dims, d, src, buf) <- point =<< pt
     sc <- chartOf =<< s
     when src.moving (Left (Eval.Eval.Domain (takesArguments src)))

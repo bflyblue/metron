@@ -140,7 +140,7 @@ primScheme name = case name of
   -- @Coords c@, and two points on one frame are @Diff c@ apart.
   "pointOn" ->
     let (f, vs) = frameVar 20
-     in Just (Forall vs (TFun (TScale f) (TFun (TOver f (Just dimOne)) (TPoint f))))
+     in Just (Forall vs (TFun (TChart f) (TFun (TOver f (Just dimOne)) (TPoint f))))
   "pointAdd" ->
     let (f, vs) = frameVar 20
      in Just (Forall vs (TFun (TPoint f) (TFun (TOver f Nothing) (TPoint f))))
@@ -149,17 +149,17 @@ primScheme name = case name of
      in Just (Forall vs (TFun (TPoint f) (TFun (TPoint f) (TOver f Nothing))))
   -- A point to a chart of another frame of its space (F5), and from a
   -- configuration of its frame (F7).
-  "toScale" ->
+  "toChart" ->
     let (f, vs) = frameVar 20
         (f1, vs1) = sibling f
-     in Just (Forall (vs ++ vs1) (TFun (TPoint f) (TFun (TScale f1) (TPoint f1))))
+     in Just (Forall (vs ++ vs1) (TFun (TPoint f) (TFun (TChart f1) (TPoint f1))))
   "fromTo" ->
     let (f, vs) = frameVar 20
         (f1, vs1) = sibling f
      in Just
           ( Forall
               (vs ++ vs1)
-              (TFun (TPoint f) (TFun (TScale f) (TFun (TScale f1) (TPoint f1))))
+              (TFun (TPoint f) (TFun (TChart f) (TFun (TChart f1) (TPoint f1))))
           )
   -- An amount along a chart's axes (F10): from the space's base axes, or
   -- from a configuration of a frame, along its leading position. Only the
@@ -171,7 +171,7 @@ primScheme name = case name of
               (vs ++ [tailV, dTailV])
               ( TFun
                   (TTensor (SCons (spaceLen f) f.space.base tailS) dTail)
-                  (TFun (TScale f) (TTensor (SCons (spaceLen f) f.axes tailS) dTail))
+                  (TFun (TChart f) (TTensor (SCons (spaceLen f) f.axes tailS) dTail))
               )
           )
   "axesFromTo" ->
@@ -183,8 +183,8 @@ primScheme name = case name of
               ( TFun
                   (TTensor (SCons (spaceLen f) f.axes tailS) dTail)
                   ( TFun
-                      (TScale f)
-                      (TFun (TScale f1) (TTensor (SCons (spaceLen f) f1.axes tailS) dTail))
+                      (TChart f)
+                      (TFun (TChart f1) (TTensor (SCons (spaceLen f) f1.axes tailS) dTail))
                   )
               )
           )
@@ -326,7 +326,7 @@ primScheme name = case name of
           ( Forall
               vs
               ( TFun
-                  (TScale f)
+                  (TChart f)
                   (matA (spaceLen f, f.space.base) (spaceLen f, f.axes) dimOne)
               )
           )
@@ -336,14 +336,14 @@ primScheme name = case name of
   -- origin, in the space's dimension.
   "spinOf" ->
     let (f, vs) = vectorFrameVar 20 (Just 3)
-     in Just (Forall vs (TFun (TScale f) (baseVec f (dimInv (dimBase T)))))
+     in Just (Forall vs (TFun (TChart f) (baseVec f (dimInv (dimBase T)))))
   "originVelocityOf" ->
     let (f, vs) = vectorFrameVar 20 (Just 3)
      in Just
-          (Forall vs (TFun (TScale f) (baseVec f (dimDiv f.space.dim (dimBase T)))))
+          (Forall vs (TFun (TChart f) (baseVec f (dimDiv f.space.dim (dimBase T)))))
   "originOf" ->
     let (f, vs) = vectorFrameVar 20 Nothing
-     in Just (Forall vs (TFun (TScale f) (baseVec f f.space.dim)))
+     in Just (Forall vs (TFun (TChart f) (baseVec f f.space.dim)))
   -- A vector with anonymous axes, read as along a chart's (design §3.9,
   -- §3.10): a relabelling, no arithmetic.
   "withAxes" ->
@@ -352,7 +352,7 @@ primScheme name = case name of
           ( Forall
               (vs ++ [d2v])
               ( TFun
-                  (TScale f)
+                  (TChart f)
                   (TFun (vecA (spaceLen f) AAnon d2) (vecA (spaceLen f) f.axes d2))
               )
           )
@@ -456,7 +456,7 @@ primSchemeFor defs name statics = case name of
               turning.vars
               ( foldr
                   TFun
-                  (TScale f)
+                  (TChart f)
                   [ TData hf []
                   , optional axesL (maybe numT (`TData` []) (firstTag axesL))
                   , TData hs []
@@ -502,10 +502,10 @@ primSchemeFor defs name statics = case name of
               (parentVars ++ turning.vars)
               ( foldr
                   TFun
-                  (TScale f)
+                  (TChart f)
                   [ optional frameTagL (maybe numT (`TData` []) (firstTag frameTagL))
                   , optional axesL (maybe numT (`TData` []) (firstTag axesL))
-                  , TScale parent
+                  , TChart parent
                   , optional step (TUnit parent.space.dim)
                   , optional origin (TOver parent Nothing)
                   , turning.gens
@@ -1099,7 +1099,7 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (TQty r sa da, TQty r' sb db) ->
       matchRole r r' m >>= matchShape sa sb >>= matchDim da db
     (TPoint f, TPoint g) -> matchFrame f g m
-    (TScale f, TScale g) -> matchFrame f g m
+    (TChart f, TChart g) -> matchFrame f g m
     -- A synonym is checked by the comparison at the end, reduced.
     (TOver _ _, _) -> Just m
     (TData h as, TData h' bs)

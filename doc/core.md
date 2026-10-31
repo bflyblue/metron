@@ -222,9 +222,7 @@ at every rank:
 - **Built-in data types.** No constructor and no type is built in. `true`,
   `(a, b)` and `x : xs` are constructors of three `structural data`
   declarations the compiler holds as values (`Eval.Builtin`: `Bool`, the
-  tuple types, `List`), whose hashes the declarations alone fix; until
-  format 6 they were names in the constructor reference (`Builtin "True"`)
-  and forms of the type language (`TBool`, `TTuple`, `TList`). The
+  tuple types, `List`), whose hashes the declarations alone fix. The
   desugarer, inference, lint, the evaluator and the printers know them by
   hash, so the one table that `Con` and `Case` are checked against is the
   declarations', for these three as for any other, and the library's names
@@ -281,10 +279,9 @@ function of three things, not one:
 Only the first is the user's. The other two are part of the trusted base, and a
 change to either re-identifies every stored definition it touches: a definition
 containing `-3` had one hash before negative constants were canonical and has
-another after. Nothing is persisted yet, so today such a change costs nothing.
-Once the codebase lives on disk and iapetus depends on stable hashes, every
-desugaring or encoding change is a migration of stored definitions and their
-history.
+another after. Once the codebase lives on disk and iapetus depends on stable
+hashes, every desugaring or encoding change re-identifies stored definitions
+and their history.
 
 This is the asymmetry that makes a small, stable Core matter: library
 definitions can be versioned by the codebase itself, since a new version is a
@@ -296,7 +293,7 @@ translation.
 
 The policy, now that stores exist (design §7.4):
 
-- **Desugaring changes need no migration.** A stored term is Core, not
+- **Desugaring changes leave stored terms valid.** A stored term is Core, not
   source. If `-3` stops desugaring to `neg 3`, the stored `neg 3` is still a
   valid term with its old hash and keeps working; only a definition typed
   again gets the new hash, which the codebase treats as a new version like
@@ -307,45 +304,22 @@ The policy, now that stores exist (design §7.4):
   stored `±` definition keeps its hash, and the same text entered again, or
   under a namespace, gets the new one.
 - **Encoding and Core changes are versioned.** The store carries a format
-  number (`format`, currently 9; design §7.4 lists them all). Any change to the canonical encoding or to
-  a Core constructor (the label field on `Noise` and `Uncertain` was the last,
-  made before any store existed) bumps it, and the loader refuses a store of
-  any other format. The format number is not the storage encoding's
-  version (`storageVersion`, now 4): a format also changes when what a
-  store holds changes. Format 2 added a written name after each reference;
-  3 replaced `If` and the boolean literal by `Case` and `Con`; 4 seeded
-  the standard library into the store under `std` instead of entering a
-  prelude in memory; 5 split the library by domain into sibling
-  namespaces, re-hashing much of it; 6 (storage version 4) made `Bool`,
-  tuples and lists declarations the compiler holds, so a constructor
-  reference is always a type's hash and a position and the type tags
-  0x20, 0x24 and 0x25 are retired (design §6.1, §7.4, §7.7).
-- **Until the language is released, a format change refuses older stores
-  rather than migrating them.** Each of the changes above once came with
-  a migration that rewrote an older store in place on open. They are
-  retired: in a language still in design they claimed more than they did.
-  The 4 to 5 step recognised the old library's labels by the hashes of a
-  frozen copy of the format-4 library, but that copy was entered by the
-  current elaborator, so an elaborator change (the axis slot of design
-  §3.9) silently moved its hashes away from the ones old stores held,
-  while its tests still passed. An older store is now refused with a
-  message that says how to recreate it: with the previous build,
-  `:export` it, and `:load` the file into a new codebase (design §7.4).
-  Nothing in the build decodes an older storage version. Migrations
-  return with the first release, when stores must outlive the builds
-  that wrote them; a migration then is the numbered step it was: decode
-  with the old decoder, re-encode, map every old hash to its new one,
-  rewrite the references in dependency order (the `propagate`
-  machinery), rewrite the log, and keep no copy of an old library that
-  the current build re-enters.
+  number (`format`, currently 11; design §7.4). Any change to the canonical
+  encoding or to a Core constructor bumps it, and the loader refuses a store
+  of any other format with one line, "<path>: this codebase is format N;
+  this eval opens format 11". The format number is not the storage
+  encoding's version (`storageVersion`, now 5): a format also changes when
+  what a store holds changes, its log lines or its seeded library.
+- **No migrations.** eval is a proof of concept: a store of another format is
+  refused, not rewritten, and nothing in the build decodes another storage
+  version.
 - **Primitives are append-only, and their types only tighten knowingly.** A
   stored term names its primitives by text, so a primitive may be added but
-  never renamed or removed without a format bump (which, until release,
-  refuses older stores; after it, comes with a migration). A primitive's type may change
-  (the circular functions gained an angle dimension after stores existed),
-  but every stored term is re-checked on load, so such a change turns the
-  definitions it breaks into load-time notes rather than wrong answers, and
-  is listed in the changelog.
+  never renamed or removed without a format bump. A primitive's type may
+  change (the circular functions gained an angle dimension after stores
+  existed), but every stored term is re-checked on load, so such a change
+  turns the definitions it breaks into load-time notes rather than wrong
+  answers, and is listed in the changelog.
 
 ## 7. Changing Core
 
@@ -387,36 +361,32 @@ Applying the test to the roadmap, in order:
   adding `DictLam`/`DictApp` forms of its own. No new Core form either way.
 - **Tuples, then lists, then user data types.** The one genuine extension,
   done: `Con` and `Case` arrived once, `If` and the boolean literal left, so
-  Core is 15 constructors where it was 14. It was the first hash-changing
-  migration (format 2 to 3). `Vec`, `Mat` and `Proj` stay built in because the
+  Core is 15 constructors where it was 14, and hashes changed. `Vec`, `Mat` and `Proj` stay built in because the
   length index is beyond an ordinary data declaration. User data types then
   added constructors to the table, not forms to Core: a constructor reference
   became a built-in name or a type hash with a position, encoded so that the
   built-in ones kept their bytes, and no format bump was needed.
-- **`Bool`, tuples and lists as declarations (format 6).** With user data
+- **`Bool`, tuples and lists as declarations.** With user data
   types in place, the built-in ones were a second mechanism for the same
   thing. They became `structural data` declarations the compiler holds and
   refers to by hash (`Eval.Builtin`), named by the library under `std`: the
   constructor reference lost its built-in alternative and the type language
   lost `Bool`, tuples and lists as forms of their own, so nothing in Core,
   inference, lint or the evaluator knows a data type by name. No term
-  constructor came or went; Core stays at 15. It was the second
-  hash-changing migration (format 5 to 6).
-- **Points and scales (design §3.6).** Two constructors in the *type* language,
-  `Point δ` and `Scale δ`, five saturated primitives, and a `scale`
-  declaration that is label-level metadata like `unit`. No Core change: a
-  point is a number at runtime and `.+`/`.-` are primitive applications.
-  (Since part F, below, a point carries its chart at run time and the
-  type constructors take a frame.)
+  constructor came or went; Core stays at 15, and hashes changed.
+- **Points and charts (design §3.6).** Two constructors in the *type*
+  language, `Point c` and `Chart c`, saturated primitives, and a `chart`
+  flag that is label-level metadata like `unit`. No Core change: `.+` and
+  `.-` are primitive applications.
 - **Units as a type (design §3.10, part U).** One constructor in the type
   language, `Unit δ`, and two saturated primitives, `scale` (the quantity
-  rule after a unit) and `unit` (a unit's declaration), both named by
-  keywords so that no source names them. No Core change. The quantity rule
+  rule after a unit, which a source may also name) and `unit` (a unit's
+  declaration, named by its keyword only). No Core change. The quantity rule
   and `to` now have readings the types choose where the spelling does not;
   the desugarer leaves a marker primitive there, inference resolves it,
   and the reading is written into the term before it is hashed, so Core
   never holds a marker and the rule is still a rewrite into Core, one that
-  needs the types. It was a hash-changing migration (format 7 to 8).
+  needs the types. Every term over a unit changed its hash.
 - **Spaces and frames (design §3.10, part F).** The type language's `Point`
   and `Chart` take a frame instead of a type, and `Diff` and `Coords` (the
   amount between two points on a frame and the coordinates one is written
@@ -426,22 +396,19 @@ Applying the test to the roadmap, in order:
   of a chart names its frame and space by hash through their constructors.
   The chart primitives became two, `mkRoot` and `mkChart`, each taking its
   clauses as lists of none or one, beside `pointOn`, `pointAdd`,
-  `pointSub`, `toScale`, `fromTo`, `toAxes`, `axesFromTo`, `originOf` and
+  `pointSub`, `toChart`, `fromTo`, `toAxes`, `axesFromTo`, `originOf` and
   the retyped `rotationOf`, `spinOf`, `originVelocityOf` and `withAxes`.
   `p from c to c1` and `b .- a on c` desugar to primitive applications and
   a `let`, and `to` gained two readings the types choose (a point on a
   chart, a vector along a chart's axes) written into the term as before.
-  No Core change: Core stays at 15 constructors. It was a hash-changing
-  migration (format 8 to 9) for the library's charts and the two `astro`
-  functions that build or read a state.
+  No Core change: Core stays at 15 constructors.
 - **Roles (design §3.10, U9).** A unit and an amount became one quantity
   type in two roles: the type language's tensor gained a role, `Amount`,
   `Unit` or a variable of a new kind, and `Unit δ` is the unit role at the
   shape `[]`. `*`, `/`, `^k` and `unit` are polymorphic in the role, so
   arithmetic's static reading went and the quantity rule and `to` are the
   only readings left. No Core change, and no hash moved, since a term's
-  hash does not cover its type; the store moved to format 10 for the
-  types it holds.
+  hash does not cover its type.
 - **Affine arithmetic, units, printing, covariance.** Runtime and prelude work.
   `Noise` and `Uncertain` already existed for it, and the arithmetic itself
   landed without touching Core: `Eval.Affine` sits entirely under the

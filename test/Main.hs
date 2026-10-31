@@ -54,7 +54,6 @@ import Eval.Prelude (
   isLibraryPath,
   stdlibCodebase,
   stdlibDefaultUses,
-  stdlibMovedOut,
   stdlibNames,
   stdlibNamespaces,
  )
@@ -1006,8 +1005,6 @@ codebaseTests =
               ]
           ls "--units furl" @?= Right ["unit furlong : Unit m"]
           ls "--charts degC" @?= Right ["chart degC : Chart degC"]
-          -- The old spelling of the flag.
-          ls "--scales degC" @?= Right ["chart degC : Chart degC"]
           ls "--types"
             @?= Right
               ( [ -- The library's types: a body's state, the joint covariance
@@ -1020,19 +1017,18 @@ codebaseTests =
                 , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
                 , "Circle : Num m -> Shape"
                 , "Rect : Num m -> Num m -> Shape"
-                , "frame gauge"
-                , "space Pressure = Num (kg/(m*s^2))"
                 ]
                   ++ builtinTypeListing
                   ++ [ "frame degC"
                      , "frame degF"
+                     , "space ITS90 = Num K"
                      , "frame kelvin"
-                     , "space Temperature = Num K"
                      , "frame J2000"
                      , "frame JD"
                      , "frame MJD"
-                     , "space Time = Num s"
+                     , "space TT = Num s"
                      , "frame unix"
+                     , "space UTC = Num s"
                      ]
               )
           -- The library's polymorphic constructors match too.
@@ -1986,7 +1982,7 @@ turnedChartTests =
                   ++ ["([1, 2, 3] lvlh .- [0, 0, 0] lvlh) + ([1, 2, 3] eci .- [0, 0, 0] eci)"]
               )
           )
-          "the axes of lvlh against the axes of Inertial"
+          "the axes of lvlh against the axes of GCRS"
     , testCase "a covariance and a Cov2 block through rotateCov are R P Rᵀ" $ do
         let pm = "[[4, 1, 0], [1, 9, 0], [0, 0, 1]]"
         typeOfTextP "rotateCov"
@@ -2077,13 +2073,13 @@ turnedChartTests =
         (loaded, notes) <- reload dir
         notes @?= []
         loaded.codebase.names @?= s.codebase.names
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         linesIn loaded [":view pf", ":hash pf"]
           @?= linesIn s [":view pf", ":hash pf"]
         linesIn loaded ["[1, 2, 3] pf to eci"] @?= linesIn s ["[1, 2, 3] pf to eci"]
     ]
  where
-  eci = multiline ["space Inertial = Vec 3 m", "chart eci on Inertial"]
+  eci = multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
   frame = [eci, "chart lvlh on eci at [7000, 0, 0] km by rotz (90 deg)"]
   fromEci p = "(((" <> p <> ") to eci) .- [0, 0, 0] eci) / 1 m"
 
@@ -2093,8 +2089,8 @@ covariance given along its axes.
 -}
 perifocalSession :: [Text]
 perifocalSession =
-  [ "space Inertial = Vec 3 m"
-  , "chart eci on Inertial"
+  [ "space GCRS = Vec 3 m"
+  , "chart eci on GCRS"
   , "chart pf on eci step km by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"
   , ":view pf"
   , "let rp = [7000, 0, 0] pf"
@@ -2295,8 +2291,8 @@ movingChartTests =
     , testCase "an uncertain spin rate gives a velocity whose bound grows with |r|" $ do
         runLinesP
           [ ":use astro"
-          , "space Inertial = Vec 3 m"
-          , "chart eci on Inertial"
+          , "space GCRS = Vec 3 m"
+          , "chart eci on GCRS"
           , "let wu = 7.2921159e-5 rad/s ± 1e-10 rad/s"
           , "let t0 = 0 unix"
           , "chart wobbly t on eci by rotz (wu * (t .- t0)) spinning [0, 0, 1] * wu"
@@ -2311,7 +2307,7 @@ movingChartTests =
         s <- persistLines dir (spinning ++ [":add"])
         (loaded, notes) <- reload dir
         notes @?= []
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         let probe =
               [ ":view spinner"
               , ":hash spinner"
@@ -2352,7 +2348,7 @@ movingChartTests =
     ]
  where
   spinning =
-    [ multiline ["space Inertial = Vec 3 m", "chart eci on Inertial"]
+    [ multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
     , "let w = 7.2921159e-5 rad/s"
     , "let t0 = 0 unix"
     , "let t1 = 1000 unix"
@@ -2365,7 +2361,7 @@ station's velocity, which is the Earth's rotation alone.
 -}
 spinningEarthSession :: [Text]
 spinningEarthSession =
-  [ multiline ["space Inertial = Vec 3 m", "chart eci on Inertial"]
+  [ multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
   , "let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)"
   , "chart earth t on eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg/day"
   , ":view earth"
@@ -2918,7 +2914,7 @@ namedAxesTests =
         runLinesP [eci, ":ls --types eci", ":type eci"]
           @?= Right ["frame eci", "Chart eci"]
         -- Two charts of one body: two frames, two hashes.
-        s <- sessionOf [eci, "chart lab on Inertial"]
+        s <- sessionOf [eci, "chart lab on GCRS"]
         lookupTypeName "eci" s.staging /= lookupTypeName "lab" s.staging
           @? "one frame for two charts"
         isJust (lookupTypeName "eci" s.staging) @? "no frame for eci"
@@ -2935,7 +2931,7 @@ namedAxesTests =
         decodeTypeDef (encodeTypeDef (frameDef "eci" True))
           @?= Right (frameDef "eci" True)
         decodeTypeDef (encodeTypeDef (axesDef "eci")) @?= Right (axesDef "eci")
-        let inertial = spaceDef "Inertial" [3] (dimFromAtoms [(Base Dimension.L, 1)])
+        let inertial = spaceDef "GCRS" [3] (dimFromAtoms [(Base Dimension.L, 1)])
         decodeTypeDef (encodeTypeDef inertial) @?= Right inertial
         expectError
           (linesIn u ["mkChart {Eci} {} eci {} {} {} {}"])
@@ -2966,11 +2962,11 @@ namedAxesTests =
           @?= Right
             [ "Point lvlh"
             , "Vec lvlh m"
-            , "Mat Inertial lvlh"
+            , "Mat GCRS lvlh"
             , "Vec lvlh m"
-            , "Vec Inertial (1/s)"
-            , "Vec Inertial m"
-            , "Vec Inertial m"
+            , "Vec GCRS (1/s)"
+            , "Vec GCRS m"
+            , "Vec GCRS m"
             ]
         runLinesP
           ( frame
@@ -2988,7 +2984,7 @@ namedAxesTests =
           ( runLinesP
               (frame ++ ["let v = [1, 2, 3] eci .- [0, 0, 0] eci", "rotationOf lvlh @ v"])
           )
-          "the axes of lvlh against the axes of Inertial"
+          "the axes of lvlh against the axes of GCRS"
     , testCase "a literal takes its frame from use; a named value is anonymous" $ do
         let setup = frame ++ ["let p = [1, 2, 3] eci", "let off = [0, 0, 2] m"]
         runLinesP
@@ -2996,7 +2992,7 @@ namedAxesTests =
           @?= Right ["[2, 2, 3] eci", "Vec 3 m", "Vec lvlh m"]
         expectError
           (runLinesP (setup ++ ["p .+ off"]))
-          "the axes of Inertial against anonymous axes; give it a frame with `withAxes c v`, or `v to c` if it is along its space's base axes"
+          "the axes of GCRS against anonymous axes; give it a frame with `withAxes c v`, or `v to c` if it is along its space's base axes"
         -- A function keeps its frame general; a value meets a frame through
         -- withAxes or a signature that keeps it polymorphic.
         runLinesP
@@ -3024,24 +3020,24 @@ namedAxesTests =
             , "Vec 3 m"
             ]
     , testCase "roots on one space convert; two spaces never meet" $ do
-        let setup = [eci, "chart lab on Inertial", "let p = [1, 2, 3] eci"]
+        let setup = [eci, "chart lab on GCRS", "let p = [1, 2, 3] eci"]
         runLinesP
           (setup ++ ["p to lab", "(p .- [0, 0, 0] eci) + ([1, 0, 0] lab .- [0, 0, 0] lab)"])
           @?= Right ["[1, 2, 3] lab", "[2, 2, 3] m"]
         let apart = [eci, "space Bench = Vec 3 m", "chart lab on Bench", "let p = [1, 2, 3] eci"]
         expectError
           (runLinesP (apart ++ ["p to lab"]))
-          "frames of two spaces, Inertial and Bench"
+          "frames of two spaces, GCRS and Bench"
         expectError
           (runLinesP (apart ++ ["(p .- [0, 0, 0] eci) + ([1, 0, 0] lab .- [0, 0, 0] lab)"]))
-          "the axes of Inertial against the axes of Bench"
+          "the axes of GCRS against the axes of Bench"
     , testCase "scalar charts are typed by their frames too" $ do
         runLinesP
           [ "20 degC to degF"
           , "77 °F .- 68 °F"
           , ":type 20 degC"
           , ":type degC"
-          , "chart warm on Temperature at 300 K"
+          , "chart warm on ITS90 at 300 K"
           , "1 warm .- 0 warm"
           ]
           @?= Right ["68 degF", "9 deltaF", "Point degC", "Chart degC", "1 K"]
@@ -3061,9 +3057,9 @@ namedAxesTests =
                  ]
           )
           @?= Right
-            [ "Mat Inertial spinner"
-            , "Mat Inertial spinner"
-            , "Mat Inertial spinner"
+            [ "Mat GCRS spinner"
+            , "Mat GCRS spinner"
+            , "Mat GCRS spinner"
             , "Point spinner"
             ]
     , testCase "a written type names a frame, its axes and a space's" $ do
@@ -3077,19 +3073,19 @@ namedAxesTests =
               ++ [ ":type v"
                  , ":type rotationOf lvlh @ v"
                  , ":type c"
-                 , ":type (rotationOf lvlh :: Mat Inertial lvlh)"
+                 , ":type (rotationOf lvlh :: Mat GCRS lvlh)"
                  , ":type (rotationOf lvlh :: Mat eci lvlh)"
                  ]
           )
           @?= Right
             [ "Vec lvlh m"
-            , "Vec Inertial m"
+            , "Vec GCRS m"
             , "Chart lvlh"
-            , "Mat Inertial lvlh"
-            , "Mat Inertial lvlh"
+            , "Mat GCRS lvlh"
+            , "Mat GCRS lvlh"
             ]
         expectError
-          (runLinesP (frame ++ [":type (rotationOf lvlh :: Mat lvlh Inertial)"]))
+          (runLinesP (frame ++ [":type (rotationOf lvlh :: Mat lvlh GCRS)"]))
           "the axes of"
         runLinesP
           ( frame
@@ -3112,7 +3108,7 @@ namedAxesTests =
           , ":type Obs ([1, 2, 3] eci .- [0, 0, 0] eci)"
           , ":type rotationOf lvlh"
           ]
-          @?= Right ["Vec Inertial m", "Obs", "Mat Inertial lvlh"]
+          @?= Right ["Vec GCRS m", "Obs", "Mat GCRS lvlh"]
         -- The group's charts enter first, unchecked: a stored signature a
         -- redefinition they depend on breaks is still checked.
         expectError
@@ -3128,12 +3124,12 @@ namedAxesTests =
         -- A root chart's origin is along its space's base axes, so a named
         -- value there needs a signature that keeps it polymorphic.
         expectError
-          (runLinesP [eci, "let o = [100, 200, 0] m", "chart site on Inertial at o"])
+          (runLinesP [eci, "let o = [100, 200, 0] m", "chart site on GCRS at o"])
           "anonymous axes"
         runLinesP
           [ eci
           , multiline ["o :: forall (a : 3). Vec a m", "let o = [100, 200, 0] m"]
-          , "chart site on Inertial at o"
+          , "chart site on GCRS at o"
           , "[1, 2, 3] site"
           ]
           @?= Right ["[1, 2, 3] site"]
@@ -3195,10 +3191,10 @@ namedAxesTests =
                  ]
           )
           @?= Right
-            ["stored use astro", "State unix Inertial", "Vec Inertial m", "true"]
+            ["stored use astro", "State unix GCRS", "Vec GCRS m", "true"]
     ]
  where
-  eci = multiline ["space Inertial = Vec 3 m", "chart eci on Inertial"]
+  eci = multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
   frame = [eci, "chart lvlh on eci at [7000, 0, 0] km by rotz (90 deg)"]
 
 {- | The name slot of a shape position (design §3.9, stage 1). These read
@@ -3293,7 +3289,7 @@ axisSlotTests =
                 [(0, KLen), (1, KAxis)]
                 [
                   [ TTensor (pos (LVar 0 0) (AVar 1) (pos (LLit 3) (ANamed lvlh) SNil)) dimOne
-                  , TScale
+                  , TChart
                       ( Frame
                           (FrNamed lvlh)
                           (ANamed lvlh)
@@ -3460,10 +3456,10 @@ partUTests =
           ["unit am = deg / 60", "unit dF = 5/9 * K", "1 am to deg", "9 dF to K"]
           @?= Right ["0.016666666666666666666… deg", "5 K"]
         runLinesP
-          ["chart degF2 on Temperature at 459.67 deltaF step deltaF", "32 degF2 to degC"]
+          ["chart degF2 on ITS90 at 459.67 deltaF step deltaF", "32 degF2 to degC"]
           @?= Right ["0 degC"]
         expectError
-          (runLinesP ["chart bad on Temperature step 1 K"])
+          (runLinesP ["chart bad on ITS90 step 1 K"])
           "expected unit syntax"
         expectError (runLinesP ["unit bad = [1,2] m"]) "a unit is one number"
     , testCase "charts remain first class and cannot enter arithmetic" $ do
@@ -3601,7 +3597,7 @@ generatorProperty =
     TPoint _ -> "Point"
     TOver _ _ -> "Diff"
     TUnit _ -> "Unit"
-    TScale{} -> "Chart"
+    TChart{} -> "Chart"
     TupleT _ -> "tuple"
     ListT _ -> "list"
     TTensor sh d ->
@@ -4649,7 +4645,7 @@ affineTests =
             , "[0.99512437810945273631…, 0, 0; 0, 1, 0; 0, 0, 1] m^2 s^-2"
             , "true"
             ]
-    , testCase "points: scales, .+ and .-, printing on the written scale" $ do
+    , testCase "points: charts, .+ and .-, printing on the written chart" $ do
         evalP "20 degC" @?= Right ["20 degC"]
         evalP "20 °C .+ 5 K" @?= Right ["25 degC"]
         evalP "20 degC .+ 9 deltaF" @?= Right ["25 degC"]
@@ -4660,7 +4656,7 @@ affineTests =
         evalP "0 kelvin to degC" @?= Right ["-273.15 degC"]
         evalP "0 J2000 to JD" @?= Right ["2451545 JD"]
         evalP "(0 J2000 .+ 365.25 day) .- 0 J2000" @?= Right ["365.25 day"]
-        evalP "100 gauge .- 0 gauge" @?= Right ["100 Pa"]
+        evalP "20 degC to kelvin" @?= Right ["293.15 kelvin"]
         -- Two frames are two types (design §3.10, F5): convert first.
         expectError
           (evalP "100 degC .- 32 degF")
@@ -4738,10 +4734,11 @@ affineTests =
         case evalP "[1, 2] < [1, 3]" of
           Left err -> T.isInfixOf "no ordering on Vec 2" err @? T.unpack err
           Right v -> assertFailure (show v)
-    , testCase "scale declarations: user scales, :view and :edit read back as written" $ do
+    , testCase "chart declarations: user charts, :view and :edit read back as written" $ do
         runLinesP
           [ "unit mmHg = 133.322 Pa"
-          , "scale bp on Pressure step mmHg"
+          , "space ISA = Num Pa"
+          , "chart bp on ISA step mmHg"
           , "120 bp .+ 10 mmHg"
           , "(120 bp .- 80 bp)"
           ]
@@ -4749,15 +4746,16 @@ affineTests =
         runLinesP ["let boil = 100 degC", ":view boil"] @?= Right ["boil = 100 degC"]
         -- The library lives in namespaces, so :edit prints its definitions in their block.
         runLinesP [":edit degC"]
-          @?= Right ["namespace temperature", "  chart degC on Temperature at 273.15 K"]
+          @?= Right ["namespace temperature", "  chart degC on ITS90 at 273.15 K"]
         runLinesP [":edit km"]
           @?= Right ["namespace si", "  unit km = kilo * 1 metre"]
     , testCase
-        "chart is the keyword, scale its old spelling: one declaration, one hash"
+        "chart is a keyword: a declaration, its type, :view and :ls"
         $ do
           runLinesP
             [ "unit mmHg = 133.322 Pa"
-            , "chart bp on Pressure step mmHg"
+            , "space ISA = Num Pa"
+            , "chart bp on ISA step mmHg"
             , "120 bp .+ 10 mmHg"
             , ":type bp"
             , ":view bp"
@@ -4767,35 +4765,24 @@ affineTests =
             @?= Right
               [ "130 bp"
               , "Chart bp"
-              , "chart bp on Pressure step mmHg"
+              , "chart bp on ISA step mmHg"
               , "chart bp : Chart bp"
               , "chart bp"
               ]
-          -- The keyword is a label flag, not part of the hash.
-          let hashOf kw' =
-                runLinesP
-                  ["unit mmHg = 133.322 Pa", kw' <> " bp on Pressure step mmHg", ":hash bp"]
-          hashOf "chart" @?= hashOf "scale"
           typeOfTextP "\\c -> (c :: Chart degC)"
             @?= Right "Chart degC -> Chart degC"
-          typeOfTextP "\\c -> (c :: Scale degC)"
-            @?= Right "Chart degC -> Chart degC"
-          -- `chart` is a keyword now, not a name.
+          -- `chart` is a keyword, not a name.
           case runLinesP ["let chart = 3"] of
             Left _ -> pure ()
             Right v -> assertFailure (show v)
-          -- The old declaration, with its `=`, is refused with the new one.
-          expectError
-            (runLinesP ["chart bp = mmHg at 0 mmHg"])
-            "a chart is declared with no `=`"
           expectError
             (runLinesP ["chart bp at 0 K"])
-            "name its space: `chart … on Temperature`"
+            "name its space: `chart … on ITS90`"
     , testCase
         "mkRoot and mkChart: a frame, a parent, a list of generators, antisymmetry"
         $ do
-          let inertial = "space Inertial = Vec 3 m"
-              eci = "chart eci on Inertial"
+          let inertial = "space GCRS = Vec 3 m"
+              eci = "chart eci on GCRS"
           -- A chart's frame is its declaration's (design §3.10, F3): the
           -- primitive takes the minted constructor no source can write.
           expectError
@@ -4825,7 +4812,7 @@ affineTests =
           -- The parent's dimension and shape, and the generator's size, are the child's.
           refused
             [inertial, eci, "chart k on eci at 0 K"]
-            "expected Vec Inertial m, got Num K"
+            "expected Vec GCRS m, got Num K"
           refused [inertial, eci, "chart k on eci at [1, 2] m"] "lengths differ: 3 and 2"
           refused (turnedBy "[0, 1; -1, 0]") "lengths differ: 3 and 2"
           -- A space of numbers has no axes to turn.
@@ -4835,8 +4822,8 @@ affineTests =
     , testCase "charts with a parent: the translated tree, to and .- through it" $ do
         -- design §3.8's hierarchy without the rotations
         let tree =
-              [ "space Inertial = Vec 3 m"
-              , "chart eci on Inertial"
+              [ "space GCRS = Vec 3 m"
+              , "chart eci on GCRS"
               , "chart site on eci at [6378, 0, 0] km"
               , "chart antenna on site at [2, 0, 1] m"
               ]
@@ -4875,12 +4862,12 @@ affineTests =
         -- §3.10, F2); their points never mix unconverted.
         runLinesP
           ( tree
-              ++ ["chart pad on Inertial at [6378000, 10, 0] m", "[1, 2, 3] antenna to pad"]
+              ++ ["chart pad on GCRS at [6378000, 10, 0] m", "[1, 2, 3] antenna to pad"]
           )
           @?= Right ["[3, -8, 4] pad"]
         expectError
           ( runLinesP
-              (tree ++ ["chart pad on Inertial", "[1, 2, 3] antenna .- [0, 0, 0] pad"])
+              (tree ++ ["chart pad on GCRS", "[1, 2, 3] antenna .- [0, 0, 0] pad"])
           )
           "points on antenna and pad: convert one with `to`"
         -- :edit reads back to the same hash.
@@ -4909,13 +4896,13 @@ affineTests =
         -- The parent's dimension is the child's.
         expectError
           (runLinesP (tree ++ ["chart t on site at 3 K", "t"]))
-          "expected Vec Inertial m, got Num K"
-        runLinesP ["chart warm on Temperature at 300 K", "0 warm to degC"]
+          "expected Vec GCRS m, got Num K"
+        runLinesP ["chart warm on ITS90 at 300 K", "0 warm to degC"]
           @?= Right ["26.85 degC"]
     , testCase
         "a chart turned by a generator: by and then parse, and read back as written"
         $ do
-          let eci = multiline ["space Inertial = Vec 3 m", "chart eci on Inertial"]
+          let eci = multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
               turn = "[0, -1, 0; 1, 0, 0; 0, 0, 0]"
           runLinesP
             [ eci
@@ -4970,7 +4957,7 @@ affineTests =
           -- A root may be turned too: its axes are its own.
           runLinesP
             [ eci
-            , "chart free on Inertial by " <> turn
+            , "chart free on GCRS by " <> turn
             , ":type [1, 2, 3] free .- [0, 0, 0] free"
             ]
             @?= Right ["Vec free m"]
@@ -4992,8 +4979,8 @@ affineTests =
           let block =
                 multiline
                   [ "namespace frames"
-                  , "  space Inertial = Vec 3 m"
-                  , "  chart eci on Inertial"
+                  , "  space GCRS = Vec 3 m"
+                  , "  chart eci on GCRS"
                   , "  chart site on eci at [6378, 0, 0] km"
                   , "  chart lvlh on site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
                   ]
@@ -5008,7 +4995,7 @@ affineTests =
           reloaded <-
             either (assertFailure . T.unpack) pure (sessionP [source, ":add"])
           reloaded.codebase.names @?= original.codebase.names
-          reloaded.codebase.scales @?= original.codebase.scales
+          reloaded.codebase.charts @?= original.codebase.charts
           reloaded.codebase.typeNames @?= original.codebase.typeNames
     , testCase "display units of one dimension cancel against each other" $ do
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
@@ -5190,8 +5177,8 @@ storeTests =
         s <-
           persistLines
             dir
-            [ "space Inertial = Vec 3 m"
-            , "chart eci on Inertial"
+            [ "space GCRS = Vec 3 m"
+            , "chart eci on GCRS"
             , "chart site on eci at [6378, 0, 0] km"
             , "chart antenna on site at [2, 0, 1] m"
             , "chart lvlh on site by [0, -1, 0; 1, 0, 0; 0, 0, 0]"
@@ -5200,7 +5187,7 @@ storeTests =
         (loaded, notes) <- reload dir
         notes @?= []
         loaded.codebase.names @?= s.codebase.names
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         loaded.codebase.typeNames @?= s.codebase.typeNames
         linesIn
           loaded
@@ -5225,7 +5212,8 @@ storeTests =
             , "let r = 10 mm ± 0.01 mm #batch7"
             , "let even n = if n == 0 then true else odd (n - 1); let odd n = if n == 0 then false else even (n - 1)"
             , "unit mmHg = 133.322 Pa"
-            , "scale bp on Pressure step mmHg"
+            , "space ISA = Num Pa"
+            , "chart bp on ISA step mmHg"
             , ":add"
             , "let speed = 6 km / h"
             , ":update"
@@ -5237,7 +5225,7 @@ storeTests =
         loaded.codebase.names @?= s.codebase.names
         loaded.codebase.history @?= s.codebase.history
         loaded.codebase.units @?= s.codebase.units
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         loaded.codebase.preferences @?= s.codebase.preferences
         Map.keysSet s.codebase.terms `Set.isSubsetOf` Map.keysSet loaded.codebase.terms
           @? "every term came back"
@@ -5284,7 +5272,7 @@ storeTests =
           loaded.codebase.names @?= s.codebase.names
           loaded.codebase.history @?= s.codebase.history
           loaded.codebase.units @?= s.codebase.units
-          loaded.codebase.scales @?= s.codebase.scales
+          loaded.codebase.charts @?= s.codebase.charts
           loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
           linesIn loaded ["d", "astro.G"]
             @?= Right ["3 km", "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
@@ -5380,7 +5368,7 @@ storeTests =
                 [ "namespace orbital"
                 , "  unit au = 149597870700 m"
                 , "  space Distance = Num m"
-                , "  scale tip on Distance step au"
+                , "  chart tip on Distance step au"
                 , "  data Body = Body {mass :: Num kg, dist :: Num m}"
                 , "  let mu = 3"
                 , "  namespace kepler"
@@ -5398,14 +5386,14 @@ storeTests =
         let settled = Map.adjust (take 1) "mechanics.tip"
         settled loaded.codebase.history @?= settled s.codebase.history
         loaded.codebase.units @?= s.codebase.units
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         loaded.codebase.typeNames @?= s.codebase.typeNames
         loaded.codebase.conNames @?= s.codebase.conNames
         loaded.codebase.fieldNames @?= s.codebase.fieldNames
         Map.member "celestial.kepler.anomaly" loaded.codebase.names @? "renamed"
         Map.member "mechanics.mass" loaded.codebase.fieldNames @? "field path"
         Set.member "mechanics.au" loaded.codebase.units @? "unit path"
-        Set.member "mechanics.tip" loaded.codebase.scales @? "scale path"
+        Set.member "mechanics.tip" loaded.codebase.charts @? "chart path"
         Map.member "mechanics.Body" loaded.codebase.typeNames @? "type path"
         Map.member "mechanics.Body" loaded.codebase.conNames @? "constructor path"
         Map.member "orbital.mu" loaded.codebase.history @? "history keeps the old path"
@@ -5440,40 +5428,25 @@ storeTests =
         (loaded, notes) <- reload dir
         length notes @?= 2
         linesIn loaded ["x + y"] @?= Right ["18"]
-    , testCase "a store of a newer format is refused" $ withTempStore $ \dir -> do
-        _ <- persistLines dir ["let x = 1", ":add"]
-        writeFile (dir </> "format") "eval codebase 99\n"
-        opened <- openStore theSeed dir
-        case opened of
-          Left err -> T.isInfixOf "is not an eval codebase of format" err @? T.unpack err
-          Right _ -> assertFailure "opened a store of another format"
-    , testCase "a store of an older format is refused and left as it is"
-        $ forM_ [3 .. 10 :: Int]
-        $ \v -> withTempStore $ \dir -> do
-          -- A store as an older eval left it: no types directory, a term file
-          -- and a log, none of which this build reads.
-          createDirectoryIfMissing True (dir </> "terms")
-          writeFile (dir </> "format") ("eval codebase " <> show v <> "\n")
-          writeFile (dir </> "names.log") ("1 bind x " <> replicate 64 'a' <> "\n")
-          BS.writeFile (dir </> "terms" </> replicate 64 'a') (BS.pack [0x04, 1])
+    , testCase "a store of another format is refused with one line and left as it is"
+        $ withTempStore
+        $ \dir -> do
+          _ <- persistLines dir ["let x = 1", ":add"]
+          writeFile (dir </> "format") "eval codebase 10\n"
           before <- snapshot dir
           entries <- sort <$> listDirectory dir
           opened <- openStore theSeed dir
           case opened of
             Left err ->
-              err
-                @?= T.pack dir
-                  <> ": this codebase is format "
-                  <> T.pack (show v)
-                  <> "; it predates format 11 and cannot be opened: create a fresh codebase for syntax-only units; old first-class-unit programs are not supported"
-            Right _ -> assertFailure ("opened a store of format " <> show v)
+              err @?= T.pack dir <> ": this codebase is format 10; this eval opens format 12"
+            Right _ -> assertFailure "opened a store of another format"
           snapshot dir >>= (@?= before)
           listDirectory dir >>= (@?= entries) . sort
     , testCase "a store of the current format opens as it was seeded" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add"]
         readFile (dir </> "format")
           >>= (@?= "eval codebase " <> show formatVersion <> "\n")
-        formatVersion @?= 11
+        formatVersion @?= 12
         before <- snapshot dir
         (loaded, notes) <- reload dir
         notes @?= []
@@ -5593,7 +5566,7 @@ storeTests =
           (loaded, _) <- reload a
           linesIn loaded ["x + y"] @?= Right ["3"]
     , testCase
-        "merging from what is not a store, or from an older store, is refused and touches nothing"
+        "merging from what is not a store, or from a store of another format, is refused and touches nothing"
         $ withTempStore
         $ \root -> do
           let a = root </> "a"
@@ -5612,13 +5585,10 @@ storeTests =
           doesDirectoryExist (root </> "missing") >>= (@?= False)
           _ <- persistLines (root </> "future") ["let x = 1", ":add"]
           writeFile (root </> "future" </> "format") "eval codebase 99\n"
-          refused (root </> "future") "is not an eval codebase of format"
-          -- a store of an older format is refused, and left as it is
-          createDirectoryIfMissing True (root </> "old")
-          writeFile (root </> "old" </> "format") "eval codebase 2\n"
-          refused (root </> "old") "this codebase is format 2; it predates format 11"
-          listDirectory (root </> "old") >>= (@?= ["format"])
-          readFile (root </> "old" </> "format") >>= (@?= "eval codebase 2\n")
+          refused
+            (root </> "future")
+            "this codebase is format 99; this eval opens format 12"
+          readFile (root </> "future" </> "format") >>= (@?= "eval codebase 99\n")
     ]
  where
   mergeInto :: FilePath -> FilePath -> IO MergeReport
@@ -6912,7 +6882,7 @@ orbitalSetup =
   ]
 
 {- | A codebase for the export round trip: two namespaces, a nested one, a
-root definition, a unit, a scale, a record with a field a function uses, a
+root definition, a unit, a chart, a record with a field a function uses, a
 cycle, a block definition shadowing a root name, and a prelude reference.
 -}
 exportScript :: [Text]
@@ -6924,7 +6894,7 @@ exportScript =
       , "namespace orbital"
       , "  unit au = 149597870700 m"
       , "  space Distance = Num m"
-      , "  scale tip on Distance at 1 au step au"
+      , "  chart tip on Distance at 1 au step au"
       , "  data Body = Body {mass :: Num kg, dist :: Num m}"
       , "  let weight b = b.mass * 9.81 m/s^2"
       , "  let size = 3"
@@ -7005,6 +6975,32 @@ namespaceTests =
               ]
           )
           "`x` is both `a.x` and `b.x`; write one of them"
+    , testCase
+        "a command's name the uses offer as several: :view shows each, a query takes its kind"
+        $ do
+          let hashOf p = runLinesP [":hash " <> p]
+          -- A type in one namespace and a term in another: both, types first,
+          -- each after its full path.
+          runLinesP [":view TT"]
+            @?= Right ["-- time.TT", "space TT = Num s", "-- si.TT", "TT = tera * 1 T"]
+          -- A query about a definition takes the one term among them.
+          runLinesP [":hash TT"] @?= hashOf "si.TT"
+          runLinesP [":history TT"] @?= runLinesP [":history si.TT"]
+          -- Two terms: :view shows both, a query lists them.
+          runLinesP [":use physics", ":view h"]
+            @?= Right
+              [ "stored use physics"
+              , "-- physics.h"
+              , "physics.h = 6.62607015e-34 J * s"
+              , "-- time.h"
+              , "time.h = 60 min"
+              ]
+          expectError
+            (runLinesP [":use physics", ":hash h"])
+            "`h` is both `physics.h` and `time.h`; write one of them"
+          -- One match is as before, and none is unknown.
+          runLinesP [":view UTC"] @?= Right ["space UTC = Num s"]
+          expectError (runLinesP [":view nosuch"]) "unknown name `nosuch`"
     , testCase "an absolute .name picks the root's"
         $ runLinesP
           [ "let period a = a"
@@ -7369,7 +7365,7 @@ namespaceTests =
         same "conNames" (.conNames)
         same "fieldNames" (.fieldNames)
         same "units" (.units)
-        same "scales" (.scales)
+        same "charts" (.charts)
         -- The shadowed root name needs its leading dot inside the block.
         (".size" `T.isInfixOf` source) @? T.unpack source
         -- A prelude term is referenced by name, never exported.
@@ -7515,7 +7511,7 @@ sameLabels a b = do
   a.conNames @?= b.conNames
   a.fieldNames @?= b.fieldNames
   a.units @?= b.units
-  a.scales @?= b.scales
+  a.charts @?= b.charts
 
 -- | @updated n #old -> #new@ and its kin, from the two sessions.
 movedLine :: Text -> Session -> Session -> Text -> Text
@@ -7828,9 +7824,18 @@ stdlibTests :: TestTree
 stdlibTests =
   testGroup
     "standard library"
-    [ testCase "the names moved out of the default namespaces need their namespace"
-        $ forM_ stdlibMovedOut
-        $ \n -> qualifyName TermLabel S.rootScope seeded.codebase n @?= NotFound
+    [ testCase "a name outside the namespaces used by default needs its namespace" $ do
+        let inDefault n = any (\u -> (u <> ".") `T.isPrefixOf` n) stdlibDefaultUses
+            defaultLast = Set.fromList (map S.lastSegment (filter inDefault stdlibNames))
+            outside =
+              Set.toList
+                ( Set.fromList (map S.lastSegment (filter (not . inDefault) stdlibNames))
+                    `Set.difference` defaultLast
+                )
+        -- The constants and AU among them (design §7.7).
+        all (`elem` outside) ["AU", "G", "c", "planck", "g0"] @? show outside
+        forM_ outside $ \n ->
+          qualifyName TermLabel S.rootScope seeded.codebase n @?= NotFound
     , testCase "no name is ambiguous among the namespaces used by default" $ do
         let cb = seeded.codebase
             used n = any (\u -> (u <> ".") `T.isPrefixOf` n) stdlibDefaultUses
@@ -8946,7 +8951,7 @@ forallTests =
           -- forall in a query binds, as in a signature.
           ls "forall a. {a} -> Num" @?= Right ["std.length : forall a. {a} -> Num"]
     , testCase
-        "a sig line writes forall, reads back across a reload; an old one still replays"
+        "a sig line writes forall and reads back across a reload"
         $ withTempStore
         $ \dir -> do
           s <-
@@ -8971,18 +8976,15 @@ forallTests =
             @? T.unpack logText
           (" sig pair forall a b. a -> b -> (a, b)\n" `T.isInfixOf` logText)
             @? T.unpack logText
-          -- A line written before forall was required, without it.
-          appendFile (dir </> "names.log") "0 sig ident a -> a\n"
           (loaded, notes) <- reload dir
           notes @?= []
-          Map.delete "ident" loaded.codebase.signatures @?= s.codebase.signatures
-          linesIn loaded [":type same", ":type pair", ":type ident"]
+          loaded.codebase.signatures @?= s.codebase.signatures
+          linesIn loaded [":type same", ":type pair"]
             @?= Right
               [ "forall s d. Tensor s d -> Tensor s d"
               , "forall a b. a -> b -> (a, b)"
-              , "forall a. a -> a"
               ]
-          userSignatures loaded.codebase @?= ["ident", "keep", "pair", "same"]
+          userSignatures loaded.codebase @?= ["keep", "pair", "same"]
     ]
 
 -- | What @:ls --types@ lists of the library's declarations of the built-in types.
@@ -8999,24 +9001,24 @@ builtinTypeListing =
   ]
 
 {- | A listing of types, then the library's own in the order of their
-namespaces: the SI's space and frame, the declarations of the built-in
+namespaces: the declarations of the built-in
 types, then temperature's and time's (design §3.10, F2).
 -}
 withBuiltinTypes :: [Text] -> Either Text [Text]
 withBuiltinTypes ts =
   Right
     ( ts
-        ++ ["frame gauge", "space Pressure = Num (kg/(m*s^2))"]
         ++ builtinTypeListing
         ++ [ "frame degC"
            , "frame degF"
+           , "space ITS90 = Num K"
            , "frame kelvin"
-           , "space Temperature = Num K"
            , "frame J2000"
            , "frame JD"
            , "frame MJD"
-           , "space Time = Num s"
+           , "space TT = Num s"
            , "frame unix"
+           , "space UTC = Num s"
            ]
     )
 
@@ -9118,7 +9120,7 @@ dimensionSyntaxTests =
           @?= Right "Tensor [2, 3, 4] m -> Tensor [2, 3, 4] m"
         expectError
           (runLinesP ["\\x -> (x :: Num [m])"])
-          "a bracket is a shape; a dimension is written without one, like m or (m/s^2)"
+          "a dimension is a unit, a variable, 1, or a product of them in parentheses"
         expectError
           (runLinesP ["\\x -> (x :: Num [m s^-2])"])
           "unexpected"
@@ -9132,8 +9134,8 @@ dimensionSyntaxTests =
           (runLinesP ["(20 degC :: Point (Num K))"])
           "a point and a chart are typed by a frame, a chart's name or a variable, as in Point degC"
         expectError
-          (runLinesP ["(20 degC :: Point Temperature)"])
-          "`Temperature` is a space; a point is on a frame of it, as in Point degC"
+          (runLinesP ["(20 degC :: Point ITS90)"])
+          "`ITS90` is a space; a point is on a frame of it, as in Point degC"
         expectError
           (runLinesP ["(491.67 degR :: Point degR)"])
           "`degR` is a rescaling and shares the frame of its parent: write Point kelvin"
@@ -9276,7 +9278,7 @@ partFTests =
     , testCase "F1: kinds; a binder names its frame's space" $ do
         runLinesP
           [ multiline
-              [ "diffK :: forall (c : Temperature). Point c -> Point c -> Num K"
+              [ "diffK :: forall (c : ITS90). Point c -> Point c -> Num K"
               , "let diffK p q = p .- q"
               ]
           , "diffK (20 degC) (10 degC)"
@@ -9293,7 +9295,7 @@ partFTests =
           @?= Right
             [ "10 K"
             , "273.15 K"
-            , "diffK : forall (c : Temperature). Point c -> Point c -> Num K"
+            , "diffK : forall (c : ITS90). Point c -> Point c -> Num K"
             , "68 degF"
             , "conv : forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1"
             , "forall c. Point c -> Point c -> Diff c"
@@ -9310,17 +9312,18 @@ partFTests =
                      ]
               )
           )
-          "frames of two spaces, Temperature and Inertial"
+          "frames of two spaces, ITS90 and GCRS"
         expectError
           (runLinesP ["f :: forall (c : Kelvin). Point c -> Point c", "let f p = p"])
           "`Kelvin` is not a space"
     , testCase "F2: spaces are declared and nominal; a chart names its space" $ do
         runLinesP
           ( inertial
-              ++ [ ":view Temperature"
-                 , ":view Time"
-                 , ":view Pressure"
-                 , ":view Inertial"
+              ++ [ ":view ITS90"
+                 , -- TT is also si.TT, the teratesla: both show
+                   ":view TT"
+                 , ":view UTC"
+                 , ":view GCRS"
                  , ":type [1, 2, 3] eci .- [0, 0, 0] eci"
                  , "space Other = Num K"
                  , "chart oC on Other at 273.15 K"
@@ -9328,25 +9331,32 @@ partFTests =
                  ]
           )
           @?= Right
-            [ "space Temperature = Num K"
-            , "space Time = Num s"
-            , "space Pressure = Num (kg/(m*s^2))"
-            , "space Inertial = Vec 3 m"
-            , "Vec Inertial m"
+            [ "space ITS90 = Num K"
+            , "-- time.TT"
+            , "space TT = Num s"
+            , "-- si.TT"
+            , "TT = tera * 1 T"
+            , "space UTC = Num s"
+            , "space GCRS = Vec 3 m"
+            , "Vec GCRS m"
             , "20 K"
             ]
         -- Two spaces declared alike are two spaces: their points never convert.
         expectError
           (runLinesP ["space Other = Num K", "chart oC on Other", "20 degC to oC"])
-          "frames of two spaces, Temperature and Other"
+          "frames of two spaces, ITS90 and Other"
         expectError
           (runLinesP (inertial ++ ["20 degC to eci"]))
-          "frames of two spaces, Temperature and Inertial"
+          "frames of two spaces, ITS90 and GCRS"
+        -- TT and UTC are two spaces with no chart between them (design
+        -- §3.10, F2): a unix instant and a J2000 one never meet.
+        expectError (runLinesP ["0 unix .- 0 J2000"]) "frames of two spaces, UTC and TT"
+        expectError (runLinesP ["0 unix to J2000"]) "frames of two spaces, UTC and TT"
         -- No point is written on a space's base, and a chart names its space.
-        expectError (runLinesP ["3 Temperature"]) "unknown name `Temperature`"
+        expectError (runLinesP ["3 ITS90"]) "unknown name `ITS90`"
         expectError
           (runLinesP ["chart degC2 at 273.15 K"])
-          "name its space: `chart … on Temperature`"
+          "name its space: `chart … on ITS90`"
         expectError
           (runLinesP ["space Bad = Mat 2 2 m"])
           "a space is of numbers or of vectors"
@@ -9385,7 +9395,7 @@ partFTests =
             ]
         -- Two charts declared alike are two frames, like two newtypes.
         expectError
-          (runLinesP ["chart a1 on Temperature", "chart a2 on Temperature", "0 a1 .- 0 a2"])
+          (runLinesP ["chart a1 on ITS90", "chart a2 on ITS90", "0 a1 .- 0 a2"])
           "points on a1 and a2: convert one with `to`"
         -- A chart with parameters is one frame for all its arguments.
         runLinesP
@@ -9432,7 +9442,7 @@ partFTests =
               ++ [ ":type 20 degC .- 10 degC"
                  , ":type 20 degF .- 10 degF"
                  , ":type [1, 2, 3] lvlh .- [0, 0, 0] lvlh"
-                 , "chart bench on Inertial at [1, 0, 0] m"
+                 , "chart bench on GCRS at [1, 0, 0] m"
                  , ":type [1, 2, 3] bench .- [0, 0, 0] bench"
                  , multiline ["d :: Diff lvlh", "let d = [1, 0, 0] m"]
                  , ":type d"
@@ -9441,7 +9451,7 @@ partFTests =
                  , ":type \\p q -> p .- q"
                  , ":type \\c -> pointOn c"
                  , multiline
-                     [ "good :: forall (c : Inertial). Point c -> Point c -> Num m"
+                     [ "good :: forall (c : GCRS). Point c -> Point c -> Num m"
                      , "let good p q = norm (p .- q)"
                      ]
                  , "good ([3, 4, 0] eci) ([0, 0, 0] eci)"
@@ -9451,7 +9461,7 @@ partFTests =
             [ "Num K"
             , "Num K"
             , "Vec lvlh m"
-            , "Vec Inertial m"
+            , "Vec GCRS m"
             , "Vec lvlh m"
             , "Vec lvlh"
             , "forall c. Point c -> Point c -> Diff c"
@@ -9467,7 +9477,7 @@ partFTests =
         runLinesP
           ( frame
               ++ [ ":type pointOn"
-                 , ":type toScale"
+                 , ":type toChart"
                  , ":type rotationOf"
                  , ":type withAxes"
                  , "([1.5, 2.25, 3] lvlh).0"
@@ -9615,7 +9625,7 @@ partFTests =
                    , "3 c"
                    , "[1, 2, 3] (ecef (0 J2000))"
                    , multiline
-                       ["pt :: forall (c : Temperature). Chart c -> Point c", "let pt c = 3 c"]
+                       ["pt :: forall (c : ITS90). Chart c -> Point c", "let pt c = 3 c"]
                    , "pt degF"
                    , "(\\c -> 3 c) degC"
                    ]
@@ -9652,18 +9662,16 @@ partFTests =
           , ":view MJD"
           , ":view J2000"
           , ":view unix"
-          , ":view gauge"
           ]
           @?= Right
-            [ "chart kelvin on Temperature"
-            , "chart degC on Temperature at 273.15 K"
-            , "chart degF on Temperature at 459.67 deltaF step deltaF"
+            [ "chart kelvin on ITS90"
+            , "chart degC on ITS90 at 273.15 K"
+            , "chart degF on ITS90 at 459.67 deltaF step deltaF"
             , "chart degR on kelvin step deltaF"
-            , "chart JD on Time step day"
-            , "chart MJD on Time at 2400000.5 day step day"
-            , "chart J2000 on Time at 2451545 day step day"
-            , "chart unix on Time at 2440587.5 day"
-            , "chart gauge on Pressure at 101325 Pa step Pa"
+            , "chart JD on TT step day"
+            , "chart MJD on TT at 2400000.5 day step day"
+            , "chart J2000 on TT at 2451545 day step day"
+            , "chart unix on UTC"
             ]
         -- step, by, then and spinning are names outside a chart; on is a keyword.
         runLinesP ["let step = 2", "let spinning = 3", "step + spinning"]
@@ -9698,10 +9706,10 @@ partFTests =
                    , multiline
                        ["fromPt :: Point lvlh -> Point eci", "let fromPt p = p from lvlh to eci"]
                    , multiline
-                       [ "fromAmt :: Vec lvlh m -> Vec Inertial m"
+                       [ "fromAmt :: Vec lvlh m -> Vec GCRS m"
                        , "let fromAmt v = v from lvlh to eci"
                        ]
-                   , multiline ["toAmt :: Vec Inertial m -> Vec lvlh m", "let toAmt v = v to lvlh"]
+                   , multiline ["toAmt :: Vec GCRS m -> Vec lvlh m", "let toAmt v = v to lvlh"]
                    ]
         forM_ ["viaOn", "fromPt", "fromAmt", "toAmt"] $ \n ->
           expecting (runLinesP (stored ++ [":edit " <> n])) $ \outs ->
@@ -9715,16 +9723,16 @@ partFTests =
           let setup =
                 earth
                   ++ [ multiline
-                         ["toE :: forall (c : Inertial). Point c -> Point eci", "let toE p = p to eci"]
+                         ["toE :: forall (c : GCRS). Point c -> Point eci", "let toE p = p to eci"]
                      ]
           runLinesP (setup ++ [":type toE", "toE ([1, 2, 3] eci)"])
-            @?= Right ["forall (c : Inertial). Point c -> Point eci", "[1, 2, 3] eci"]
+            @?= Right ["forall (c : GCRS). Point c -> Point eci", "[1, 2, 3] eci"]
           expectError
             (runLinesP (setup ++ ["toE ([1, 2, 3] (ecef (0 J2000)))"]))
             "ecef takes arguments: write p from (ecef …) to c"
     ]
  where
-  inertial = [multiline ["space Inertial = Vec 3 m", "chart eci on Inertial"]]
+  inertial = [multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]]
   frame = inertial ++ ["chart lvlh on eci at [7000, 0, 0] km by rotz (90 deg)"]
   earth =
     inertial

@@ -330,7 +330,7 @@ runtimeOf cfg cb = rt
     Runtime
       { typedOf = (`lookupTyped` cb)
       , unitName = \h i written -> unitNameFor (Reference h i) written cb
-      , scaleName = \h i written -> scaleNameFor (Reference h i) written cb
+      , chartName = \h i written -> chartNameFor (Reference h i) written cb
       , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
       }
@@ -582,26 +582,33 @@ command session src = \case
               (map (short cb) (historicalNamesOf (Reference h' Nothing) cb) ++ cycleNames h')
         | h' <- hs
         ]
-  ["history", n] -> keep $ case historyOf (argIn cb n) cb of
-    [] -> Left ("unknown name `" <> n <> "`")
-    r : rs -> pure ((showReference r <> "  (current)") : map showReference rs)
-  ["view", n] ->
-    keep
-      $ let full = argIn ecb n
-         in case lookupName full ecb of
-              -- A chart's right-hand side, `step at origin`, is not an
-              -- expression, so it is viewed with its keyword (design §3.8).
-              Just r ->
-                (: [])
-                  <$> definitionLine
-                    spelling
-                    scope
-                    ecb
-                    (if isScaleName full ecb then "chart " else "")
-                    (short ecb full)
-                    r
-              Nothing -> viewData spelling scope cb full
-  ["dependents", n] -> keep $ withName n $ \r -> pure (map (short cb) (dependents (argIn cb n) r.hash cb))
+  ["history", n] -> keep $ do
+    full <- argFor (\p -> not (null (historyOf p cb))) cb n
+    case historyOf full cb of
+      [] -> Left ("unknown name `" <> n <> "`")
+      r : rs -> pure ((showReference r <> "  (current)") : map showReference rs)
+  -- A name the uses offer as several shows each, after a comment naming
+  -- its path, types first (design §7.3).
+  ["view", n] -> keep $ case argPaths scope ecb n of
+    [full] -> viewOne full
+    fulls -> case [(full, ls) | full <- fulls, Right ls <- [viewOne full]] of
+      [] -> Left ("unknown name `" <> n <> "`")
+      views -> pure (concat [("-- " <> full) : ls | (full, ls) <- views])
+   where
+    viewOne full = case lookupName full ecb of
+      -- A chart's right-hand side, `step at origin`, is not an
+      -- expression, so it is viewed with its keyword (design §3.8).
+      Just r ->
+        (: [])
+          <$> definitionLine
+            spelling
+            scope
+            ecb
+            (if isChartName full ecb then "chart " else "")
+            (short ecb full)
+            r
+      Nothing -> viewData spelling scope cb full
+  ["dependents", n] -> keep $ withName n $ \full r -> pure (map (short cb) (dependents full r.hash cb))
   -- An alias of a unit or chart is one too; an alias of a namespace aliases
   -- every label under it (design §7.6).
   ["alias", new, old]
@@ -610,7 +617,7 @@ command session src = \case
             new' = newPath new
             flagged =
               (if isUnitName old' cb then markUnit new' else id)
-                . (if isScaleName old' cb then markScale new' else id)
+                . (if isChartName old' cb then markChart new' else id)
         refuseClash cb [(new', "definition")]
         commit
           (flagged (bindName new' r cb))
@@ -824,10 +831,26 @@ command session src = \case
       n of
       Found full -> full
       _ -> n
-  withName n k = maybe (Left ("unknown name `" <> n <> "`")) k (lookupName (argIn cb n) cb)
-  withExprName n k =
-    let full = argIn ecb n
-     in maybe (Left ("unknown name `" <> n <> "`")) (k full) (lookupName full ecb)
+  withName = withNameIn cb
+  withExprName = withNameIn ecb
+  withNameIn c n k = do
+    full <- argFor (\p -> isJust (lookupName p c)) c n
+    maybe (Left ("unknown name `" <> n <> "`")) (k full) (lookupName full c)
+  {- A name a query about one definition takes: of the paths it may mean
+  (design §7.6), the one that is such a definition; several are listed. -}
+  argFor present c n = case argPaths scope c n of
+    [full] -> Right full
+    fulls -> case filter present fulls of
+      [full] -> Right full
+      [] -> Left ("unknown name `" <> n <> "`")
+      several ->
+        Left
+          ( "`"
+              <> n
+              <> "` is both "
+              <> T.intercalate " and " (map (\f -> "`" <> f <> "`") several)
+              <> "; write one of them"
+          )
   cycleNames h' = case lookupTerm h' cb of
     Just (Cycle hints _) ->
       [ T.intercalate
@@ -865,11 +888,22 @@ command session src = \case
 the uses, or absolute with a leading dot (design §7.6).
 -}
 argPath :: S.Scope -> Codebase -> Text -> Text
-argPath scope c n
-  | Just p <- T.stripPrefix "." n = p
+argPath scope c n = case argPaths scope c n of
+  [full] -> full
+  _ -> n
+
+{- | Every full path a name given to a command may mean: one, or, when the
+uses offer it as several (a type in one namespace and a term in another,
+@time.TT@ and @si.TT@, or two terms), each of them, types first and then by
+path. A name that nothing offers is itself.
+-}
+argPaths :: S.Scope -> Codebase -> Text -> [Text]
+argPaths scope c n
+  | Just p <- T.stripPrefix "." n = [p]
   | otherwise = case qualifyWith c.uses known scope n of
-      Found full -> full
-      _ -> n
+      Found full -> [full]
+      Ambiguous fulls -> sortOn (\p -> (not (isLabel TypeLabel c p), p)) fulls
+      NotFound -> [n]
  where
   known x =
     isLabel TermLabel c x
@@ -954,7 +988,7 @@ relabel keepOld pairs cb = do
     TermLabel
       | Just r <- lookupName o cb ->
           (if isUnitName o cb then markUnit n else id)
-            . (if isScaleName o cb then markScale n else id)
+            . (if isChartName o cb then markChart n else id)
             . maybe id (setSignature n) (if keepOld then Nothing else signatureOf o cb)
             $ bindName n r acc
       | Just (h, i) <- lookupConName o cb -> bindConName n h i acc
@@ -987,7 +1021,7 @@ definitionSource spelling scope cb full = case lookupName full cb of
   Just r ->
     let keyword
           | isUnitName full cb = "unit "
-          | isScaleName full cb = "chart "
+          | isChartName full cb = "chart "
           | otherwise = "let "
      in ( \line ->
             map
@@ -1239,7 +1273,7 @@ stdlibUpgrade shipped session =
           }
       flagged n =
         (if isUnitName n shipped then markUnit n else id)
-          . (if isScaleName n shipped then markScale n else id)
+          . (if isChartName n shipped then markChart n else id)
       -- A type, constructor or field label the codebase has never had comes
       -- with the library's type; one it has, the user's or an older
       -- library's, is left alone.
@@ -1524,11 +1558,7 @@ so @: a -> a@ finds @Num m -> Num m@ and @: Num -> Num@ finds @a -> a@.
 listNames :: Session -> [Text] -> Either Text [Text]
 listNames session args = do
   let (before, after) = break (== ":") args
-      -- @--scales@ is the old spelling of @--charts@ (design §3.6).
-      flags =
-        map
-          (\f -> if f == "--scales" then "--charts" else f)
-          (filter (T.isPrefixOf "--") before)
+      flags = filter (T.isPrefixOf "--") before
       words' = filter (not . T.isPrefixOf "--") before
       -- A word that names a namespace lists that namespace (design §7.6);
       -- the others are globs. With no argument at all, the current namespace.
@@ -1562,7 +1592,7 @@ listNames session args = do
       allPaths = "--all" `elem` flags && isNothing nsFilter
       kindOk n
         | "--units" `elem` flags = isUnitName n cb
-        | "--charts" `elem` flags = isScaleName n cb
+        | "--charts" `elem` flags = isChartName n cb
         | "--types" `elem` flags = False
         | otherwise = True
       inNamespace n = maybe True (\ns -> (ns <> ".") `T.isPrefixOf` n) nsFilter
@@ -1655,7 +1685,7 @@ listNames session args = do
   namesText k = tshow k <> (if k == 1 then " name" else " names")
   prefix n
     | isUnitName n cb = "unit "
-    | isScaleName n cb = "chart "
+    | isChartName n cb = "chart "
     | otherwise = ""
   declaration shownType shown h n def =
     renderTypeDef
@@ -1861,7 +1891,7 @@ exportLabels session under = do
     let scope = S.Scope (namespaceOf n) stored
         keyword
           | isUnitName n cb = "unit "
-          | isScaleName n cb = "chart "
+          | isChartName n cb = "chart "
           | otherwise = "let "
      in ( \line ->
             ( namespaceOf n
@@ -2220,7 +2250,7 @@ applyEdit target text session = case reconcile of
         -- A body unchanged under another keyword: @unit km@ became @let km@.
         keyword c n
           | isUnitName n c = "unit"
-          | isScaleName n c = "chart"
+          | isChartName n c = "chart"
           | otherwise = "let" :: Text
         rekeyed =
           [ "updated " <> short n <> ": " <> keyword cb0 n <> " -> " <> keyword staged n
@@ -2360,7 +2390,7 @@ removeKind (k, n) cb = case k of
     cb
       { names = Map.delete n cb.names
       , units = Set.delete n cb.units
-      , scales = Set.delete n cb.scales
+      , charts = Set.delete n cb.charts
       , conNames = Map.delete n cb.conNames
       , signatures = Map.delete n cb.signatures
       }

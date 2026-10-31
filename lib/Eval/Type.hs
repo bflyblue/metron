@@ -145,9 +145,9 @@ renderForallWith typeName spelling (Forall _ t) =
         Map.fromList
           [ (s, TTensor sp.shape sp.dim)
           | f <- framesOf t
+          , restrictedSpace t f
           , let sp = f.space
           , SpVar s <- [sp.slot]
-          , restrictedSpace t f
           ]
       printed = Set.fromList [x | AVar x <- map snd (positionsOf t)]
       standing =
@@ -293,7 +293,7 @@ ownersOf t0 = foldl add (Owners Map.empty Map.empty Map.empty) (framesOf t0)
 framesOf :: Type -> [Frame]
 framesOf = \case
   TPoint f -> [f]
-  TScale f -> [f]
+  TChart f -> [f]
   TOver f _ -> [f]
   TData _ as -> concat [framesOf t | AType t <- as]
   TFun a b -> framesOf a ++ framesOf b
@@ -336,7 +336,7 @@ standingVars = nubBy (\a b -> fst a == fst b) . go
  where
   go = \case
     TPoint f -> frame f
-    TScale f -> frame f
+    TChart f -> frame f
     TOver f md -> frame f ++ maybe [] dims md
     -- A declared type's companion arguments do not print, but a length's
     -- axes print with it.
@@ -495,7 +495,7 @@ baseSymbolsOf :: Type -> Set.Set Text
 baseSymbolsOf = \case
   TQty _ _ d -> dim d
   TPoint _ -> Set.empty
-  TScale _ -> Set.empty
+  TChart _ -> Set.empty
   TOver _ md -> foldMap dim md
   TData _ as -> foldMap arg as
   TFun a b -> baseSymbolsOf a <> baseSymbolsOf b
@@ -589,7 +589,7 @@ renderWithNamed typeName spelling axes names prec = \case
   -- c`, and the coordinates they are written with, `Coords c`, while
   -- the frame's space is not known.
   TPoint f -> paren (prec > 10) ("Point " <> frameName f)
-  TScale f -> paren (prec > 10) ("Chart " <> frameName f)
+  TChart f -> paren (prec > 10) ("Chart " <> frameName f)
   TOver f Nothing -> paren (prec > 10) ("Diff " <> frameName f)
   TOver f (Just _) -> paren (prec > 10) ("Coords " <> frameName f)
   -- A unit (design §3.10, U1) takes its dimension as `Num` does: `Unit m`,
@@ -785,7 +785,7 @@ withBuiltins defs h = builtinDefs h <|> defs h
 
 {- | What the equality of a declared type rests on (design §4.2): the type
 arguments that must themselves have equality, or 'Nothing' when no
-arguments would do, because a field is a function or a scale, or the type
+arguments would do, because a field is a function or a chart, or the type
 is unknown. Equality on @T as@ is derived structurally: it holds when every
 field of every constructor, at @as@, has equality. @Bool@, tuples and lists
 are declared types like any other here.
