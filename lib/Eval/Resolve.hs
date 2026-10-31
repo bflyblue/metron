@@ -472,7 +472,9 @@ processGroup :: Codebase -> [S.Decl] -> Either ResolveError Codebase
 processGroup cb0 decls
   | null charts = enterGroup True cb0 decls
   | otherwise = case enterGroup False cb0 part of
-      Right cb1 -> enterGroup True cb1 decls
+      -- The first pass, unchecked, may have dropped a signature that does
+      -- not hold of a redefinition; the checked pass checks it.
+      Right cb1 -> enterGroup True cb1{signatures = cb0.signatures} decls
       Left _ -> enterGroup True cb0 decls
  where
   -- A written type names a chart's axes by a label the chart's entry

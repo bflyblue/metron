@@ -2612,7 +2612,16 @@ still stored in base form.
   re-hash always did); a chart redefined as no chart drops its axes' type
   label in the session but the log, which unnames a path for every kind,
   does not record it. `inChart` and `along` act on the leading position,
-  not on vectors only. The library's literal-built constructors print
+  not on vectors only. A root chart's origin is along the axes it mints, so
+  a named value there (`let o = [100, 200, 0] m`, `chart site = m at o`)
+  is refused as anonymous, and the hint's `withAxes` cannot name a chart
+  not yet declared: the value needs `o :: forall (a : 3). Vec a [m]`.
+  `pointOn` and `toScale` used as values, not applied to a known shape,
+  are scalar. `withAxes`'s printed type does not show that its argument is
+  anonymous, and `det`'s `Mat n a` reads back with a length of its own.
+  The first pass of a group that holds charts falls back to one pass when
+  a chart needs the group's own data constructors, and then a signature
+  or data field there naming the chart's axes is refused. The library's literal-built constructors print
   free axes of their own (`rotation`, `dual`, `axisAngle`) until stage 4
   generalises them.
 

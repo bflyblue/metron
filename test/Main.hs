@@ -3007,6 +3007,48 @@ namedAxesTests =
           , ":type rotationOf lvlh"
           ]
           @?= Right ["Vec eci [m]", "Obs", "Mat eci lvlh"]
+        -- The group's charts enter first, unchecked: a stored signature a
+        -- redefinition they depend on breaks is still checked.
+        expectError
+          ( runLinesP
+              [ eci
+              , multiline ["k :: Num [m]", "let k = 3 m"]
+              , ":add"
+              , multiline
+                  ["let k = 2 s", "chart c = m at [0, 0, 0] m eci by rotz (k / s * 1 rad)"]
+              ]
+          )
+          "`k`'s definition has type `Num [s]`, not as general as its signature `Num [m]`"
+        -- A root chart's origin is along the axes it mints, so a named
+        -- value there needs a signature that keeps it polymorphic.
+        expectError
+          (runLinesP ["let o = [100, 200, 0] m", "chart site = m at o"])
+          "anonymous axes"
+        runLinesP
+          [ multiline ["o :: forall (a : 3). Vec a [m]", "let o = [100, 200, 0] m"]
+          , "chart site = m at o"
+          , "[1, 2, 3] site"
+          ]
+          @?= Right ["[1, 2, 3] site"]
+        -- Named slots follow a chart's axes when it is renamed, in a
+        -- signature and in a data field, and across a reload.
+        let renamed =
+              [ eci
+              , multiline ["v :: Vec eci [m]", "let v = [1, 0, 0] m"]
+              , "data Obs = Obs (Vec eci [m])"
+              , ":add"
+              , ":rename eci frame"
+              ]
+        moved <- sessionOf renamed
+        linesIn moved [":type v", ":view Obs"]
+          @?= Right ["Vec frame [m]", "data Obs = Obs (Vec frame [m])"]
+        withTempStore $ \dir -> do
+          stored <- persistLines dir renamed
+          (loaded, notes) <- reload dir
+          notes @?= []
+          loaded.codebase.signatures @?= stored.codebase.signatures
+          linesIn loaded [":type v", ":view Obs"]
+            @?= Right ["Vec frame [m]", "data Obs = Obs (Vec frame [m])"]
         -- A chart redefined as no chart leaves no axes behind.
         fmap
           (drop 2)
