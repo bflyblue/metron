@@ -136,7 +136,8 @@ openStore seeding d = do
         then directories >> pure (Right (Store d))
         else pure . Left $ case [v | v <- [1 .. formatVersion - 1], line == formatLine v] of
           [v] ->
-            "this codebase is format "
+            T.pack d
+              <> ": this codebase is format "
               <> tshow v
               <> "; it predates format "
               <> tshow formatVersion

@@ -4714,7 +4714,8 @@ storeTests =
           case opened of
             Left err ->
               err
-                @?= "this codebase is format "
+                @?= T.pack dir
+                  <> ": this codebase is format "
                   <> T.pack (show v)
                   <> "; it predates format 6 and cannot be opened: recreate it"
                   <> " (with the previous eval, `:export` it and `:load` the file into a new codebase)"
