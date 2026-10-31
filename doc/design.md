@@ -2360,7 +2360,8 @@ frame's axes. The decisions:
    is printed can be pasted back; `:ls : type` queries stay implicit, being
    search patterns; `data` parameters are already explicit. Built in stage 2a
    (below), but for printing a sized binder.
-7. **The base axes are named** (decided by the owner). Every chart without
+7. **The base axes are named** (decided by the owner). Revised in §3.10 (F2), also by the
+   owner: a root chart has its space's axes, named after the space. Every chart without
    a parent names its own axis set; a translated child shares its parent's,
    a rotated child names its own. Two unrelated root charts (`eci`, a lab
    bench) never mix without a `to`. Literals take their frame from use
@@ -2737,7 +2738,7 @@ refused as ambiguous.
 library's declarations written as `60 * s`, `deg / 60` and `5/9 * K` are
 respelled `60 s`, `1 deg / 60` and `5/9 * 1 K`. A chart's step is a `Unit`
 and its origin an amount (`chart degF = deltaF at 459.67 deltaF
-temperature`). `:prefer` takes a unit.
+Temperature`). `:prefer` takes a unit.
 
 **U8. Printing.** `Unit δ` is written and printed like any type. A unit value
 prints as the unit expression of its hint, with `*`, `/` and `^` as a type's
@@ -2747,9 +2748,9 @@ dimension is written (§4.1), so that it reads back as unit arithmetic: `km`,
 #### Part F: spaces and frames
 
 **F1. Kinds.** Two new kinds: `Space`, and `Frame s` for a space `s`.
-`temperature : Space`, `degC : Frame temperature`. In a binder a space names
-the kind of its frames, so `forall (c : temperature).` means `c : Frame
-temperature`. A bare `forall c.` used as a frame gets the kind `Frame s` with
+`Temperature : Space`, `degC : Frame Temperature`. In a binder a space names
+the kind of its frames, so `forall (c : Temperature).` means `c : Frame
+Temperature`. A bare `forall c.` used as a frame gets the kind `Frame s` with
 `s` generalised too: a frame on any space (kind polymorphism, the way a `d`
 is inferred to be a dimension).
 
@@ -2757,9 +2758,9 @@ is inferred to be a dimension).
 each other: the temperatures, the instants of time, a physical space.
 
 ```
-space temperature = Num K
-space time        = Num s
-space inertial    = Vec 3 m
+space Temperature = Num K
+space Time        = Num s
+space Inertial    = Vec 3 m
 ```
 
 A declaration mints a nominal space, as a chart mints its axes: two spaces
@@ -2767,17 +2768,18 @@ declared alike are two spaces, and points of one never convert to the other
 (`20 degC to eci` is a kind error). It fixes the dimension and shape of the
 space's amounts and gives the space a base: origin zero, the base unit as
 step and, for a vector space, axes of its own, minted with it and named after
-it (`Vec inertial m`). The base is the reference every chart on the space is
+it (`Vec Inertial m`). The base is the reference every chart on the space is
 given against in the end; no point is written on the base itself. A chart
-names its space as its parent, `chart degC = K at 273.15 K temperature`,
-`chart JD = day at 0 day time`; a chart with no parent is refused, "name its
-space: `chart … temperature`". This replaces §3.8's implicit base of a
-dimension, and §3.9 decision 7's root chart that names its own axes: a root
+names its space as its parent, `chart degC = K at 273.15 K Temperature`,
+`chart JD = day at 0 day Time`; a chart with no parent is refused, "name its
+space: `chart … Temperature`". This replaces §3.8's implicit base of a
+dimension and, by the owner's decision, §3.9 decision 7's root chart that names its
+own axes: a root
 chart is a translated child of its space's base and has the base's axes, so
 two translated roots on one space (`eci`, a lab bench) have one set of axes
 and convert with `to`, and two on different spaces never meet. The library
-declares `time` (`JD`, `MJD`, `J2000`, `unix`), `temperature` (`degC`,
-`degF`, `degR`, `kelvin`) and `pressure` (`si.gauge`).
+declares `Time` in `time` (`JD`, `MJD`, `J2000`, `unix`), `Temperature` in `temperature` (`degC`,
+`degF`, `degR`, `kelvin`) and `Pressure` in `si` (`gauge`).
 
 **F3. Frames.** A frame is the type-level identity of a chart: which origin
 and which axes, with no numbers. Every chart has one. Whether a declaration
@@ -2788,13 +2790,13 @@ decided.
 - A chart with `at` (a new origin) mints a frame.
 - A chart with `by` or `spinning` (new axes) mints a frame and its axes, as
   in §3.9 stage 2b.
-- A chart with a step and a parent and no `at` (`chart mdegC = mK degC`) is a
-  rescaling: it shares its parent's frame, its points have the parent's type,
+- A chart with a step and a parent and no `at` (`chart mdegC = mK degC`;
+  this spelling is under discussion) is a rescaling: it shares its parent's frame, its points have the parent's type,
   and its step is only how they print.
 
 A frame is named after the chart that mints it, so `chart degC = …` makes
 `degC` a value (`degC : Chart degC`) and a frame (`degC : Frame
-temperature`), in separate namespaces as a chart and its axes are today. Two
+Temperature`), in separate namespaces as a chart and its axes are today. Two
 charts declared alike are two frames, like two `newtype`s over one type. A
 moving chart mints one frame for every argument: `ecef (100 unix)` and
 `ecef (200 unix)` are two chart values of type `Chart ecef`. The relation
@@ -2803,8 +2805,8 @@ between the levels:
 ```
 20 degC          : Point degC          -- a point on the frame
 degC  (value)    : Chart degC          -- the chart: its step and origin
-degC  (frame)    : Frame temperature   -- the type-level name and its kind
-temperature      : Space
+degC  (frame)    : Frame Temperature   -- the type-level name and its kind
+Temperature      : Space
 ```
 
 **F4. Types.** `Point c` is the type of points on the frame `c`, and
@@ -2816,7 +2818,7 @@ one per argument for a moving one. Two type functions read a frame:
   an axis position means `Axes c`, and a space's name the base axes.
 - `Diff c`, the type of amounts between points on `c`: the space's
   dimension along `Axes c`. `Diff degC = Diff degF = Num K`, `Diff lvlh =
-  Vec lvlh m`, `Diff bench = Vec inertial m` for a translated chart.
+  Vec lvlh m`, `Diff bench = Vec Inertial m` for a translated chart.
 
 `Diff` is a synonym, not a new type (an associated type, not associated
 data): amounts from frames with the same axes mix freely, because the scale is
@@ -2862,8 +2864,8 @@ base-form storage.
 instant: `[1, 2, 3] (ecef t0)` and `[1, 2, 3] (ecef t1)` are the same point,
 a point fixed on the moving body (a ground station is a constant), and the
 quantity rule also accepts the moving chart itself, `[1, 2, 3] ecef`.
-Converting needs the instant, from `at` or from an applied moving chart on
-the right: `p to eci at (100 unix)`, `q to (ecef t)`. A conversion that
+Converting needs the instant (this spelling is under discussion), from `at`
+or from an applied moving chart on the right: `p to eci at (100 unix)`, `q to (ecef t)`. A conversion that
 passes through a moving chart with no instant is refused, "ecef moves: say
 when, `p to eci at t`", so the wrong-epoch mistake is a missing argument, not
 a silent error. Charts chosen by a stored argument (a family with one chart
