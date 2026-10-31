@@ -42,6 +42,8 @@ module Eval.Eval (
   eval,
   evalClosed,
   evalAt,
+  evalDefinition,
+  TyEnv,
   apply,
   scalar,
   render,
@@ -51,6 +53,7 @@ import Control.Monad (foldM, when, zipWithM)
 import Data.Bifunctor (first)
 import Data.List (nub, transpose)
 import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
@@ -62,7 +65,23 @@ import Eval.Builtin
 import Eval.Core
 import Eval.Dimension
 import Eval.TCore
-import Eval.Type (Len (..), Space (..), TypeDef, conText, spaceLens)
+import Eval.Type (
+  Arg (..),
+  Kind (..),
+  Len (..),
+  Shape (..),
+  Space (..),
+  Type (..),
+  TypeDef,
+  VarId,
+  conText,
+  freeVars,
+  selfType,
+  spaceLens,
+  substOnce,
+  varArg,
+  pattern TTensor,
+ )
 
 {- | Evaluation parameters: the number of significant digits printed, the
 number of standard deviations a comparison must clear to be decided (design
@@ -98,7 +117,7 @@ data Runtime = Runtime
   , shared :: Hash -> Maybe Thunk
   {- ^ the value of a definition (not a cycle member) evaluated once and
   shared by every reference to it, when the caller keeps such a table:
-  @evalAt cfg rt h t@ under the same 'Config' and this runtime, so that an
+  @evalDefinition cfg rt h t@ under the same 'Config' and this runtime, so that an
   expensive value (a turned chart's rotation, design §3.8) is computed once
   per evaluation rather than once per reference. Pure, so sharing changes
   no result; 'Nothing' evaluates the definition afresh
@@ -272,6 +291,10 @@ data Value
     it is, inside a tuple or a record as at the top
     -}
     VUnit Value
+  | {- | a polymorphic value waiting for the argument of its type-level
+    variable (design §8); only a type application consumes one
+    -}
+    VTyAbs VarId Kind (Arg -> Thunk)
 
 -- | A boolean: @True@ or @False@ of the built-in @Bool@ ("Eval.Builtin").
 pattern VBool :: Bool -> Value
@@ -288,66 +311,92 @@ asBool = \case
 {- | A function value: a body under one binder, closed over its environment
 and its site.
 -}
-data Closure = forall n. Closure Site (Env n) (TTerm (S n))
+data Closure = forall n. Closure TyEnv Site (Env n) (TTerm (S n))
+
+{- | The type-level arguments in force at a point of a term, by the
+variables of that term's abstractions (design §8). Types are erased except
+where a value's runtime shape or dimension comes from them alone: an
+empty tensor literal, and the result of a mapping primitive. A variable
+with no argument here is unconstrained, and any instance is a valid one.
+-}
+type TyEnv = Map VarId Arg
 
 -- | Evaluate a closed term that belongs to no definition.
 evalClosed :: Config -> Runtime -> TTerm Z -> Thunk
 evalClosed cfg rt = evalAt cfg rt (Hash mempty)
 
--- | Evaluate a closed term as the body of the definition with the given hash.
+{- | Evaluate a closed term as the body of the definition with the given
+hash, for its value: abstractions over type-level variables still
+unapplied at the top are applied to the variables themselves, which
+nothing constrains.
+-}
 evalAt :: Config -> Runtime -> Hash -> TTerm Z -> Thunk
-evalAt cfg rt h = eval cfg rt (Site h []) VNil
+evalAt cfg rt h t = instantiated =<< evalDefinition cfg rt h t
+ where
+  instantiated = \case
+    VTyAbs v k f -> instantiated =<< f (varArg k v)
+    x -> Right x
 
-eval :: Config -> Runtime -> Site -> Env n -> TTerm n -> Thunk
+{- | Evaluate a closed term as the definition with the given hash, as a
+reference to it sees it: polymorphic definitions stay abstractions, which
+each use applies to its type-level arguments.
+-}
+evalDefinition :: Config -> Runtime -> Hash -> TTerm Z -> Thunk
+evalDefinition cfg rt h = eval cfg rt Map.empty (Site h []) VNil
+
+eval :: Config -> Runtime -> TyEnv -> Site -> Env n -> TTerm n -> Thunk
 eval cfg rt = go
  where
   p = precisionOf cfg
 
-  go :: Site -> Env m -> TTerm m -> Thunk
-  go site env = \case
+  go :: TyEnv -> Site -> Env m -> TTerm m -> Thunk
+  go tenv site env = \case
     TVr i -> lookupEnv i env
     TRef h mi (Hint written) -> case rt.typedOf h of
       Nothing -> Left (UnknownRef h)
       Just t -> do
-        -- A chart whose step may be zero is named by its reference.
+        -- A chart whose step may be zero is named by its reference. A
+        -- definition is its own term: its type-level variables are its own.
         v <- first (namedChart (rt.chartName h mi written)) $ case mi of
-          Nothing -> fromMaybe (go (Site h []) VNil t) (rt.shared h)
+          Nothing -> fromMaybe (go Map.empty (Site h []) VNil t) (rt.shared h)
           Just i -> case t of
-            TCycle _ _ bodies -> case vecIndex i (cycleMembers h VNil bodies) of
-              Just member -> member
-              Nothing -> Left (BadCycleIndex i)
+            TCycle vars _ bodies -> cycleMember h i vars bodies
             _ -> Left (BadCycleIndex i)
         -- A declared unit is its own display unit (design §3.2.12).
         case (rt.unitName h mi written, rt.chartName h mi written) of
           (Just u, _) -> asUnit (UnitNamed u) v
           (_, Just s) -> asChart (UnitNamed s) v
           _ -> Right v
-    TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
+    TPrimApp prim _ args ->
+      runPrim cfg rt prim (zipWith (\i a -> go tenv (child i) env a) [0 ..] args)
     TLit (LTensor (dims, rs)) _ -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
     -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
     -- A boolean is data like any other: @if@ is a case on its constructor.
-    TCon c _ args -> Right (VData c (zipWith (\i a -> go (child i) env a) [0 ..] args))
+    TCon c _ args -> Right (VData c (zipWith (\i a -> go tenv (child i) env a) [0 ..] args))
     TCase sc _ alts ->
-      go (child 0) env sc >>= \case
+      go tenv (child 0) env sc >>= \case
         VData c fields ->
           case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
-            (i, TAlt _ bs body) : _ -> go (child i) (vecAppend (attach bs fields) env) body
+            (i, TAlt _ bs body) : _ -> go tenv (child i) (vecAppend (attach bs fields) env) body
             [] -> Left (Internal ("case: no alternative for " <> conText c))
         _ -> Left (Internal "case: the scrutinee is not data")
-    TLam _ _ body -> Right (VClosure (Closure (child 0) env body))
+    TLam _ _ body -> Right (VClosure (Closure tenv (child 0) env body))
     TApp f a -> do
-      fv <- go (child 0) env f
-      v <- apply cfg rt fv (go (child 1) env a)
+      fv <- go tenv (child 0) env f
+      v <- apply cfg rt fv (go tenv (child 1) env a)
       -- A moving chart applied is an instant of it (design §3.8), named
       -- after it with the arguments it was applied to.
       Right $ case (v, instantOf site [] (TApp f a)) of
         (VChart c, Just (n, args)) ->
           VChart
-            c{name = Just (UnitNamed n), applied = Applied [go s env x | (s, x) <- args]}
+            c
+              { name = Just (UnitNamed n)
+              , applied = Applied [go tenv s env x | (s, x) <- args]
+              }
         _ -> v
-    TLet _ _ e body -> go (child 1) (VCons (go (child 0) env e) env) body
+    TLet _ _ e body -> go tenv (child 1) (VCons (go tenv (child 0) env e) env) body
     TPow t n -> do
-      v <- go (child 0) env t
+      v <- go tenv (child 0) env t
       (x, d, hint) <- scalarFull v
       r <- arith (powM p x n)
       Right $ case v of
@@ -369,8 +418,8 @@ eval cfg rt = go
     -- One independent nudge per component, the component index in its
     -- identity (design §3.4); a scalar uncertainty applies to every component.
     TUncertain k l x e -> do
-      (dims, d, hint, xs) <- tensor =<< go (child 0) env x
-      (edims, _, _, es) <- tensor =<< go (child 1) env e
+      (dims, d, hint, xs) <- tensor =<< go tenv (child 0) env x
+      (edims, _, _, es) <- tensor =<< go tenv (child 1) env e
       case (dims, edims) of
         -- v ±σ P: v + cholesky P · gauss n, one statistical nudge per
         -- component, identified by this site (design §3.5).
@@ -401,11 +450,14 @@ eval cfg rt = go
     -- shape the other components have, so an error in one component is
     -- only raised when that component is used. The first component's
     -- display unit is kept.
-    TPack _ ts ->
-      let results = zipWith (\i t -> tensor =<< go (child i) env t) [0 ..] ts
+    -- With none, the element type alone says what the stack holds.
+    TPack _ ty ts ->
+      let results = zipWith (\i t -> tensor =<< go tenv (child i) env t) [0 ..] ts
           known = [(dims, d, hint) | Right (dims, d, hint, _) <- results]
        in case (results, known) of
-            ([], _) -> Right (VTensor [0] dimOne Nothing V.empty)
+            ([], _) -> case resolveType tenv ty of
+              TTensor sh d -> Right (VTensor (0 : runtimeShape sh) (runtimeDim d) Nothing V.empty)
+              _ -> Left (Internal "an empty pack of non-tensors")
             (_, (dims, d, hint) : _) ->
               let block = \case
                     Right (_, _, _, buf) -> buf
@@ -415,7 +467,7 @@ eval cfg rt = go
             (Right _ : _, []) -> Left (Internal "unreachable: a tensor with no shape")
     -- Slice out component i: a view, not a copy.
     TProj t i -> do
-      v <- go (child 0) env t
+      v <- go tenv (child 0) env t
       case v of
         VTensor dims d hint buf -> slice dims (\rest -> VTensor rest d hint) buf
         -- A coordinate of a point (design §3.10, F5): the amount along one
@@ -430,9 +482,24 @@ eval cfg rt = go
               let stride = product rest
                in Right (mk rest (V.slice (i * stride) stride buf))
         _ -> Left (Internal ("projection ." <> tshow i <> " out of range"))
-    -- Erasure.
-    TTyLam _ _ b -> go site env b
-    TTyApp b _ -> go site env b
+    -- An abstraction over a type-level variable waits for its argument
+    -- only if the body's runtime needs it; otherwise the body is evaluated
+    -- once, shared by every application (design §8).
+    TTyLam v k b ->
+      let erased = go tenv site env b
+       in Right
+            ( VTyAbs
+                v
+                k
+                ( if neededAtRuntime v k b
+                    then \a -> go (Map.insert v a tenv) site env b
+                    else const erased
+                )
+            )
+    TTyApp b a ->
+      go tenv site env b >>= \case
+        VTyAbs _ _ f -> f (resolveArg tenv a)
+        _ -> Left (Internal "type application to a value that is not polymorphic")
     -- A cycle is not itself a value; it is reached through @TRef h (Just i)@.
     TCycle{} -> Left (BadCycleIndex (-1))
    where
@@ -452,10 +519,25 @@ eval cfg rt = go
   -- Knot-tying: every member is evaluated in an environment that already
   -- contains all the members. 'vecMap' and 'vecAppend' inspect only the
   -- spine, so the recursion is productive.
-  cycleMembers :: Hash -> Env m -> Vec k (TTerm (Plus k m)) -> Vec k Thunk
-  cycleMembers h env bodies = members
+  cycleMembers :: TyEnv -> Hash -> Vec k (TTerm (Plus k Z)) -> Vec k Thunk
+  cycleMembers tenv h bodies = members
    where
-    members = vecMapIndexed (\i -> go (Site h [i]) (vecAppend members env)) bodies
+    members = vecMapIndexed (\i -> go tenv (Site h [i]) (vecAppend members VNil)) bodies
+
+  -- A member of a cycle, abstracted over the cycle's type-level variables
+  -- as its stored scheme is (every member's lists them all, in order).
+  -- The members are evaluated once for every application only when some
+  -- body needs the arguments at run time.
+  cycleMember ::
+    Hash -> Int -> [(VarId, Kind)] -> Vec k (TTerm (Plus k Z)) -> Thunk
+  cycleMember h i vars bodies = abstract vars Map.empty
+   where
+    needed = any (\(v, k) -> any (neededAtRuntime v k) (vecToList bodies)) vars
+    shared = member Map.empty
+    member tenv = fromMaybe (Left (BadCycleIndex i)) (vecIndex i (cycleMembers tenv h bodies))
+    abstract vs tenv = case vs of
+      [] -> if needed then member tenv else shared
+      (v, k) : rest -> Right (VTyAbs v k (\a -> abstract rest (Map.insert v a tenv)))
 
 {- | The identity of a declared nudge (design §3.2.4): where it sits, unless
 it carries a tag.
@@ -481,10 +563,75 @@ lookupEnv i env = case (i, env) of
   (FZ, VCons x _) -> x
   (FS j, VCons _ xs) -> lookupEnv j xs
 
+-- Types at run time ---------------------------------------------------------------
+
+{- | Whether a term's run time needs the argument of a type-level variable
+(design §8): the element type of an empty pack, or an argument passed on
+to another abstraction. Only lengths, shapes and dimensions
+are ever needed; a variable of another kind never is.
+-}
+neededAtRuntime :: VarId -> Kind -> TTerm n -> Bool
+neededAtRuntime v k body = k `elem` [KLen, KShape, KDim] && go body
+ where
+  go :: TTerm m -> Bool
+  go = \case
+    TVr _ -> False
+    TRef{} -> False
+    TPrimApp _ _ args -> any go args
+    TLit{} -> False
+    TLam _ _ b -> go b
+    TApp f a -> go f || go a
+    TLet _ _ e b -> go e || go b
+    TCon _ _ args -> any go args
+    TCase s _ alts -> go s || any (\(TAlt _ _ b) -> go b) alts
+    TPow t _ -> go t
+    TNoise{} -> False
+    TUncertain _ _ a b -> go a || go b
+    TPack _ ty [] -> mentions ty
+    TPack _ _ ts -> any go ts
+    TProj t _ -> go t
+    TTyLam _ _ b -> go b
+    TTyApp b a -> mentions (TData selfType [a]) || go b
+    TCycle _ _ bodies -> any go (vecToList bodies)
+  mentions t = v `elem` map fst (freeVars t)
+
+-- | A type under the type-level arguments in force.
+resolveType :: TyEnv -> Type -> Type
+resolveType tenv
+  | Map.null tenv = id
+  | otherwise = substOnce tenv
+
+-- | A type application's argument under the arguments in force where it is written.
+resolveArg :: TyEnv -> Arg -> Arg
+resolveArg tenv a
+  | Map.null tenv = a
+  | otherwise = case substOnce tenv (TData selfType [a]) of
+      TData _ [a'] -> a'
+      _ -> a
+
+{- | The lengths of a shape at run time. A variable still in it is
+unconstrained, so any instance is a valid one: an unknown shape is @[]@,
+and an unknown length its offset alone.
+-}
+runtimeShape :: Shape -> [Int]
+runtimeShape = \case
+  SNil -> []
+  SCons l _ rest -> lenOf l : runtimeShape rest
+  SVar _ -> []
+ where
+  lenOf = \case
+    LLit k -> k
+    LVar _ k -> k
+    LRank _ k -> k
+
+-- | A dimension at run time: an unconstrained variable is dimensionless.
+runtimeDim :: Dim -> Dim
+runtimeDim d = dimFromAtoms [(a, k) | (a@(Base _), k) <- dimAtoms d]
+
 -- | Apply a function value to an argument thunk.
 apply :: Config -> Runtime -> Value -> Thunk -> Thunk
 apply cfg rt f arg = case f of
-  VClosure (Closure site env body) -> eval cfg rt site (VCons arg env) body
+  VClosure (Closure tenv site env body) -> eval cfg rt tenv site (VCons arg env) body
   _ -> Left (Internal "application of a non-function")
 
 arith :: Either ArithError a -> Either EvalError a
@@ -1840,6 +1987,7 @@ render = \case
           _ -> T.unwords (conText c : parts)
       )
   VClosure _ -> Right "<function>"
+  VTyAbs{} -> Right "<polymorphic value>"
   VUnit v -> ("unit " <>) <$> render v
  where
   magnitude = \case

@@ -230,6 +230,8 @@ renderValueWith printer scale prefs showMagnitude = \case
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
+  -- Unreachable: a polymorphic value is instantiated before it is printed.
+  VTyAbs{} -> Right "<polymorphic value>"
   -- Tuples as written; a list by walking its spine.
   VData (TupleC _) fields -> do
     parts <- mapM (>>= recur) fields

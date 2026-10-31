@@ -59,8 +59,11 @@ data TTerm (n :: Nat) where
   TPow :: TTerm n -> Integer -> TTerm n
   TNoise :: NudgeKind -> Label -> Integer -> TTerm n
   TUncertain :: NudgeKind -> Label -> TTerm n -> TTerm n -> TTerm n
-  -- | A stack of tensors, along the axes its new leading position has.
-  TPack :: Axis -> [TTerm n] -> TTerm n
+  {- | A stack of tensors of the given element type, along the axes its new
+  leading position has. The element type is kept even with no elements,
+  where nothing else says what the stack holds (design §3.3).
+  -}
+  TPack :: Axis -> Type -> [TTerm n] -> TTerm n
   TProj :: TTerm n -> Int -> TTerm n
   -- | Abstraction over a type-level variable of the given kind.
   TTyLam :: VarId -> Kind -> TTerm n -> TTerm n
@@ -907,16 +910,15 @@ lint look ctx = \case
       _ ->
         Left
           "± needs a tensor and an uncertainty of its dimension: scalar, of its shape, or its covariance matrix"
-  TPack ax ts -> do
+  TPack ax ty ts -> do
     tys <- mapM monoOf ts
-    case tys of
-      [] -> Left "an empty pack has no element type to lint against"
-      TTensor sh d : rest -> do
+    case ty of
+      TTensor sh d -> do
         require
-          (all (== TTensor sh d) rest)
-          "pack of tensors with different shapes or dimensions"
+          (all (== ty) tys)
+          "pack of tensors with different shapes or dimensions from its element type"
         mono (TTensor (SCons (LLit (length ts)) ax sh) d)
-      t : _ -> Left ("pack of non-tensors of type " <> renderType t)
+      t -> Left ("pack of non-tensors of type " <> renderType t)
   TProj t i -> do
     tt <- monoOf t
     case tt of
@@ -1239,7 +1241,7 @@ renderTTerm namer = go 0
             <> go 6 ctx e
             <> renderLabel l
         )
-    TPack _ ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
+    TPack _ _ ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
     TProj b i -> go 11 ctx b <> "." <> T.pack (show i)
     -- Axis variables print in a scheme's forall only (design §3.9): in
     -- Typed Core their abstractions and applications print as nothing.

@@ -1181,6 +1181,18 @@ polymorphic in the whole shape, or (`contract`, `permute`) has a signature
 computed from literal index positions written at the call, the way a
 projection's position is, so unification stays first-order.
 
+**The empty literal.** `[]` is a tensor of length zero whose element type
+comes from context, as any literal's does: an ascription, `([] :: Vec 0 m)`
+or `([] :: Mat 0 3 m)`, unification with another operand, `dot ([] :: Vec 0
+m) ([] :: Vec 0 m)` is `0 m^2`, or a signature. Typed Core keeps a pack's
+element type even with no elements (`TPack`), and an empty pack is built
+from it (§8). A definition may leave it open, `let e = []` is `forall s d.
+Tensor (0 : s) d`, each use choosing; an expression at the prompt whose
+value leaves a length, shape or dimension open outside any function has no
+value to build, and is refused as a type error: "ambiguous: nothing fixes the
+shape or dimension of this value, of type Tensor (0 : s) d; give an empty
+tensor a type, as in ([] :: Vec 0 m)".
+
 **Size.** A tensor has at most ten million components (`componentLimit`).
 Lengths, counts and index positions are machine integers, so one written
 past the limit (`noise 18446744073709551616`, `Vec 18446744073709551616` in
@@ -3951,7 +3963,8 @@ Elaboration does three things:
 
 - **Explicit polymorphism.** Each generalised variable of a scheme becomes a
   `TyLam`, `DimLam` or `LenLam`; each use of a polymorphic definition becomes the
-  matching applications. Dimension and length arguments are erased at runtime but
+  matching applications. Dimension and length arguments are erased at runtime,
+  except where a value's shape or dimension comes from them alone (§8), and
   guide the compiler (and make the pretty-printer's `:type` output exact).
 - **Overload resolution.** An overloaded `PrimApp "mul" [a, b]` whose constraint
   was solved is rewritten in place to `PrimApp mul@Num×Num [a, b]`,
@@ -5112,8 +5125,18 @@ unreachable for linted terms and are reported as internal errors.
   buffer is boxed because elements are exact rationals and later affine forms;
   an unboxed buffer is a specialisation for a future strict numeric mode, not a
   redesign. Dictionaries are values too: a record of monomorphic primitives.
-- `TyLam`, `DimLam`, `LenLam` and their applications are erased: the interpreter
-  steps through them without allocating.
+- Type abstractions and applications are erased except where a value's
+  runtime shape or dimension comes from a type alone: the element type of an
+  empty tensor literal (§3.3). An abstraction over a
+  length, shape or dimension variable that its body needs there, or passes
+  on in a type application, waits for its argument, and each application
+  supplies it, resolved under the arguments in force where it is written;
+  closures capture those arguments. Every other abstraction evaluates its
+  body once, shared by all its applications, so a polymorphic value is not
+  recomputed per use. A variable that nothing applies, at the top of an
+  expression or never used, is unconstrained, and the evaluator takes any
+  instance of it (an empty shape, length zero, dimensionless); the prompt
+  refuses a value whose type leaves one open (§3.3), so that never prints.
 - `DictLam` is an ordinary lambda over a dictionary value; `DictApp` applies it.
   A monomorphic `PrimApp mul@Mat×Vec [a, b]` is a direct call with its arguments
   as thunks, forced as the primitive needs them. There is no dispatch on value

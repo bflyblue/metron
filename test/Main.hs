@@ -967,6 +967,35 @@ endToEndTests =
         refused "let v = noise 4000 in wedge v v"
         refused "let v = noise 4000 in dot (outer v [1]) (outer [1] v)"
         evalText "let v = noise 3000 in (outer v v).1.2" @?= Right ["0 ± 1"]
+    , testCase "an empty tensor takes its element type from context" $ do
+        -- an ascription
+        evalText "([] :: Vec 0 m)" @?= Right ["[] m"]
+        evalText "dot ([] :: Vec 0 m) ([] :: Vec 0 m)" @?= Right ["0 m^2"]
+        evalText "transpose ([] :: Mat 0 3 m)" @?= Right ["[; ; ] m"]
+        -- unification with another operand, inside a polymorphic function
+        evalText "let v = ([] :: Vec 0 m) in dot v (if true then v else [])"
+          @?= Right ["0 m^2"]
+        runLines ["let g v = dot v (if true then v else [])", "g ([] :: Vec 0 kg)"]
+          @?= Right ["0 kg^2"]
+        -- a signature
+        runLines ["e :: Vec 0 m", "let e = []", "dot e e"] @?= Right ["0 m^2"]
+        -- a definition left open, each use choosing
+        runLines ["let z = []", ":type z", "(z :: Vec 0 m) .* (z :: Vec 0 s)"]
+          @?= Right ["forall s d. Tensor (0 : s) d", "[] m s"]
+    , testCase "an empty tensor nothing fixes is a type error, not an internal one" $ do
+        let ambiguous r = case r of
+              Left err ->
+                T.isInfixOf "ambiguous: nothing fixes the shape or dimension" err
+                  && not (T.isInfixOf "internal error" err)
+                  @? T.unpack err
+              Right out -> assertFailure (show out)
+        ambiguous (evalText "[]")
+        ambiguous (evalText "(1, [])")
+        ambiguous (evalText "dot ([] :: Vec 0 m) []")
+        ambiguous (runLines ["let e = []", "e"])
+        -- inside a function it is the caller's to fix
+        evalText "\\x -> []" @?= Right ["<function>"]
+        runLines [":type []"] @?= Right ["forall s d. Tensor (0 : s) d"]
     ]
 
 -- Codebase, scratch and versioning -------------------------------------------------
@@ -3705,7 +3734,7 @@ polyLets = \case
   TPrimApp _ _ as -> sum (map polyLets as)
   TPow b _ -> polyLets b
   TUncertain _ _ x e -> polyLets x + polyLets e
-  TPack _ ts -> sum (map polyLets ts)
+  TPack _ _ ts -> sum (map polyLets ts)
   TProj t _ -> polyLets t
   TTyLam _ _ b -> polyLets b
   TTyApp b _ -> polyLets b
@@ -3725,7 +3754,7 @@ annotations = \case
       ++ concat [map snd (vecToList bs) ++ annotations b | TAlt _ bs b <- alts]
   TPow b _ -> annotations b
   TUncertain _ _ x e -> annotations x ++ annotations e
-  TPack _ ts -> concatMap annotations ts
+  TPack _ _ ts -> concatMap annotations ts
   TProj t _ -> annotations t
   TTyLam _ _ b -> annotations b
   TTyApp b arg -> (case arg of AType t -> [t]; _ -> []) ++ annotations b

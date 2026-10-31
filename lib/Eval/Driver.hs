@@ -64,14 +64,18 @@ import Eval.Syntax qualified as S
 import Eval.TCore
 import Eval.Type (
   Arg (..),
+  Kind (..),
   Scheme (..),
   Type (..),
   TypeDef (..),
+  VarId,
   dataConstructors,
   defaultAxes,
+  freeVars,
   renderForallIn,
   renderScheme,
   renderTypeDef,
+  selfType,
   varArg,
  )
 import Eval.Update
@@ -311,11 +315,42 @@ evalChecked ::
   S.Expr ->
   Either Text (Hash, Value, LastExpr)
 evalChecked cfg scope cb src e = do
-  (term, typed, _, linted) <- checkExpr scope cb src e
+  (term, typed, scheme, linted) <- checkExpr scope cb src e
+  case scheme of
+    Just sc
+      | not (null (openInValue sc)) ->
+          Left
+            ( S.renderSpanError
+                (Just src)
+                e.span
+                ( "ambiguous: nothing fixes the shape or dimension of this value, of type "
+                    <> renderScheme sc
+                    <> "; give an empty tensor a type, as in ([] :: Vec 0 m)"
+                )
+            )
+    _ -> Right ()
   let h = hashTerm term
   v <-
     either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cfg cb) h typed)
   pure (h, v, LastExpr term linted typed cb)
+
+{- | The length, shape and dimension variables an expression's type leaves
+open in its value, outside any function (design §3.3). Nothing fixes
+them, and a value with them, an empty tensor alone (@[]@ is @Tensor (0 :
+s) d@), has no shape or dimension to be built or printed with. Inside a
+function they are the function's to receive.
+-}
+openInValue :: Scheme -> [VarId]
+openInValue (Forall vs t) =
+  [v | (v, k) <- vs, k `elem` [KLen, KShape, KDim], v `elem` inValue t]
+ where
+  inValue = \case
+    TFun _ _ -> []
+    TData _ as -> concatMap inArg as
+    ty -> map fst (freeVars ty)
+  inArg = \case
+    AType ty -> inValue ty
+    a -> map fst (freeVars (TData selfType [a]))
 
 {- | The runtime for one evaluation under a configuration. Every definition's
 value is shared by all the references to it in that evaluation: a lazy
@@ -334,7 +369,7 @@ runtimeOf cfg cb = rt
       , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
       }
-  values = LazyMap.mapWithKey (\h (_, t) -> evalAt cfg rt h t) cb.derived
+  values = LazyMap.mapWithKey (\h (_, t) -> evalDefinition cfg rt h t) cb.derived
 
 {- | Desugar, typecheck, elaborate and lint an expression against a codebase.
 Returns the Core, the Typed Core, the inferred type and the types lint

@@ -263,7 +263,11 @@ constructors' types enforce the structural ones; tests pin the rest.
   used at an instance of its scheme, every type application has a matching
   abstraction, every `Let` binder's scheme matches its right-hand side, and
   erasing the type forms gives back the Core.
-- **Erasure is semantics-preserving.** The evaluator may ignore every type form.
+- **Erasure is semantics-preserving where nothing else holds the information.**
+  The evaluator ignores every type form except the length, shape and
+  dimension arguments that a value's runtime shape or dimension comes from
+  alone: the element type of an empty `TPack`, which Typed Core keeps even
+  with no elements (design §8).
 
 ### What the hash depends on
 
