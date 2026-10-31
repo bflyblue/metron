@@ -2790,16 +2790,18 @@ decided.
 - A chart with `at` (a new origin) mints a frame.
 - A chart with `by` or `spinning` (new axes) mints a frame and its axes, as
   in §3.9 stage 2b.
-- A chart with a step and a parent and no `at` (`chart mdegC = mK degC`;
-  this spelling is under discussion) is a rescaling: it shares its parent's frame, its points have the parent's type,
-  and its step is only how they print.
+- A chart written as its parent `in` a step (`chart mdegC = degC in mK`,
+  `chart degR = kelvin in deltaF`) is a rescaling: it shares its parent's
+  frame, its points have the parent's type, and its step is only how they
+  print. It has no `at`, `by` or `spinning`. Rankine written this way shares
+  kelvin's frame, so Rankine and kelvin points subtract without a `to`.
 
 A frame is named after the chart that mints it, so `chart degC = …` makes
 `degC` a value (`degC : Chart degC`) and a frame (`degC : Frame
 Temperature`), in separate namespaces as a chart and its axes are today. Two
 charts declared alike are two frames, like two `newtype`s over one type. A
-moving chart mints one frame for every argument: `ecef (100 unix)` and
-`ecef (200 unix)` are two chart values of type `Chart ecef`. The relation
+chart with parameters mints one frame for all its arguments: `ecef (100
+unix)` and `ecef (200 unix)` are two chart values of type `Chart ecef`. The relation
 between the levels:
 
 ```
@@ -2808,6 +2810,31 @@ degC  (value)    : Chart degC          -- the chart: its step and origin
 degC  (frame)    : Frame Temperature   -- the type-level name and its kind
 Temperature      : Space
 ```
+
+**What a declaration means** (decided by the owner). A chart declaration is
+one frame, like one rigid body. Its parameters are that frame's
+configuration, its degrees of freedom (a time, a joint angle, a state), and
+never a choice between frames. It denotes the frame with a pose for each
+argument, `pose(p) = (origin(p), rotation(p), step(p))` relative to the
+parent. A point on it is coordinates in the frame, which do not depend on the
+pose, as a seat's place on a train does not depend on where the train is. Two
+bodies are two declarations; what they share is an ordinary function, not a
+chart:
+
+```
+let lvlhTurn s = …                                   -- the recipe: a rotation for a state
+chart lvlhA t = m at (posA t) eci by lvlhTurn (stateA t)
+chart lvlhB t = m at (posB t) eci by lvlhTurn (stateB t)
+```
+
+`lvlhA` and `lvlhB` are sibling frames under `eci`, with axes of their own,
+so their points and amounts never mix unconverted. One declaration used for
+both, `lvlh (stateA t)` and `lvlh (stateB t)`, would make them one frame, and
+`b .- a` would compare offsets from two spacecraft as if they were one body:
+a misuse the checker cannot see, since it would have to compare argument
+values. Charts are therefore declared when the code is written (decided by
+the owner for now: eval is a small language of expressions over tensors); a
+frame per item of data is an open question (§11).
 
 **F4. Types.** `Point c` is the type of points on the frame `c`, and
 `Chart c` the type of charts whose frame is `c`: one value for a fixed chart,
@@ -2860,23 +2887,56 @@ the common ancestor and down. A point written on a rescaled chart and one on
 its parent are on one frame and subtract directly. This replaces §3.8's
 base-form storage.
 
-**F7. Moving charts.** A point on a moving frame holds its coordinates and no
-instant: `[1, 2, 3] (ecef t0)` and `[1, 2, 3] (ecef t1)` are the same point,
-a point fixed on the moving body (a ground station is a constant), and the
-quantity rule also accepts the moving chart itself, `[1, 2, 3] ecef`.
-Converting needs the instant (this spelling is under discussion), from `at`
-or from an applied moving chart on the right: `p to eci at (100 unix)`, `q to (ecef t)`. A conversion that
-passes through a moving chart with no instant is refused, "ecef moves: say
-when, `p to eci at t`", so the wrong-epoch mistake is a missing argument, not
-a silent error. Charts chosen by a stored argument (a family with one chart
-per spacecraft) are deferred (§11).
+**F7. Charts with parameters.** A chart's parameters are arbitrary, any
+number of any type. An applied chart fixes its whole path to its space,
+because a child's declaration either applies its parent to expressions of its
+own parameters (linked: `chart lvlh s = m at s.pos (ecef s.epoch) by …`) or
+leaves the parent's parameters open, and they become parameters of the child
+(inherited: `chart arm q t = m at [1, 0, 0] m (ecef t) by roty q`). So a
+conversion needs exactly two chart values, the source's and the target's.
 
-**F8. The quantity rule for charts** (U4). Any expression of type `Chart c`,
-or a moving chart, after a literal builds a point, so chart parameters,
-applied moving charts and local chart values need no declaration:
+A point on a parameterised frame holds its coordinates, and the chart it was
+written on for printing only. Writing one needs an applied chart, `[1, 2, 3]
+(ecef t0)`, because the step may depend on the arguments. Converting names
+the source chart whenever it takes parameters, and a parameterised target is
+given applied:
+
+```
+p from (lvlh s) to eci     -- p : Point lvlh
+q to (ecef t)              -- the target applied
+r to eci                   -- r on a chart without parameters: no from
+p to eci                   -- refused: "lvlh takes arguments: write p from (lvlh …) to eci"
+```
+
+`p from c to c1` is typed `Point f -> Chart f -> Chart f1 -> Point f1`: the
+chart after `from` must have the point's frame. The chart a point was written
+on is never used for a conversion, so a wrong configuration is a missing
+argument, not a silent error.
+
+`.-` on one frame is frame-relative, whatever configurations its points were
+written with. The other questions one asks of two points are conversions
+followed by a subtraction:
+
+1. On one frame: `b .- a`, relative to the frame (two cities on `ecef`).
+2. Across the tree: `(sat to (ecef t)) .- station`, a satellite seen from a
+   ground station, in Earth-fixed axes.
+3. Both in a third frame. At one configuration this re-expresses the
+   difference, `(b to (lvlhA t)) .- (a to (lvlhA t))`, which equals `along
+   (lvlhA t) (b .- a)`. At two configurations it is a new quantity that
+   includes the frame's motion between them, `(b from (ecef t1) to eci) .-
+   (a from (ecef t0) to eci)`.
+
+A shorthand for "convert both to this frame, then subtract", `b .- a in
+(lvlhA t)`, is possible later; it covers only points sharing a
+configuration.
+
+**F8. The quantity rule for charts** (U4). Any expression of type `Chart c`
+after a literal builds a point, so chart parameters, applied charts (`[1, 2,
+3] (ecef t0)`) and local chart values need no declaration:
 `pt :: forall c. Chart c -> Point c` with `pt c = 3 c`; without the signature
-the parameter could be a unit or a chart, which U4 refuses as ambiguous. The
-`chart` keyword is still what mints a frame.
+the parameter could be a unit or a chart, which U4 refuses as ambiguous. A
+chart with parameters, unapplied, is a function and is refused after a
+literal. The `chart` keyword is still what mints a frame.
 
 **F9. Printing and encoding.** `:type 20 degC` is `Point degC`, `:type degC`
 is `Chart degC`, `:type [1, 2, 3] lvlh` is `Point lvlh`; a point prints as it
@@ -2885,7 +2945,7 @@ like a chart's axes, with label kinds of their own that no source `data`
 produces; a type that mentions them encodes them as appended tags (§6.1), and
 the store format moves if the encoding does.
 
-**Deferred.** Families selected by a stored argument (F7); constraints over
+**Deferred.** A frame per item of data (F3, §11); constraints over
 `Diff` beyond the pending one (F4); printing values with `·` (§4.1).
 
 ## 4. Type system
@@ -5252,11 +5312,16 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
-- Chart families chosen by a stored argument (§3.10, F7): one chart per
-  spacecraft, say, where the argument selects which chart and is not a time
-  supplied at conversion. A point on such a chart needs the selection in its
-  type or its value; named instances, or scoped generative frames in the
-  style of Haskell's `ST`, are the candidates.
+- A frame per item of data (§3.10, F3). Frames are minted by declarations,
+  so their number is fixed when the code is written, which the owner accepts
+  for now. Bodies that come from data, a list of a hundred satellites,
+  cannot each be declared, and one parameterised chart would make them one
+  frame. The candidates: a scoped frame in the style of `runST` (`frame c =
+  chart in body`, a rigid frame that may not escape its scope, so points
+  leave it only converted); existential packages of a chart and its points
+  (`data Body = forall c. Body (Chart c) {Point c}`), the general form, which
+  needs existential types and the same escape check; and a run-time identity
+  check, which gives up the checker's guarantee.
 - Comparison operators beyond the certain `<` and `==` (§3.2.9): possible
   comparisons `<?` and `=?` ("consistent with", at `k` sigma for statistical
   nudges), tolerance equality `a ≈ b within t`, and enclosure containment. The
