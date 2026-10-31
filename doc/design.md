@@ -2737,8 +2737,7 @@ refused as ambiguous.
 (`unit N = kg*m/s^2`, `unit psi = lbf / inch^2`, `unit deltaC = K`). The
 library's declarations written as `60 * s`, `deg / 60` and `5/9 * K` are
 respelled `60 s`, `1 deg / 60` and `5/9 * 1 K`. A chart's step is a `Unit`
-and its origin an amount (`chart degF = deltaF at 459.67 deltaF
-Temperature`). `:prefer` takes a unit.
+and its origin an amount (`chart degF on Temperature at 459.67 deltaF step deltaF`). `:prefer` takes a unit.
 
 **U8. Printing.** `Unit δ` is written and printed like any type. A unit value
 prints as the unit expression of its hint, with `*`, `/` and `^` as a type's
@@ -2770,9 +2769,9 @@ space's amounts and gives the space a base: origin zero, the base unit as
 step and, for a vector space, axes of its own, minted with it and named after
 it (`Vec Inertial m`). The base is the reference every chart on the space is
 given against in the end; no point is written on the base itself. A chart
-names its space as its parent, `chart degC = K at 273.15 K Temperature`,
-`chart JD = day at 0 day Time`; a chart with no parent is refused, "name its
-space: `chart … Temperature`". This replaces §3.8's implicit base of a
+names its space as its parent, `chart degC on Temperature at 273.15 K`,
+`chart JD on Time step day`; a chart with no `on` is refused, "name its
+space: `chart … on Temperature`" (syntax in F10). This replaces §3.8's implicit base of a
 dimension and, by the owner's decision, §3.9 decision 7's root chart that names its
 own axes: a root
 chart is a translated child of its space's base and has the base's axes, so
@@ -2787,16 +2786,18 @@ makes a new frame is decided by what it says, never by comparing values: an
 origin may be approximate, and equality of computed values cannot be
 decided.
 
+- A chart directly on a space mints a frame: it is a root, and no point is
+  written on a space's base itself.
 - A chart with `at` (a new origin) mints a frame.
 - A chart with `by` or `spinning` (new axes) mints a frame and its axes, as
   in §3.9 stage 2b.
-- A chart written as its parent `in` a step (`chart mdegC = degC in mK`,
-  `chart degR = kelvin in deltaF`) is a rescaling: it shares its parent's
+- A chart on a chart with only a `step` (`chart mdegC on degC step mK`,
+  `chart degR on kelvin step deltaF`) is a rescaling: it shares its parent's
   frame, its points have the parent's type, and its step is only how they
-  print. It has no `at`, `by` or `spinning`. Rankine written this way shares
-  kelvin's frame, so Rankine and kelvin points subtract without a `to`.
+  print. Rankine written this way shares kelvin's frame, so Rankine and
+  kelvin points subtract without a `to`.
 
-A frame is named after the chart that mints it, so `chart degC = …` makes
+A frame is named after the chart that mints it, so `chart degC on …` makes
 `degC` a value (`degC : Chart degC`) and a frame (`degC : Frame
 Temperature`), in separate namespaces as a chart and its axes are today. Two
 charts declared alike are two frames, like two `newtype`s over one type. A
@@ -2823,8 +2824,8 @@ chart:
 
 ```
 let lvlhTurn s = …                                   -- the recipe: a rotation for a state
-chart lvlhA t = m at (posA t) eci by lvlhTurn (stateA t)
-chart lvlhB t = m at (posB t) eci by lvlhTurn (stateB t)
+chart lvlhA t on eci at (posA t) by lvlhTurn (stateA t)
+chart lvlhB t on eci at (posB t) by lvlhTurn (stateB t)
 ```
 
 `lvlhA` and `lvlhB` are sibling frames under `eci`, with axes of their own,
@@ -2866,7 +2867,7 @@ p.k        : Point c -> Num δ                                -- the k-th coordi
 rotationOf : forall s (c : s). Chart c -> Mat s c            -- rows along the space's base axes, columns along c's
 ```
 
-`along`, `inChart`, `withAxes`, `spinOf`, `originVelocityOf`, `velocityIn`,
+`withAxes`, `spinOf`, `originVelocityOf`, `velocityIn`,
 `stateFrom` and `astro.State` are retyped over frames and spaces in the same
 way. The checker needs no special rule for "convert first": `.-` takes two
 `Point c`, so points on two frames fail to unify, reported as "points on degC
@@ -2890,9 +2891,9 @@ base-form storage.
 **F7. Charts with parameters.** A chart's parameters are arbitrary, any
 number of any type. An applied chart fixes its whole path to its space,
 because a child's declaration either applies its parent to expressions of its
-own parameters (linked: `chart lvlh s = m at s.pos (ecef s.epoch) by …`) or
+own parameters (linked: `chart lvlh s on (ecef s.epoch) at s.pos by …`) or
 leaves the parent's parameters open, and they become parameters of the child
-(inherited: `chart arm q t = m at [1, 0, 0] m (ecef t) by roty q`). So a
+(inherited: `chart arm q t on (ecef t) at [1, 0, 0] m by roty q`). So a
 conversion needs exactly two chart values, the source's and the target's.
 
 A point on a parameterised frame holds its coordinates, and the chart it was
@@ -2921,14 +2922,13 @@ followed by a subtraction:
 2. Across the tree: `(sat to (ecef t)) .- station`, a satellite seen from a
    ground station, in Earth-fixed axes.
 3. Both in a third frame. At one configuration this re-expresses the
-   difference, `(b to (lvlhA t)) .- (a to (lvlhA t))`, which equals `along
-   (lvlhA t) (b .- a)`. At two configurations it is a new quantity that
+   difference, `(b to (lvlhA t)) .- (a to (lvlhA t))`, which equals `(b .-
+   a) to (lvlhA t)`. At two configurations it is a new quantity that
    includes the frame's motion between them, `(b from (ecef t1) to eci) .-
    (a from (ecef t0) to eci)`.
 
-A shorthand for "convert both to this frame, then subtract", `b .- a in
-(lvlhA t)`, is possible later; it covers only points sharing a
-configuration.
+A shorthand for "convert both to this frame, then subtract" is deferred
+(F10); it would cover only points sharing a configuration.
 
 **F8. The quantity rule for charts** (U4). Any expression of type `Chart c`
 after a literal builds a point, so chart parameters, applied charts (`[1, 2,
@@ -2945,6 +2945,51 @@ like a chart's axes, with label kinds of their own that no source `data`
 produces; a type that mentions them encodes them as appended tags (§6.1), and
 the store format moves if the encoding does.
 
+**F10. Syntax** (decided by the owner). A chart declaration is its name,
+its parameters and its clauses, with no `=`:
+
+```
+chart name params… on parent [at origin] [step unit] [by B [then B …]] [spinning ω]
+```
+
+`on` is required and comes first: it ends the parameters and names the
+parent, a space or a chart (applied, if it has parameters). The other clauses
+come in any order, each running to the next clause word, so no expression in
+them needs parentheses. `on`, `step`, `by`, `then` and `spinning` are words
+only inside a chart declaration and stay free as names elsewhere; `at` is a
+keyword already. An omitted clause is inherited: the origin and the axes are
+the parent's, and the step is the parent's or, on a space, the space's base
+unit. Which clauses appear decides whether a frame is minted (F3). `unit` and
+`space` keep their `=`, since each binds one expression. The library's
+charts, and §3.8's examples, read:
+
+```
+chart kelvin    on Temperature
+chart degC      on Temperature at 273.15 K
+chart degF      on Temperature at 459.67 deltaF step deltaF
+chart degR      on kelvin step deltaF                    -- a rescaling of kelvin
+chart JD        on Time step day
+chart MJD       on Time at 2400000.5 day step day
+chart J2000     on Time at 2451545 day step day
+chart unix      on Time at 2440587.5 day
+chart gauge     on Pressure at 101325 Pa
+chart eci       on Inertial
+chart ecef t    on eci by rotz (gmst t) spinning [0, 0, 1] * ω_e
+chart lvlh s    on (ecef s.epoch) at s.pos by lvlhTurn s
+```
+
+**`to` is the one conversion.** It re-expresses its left side in the target
+on its right, the reading chosen by types (U6): an amount in a unit
+(display); a point on a chart (F7); an amount along a chart's axes, where only
+the rotation applies, `(b .- a) to (lvlhA t)`. An amount on a frame with
+parameters takes `from` as a point does, `v from (ecef t) to eci`. `along` and
+`inChart` are retired into `to`, one for each direction. `withAxes c v` stays:
+it labels a vector that has no frame, which is not a conversion.
+
+**Deferred: a shorthand for "convert both, then subtract".** `b .- a in
+(lvlhA t)` cannot be the spelling, because `let d = b .- a in (lvlhA t)`
+already parses as a `let … in` whose body is `(lvlhA t)`. Another word is
+needed, `on` the likeliest, which would then be a word in expressions too.
 **Deferred.** A frame per item of data (F3, §11); constraints over
 `Diff` beyond the pending one (F4); printing values with `·` (§4.1).
 
