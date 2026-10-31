@@ -398,6 +398,12 @@ roundAt e r
  where
   unit = 10 ^^ e :: Rational
 
+-- | Round up to a multiple of @10^e@: an upper bound stays one.
+roundUpAt :: Int -> Rational -> Rational
+roundUpAt e r = fromInteger (ceiling (r / unit)) * unit
+ where
+  unit = 10 ^^ e :: Rational
+
 -- Rigorous elementary functions on rationals -------------------------------------------
 --
 -- Each returns an approximation and a bound on its absolute error, good to
@@ -460,9 +466,16 @@ expApprox p x
           q = p + 2 * k + 4
           r = x / (2 ^ k)
           terms = scanl (\t n -> t * r / fromInteger n) 1 [1 :: Integer ..]
+          -- The square is rounded at its own last digit, and its error
+          -- bound rounded up there: rounded at the last digit of the value
+          -- squared, a small result lost every digit (e^-200 came out as
+          -- 0), and only a working precision of hundreds of digits found
+          -- it, which took seconds for e^-10000.
           square (s, e) =
-            let s' = roundAt (precisionExponent q s) (s * s)
-             in (s', 2 * abs s * e + e * e + abs (s * s - s'))
+            let ss = s * s
+                at = precisionExponent q ss
+                s' = roundAt at ss
+             in (s', roundUpAt at (2 * abs s * e + e * e + abs (ss - s')))
        in iterate square (sumSeries (tolerance q 1) terms) !! k
 
 -- | @atanh z@ for @|z| < 1@, relative to its size.

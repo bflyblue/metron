@@ -4096,7 +4096,23 @@ lintRegressionTests :: TestTree
 lintRegressionTests =
   testGroup
     "lint regressions"
-    [ testCase "instantiation renames quantified variables simultaneously" $ do
+    [ -- Found by the property "evaluating a linted term never reports an
+      -- internal error", which ran for an hour on this program from the
+      -- type-directed generator. exp squared its halved argument back at
+      -- the precision of the value before squaring, so a small result
+      -- lost every digit (e^-200 was 0) and only a working precision of
+      -- thousands of digits found it: e^-19683 took 20 s, and its
+      -- reciprocal was refused as a division by zero.
+      localOption (mkTimeout 5000000)
+        $ testCase "exp of a large negative argument keeps its digits, quickly"
+        $ do
+          evalText "exp (-200)" @?= Right ["1.3838965267367375306…e-87"]
+          evalText "exp (-19683) > 0" @?= Right ["true"]
+          evalText "1 / exp (-19683) < 1" @?= Right ["false"]
+          evalText
+            "(((\\q -> [6, 9, 0] K ⊙ [5, 3, 2] K^-1) ([[-3]]._.0 - ([6] - [7])) ⊘ (if 0 > 1.5 then [5, 2, 8] ⊙ [2, 6, 1.5] else (\\x -> [9, 8, 5]) (\\y -> [0.5] m^-1 * kg^-1))).2 * (let g = 0.25 * (-0.5 mol * cd) / (2 * 0.5 mol) <= 3 mol^-1 * rad^-2 * (if true then -1 mol * cd * rad^2 else 5 mol * cd * rad^2) in [0.5] K * (4 kg / K) · ([[0]] rad^-1 ⊙ ([[3]] A * rad / kg)) ⊘ ((\\w -> [9] kg) g ⊙ ([4] * 9 kg^-1)))).0 ⊙ (-2 kg * A^-1 / (exp (((-3 to m / m) * (6 * 1.5))^3) ⊙ (\\f -> ([8, 1.5] kg).0) (vmap (\\z -> -2) (let x = [9] in [0, 8, 6; 1.5, 0, 8] K^2 / s))))"
+            @?= Right ["0"]
+    , testCase "instantiation renames quantified variables simultaneously" $ do
         typeOfTextP "\\a b -> a >< b"
           @?= Right "forall (a : 3) d d1. Vec a d -> Vec a d1 -> Vec a (d*d1)"
         evalP "[1, 0, 0] m >< ([0, 1, 0] m / s)" @?= Right ["[0, 0, 1] m^2 s^-1"]
