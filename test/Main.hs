@@ -1032,7 +1032,7 @@ codebaseTests =
         "propagation follows a rebinding only through the name it was made under"
         $ do
           -- `unit meter = m` is the library's `si.metre` term; changing meter must not
-          -- rescale km, which is written as kilo * metre.
+          -- rescale km, which is written as kilo * 1 metre.
           let session =
                 [ "unit meter = m"
                 , ":add"
@@ -4540,7 +4540,8 @@ affineTests =
         -- The library lives in namespaces, so :edit prints its definitions in their block.
         runLinesP [":edit degC"]
           @?= Right ["namespace temperature", "  chart degC = K at 273.15 * K"]
-        runLinesP [":edit km"] @?= Right ["namespace si", "  unit km = kilo * metre"]
+        runLinesP [":edit km"]
+          @?= Right ["namespace si", "  unit km = kilo * (1 * metre)"]
     , testCase
         "chart is the keyword, scale its old spelling: one declaration, one hash"
         $ do
@@ -5037,9 +5038,10 @@ storeTests =
           @?= Right
             [ "6 km h^-1"
             , "6 km h^-1"
-            , -- These changed when km became kilo * metre and h an alias of hr.
-              "#tm912  (current)"
-            , "#fhtmk"
+            , -- These changed when km became kilo * metre and h an alias of hr,
+              -- and when km was respelled kilo * 1 metre (design §3.10, U3).
+              "#9sq9r  (current)"
+            , "#uma3q"
             , "201.168 m"
             , "0 mm"
             , "true"
@@ -7508,15 +7510,18 @@ editTests =
     , testCase "(j) :edit si includes the library; :edit alone never touches it" $ do
         s <- editSession
         file <- editFileOf s ["si"]
-        ("unit km = kilo * metre" `T.isInfixOf` file) @? "si.km is in the file"
-        file' <- replaceOnce "unit km = kilo * metre\n" "unit km = 1001 * m\n" file
+        ("unit km = kilo * (1 * metre)" `T.isInfixOf` file) @? "si.km is in the file"
+        file' <-
+          replaceOnce "unit km = kilo * (1 * metre)\n" "unit km = 1001 * m\n" file
         (s', outs) <- edited (EditNamespace "si") file' s
-        -- The library's own users are in the file; the user's are propagated.
-        outs
-          @?= [ T.replace "si.km" "km" (movedLine "updated" s s' "si.km")
-              , movedLine "upgraded" s s' "orbital.earth"
-              , movedLine "upgraded" s s' "trip"
-              ]
+        -- The library's own users are in the file; the user's are propagated,
+        -- two independent ones in an order their hashes decide.
+        take 1 outs @?= [T.replace "si.km" "km" (movedLine "updated" s s' "si.km")]
+        sort (drop 1 outs)
+          @?= sort
+            [ movedLine "upgraded" s s' "orbital.earth"
+            , movedLine "upgraded" s s' "trip"
+            ]
         snd <$> feed s' "trip to m" @?= Right ["2002 m"]
         -- The codebase without the library: nothing under si is removed.
         plain <- editFileOf s []
@@ -7771,7 +7776,8 @@ stdlibTests =
         expectError
           (runLinesP [":use astro", ":unname astro.AU", "1 AU"])
           "unknown name `AU`"
-        runLinesP [":edit si.km"] @?= Right ["namespace si", "  unit km = kilo * metre"]
+        runLinesP [":edit si.km"]
+          @?= Right ["namespace si", "  unit km = kilo * (1 * metre)"]
     , testCase ":uses, :unuse and :use for the stored uses" $ do
         let stored = ["use " <> u <> " (stored)" | u <- stdlibDefaultUses]
             withoutSi = ["use " <> u <> " (stored)" | u <- stdlibDefaultUses, u /= "si"]

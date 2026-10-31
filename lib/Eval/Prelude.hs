@@ -108,11 +108,11 @@ algebra =
   , ("e1", "[1, 0, 0]")
   , ("e2", "[0, 1, 0]")
   , ("e3", "[0, 0, 1]")
-  , ("rotx", "\\θ -> (θ to rad) / rad * (e3 /\\ e2)")
-  , ("roty", "\\θ -> (θ to rad) / rad * (e1 /\\ e3)")
-  , ("rotz", "\\θ -> (θ to rad) / rad * (e2 /\\ e1)")
+  , ("rotx", "\\θ -> (θ to rad) / 1 rad * (e3 /\\ e2)")
+  , ("roty", "\\θ -> (θ to rad) / 1 rad * (e1 /\\ e3)")
+  , ("rotz", "\\θ -> (θ to rad) / 1 rad * (e2 /\\ e1)")
   , ("dual", "\\v -> ε @ v")
-  , ("axisAngle", "\\n θ -> dual ((θ to rad) / rad * (-n) / norm n)")
+  , ("axisAngle", "\\n θ -> dual ((θ to rad) / 1 rad * (-n) / norm n)")
   ,
     ( "rotation"
     , T.unwords
@@ -121,7 +121,7 @@ algebra =
         , "(if a · b > 0 * (a · b) then [[0, 0, 0], [0, 0, 0], [0, 0, 0]]"
         , "else let k = if cross a e3 == 0 * cross a e3 then e1 else e3 in"
         , "dual (cross k a * pi / norm (cross k a)))"
-        , "else dual (-c * (atan2 (norm c) (a · b) / rad) / norm c)"
+        , "else dual (-c * (atan2 (norm c) (a · b) / 1 rad) / norm c)"
         ]
     )
   ,
@@ -339,11 +339,11 @@ stdlibLayout =
   ,
     ( "time"
     ,
-      [ Unit "min" "60 * s"
-      , Unit "hr" "60 * min"
-      , Unit "day" "86400 * s"
-      , Unit "week" "7 * day"
-      , Unit "year" "365.25 * day"
+      [ Unit "min" "60 s"
+      , Unit "hr" "60 min"
+      , Unit "day" "86400 s"
+      , Unit "week" "7 day"
+      , Unit "year" "365.25 day"
       , Chart "JD" "day at 0 day"
       , Chart "MJD" "day at 2400000.5 day"
       , Chart "J2000" "day at 2451545 day"
@@ -353,10 +353,10 @@ stdlibLayout =
   ,
     ( "angle"
     ,
-      [ Unit "deg" "pi / 180 * rad"
-      , Unit "arcmin" "deg / 60"
-      , Unit "arcsec" "arcmin / 60"
-      , Unit "turn" "2 * pi * rad"
+      [ Unit "deg" "pi / 180 * 1 rad"
+      , Unit "arcmin" "1 deg / 60"
+      , Unit "arcsec" "1 arcmin / 60"
+      , Unit "turn" "2 * pi * 1 rad"
       , Unit "sr" "rad^2"
       ]
     )
@@ -364,7 +364,7 @@ stdlibLayout =
     ( "temperature"
     ,
       [ Unit "deltaC" "K"
-      , Unit "deltaF" "5/9 * K"
+      , Unit "deltaF" "5/9 * 1 K"
       , Chart "degC" "K at 273.15 K"
       , Chart "degF" "deltaF at 459.67 deltaF"
       , Chart "degR" "deltaF at 0 deltaF"
@@ -374,15 +374,15 @@ stdlibLayout =
     )
   ,
     ( "astro"
-    , [ Unit "AU" "149597870700 * m"
+    , [ Unit "AU" "149597870700 m"
       , -- IAU 2015: the parsec is exactly 648000/π au; the light-year is
         -- the distance light travels in a Julian year.
-        Unit "pc" "648000 / pi * AU"
-      , Unit "ly" "physics.c * time.year"
-      , Let "GM_earth" "3.986004e14 * m^3 / s^2"
-      , Let "GM_sun" "1.3271244e20 * m^3 / s^2"
-      , Let "R_earth" "6378100 * m"
-      , Let "G" "(6.67430e-11 ±σ 1.5e-15) * m^3 / (kg * s^2)"
+        Unit "pc" "648000 / pi * 1 AU"
+      , Unit "ly" "physics.c * 1 time.year"
+      , Let "GM_earth" "3.986004e14 m^3/s^2"
+      , Let "GM_sun" "1.3271244e20 m^3/s^2"
+      , Let "R_earth" "6378100 m"
+      , Let "G" "(6.67430e-11 ±σ 1.5e-15) * 1 m^3 kg^-1 s^-2"
       , Let "M_earth" "GM_earth / G"
       , Let "M_sun" "GM_sun / G"
       ]
@@ -392,27 +392,27 @@ stdlibLayout =
     ( "physics"
     ,
       [ UseNs "si"
-      , Let "c" "299792458 * m / s"
-      , Let "planck" "6.62607015e-34 * J * s"
+      , Let "c" "299792458 m/s"
+      , Let "planck" "6.62607015e-34 J s"
       , Let "hbar" "planck / (2 * pi)"
-      , Let "k_B" "1.380649e-23 * J / K"
-      , Let "N_A" "6.02214076e23 / mol"
-      , Let "e_charge" "1.602176634e-19 * C"
-      , Unit "eV" "e_charge * V"
-      , Let "g0" "9.80665 * m / s^2"
+      , Let "k_B" "1.380649e-23 J/K"
+      , Let "N_A" "6.02214076e23 mol^-1"
+      , Let "e_charge" "1.602176634e-19 C"
+      , Unit "eV" "e_charge * 1 V"
+      , Let "g0" "9.80665 m/s^2"
       ]
     )
   ,
     ( "imperial"
     , -- Exact by the 1959 international yard and pound; `in` is a keyword.
 
-      [ Unit "inch" "0.0254 * m"
-      , Unit "ft" "12 * inch"
-      , Unit "yd" "3 * ft"
-      , Unit "mile" "1760 * yd"
-      , Unit "lb" "0.45359237 * kg"
-      , Unit "oz" "lb / 16"
-      , Unit "lbf" "lb * physics.g0"
+      [ Unit "inch" "0.0254 m"
+      , Unit "ft" "12 inch"
+      , Unit "yd" "3 ft"
+      , Unit "mile" "1760 yd"
+      , Unit "lb" "0.45359237 kg"
+      , Unit "oz" "1 lb / 16"
+      , Unit "lbf" "1 lb * physics.g0"
       , Unit "psi" "lbf / inch^2"
       , Unit "mph" "mile / time.hr"
       ]
@@ -472,7 +472,7 @@ coherent =
   , ("J", "joule", "N * m")
   , ("W", "watt", "J / s")
   , ("Pa", "pascal", "N / m^2")
-  , ("Hz", "hertz", "1 / s")
+  , ("Hz", "hertz", "s^-1")
   , ("C", "coulomb", "A * s")
   , ("V", "volt", "W / A")
   , ("Ω", "ohm", "V / A")
@@ -485,13 +485,13 @@ coherent =
   , ("lx", "lux", "lm / m^2")
   , -- Two units may share a definition (Bq and Hz are both 1/s): a unit is
     -- a name, and a value prints under the name it was written with.
-    ("Bq", "becquerel", "1 / s")
+    ("Bq", "becquerel", "s^-1")
   , ("Gy", "gray", "J / kg")
   , ("Sv", "sievert", "J / kg")
   , ("kat", "katal", "mol / s")
-  , ("g", "gram", "kg / 1000")
-  , ("L", "litre", "(m / 10)^3")
-  , ("t", "tonne", "1000 * kg")
+  , ("g", "gram", "1 kg / 1000")
+  , ("L", "litre", "(1 m / 10)^3")
+  , ("t", "tonne", "1000 kg")
   ]
 
 {- | Units that take prefixes, by symbol: the base units except kg (whose
@@ -515,7 +515,7 @@ siStatements =
     ++ [Let n ("10^" <> T.pack (show k)) | (n, k) <- prefixValues]
     ++ [Unit u e | (u, _, e) <- coherent]
     ++ [Chart "gauge" "Pa at 101325 Pa"]
-    ++ [ Unit (p <> u) (n <> " * " <> fromMaybe u (lookup u baseNames))
+    ++ [ Unit (p <> u) (n <> " * 1 " <> fromMaybe u (lookup u baseNames))
        | (p, n) <- prefixNames
        , u <- siPrefixable
        , p <> u /= "kg"

@@ -323,7 +323,7 @@ unitExpr d = do
               else mk (S.Pow (var (baseSymbol b)) (fromIntegral k))
         )
 
--- | A literal quantity: @[1, 2] * m@, @m * 3@, @5@.
+-- | A literal quantity: @[1, 2] m@, @3 (m/s^2)@, @5@ (design §3.10, U4).
 quantity :: [Int] -> Dim -> Gen S.Expr
 quantity ls d = do
   lit <- literalOf genNum ls
@@ -331,7 +331,7 @@ quantity ls d = do
     then pure lit
     else do
       u <- unitExpr d
-      elements [binop S.Outer lit u, binop S.Outer u lit]
+      pure (binop S.Scale lit u)
 
 -- | A zero of the given type whose rank inference sees, for pinning.
 zeroOf :: [Int] -> Dim -> S.Expr
@@ -339,7 +339,7 @@ zeroOf ls d
   | isDimOne d = lit
   | otherwise =
       binop
-        S.Outer
+        S.Scale
         lit
         ( foldl1
             (binop S.Outer)
@@ -705,7 +705,9 @@ tensorProds sc ls d n =
     ( 1
     , do
         a <- gen sc t (n - 1)
-        u <- (`G` True) <$> (if isDimOne d then quantity [] d else unitExpr d)
+        u <-
+          (`G` True)
+            <$> if isDimOne d then pure (binop S.Div (var "m") (var "m")) else unitExpr d
         pure (G (binop S.To a.expr u.expr) a.pinned)
     )
   ]
