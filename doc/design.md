@@ -3093,8 +3093,10 @@ points sharing a configuration.
 **F8. The quantity rule for charts** (U4). Any expression of type `Chart c`
 after a literal builds a point, so chart parameters, applied charts (`[1, 2,
 3] (ecef t0)`) and local chart values need no declaration:
-`pt :: forall c. Chart c -> Point c` with `pt c = 3 c`; without the signature
-the parameter could be a unit or a chart, which U4 refuses as ambiguous. A
+`pt :: forall (c : Temperature). Chart c -> Point c` with `pt c = 3 c` (a bare
+number is a coordinate only on a scalar space, so `forall c` over every space
+is too general, as built); without the signature the parameter could be a
+unit or a chart, which U4 refuses as ambiguous. A
 chart with parameters, unapplied, is a function and is refused after a
 literal. The `chart` keyword is still what mints a frame.
 
