@@ -96,7 +96,7 @@ renderType :: Type -> Text
 renderType = renderTypeIn Ascii
 
 renderScheme :: Scheme -> Text
-renderScheme (Forall _ t) = renderType t
+renderScheme = renderSchemeIn Ascii
 
 -- | 'renderType' in a chosen spelling: @Num (m/s²) → Num m@ in unicode.
 renderTypeIn :: Spelling -> Type -> Text
@@ -104,7 +104,12 @@ renderTypeIn spelling t =
   renderWith spelling (forallNames (baseSymbolsOf t) (freeVars t)) 0 t
 
 renderSchemeIn :: Spelling -> Scheme -> Text
-renderSchemeIn spelling (Forall _ t) = renderTypeIn spelling t
+renderSchemeIn spelling sc@(Forall _ t)
+  | any
+      (\f -> case f.space.slot of SpVar _ -> restrictedSpace t f; _ -> False)
+      (framesOf t) =
+      renderForallWith showHash spelling sc
+  | otherwise = renderTypeIn spelling t
 
 {- | Print naming variables by their ids (@t0@, @n1@, @s2@, @d3@), so that
 binders and uses in Typed Core line up (design §5.3).
@@ -136,12 +141,22 @@ renderForallWith :: (Hash -> Text) -> Spelling -> Scheme -> Text
 renderForallWith typeName spelling (Forall _ t) =
   let (absorbed, sized) = axisRoles t
       owners = ownersOf t
+      spaceConstraints =
+        Map.fromList
+          [ (s, TTensor sp.shape sp.dim)
+          | f <- framesOf t
+          , let sp = f.space
+          , SpVar s <- [sp.slot]
+          , restrictedSpace t f
+          ]
       printed = Set.fromList [x | AVar x <- map snd (positionsOf t)]
-      standing = Set.fromList (map fst (standingVars t))
+      standing =
+        Set.fromList
+          (map fst (standingVars t ++ concatMap freeVars (Map.elems spaceConstraints)))
       printedLens =
         Set.fromList
           [ v
-          | (l, a) <- positionsOf t
+          | (l, a) <- positionsOf t ++ concatMap positionsOf (Map.elems spaceConstraints)
           , case a of
               ANamed _ -> False
               AVar x -> Map.notMember x owners.axisOwner
@@ -153,7 +168,8 @@ renderForallWith typeName spelling (Forall _ t) =
       -- A space prints when it is two frames', stands on its own, or its
       -- base axes are written, @Mat s c@.
       spacePrinted =
-        printedSpaces owners standing
+        Map.keysSet spaceConstraints
+          <> printedSpaces owners standing
           <> Set.fromList
             [ s
             | AVar b <- map snd (positionsOf t)
@@ -184,7 +200,25 @@ renderForallWith typeName spelling (Forall _ t) =
           (Map.restrictKeys names (Set.fromList [v | (v, KAxis) <- vs]))
           absorbed
       body = renderWithNamed typeName spelling axes names 0 t
+      bareLengths =
+        Set.fromList
+          [ v
+          | amount <- Map.elems spaceConstraints
+          , (v, KLen) <- freeVars amount
+          , all
+              (\(l, a) -> l /= LVar v 0 || a == AAnon || frameOwned a)
+              (positionsOf t)
+          ]
+      frameOwned = \case AVar v -> Map.member v owners.axisOwner; _ -> False
       binder v k = case (k, Map.lookup v sized) of
+        (KLen, _) | Set.member v bareLengths -> "(" <> name v <> " : Len)"
+        (KSpace, _)
+          | Just amount <- Map.lookup v spaceConstraints ->
+              "("
+                <> name v
+                <> " : Space ("
+                <> renderWithNamed typeName spelling axes names 0 amount
+                <> "))"
         (_, Just n) -> "(" <> name v <> " : " <> T.pack (show n) <> ")"
         (KFrame, _) -> case Map.lookup v owners.frameSpace of
           Just (SpNamed h) -> "(" <> name v <> " : " <> typeName h <> ")"
@@ -196,6 +230,32 @@ renderForallWith typeName spelling (Forall _ t) =
    in if null vs
         then body
         else "forall " <> T.unwords [binder v k | (v, k) <- vs] <> ". " <> body
+
+{- | Companions can be hidden only when the written uses reconstruct them.
+In particular, Point c alone says nothing about the rank or dimension.
+-}
+restrictedSpace :: Type -> Frame -> Bool
+restrictedSpace t f = dimensionRestricted || shapeRestricted || shared
+ where
+  sp = f.space
+  dimensionRestricted = case dimAtoms sp.dim of
+    [(DVar _, 1)] -> False
+    _ -> True
+  shapeRestricted = case sp.shape of
+    SVar _ -> False
+    SCons (LVar _ 0) _ SNil ->
+      not (any (\(_, a) -> a == f.axes || a == sp.base) (positionsOf t))
+    _ -> True
+  -- A length occurring only under c's or s's axes is reconstructed by
+  -- those axis names. An anonymous axis of the same length is not.
+  companions =
+    dimVars sp.dim
+      ++ [ v
+         | (v, k) <- freeVars (TTensor sp.shape dimOne)
+         , k == KShape
+             || any (\(l, a) -> a /= f.axes && a /= sp.base && l == LVar v 0) (positionsOf t)
+         ]
+  shared = any (`elem` map fst (standingVars t)) companions
 
 {- | The frames and spaces of a type (design §3.10, F1): each frame
 variable's space, the frames on each space variable, and the axis

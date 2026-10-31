@@ -162,16 +162,10 @@ data UnitHint = UnitHint
   }
   deriving stock (Eq, Show)
 
-{- | A chart (design §3.6, §3.8): how a point is written and printed. A step
-unit, an origin, the declared name if any, and the three parts a chart
-built by @mkChart3@, @mkChart4@ or @mkChart5@ may set: the chart its origin
-and axes are given in, the generators its axes are turned by from that
-chart's, and its angular velocity. Points are stored as amounts from the
-base origin along the base axes, and the chart keeps its absolute frame
-(the origin and the rotation from the base) and its absolute kinematics
-(the angular velocity and the velocity of its origin), so that writing a
-point on it, reading one off it and reading a velocity on it never walk
-the tree.
+{- | A chart (design §3.10): a step, an origin and axes relative to its
+parent. Points store frame coordinates with the step applied. Local
+offsets and generators let conversions stop at a shared configuration;
+absolute transforms and kinematics remain cached for the physics helpers.
 -}
 data Chart = Chart
   { name :: Maybe UnitAtom
@@ -184,6 +178,8 @@ data Chart = Chart
   was given at, which is along the parent's axes and so turned by the
   parent's rotation
   -}
+  , localOrigin :: Vector Magnitude
+  -- ^ the declared offset along the parent's axes, before any rotation
   , dims :: [Int]
   , dim :: Dim
   , parent :: Maybe Chart
@@ -208,6 +204,9 @@ data Chart = Chart
   (−g₂) · expm (−g₁)@, then the parent's inverse), never by inverting an
   enclosure
   -}
+  , relativeRotation :: Maybe (Either EvalError (Vector Magnitude))
+  , relativeRotationInverse :: Maybe (Either EvalError (Vector Magnitude))
+  -- ^ cached local transforms, used by conversions below a shared ancestor
   , spin :: Maybe (Vector Magnitude)
   {- ^ the angular velocity of a spinning chart relative to its parent,
   along its own axes, in s⁻¹ (the radian stripped); 'Nothing' is none
@@ -1193,7 +1192,9 @@ runPrim cfg rt prim args = case (prim, args) of
   ("axesFromTo", [v, c0, s]) -> do
     src <- chartOf =<< c0
     sc <- chartOf =<< s
-    turnAmount [src.rotation, sc.rotationInverse] =<< v
+    let (up, down) = chartRoute src sc
+    turnAmount (map (.relativeRotation) up ++ map (.relativeRotationInverse) down)
+      =<< v
   -- A chart's absolute rotation (design §3.8): its axes, as columns along
   -- the base axes, computed once with the chart. Exactly the identity for a
   -- chart that is not turned.
@@ -1252,6 +1253,7 @@ runPrim cfg rt prim args = case (prim, args) of
         Right (rotateVector p n rm amount)
     let originM = maybe along (\pc -> V.zipWith addM pc.origin along) parentChart
         (forward, backward) = chartFrame p n parentChart gens
+        (localForward, localBackward) = chartFrame p n Nothing gens
         (spinAbsM, originVelocityM) = chartMotion p n parentChart forward along spinM
     Right
       ( VChart
@@ -1260,12 +1262,15 @@ runPrim cfg rt prim args = case (prim, args) of
               stepM
               stepHint
               originM
+              amount
               odims
               d
               parentChart
               gens
               forward
               backward
+              localForward
+              localBackward
               spinM
               spinAbsM
               originVelocityM
@@ -1288,16 +1293,18 @@ runPrim cfg rt prim args = case (prim, args) of
     VData (UserCon h _) [] -> Right h
     _ -> Left (Internal "expected a frame, axes or a space")
   frameMoving h = maybe False (fromMaybe False . frameDefMoving) (rt.typeDefOf h)
-  -- A point on one chart's frame re-expressed on another's: through the
-  -- space's base, @R⁻¹ (o_F + R_F x − o_T)@; on one frame, as it is.
+  -- Walk only the edges below the shared configuration. Its uncertainty
+  -- cancels structurally, before affine arithmetic can lose correlation.
   convertPoint src sc dims d buf
     | src.frame == sc.frame = Right (VPoint dims d sc buf)
     | otherwise = do
         xs <- V.fromList <$> sequence (V.toList buf)
         let n = V.length xs
-        along <- turn n src.rotation xs
-        let fromBase = V.zipWith subM (V.zipWith addM src.origin along) sc.origin
-        coords <- turn n sc.rotationInverse fromBase
+        let (up, down) = chartRoute src sc
+            ascend x c = V.zipWith addM c.localOrigin <$> turn n c.relativeRotation x
+            descend x c = turn n c.relativeRotationInverse (V.zipWith subM x c.localOrigin)
+        above <- foldM ascend xs up
+        coords <- foldM descend above down
         Right (VPoint dims d sc (V.map Right coords))
   turn n r xs = case r of
     Nothing -> Right xs
@@ -1604,6 +1611,31 @@ matrixExp p n b
   remainder = 2 * beta' ^ top / factorial top
 
 -- Charts ------------------------------------------------------------------------------
+
+{- | The edges from source to their common configuration, then down to the
+target. Equality here is structural equality of the affine forms defining
+the pose, not numerical equality of enclosures or equality of frame names.
+Different configurations of the same moving frame must not cancel. Steps
+and display names do not affect a pose; rescalings add no edge.
+-}
+chartRoute :: Chart -> Chart -> ([Chart], [Chart])
+chartRoute source target = shared (reverse (path source)) (reverse (path target))
+ where
+  path c = case c.parent of
+    Just parent
+      | c.frame == parent.frame
+      , null c.generators
+      , V.all (== Exact 0) c.localOrigin ->
+          path parent
+    parent -> c : maybe [] path parent
+  shared (a : as) (b : bs)
+    | a.frame == b.frame
+    , a.dims == b.dims
+    , a.dim == b.dim
+    , a.localOrigin == b.localOrigin
+    , a.generators == b.generators =
+        shared as bs
+  shared as bs = (reverse as, bs)
 
 {- | The absolute rotation of a chart and its inverse (design §3.8), from its
 parent's and its own generators, as lazy values: @R = R_parent · expm g₁ ·

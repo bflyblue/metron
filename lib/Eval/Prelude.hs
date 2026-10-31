@@ -152,8 +152,8 @@ of its origin and @ω_abs@ its angular velocity, all from the base
 velocity @vc@ along @c@'s axes, relative to @c@, to a state, @p = o_abs +
 R_abs pc@ and @v = R_abs vc + v_o + ω_abs × (p − o_abs)@. A chart with
 parameters is passed at the state's instant, @velocityIn (ecef s.epoch)
-s@. Neither is signed: a position in metres ties the chart's space to
-metres, which no written type can say of a space variable.
+s@. Their inferred types retain the space constraint
+@(s : Space (Vec 3 m))@ when printed.
 -}
 stateStatements :: [Statement]
 stateStatements =

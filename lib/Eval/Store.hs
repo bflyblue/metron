@@ -84,13 +84,14 @@ and frames (design §3.10, part F): a point is typed by its frame, a
 chart's Core names the frame and the space it is on, and the library's
 charts are respelled; format 10 holds roles (design §3.10, U9): a
 signature may say @Quantity r d@, a type encodes a role variable, and a
-definition built from arithmetic alone is polymorphic in its role. A store
-opens only
+definition built from arithmetic alone is polymorphic in its role. Format 11
+uses syntax-only units and amount-only arithmetic, with no compatibility for
+first-class-unit programs. A store opens only
 at this format: until the language is released, an older store is
 refused, not migrated (core.md §6).
 -}
 formatVersion :: Int
-formatVersion = 10
+formatVersion = 11
 
 {- | The store to use: the directory given, else a @.eval@ directory found by
 walking up from the working directory, else the user store under
@@ -152,7 +153,7 @@ openStore seeding d = do
               <> tshow v
               <> "; it predates format "
               <> tshow formatVersion
-              <> " and cannot be opened: recreate it (with the previous eval, `:export` it, respell its quantities for units as a type, 60 * s as 60 s and x / s as x / 1 s, the dimensions in its types, Num [m s^-1] as Num (m/s), and its charts on spaces, chart degC on Temperature at 273.15 K, and `:load` the file into a new codebase)"
+              <> " and cannot be opened: create a fresh codebase for syntax-only units; old first-class-unit programs are not supported"
           _ ->
             T.pack d
               <> " is not an eval codebase of format "

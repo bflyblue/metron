@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Units are syntax rather than first-class values. Ordinary `*` and `/`
+  insert an implicit `1` for declared unit operands; other value positions
+  require explicit amounts. Quantity grouping is unchanged, and charts
+  remain first-class. Arithmetic again generalises over tensor shapes.
+- Unit declarations, suffixes, display targets, chart steps and `:prefer`
+  retain unit syntax. Store format 11 requires a fresh database.
+
+- Chart conversions cancel shared configurations before applying local
+  transforms, preserving exact relative coordinates under an uncertain
+  parent and exact delta identity conversions. Different moving poses
+  remain distinct during path cancellation.
+- Inferred frame types expose space constraints with binders such as
+  `forall (s : Space (Vec 3 m)) (c : s). Point c -> Point c`.
+  These constraints read back in signatures instead of silently printing
+  a more general type.
+
 - Core term language (well-scoped, saturated primitives) and a direct
   evaluator over it (design §5.1, §8).
 - Lexer with the unicode spellings and layout rule, parser over a token

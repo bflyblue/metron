@@ -106,13 +106,12 @@ primScheme name = case name of
   "sub" -> Just (Forall [sv, dv] (TFun sd (TFun sd sd)))
   "emul" -> Just (Forall [sv, dv, d2v] (TFun sd (TFun sd2 (TTensor s (dimMul d d2)))))
   "ediv" -> Just (Forall [sv, dv, d2v] (TFun sd (TFun sd2 (TTensor s (dimDiv d d2)))))
-  -- Division by a scalar of the same role (design §3.10, U9): an amount
-  -- of any shape by an amount, a unit by a unit.
+  -- Division of an amount of any shape by a scalar amount.
   "div" ->
     Just
       ( Forall
-          [rv, sv, dv, d2v]
-          (TFun (TQty rr s d) (TFun (TQty rr SNil d2) (TQty rr s (dimDiv d d2))))
+          [sv, dv, d2v]
+          (TFun sd (TFun (numD d2) (TTensor s (dimDiv d d2))))
       )
   -- outer, dot, eq and ne have constraint types; see 'lintConstrained'.
   "neg" -> Just (Forall [sv, dv] (TFun sd sd))
@@ -199,9 +198,8 @@ primScheme name = case name of
   -- The quantity rule after a unit (design §3.10, U4): a dimensionless
   -- literal of any shape times one unit, an amount.
   "scale" -> Just (Forall [sv, dv] (TFun (TTensor s dimOne) (TFun (TUnit d) sd)))
-  -- A unit's declaration (design §3.10, U7, U9): its size, an amount, or a
-  -- unit, made a unit; the identity at run time.
-  "unit" -> Just (Forall [rv, dv] (TFun (TQty rr SNil d) (TUnit d)))
+  -- Internal unit construction from a scalar amount.
+  "unit" -> Just (Forall [dv] (TFun (numD d) (TUnit d)))
   -- The wedge product is the general binary product of vectors; the 3D
   -- cross product is `star (wedge a b)` and lives in the prelude. Both
   -- vectors and the matrix are along one axis set (design §3.9).
@@ -378,9 +376,6 @@ primScheme name = case name of
   m = LVar 4 0
   xa = AVar 6
   xb = AVar 7
-  -- A role variable (design §3.10, U9).
-  rv = (8, KRole)
-  rr = RVar 8
   three = LLit 3
   sd = TTensor s d
   sd2 = TTensor s d2
@@ -896,7 +891,7 @@ lint look ctx = \case
     tb <- monoOf b
     case tb of
       -- A power of a number in its role (design §3.10, U9).
-      TQty r SNil d -> mono (TQty r SNil (dimPow (fromIntegral n) d))
+      TTensor SNil d -> mono (numD (dimPow (fromIntegral n) d))
       _ -> Left "power of a non-number"
   TNoise _ _ k -> mono (vecT (LLit (fromIntegral k)))
   TUncertain _ _ x e -> do
@@ -982,17 +977,20 @@ relation on the elaborated type.
 -}
 lintConstrained :: TypeLookup -> Text -> Type -> Either Text ()
 lintConstrained look name ty = case (name, ty) of
-  -- One role throughout (design §3.10, U9): two amounts or two units.
+  -- Ordinary arithmetic takes amounts; unit syntax is elaborated separately.
   ("outer", TFun (TQty r1 s1 d1) (TFun (TQty r2 s2 d2) (TQty r3 s3 d3))) -> do
-    require (r1 == r2 && r2 == r3) "outer: operands and result in different roles"
-    ls <-
-      maybe (Left "outer: the left operand's rank is not known") Right (closedLens s1)
-    require
-      (s3 == appendShape ls s2)
-      ( "outer: result shape "
-          <> renderType (TTensor s3 d3)
-          <> " is not the concatenation of its operands"
-      )
+    require (all (== RAmount) [r1, r2, r3]) "outer: arithmetic takes amounts"
+    if s2 == SNil
+      then require (s3 == s1) "outer: a scalar right operand preserves the left shape"
+      else do
+        ls <-
+          maybe (Left "outer: the left operand's rank is not known") Right (closedLens s1)
+        require
+          (s3 == appendShape ls s2)
+          ( "outer: result shape "
+              <> renderType (TTensor s3 d3)
+              <> " is not the concatenation of its operands"
+          )
     require
       (d3 == dimMul d1 d2)
       "outer: result dimension is not the product of its operands'"

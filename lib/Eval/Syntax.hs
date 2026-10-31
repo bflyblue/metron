@@ -162,6 +162,8 @@ data Node
     in it to desugar it; no source writes it.
     -}
     UnitBody Expr
+  | -- | Internal entry point for a unit-only context such as :prefer.
+    UnitSyntax Expr
   deriving stock (Eq, Show)
 
 -- | A chart's parent and clauses (design §3.10, F10); an omitted one is inherited.
@@ -225,6 +227,8 @@ data TyNode
   | TyFun TyExpr TyExpr
   | -- | @[2, 3]@, @[n, lvlh]@: a shape, its lengths
     TyShape [TyExpr]
+  | -- | @(n : s)@: an axis followed by an open shape.
+    TyShapeCons TyExpr TyExpr
   | {- | @(kg·m²/s²)@: a dimension written as a product of powered factors
     (design §4.1), each a name, @1@ or anything the resolver refuses with a
     hint (@m s@, read as an application). A division negates the exponents
@@ -240,9 +244,17 @@ data TyNode
 
 {- | A variable bound by @forall@, with the length it stands for when it is
 sized, @(a : 3)@ (design §3.9, decision 6), or the space it is a frame
-of, @(c : Temperature)@ or @(c : s)@ (design §3.10, F1).
+of, @(c : Temperature)@ or @(c : s)@ (design §3.10, F1). The contextual
+annotation @(n : Len)@ denotes a length with anonymous axes; a space's
+amounts are constrained by @(s : Space (Vec 3 m))@.
 -}
-data TyBinder = TyBinder {name :: Name, size :: Maybe Integer, space :: Maybe Name}
+data TyBinder = TyBinder
+  { name :: Name
+  , size :: Maybe Integer
+  , space :: Maybe Name
+  , over :: Maybe TyExpr
+  -- ^ a space variable's amounts, as in (s : Space (Vec 3 m))
+  }
   deriving stock (Eq, Show)
 
 {- | Juxtaposed names in a dimension, @Num (m s)@, read as an application

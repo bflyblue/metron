@@ -295,6 +295,7 @@ exprDepth e =
         )
     S.FromTo v c c1 -> maximum [exprDepth v, exprDepth c, exprDepth c1]
     S.UnitBody a -> exprDepth a
+    S.UnitSyntax a -> exprDepth a
 
 -- Literals and units ------------------------------------------------------------------
 

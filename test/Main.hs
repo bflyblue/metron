@@ -44,12 +44,8 @@ import Eval.Driver
 import Eval.Eval
 import Eval.Hash
 import Eval.Infer (
-  Annotations (..),
   TypeError (..),
   elaborateClosed,
-  noAnnotations,
-  readingsOf,
-  rewriteReadings,
  )
 import Eval.Lexer hiding (TNum, TProj)
 import Eval.Lexer qualified as L
@@ -648,6 +644,7 @@ shape e = case e.node of
       (catMaybes [cl.origin, cl.step, cl.generators, cl.spin])
   S.FromTo v c c1 -> A (A (shape v) (shape c)) (shape c1)
   S.UnitBody a -> shape a
+  S.UnitSyntax a -> shape a
 
 parserTests :: TestTree
 parserTests =
@@ -1311,7 +1308,7 @@ typeTests =
         -- A role left open keeps both operands scalar, so that the role
         -- generalises (design §3.10, U9).
         typeOfText "\\k v -> k * v"
-          @?= Right "forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"
+          @?= Right "forall d s d1. Num d -> Tensor s d1 -> Tensor s (d*d1)"
         typeOfText "\\a b -> a @ b"
           @?= Right "forall n d s d1. Vec n d -> Tensor (n : s) d1 -> Tensor s (d*d1)"
     , testCase "contraction requires matching inner lengths"
@@ -1608,10 +1605,8 @@ productTests =
             T.isInfixOf "`pi` is a Num, not a unit or a chart: write the `*`" err
               @? T.unpack err
           Right v -> assertFailure (show v)
-        -- A parameter could be either, so a signature must say.
-        case evalP "\\m -> 5 m" of
-          Left err -> T.isInfixOf "ambiguous: what follows this literal" err @? T.unpack err
-          Right v -> assertFailure (show v)
+        -- A dynamic suffix is now a chart, never a first-class unit.
+        evalP "(\\c -> 5 c) degC" @?= Right ["5 degC"]
         case evalP "let f x = x in 3 f" of
           Left err -> T.isInfixOf "not a unit or a chart: write the `*`" err @? T.unpack err
           Right v -> assertFailure (show v)
@@ -3021,7 +3016,7 @@ namedAxesTests =
                  ]
           )
           @?= Right
-            [ "forall c. Point c -> Point c"
+            [ "forall (s : Space (Vec 3 m)) (c : s). Point c -> Point c"
             , "[2, 2, 3] eci"
             , "true"
             , "off2 : forall (a : 3). Vec a m"
@@ -3187,8 +3182,8 @@ namedAxesTests =
         runLinesP [":use astro", ":type velocityIn", ":type stateFrom"]
           @?= Right
             [ "stored use astro"
-            , "forall s1 (c : s1) c1. Chart c -> State c1 s1 -> Vec c (m/s)"
-            , "forall s1 (c : s1) c1. Chart c -> Point c1 -> Vec c m -> Vec c (m/s) -> State c1 s1"
+            , "forall (s1 : Space (Vec 3 m)) (c : s1) c1. Chart c -> State c1 s1 -> Vec c (m/s)"
+            , "forall (s1 : Space (Vec 3 m)) (c : s1) c1. Chart c -> Point c1 -> Vec c m -> Vec c (m/s) -> State c1 s1"
             ]
         runLinesP
           ( frame
@@ -3341,145 +3336,44 @@ axisSlotTests =
     _ <- first ("lint: " <>) (lintClosed look tt)
     pure schemes
 
-{- | The readings of design §3.10 (U2, U4, U6, U7), on Core whose stored
-definitions are typed by hand: a unit @km : Unit m@, @hr : Unit s@, an
-amount @len : Num m@ and a chart @cK@ of a frame of its own. Arithmetic,
-powers and a unit's declaration are polymorphic in the role (U9); a
-quantity or a @to@ marker is resolved by the types and written into the
-term.
+{- | The Core boundary keeps internal unit objects out of ordinary arithmetic,
+while unit construction and suffix application remain checked primitives.
 -}
 readingTests :: TestTree
 readingTests =
   testGroup
-    "readings: units are a type"
-    [ testCase "two units give a unit, two amounts an amount" $ do
-        typed (ref km *. ref km)
-          @?= Right [Forall [] (TUnit (Dimension.dimPow 2 metre))]
-        typed (ref km /. ref hr)
-          @?= Right [Forall [] (TUnit (Dimension.dimDiv metre second))]
-        typed (Pow (ref hr) (-2))
-          @?= Right [Forall [] (TUnit (Dimension.dimPow (-2) second))]
-        typed (ref len *. ref len)
-          @?= Right [Forall [] (numD (Dimension.dimPow 2 metre))]
-        typed (ref len /. num 2) @?= Right [Forall [] (numD metre)]
-    , testCase "an amount and a unit together are refused, never converted" $ do
-        expectLeft
-          (typed (ref len *. ref km))
-          "an amount and a unit together: * takes two amounts or two units"
-        expectLeft
-          (typed (num 3 /. ref hr))
-          "an amount and a unit together: / takes two amounts or two units"
-        -- + and - take amounts only.
+    "internal units and public amount arithmetic"
+    [ testCase "Core arithmetic rejects internal units" $ do
+        forM_ [ref km *. ref km, ref len *. ref km, ref len /. ref km, Pow (ref km) 2] $ \tm ->
+          expectLeft (typed tm) "unit where an amount goes"
         expectLeft (typed (ref km +. ref km)) "units do not add"
-    , testCase "an operand's type chooses when it becomes known"
-        $
-        -- The parameter is a unit once the lambda is applied to one.
-        typed (App (Lam "u" (Var FZ *. Var FZ)) (ref km))
-          @?= Right [Forall [] (TUnit (Dimension.dimPow 2 metre))]
-    , testCase "unknown at generalisation, arithmetic generalises over the role" $ do
-        fmap (map renderScheme) (typed (Lam "a" (Lam "b" (Var (FS FZ) *. Var FZ))))
-          @?= Right ["Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"]
-        fmap (map renderScheme) (typed (Lam "u" (Pow (Var FZ) 2)))
-          @?= Right ["Quantity r d -> Quantity r (d^2)"]
-        -- A let generalises its square over the role (design §3.10, U9),
-        -- so it takes a unit afterwards as well as an amount.
-        typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref km)))
-          @?= Right [Forall [] (TUnit (Dimension.dimPow 2 metre))]
-        typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref len)))
-          @?= Right [Forall [] (numD (Dimension.dimPow 2 metre))]
-    , testCase "a quantity after a unit is scale, after a chart pointOn" $ do
-        readings (PrimApp (q 0) [num 3, ref km]) @?= Right (Map.singleton (q 0) "scale")
-        readings (PrimApp (q 0) [num 20, ref cK])
-          @?= Right (Map.singleton (q 0) "pointOn")
-        -- Written in, the term stands alone: no marker, and its own types.
-        let written t = rewriteReadings <$> readings t <*> pure t
-        alphaEq (PrimApp "scale" [num 3, ref km])
-          <$> written (PrimApp (q 0) [num 3, ref km])
-          @?= Right True
-        alphaEq (PrimApp "pointOn" [ref cK, num 20])
-          <$> written (PrimApp (q 0) [num 20, ref cK])
-          @?= Right True
+    , testCase "internal scale constructs amounts and unit wraps a scalar" $ do
         typed (PrimApp "scale" [num 3, ref km]) @?= Right [Forall [] (numD metre)]
-        fmap
-          (map renderScheme)
-          (typed (PrimApp "scale" [Lit (LTensor ([2], [1, 2])), ref km]))
-          @?= Right ["Vec 2 m"]
-        fmap (map renderScheme) (typed (PrimApp "pointOn" [ref cK, num 20]))
-          @?= Right ["Point " <> showHash cK]
-    , testCase "a quantity after anything else is refused by its type" $ do
-        expectLeft
-          (readings (PrimApp (q 0) [num 2, PrimApp "pi" []]))
-          "`pi` is a Num, not a unit or a chart: write the `*`"
-        expectLeft
-          (readings (PrimApp (q 0) [num 2, ref len]))
-          "is a Num m, not a unit or a chart: write the `*`"
-    , testCase
-        "a quantity unknown at generalisation is ambiguous; a signature reads it"
-        $ do
-          let per = Lam "u" (PrimApp (q 0) [num 3, Var FZ])
-          expectLeft
-            (readings per)
-            "ambiguous: what follows this literal could be a unit or a chart"
-          -- The signature as an ascription of the body, as a definition's is.
-          let marker = signatureMarker ""
-              sig =
-                Forall
-                  [(1, KDim)]
-                  (TFun (TUnit (Dimension.dimVar 1)) (numD (Dimension.dimVar 1)))
-              annots = Annotations (\_ _ _ -> Nothing) (Map.singleton marker (sig, []))
-          first (.message) (readingsOf annots look (PrimApp marker [per]))
-            @?= Right (Map.singleton (q 0) "scale")
-          -- Its use in the same term reads it too.
-          readings (App per (ref km)) @?= Right (Map.singleton (q 0) "scale")
-    , testCase "to converts to a unit or a chart, by its target" $ do
-        readings (PrimApp (toM 0) [ref len, ref km])
-          @?= Right (Map.singleton (toM 0) "to")
-        -- Or by its value, when that says which.
-        readings (Lam "u" (PrimApp (toM 0) [ref len, Var FZ]))
-          @?= Right (Map.singleton (toM 0) "to")
-        expectLeft
-          (readings (PrimApp (toM 0) [ref len, ref len]))
-          "an amount after `to`, which takes a unit or a chart"
-        expectLeft
-          (readings (Lam "x" (Lam "u" (PrimApp (toM 0) [Var (FS FZ), Var FZ]))))
-          "ambiguous: `to` here could take a unit or a chart"
-    , testCase "a unit's declaration takes an amount or a unit" $ do
-        typed (PrimApp "unit" [ref km]) @?= Right [Forall [] (TUnit metre)]
         typed (PrimApp "unit" [ref len *. num 60]) @?= Right [Forall [] (TUnit metre)]
-        typed (PrimApp "unit" [ref km /. ref hr])
-          @?= Right [Forall [] (TUnit (Dimension.dimDiv metre second))]
         expectLeft
           (typed (PrimApp "unit" [Lit (LTensor ([2], [1, 2]))]))
           "a unit is one number"
-    , testCase "Unit is a type: printed, encoded and decoded" $ do
-        renderType (TUnit metre) @?= "Unit m"
-        renderType (TUnit (Dimension.dimDiv metre second)) @?= "Unit (m/s)"
-        renderType (TUnit dimOne) @?= "Unit"
-        renderType (TFun (TUnit (Dimension.dimVar 1)) (numD (Dimension.dimVar 1)))
-          @?= "Unit d -> Num d"
+    , testCase "generalised multiplication takes scalar times tensor" $ do
+        fmap (map renderScheme) (typed (Lam "a" (Lam "b" (Var (FS FZ) *. Var FZ))))
+          @?= Right ["Num d -> Tensor s d1 -> Tensor s (d*d1)"]
+        fmap (map renderScheme) (typed (Lam "u" (Pow (Var FZ) 2)))
+          @?= Right ["Num d -> Num (d^2)"]
+        typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref len)))
+          @?= Right [Forall [] (numD (Dimension.dimPow 2 metre))]
+    , testCase "internal unit types still encode and decode" $ do
         let def = TypeDef [(0, KDim)] [[TUnit (Dimension.dimVar 0)]] structuralLabel
         decodeTypeDef (encodeTypeDef def) @?= Right def
     ]
  where
   km = Hash (BS.replicate 32 0xb1)
-  hr = Hash (BS.replicate 32 0xb2)
   len = Hash (BS.replicate 32 0xb3)
-  cK = Hash (BS.replicate 32 0xb4)
   metre = dimFromAtoms [(Base Dimension.L, 1)]
-  second = dimFromAtoms [(Base Dimension.T, 1)]
-  kelvin = dimFromAtoms [(Base Dimension.Θ, 1)]
-  stored =
-    [ (km, TUnit metre)
-    , (hr, TUnit second)
-    , (len, numD metre)
-    , (cK, TScale (Frame (FrNamed cK) AAnon (Space (SpNamed cK) SNil kelvin AAnon)))
-    ]
   look =
-    TypeLookup (\k -> (\ty -> [Forall [] ty]) <$> lookup k stored) (const Nothing)
+    TypeLookup
+      ( \k -> (\ty -> [Forall [] ty]) <$> lookup k [(km, TUnit metre), (len, numD metre)]
+      )
+      (const Nothing)
   ref k = Ref k Nothing ""
-  q = readingMarkerName "quantity"
-  toM = readingMarkerName "to"
-  readings tm = first (.message) (readingsOf noAnnotations look tm)
   typed tm = do
     (schemes, tt) <- first (.message) (elaborateClosed look tm)
     _ <- first ("lint: " <>) (lintClosed look tt)
@@ -3490,251 +3384,118 @@ readingTests =
       (needle `T.isInfixOf` err) @? T.unpack ("expected " <> needle <> " in: " <> err)
     Right x -> assertFailure ("expected an error, got " <> show x)
 
-{- | Design §3.10, part U, from source: every decision and every example it
-writes.
--}
 partUTests :: TestTree
 partUTests =
   testGroup
-    "units are a type (design §3.10, part U)"
-    [ testCase "U1: a unit is a value of type Unit δ, first-class" $ do
-        runLinesP [":type km", ":type m", ":type temperature.deltaF", ":type km/h"]
-          @?= Right ["Unit m", "Unit m", "Unit K", "Unit (m/s)"]
-        -- Passed, stored and returned like any other value.
-        runLinesP ["let v = km/h", "5 v", "v", "(km, h)", "{km, m}", "(\\u -> u) km"]
-          @?= Right ["5 km h^-1", "km/h", "(km, h)", "{km, m}", "km"]
-        runLinesP ["data Box = Box {u :: Unit m}", "Box km", "(Box km).u"]
-          @?= Right ["Box {u = km}", "km"]
-        -- A function that puts one after a literal needs a signature.
-        runLinesP
-          [ multiline ["per :: forall d. Unit d -> Num d", "let per u = 3 u"]
-          , "per km"
-          , "per (km/h)"
-          , ":type per"
-          , ":view per"
+    "units are syntax"
+    [ testCase "implicit one at multiplication and division" $ do
+        runLinesP ["5 * km", "km * 5", "km/s", "(4 km) / km", "1 / km", "2 / km^2"]
+          @?= Right ["5 km", "5 km", "1 km s^-1", "4", "1 km^-1", "2 km^-2"]
+        runLinesP ["let mul a b = a * b", "mul 5 (1 km)", "(* km) 5", "(/ s) (4 km)"]
+          @?= Right ["5 km", "5 km", "4 km s^-1"]
+    , testCase "unit syntax does not escape as a value" $ do
+        forM_
+          [ "km"
+          , "km^2"
+          , "km + m"
+          , "km < m"
+          , "sin rad"
+          , "let u = km"
+          , "[km, m]"
+          , "(km, 2 km)"
+          , "(\\u -> u) km"
+          , "outer km 2"
           ]
-          @?= Right ["3 km", "3 km h^-1", "forall d. Unit d -> Num d", "per = \\u -> 3 u"]
-    , testCase "U1: the reading a signature chose is in the stored term" $ withTempStore $ \dir -> do
-        _ <-
-          persistLines
-            dir
-            [multiline ["per :: forall d. Unit d -> Num d", "let per u = 3 u"], ":add"]
-        (loaded, notes) <- reload dir
-        notes @?= []
-        linesIn loaded ["per km", ":type per"]
-          @?= Right ["3 km", "forall d. Unit d -> Num d"]
-    , testCase "U1: its source, written back with its signature, reads back" $ do
-        s <-
-          either
-            (assertFailure . T.unpack)
-            pure
-            ( sessionP
-                [multiline ["per :: forall d. Unit d -> Num d", "let per u = 3 u"], ":add"]
-            )
-        file <- editFileOf s ["per"]
-        (_, outs) <- edited (EditName "per") file s
-        outs @?= ["nothing changed"]
-    , testCase "U1: so is one in a cycle, read by a member's signature" $ withTempStore $ \dir -> do
-        _ <-
-          persistLines
-            dir
-            [ multiline
-                [ "per :: forall d. Unit d -> Num d"
-                , "let per u = if true then 3 u else per2 u"
-                , "let per2 u = per u"
-                ]
-            , ":add"
-            ]
-        (loaded, notes) <- reload dir
-        notes @?= []
-        linesIn loaded ["per km", "per2 (km/h)", ":type per2"]
-          @?= Right ["3 km", "3 km h^-1", "forall d. Unit d -> Num d"]
-    , testCase "U2: two units give a unit, two amounts an amount, never one of each" $ do
+          $ \src ->
+            expectError (runLinesP [src]) "a unit is not an expression"
+        expectError
+          (runLinesP ["f :: Unit m -> Num m", "let f x = x"])
+          "units are syntax"
+        expectError
+          (runLinesP ["data Box r = Box (Quantity r m)"])
+          "quantities are amounts"
+    , testCase "quantity grouping is determined before implicit one" $ do
         runLinesP
-          [ "km/h"
-          , "kg*m/s^2"
-          , "rad^2"
-          , "km^-1"
-          , ":type rad^2"
-          , ":use imperial"
-          , "lbf / inch^2"
-          ]
-          @?= Right
-            [ "km/h"
-            , "kg*m/s^2"
-            , "rad^2"
-            , "km^-1"
-            , "Unit (rad^2)"
-            , "stored use imperial"
-            , "lbf/inch^2"
-            ]
-        runLinesP ["2 m * 3 m", "6 m / 2 s"] @?= Right ["6 m^2", "3 m s^-1"]
-        expectError
-          (runLinesP ["let x = 3 m", "x * km"])
-          "an amount and a unit together: * takes two amounts or two units\n  hint: `km` is a unit; write `1 km`"
-        expectError
-          (runLinesP ["1 / s"])
-          "an amount and a unit together: / takes two amounts or two units\n  hint: `s` is a unit; write `1 s`"
-        -- + and - are refused on units.
-        expectError
-          (runLinesP ["km + km"])
-          "units do not add: this is Unit m, and + and - take amounts"
-        expectError (runLinesP ["1 km - m"]) "units do not add"
-        -- Polymorphic in the role (design §3.10, U9): a unit from a use.
-        runLinesP [":type \\u -> u * u", "(\\u -> u * u) km"]
-          @?= Right ["forall r d. Quantity r d -> Quantity r (d^2)", "km^2"]
-    , testCase "U3: a unit's name is the unit, everywhere" $ do
-        expectError
-          (runLinesP ["let x = 6 m", "x / s"])
-          "an amount and a unit together: / takes two amounts or two units\n  hint: `s` is a unit; write `1 s`"
-        expectError
-          (runLinesP ["5 m + km"])
-          "hint: `km` is a unit; where an amount is meant, write `1 km`"
-        expectError
-          (runLinesP ["sin rad"])
-          "hint: `rad` is a unit; where an amount is meant, write `1 rad`"
-        -- A quantity binds like an application.
-        runLinesP ["let x = 6 m", "x / 1 s", "x * 1 km"]
-          @?= Right ["6 m s^-1", "6 m km"]
-        expectError (runLinesP ["60 * s"]) "hint: `s` is a unit; write `1 s`"
-    , testCase "U4: the quantity rule is type-directed" $ do
-        runLinesP ["3 km", "3 (km/h)", "[1, 2] (km/h)", "20 degC"]
-          @?= Right ["3 km", "3 km h^-1", "[1, 2] km h^-1", "20 degC"]
-        expectError
-          (runLinesP ["2 pi"])
-          "`pi` is a Num, not a unit or a chart: write the `*`"
-        expectError
-          (runLinesP ["let a = [1, 2; 3, 4]", "5 a"])
-          "`a` is a Mat 2 2, not a unit or a chart: write the `*`"
-        -- What follows may be any atom: a parameter, read by a signature.
-        expectError
-          (runLinesP ["let per u = 3 u"])
-          "ambiguous: what follows this literal could be a unit or a chart; give the definition a signature"
-        expectError (runLinesP ["\\u -> 3 u"]) "ambiguous: what follows this literal"
-        runLinesP
-          [ multiline
-              ["pt :: forall (c : Temperature). Chart c -> Point c", "let pt c = 3 c"]
-          , "pt degC"
-          , "pt degF"
-          , ":view pt"
-          ]
-          @?= Right ["3 degC", "3 degF", "pt = \\c -> 3 c"]
-        -- Used where it is made, a parameter's type is known: no signature.
-        runLinesP ["(\\u -> 3 u) km", "(\\c -> 3 c) degC"] @?= Right ["3 km", "3 degC"]
-        -- A definition needs the signature, written back with it: an
-        -- ascription is not in its term, so its source would not read back.
-        expectError
-          (runLinesP ["let f u = 3 (u :: Unit m)"])
-          "ambiguous: what follows this literal could be a unit or a chart"
-        -- At the prompt an ascription reads it, as nothing is stored.
-        runLinesP [":type \\u -> 3 (u :: Unit m)"] @?= Right ["Unit m -> Num m"]
-    , testCase "U5: unit operators bind before numbers" $ do
+          ["4 km / 2 km", "4 km / km", "(4 km) / km", "1 / 2 m/s", "1 / 2 * m / s"]
+          @?= Right ["2", "4", "4", "0.5 s m^-1", "0.5 m s^-1"]
         runLinesP
           ["9.81 m/s^2", "5 km/h", "9.81 m s^-2", "6 m / 2 s", "let x = 2", "6 m / x"]
           @?= Right ["9.81 m s^-2", "5 km h^-1", "9.81 m s^-2", "3 m s^-1", "3 m"]
-        runLinesP ["let y = 2 m", "y / 1 km/h"] @?= Right ["0.002 h"]
-        -- The grouping, by the terms it makes.
         let sameTerm a b =
-              runLinesP ["let p = " <> a, "let q = " <> b, ":hash p", ":hash q"]
-                >>= \case
-                  [hp, hq] -> Right (hp == hq)
-                  other -> Left (T.pack (show other))
-        sameTerm "9.81 m/s^2" "9.81 (m/s^2)" @?= Right True
-        sameTerm "5 km/h" "5 (km/h)" @?= Right True
-        sameTerm "9.81 m s^-2" "9.81 (m*s^-2)" @?= Right True
-        sameTerm "6 m / 2 s" "(6 m) / (2 s)" @?= Right True
-        sameTerm "\\x -> 6 m / x" "\\x -> (6 m) / x" @?= Right True
-        sameTerm "\\x -> x / 1 km/h" "\\x -> x / (1 (km/h))" @?= Right True
-        sameTerm "-9.81 m/s^2" "-9.81 (m/s^2)" @?= Right True
-        -- Values print juxtaposed, and read back.
-        runLinesP ["9.81 m s^-2 == 9.81 m/s^2"] @?= Right ["true"]
-        -- A name that is not a declared unit ends the quantity: a Unit-typed
-        -- variable there is refused, with the grouping to write.
-        expectError
-          (runLinesP ["let u = km/h", "9.81 m/u"])
-          "an amount and a unit together: / takes two amounts or two units\n  hint: `u` is not a declared unit, so the quantity ends before it; if it is a unit, write 9.81 (m/u)"
-        runLinesP ["let u = km/h", "9.81 (m/u)"] @?= Right ["0.00981 h"]
-        -- Parentheses keep a quantity whole.
-        expectError (runLinesP ["(6 m) / s"]) "an amount and a unit together"
-    , testCase "U6: to takes a unit or a chart, by its right operand" $ do
-        runLinesP
-          ["5 km/h to m/s", "1 km to m", "20 degC to degF", "let v = 36 km/h", "v to m/s"]
-          @?= Right ["1.3888888888888888888… m s^-1", "1000 m", "68 degF", "10 m s^-1"]
-        expectError
-          (runLinesP ["1 km to 1 m"])
-          "an amount after `to`, which takes a unit or a chart: write the unit, as in to km or to km/h"
-        runLinesP
-          [ multiline
-              [ "cv :: forall (c : Temperature) (c1 : Temperature). Point c -> Chart c1 -> Point c1"
-              , "let cv p c = p to c"
-              ]
-          , "cv (20 degC) degF"
-          , multiline
-              ["show :: forall d. Num d -> Unit d -> Num d", "let show x u = x to u"]
-          , "show (1 km) m"
+              runLinesP ["let p = " <> a, "let q = " <> b, ":hash p", ":hash q"] >>= \case
+                [hp, hq] -> Right (hp == hq)
+                other -> Left (T.pack (show other))
+        forM_
+          [ ("9.81 m/s^2", "9.81 (m/s^2)")
+          , ("9.81 m s^-2", "9.81 (m*s^-2)")
+          , ("6 m / 2 s", "(6 m) / (2 s)")
+          , ("\\x -> x / 1 km/h", "\\x -> x / (1 (km/h))")
+          , ("5 * km", "5 * (1 km)")
+          , ("x / km^2", "x / (1 (km^2))")
           ]
-          @?= Right ["68 degF", "1000 m"]
-        expectError
-          (runLinesP ["let cv p c = p to c"])
-          "ambiguous: `to` here could take a unit or a chart; give the definition a signature"
-        -- A unit of another dimension after to is not to be written as an
-        -- amount.
-        expectError
-          (runLinesP ["5 km to h"])
-          "dimensions differ by m/s\n  hint: the unit after `to` has the dimension of the value before it"
-        -- A let-bound chart is a chart to `to` and to the quantity rule.
-        runLinesP ["let c = degF", "3 c", "20 degC to c"]
-          @?= Right ["3 degF", "68 degF"]
-    , testCase "U7: a unit is declared from an amount or a unit" $ do
+          $ \(a, b) ->
+            if "x /" `T.isPrefixOf` a
+              then sameTerm ("\\x -> " <> a) ("\\x -> " <> b) @?= Right True
+              else sameTerm a b @?= Right True
+    , testCase "aliases and shadowing distinguish units from amounts" $ do
         runLinesP
-          [ "unit min2 = 60 s"
-          , "unit deg2 = pi / 180 * 1 rad"
+          ["unit u = s", "1 / 2 m/u", "let v = 1 s", "1 / 2 m/v", "let km = 7", "5 * km"]
+          @?= Right ["0.5 u m^-1", "0.5 m^-1 s^-1", "35"]
+        runLinesP ["5 * si.km", "(\\km -> 5 * km) 7", "let u = km/h", ":type u"]
+          @?= Right ["5 km", "35", "Num (m/s)"]
+        expectError (runLinesP ["let u = km/h", "5 u"]) "not a unit or a chart"
+    , testCase "unit contexts include declarations, suffixes, to and chart steps" $ do
+        runLinesP
+          [ "unit min2 = 60 * s"
+          , "unit deg2 = pi / 180 * rad"
           , "unit N2 = kg*m/s^2"
           , "unit dC = K"
           , "2 min2 to s"
           , "180 deg2 to rad"
-          , ":type N2"
           , "3 N2"
           , "1 dC"
           ]
-          @?= Right ["120 s", "3.1415926535897932384… rad", "Unit (kg*m/s^2)", "3 N2", "1 dC"]
-        runLinesP [":use imperial", "unit psi2 = lbf / inch^2", "1 psi2 to Pa"]
-          @?= Right ["stored use imperial", "6894.7572931683613367… Pa"]
-        -- The library's declarations, respelled.
+          @?= Right ["120 s", "3.1415926535897932384… rad", "3 N2", "1 dC"]
         runLinesP
-          [ ":view time.min"
-          , ":view angle.arcmin"
-          , ":view temperature.deltaF"
-          , ":view si.km"
-          ]
-          @?= Right
-            [ "min = 60 s"
-            , "arcmin = 1 deg / 60"
-            , "deltaF = 5 / 9 * 1 K"
-            , "km = kilo * 1 metre"
-            ]
-        expectError (runLinesP ["unit m2 = 60 * s"]) "hint: `s` is a unit; write `1 s`"
-        expectError
-          (runLinesP ["unit am = deg / 60"])
-          "hint: `deg` is a unit; write `1 deg`"
-        expectError (runLinesP ["unit dF = 5/9 * K"]) "hint: `K` is a unit; write `1 K`"
-        -- A chart's step is a unit and its origin an amount.
+          ["unit am = deg / 60", "unit dF = 5/9 * K", "1 am to deg", "9 dF to K"]
+          @?= Right ["0.016666666666666666666… deg", "5 K"]
         runLinesP
           ["chart degF2 on Temperature at 459.67 deltaF step deltaF", "32 degF2 to degC"]
           @?= Right ["0 degC"]
         expectError
           (runLinesP ["chart bad on Temperature step 1 K"])
-          "an amount where a unit goes"
-    , testCase "U8: a unit prints as its unit expression, an amount as before" $ do
-        runLinesP ["km", "km/h", "kg*m/s^2", "s^-1", "km/m", "(km, 2 km)", "9.81 m/s^2"]
-          @?= Right ["km", "km/h", "kg*m/s^2", "s^-1", "km/m", "(km, 2 km)", "9.81 m s^-2"]
-        runLinesP [":set unicode on", "kg*m/s^2", "km^-2"]
-          @?= Right ["  ≡ kg*m/s²", "kg·m/s²", "  ≡ km⁻²", "km⁻²"]
-        -- What a unit prints reads back as the same unit.
-        forM_ ["km/h", "kg*m/s^2", "m/(s^2*K)", "s^-1", "rad^2"] $ \u ->
-          case runLinesP [u] of
-            Right [printed] -> runLinesP [printed] @?= Right [printed]
+          "expected unit syntax"
+        expectError (runLinesP ["unit bad = [1,2] m"]) "a unit is one number"
+    , testCase "charts remain first class and cannot enter arithmetic" $ do
+        runLinesP ["let c = degF", "3 c", "20 degC to c", "let pt c = 3 c", "pt degC"]
+          @?= Right ["3 degF", "68 degF", "3 degC"]
+        expectError (runLinesP ["5 * degC"]) "got Chart"
+        expectError (runLinesP ["20 degC + 30 degC"]) "Point"
+        runLinesP ["20 degC .+ 5 K"] @?= Right ["25 degC"]
+    , testCase "display conversions remain unit syntax" $ do
+        runLinesP ["5 km/h to m/s", "1 km to m", "let v = 36 km/h", "v to m/s"]
+          @?= Right ["1.3888888888888888888… m s^-1", "1000 m", "10 m s^-1"]
+        expectError (runLinesP ["1 km to 1 m"]) "an amount after `to`"
+        expectError (runLinesP ["5 km to h"]) "dimensions differ"
+    , testCase "compound amounts print and read back" $ do
+        forM_ ["km/h", "kg*m/s^2", "m/(s^2*K)", "1 / s", "2 * rad^2", "km/km", "km/m"] $ \src ->
+          expecting (runLinesP [src]) $ \case
+            [printed] -> runLinesP [printed] @?= Right [printed]
             other -> assertFailure (show other)
+    , testCase "implicit one preserves uncertainty and chart axes" $ do
+        runLinesP
+          [ "unit measured = 1 m ± 0.01 m"
+          , "(5 * measured) == 5 * (1 measured)"
+          , "space Lengths = Vec 3 m"
+          , "chart frame on Lengths"
+          , "let v = withAxes frame ([1,2,3] m)"
+          , "(v / km) == v / (1 km)"
+          , "let scaled x = x * km"
+          , "scaled [1,2;3,4] == [1,2;3,4] km"
+          , "let here c = (3 c) to c"
+          , "here degC"
+          ]
+          @?= Right ["true", "true", "true", "3 degC"]
     , testCase "every library definition prints as source that reads back to its hash" $ do
         s <- editSession
         forM_ stdlibNamespaces $ \ns -> do
@@ -3743,137 +3504,48 @@ partUTests =
           (ns, outs) @?= (ns, ["nothing changed"])
     ]
 
-{- | Roles (design §3.10, U9): a unit and an amount are one quantity type
-in two roles, @Quantity r δ@, and arithmetic is polymorphic in the role.
--}
 roleTests :: TestTree
 roleTests =
   testGroup
-    "roles: one quantity type (design §3.10, U9)"
-    [ testCase "arithmetic generalises over the role and is used at both" $ do
-        runLinesP [":type \\a b -> a * b", ":type \\a b -> a / b", ":type \\u -> u^3"]
-          @?= Right
-            [ "forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"
-            , "forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d/d1)"
-            , "forall r d. Quantity r d -> Quantity r (d^3)"
-            ]
-        -- Unannotated, applied to units and to amounts.
+    "amount arithmetic"
+    [ testCase "generic multiplication retains tensor polymorphism" $ do
         runLinesP
-          [ "(\\a b -> a * b) km h"
-          , "(\\a b -> a * b) (2 m) (3 s)"
-          , "(\\a b -> a / b) km h"
-          , "(\\a b -> a / b) 6 3"
+          [ "let mul a b = a * b"
+          , "mul 2 [1,2,3]"
+          , "let twice x = 2 * x"
+          , "twice [1,2,3]"
+          , "(* km) [1,2,3]"
           ]
-          @?= Right ["km*h", "6 m s", "km/h", "2"]
-        -- Let-bound, and stored: one definition serves both roles.
-        runLinesP ["let g a b = a * b", ":add", "g km h", "g (2 m) (3 s)", ":type g"]
-          @?= Right
-            [ "added g"
-            , "km*h"
-            , "6 m s"
-            , "forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"
-            ]
-        -- A role fixed by an operand: amounts keep the scalar-times-tensor
-        -- form.
-        runLinesP [":type \\k v -> 2 * k * v", "(\\k v -> 2 * k * v) 3 ([1, 2] m)"]
-          @?= Right ["forall d s d1. Num d -> Tensor s d1 -> Tensor s (d1*d)", "[6, 12] m"]
-    , testCase "sq over units is accepted, and reads back through :edit and :export" $ do
-        let sq = multiline ["sq :: forall d. Unit d -> Unit (d^2)", "let sq u = u * u"]
-        runLinesP [sq, "sq km", "sq (km/h)", ":type sq"]
-          @?= Right ["km^2", "km^2/h^2", "forall d. Unit d -> Unit (d^2)"]
-        s <- either (assertFailure . T.unpack) pure (sessionP [sq, ":add"])
-        file <- editFileOf s ["sq"]
-        ("sq :: forall d. Unit d -> Unit (d^2)" `T.isInfixOf` file) @? T.unpack file
-        (_, outs) <- edited (EditName "sq") file s
-        outs @?= ["nothing changed"]
-        source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
-        reloaded <-
-          either
-            (\err -> assertFailure (T.unpack (err <> "\nin the export:\n" <> source)))
-            pure
-            (sessionP [source, ":add"])
-        reloaded.codebase.names @?= s.codebase.names
-        linesIn reloaded ["sq km", ":type sq"]
-          @?= Right ["km^2", "forall d. Unit d -> Unit (d^2)"]
-    , testCase "Quantity r d is written in a signature and reads back" $ do
-        let f =
-              multiline
-                ["f :: forall r d. Quantity r d -> Quantity r (d^2)", "let f x = x * x"]
-        runLinesP [f, ":type f", "f km", "f (3 m)"]
-          @?= Right ["forall r d. Quantity r d -> Quantity r (d^2)", "km^2", "9 m^2"]
-        -- What :type prints is a signature that reads back as itself.
-        expecting (runLinesP ["let g a b = a / b", ":type g"]) $ \case
-          [printed] ->
-            runLinesP [multiline ["g :: " <> printed, "let g a b = a / b"], ":type g"]
-              @?= Right [printed]
-          other -> assertFailure (show other)
-        -- Amount and Unit are the roles of Num and Unit.
-        runLinesP [":type (3 m :: Quantity Amount m)", ":type (km :: Quantity Unit m)"]
-          @?= Right ["Num m", "Unit m"]
-        -- A declared type may take a role; equality asks it to be an amount's.
-        runLinesP
-          ["data Box r = Box (Quantity r m)", "Box (2 m) == Box (2 m)", ":type Box km"]
-          @?= Right ["true", "Box Unit"]
-        expectError
-          (runLinesP ["data Box r = Box (Quantity r m)", "Box km == Box km"])
-          "no equality on Unit"
-        expectError
-          (runLinesP ["(3 :: Quantity Num)"])
-          "a role is Amount or Unit, or a variable"
-    , testCase
-        "a quantity of a product of an open role is a unit's, with no signature"
-        $ do
-          -- Under part U this was ambiguous; the open role after a literal can
-          -- only be a unit's.
-          runLinesP ["let f u = 3 (u * u)", ":type f", "f km", "f (km/h)"]
-            @?= Right ["forall d. Unit d -> Num (d^2)", "3 km^2", "3 km^2 h^-2"]
-          s <-
-            either
-              (assertFailure . T.unpack)
-              pure
-              (sessionP ["let f u = 3 (u * u)", ":add"])
-          file <- editFileOf s ["f"]
-          (_, outs) <- edited (EditName "f") file s
-          outs @?= ["nothing changed"]
-    , testCase "Quantity r d survives a reload of the store" $ withTempStore $ \dir -> do
-        _ <-
+          @?= Right ["[2, 4, 6]", "[2, 4, 6]", "[1, 2, 3] km"]
+        runLinesP ["let sq x = x * x", "sq (3 m)", "let inv x = x^-1", "inv (2 s)"]
+          @?= Right ["9 m^2", "0.5 s^-1"]
+    , testCase "arithmetic types read back as signatures" $ do
+        forM_ ["\\a b -> a * b", "\\a b -> a / b", "\\x -> x^2", "(* km)"] $ \body ->
+          expecting (runLinesP ["let f = " <> body, ":type f"]) $ \case
+            [ty] ->
+              runLinesP [multiline ["f :: " <> ty, "let f = " <> body], ":type f"]
+                @?= Right [ty]
+            other -> assertFailure (show other)
+    , testCase "implicit amounts survive edit, export and reload" $ withTempStore $ \dir -> do
+        stored <-
           persistLines
             dir
-            [ multiline
-                ["f :: forall r d. Quantity r d -> Quantity r (d^2)", "let f x = x * x"]
+            [ "unit speedUnit = km/h"
+            , "let attach x = x * km"
+            , "let perSecond x = x / s"
             , ":add"
             ]
         (loaded, notes) <- reload dir
         notes @?= []
-        linesIn loaded ["f km", "f (3 m)", ":type f"]
-          @?= Right ["km^2", "9 m^2", "forall r d. Quantity r d -> Quantity r (d^2)"]
-    , testCase "an amount and a unit together are refused, with the hint" $ do
-        expectError
-          (runLinesP ["let x = 3 m", "x * km"])
-          "an amount and a unit together: * takes two amounts or two units\n  hint: `km` is a unit; write `1 km`"
-        expectError
-          (runLinesP ["let x = 6 m", "x / s"])
-          "an amount and a unit together: / takes two amounts or two units\n  hint: `s` is a unit; write `1 s`"
-        -- Through a role-polymorphic function, the role is settled by its
-        -- first argument.
-        expectError
-          (runLinesP ["let g a b = a * b", "g km 2"])
-          "an amount where a unit goes"
-        expectError (runLinesP ["(\\u -> u * 2) km"]) "a unit where an amount goes"
-    , testCase "+ and - take amounts, so units do not add" $ do
-        expectError
-          (runLinesP ["km + h"])
-          "units do not add: this is Unit m, and + and - take amounts"
-        expectError (runLinesP ["(km/h) - (km/h)"]) "units do not add"
-        expectError (runLinesP ["(\\a b -> a + b) km km"]) "a unit where an amount goes"
-        expectError (runLinesP ["km < m"]) "no ordering on Unit m"
-    , testCase "a fully cancelled unit prints its units as written and reads back" $ do
-        runLinesP
-          ["km/km", "km/m", "(km/km) * km", "km^2/km", ":type km/km", "3 (km/km)"]
-          @?= Right ["km/km", "km/m", "km", "km", "Unit", "3"]
-        expecting (runLinesP ["km/km"]) $ \printed -> runLinesP printed @?= Right ["km/km"]
-        runLinesP [":type " <> "km/km", "let u = km/km", "u", "2 u"]
-          @?= Right ["Unit", "km/km", "2"]
+        linesIn loaded ["attach [1,2]", "perSecond (3 m)", "5 speedUnit"]
+          @?= Right ["[1, 2] km", "3 m s^-1", "5 speedUnit"]
+        file <- editFileOf stored ["attach"]
+        (_, outs) <- edited (EditName "attach") file stored
+        outs @?= ["nothing changed"]
+        source <- either (assertFailure . T.unpack) pure (exportSource stored Nothing)
+        restored <- either (assertFailure . T.unpack) pure (sessionP [source, ":add"])
+        linesIn restored ["attach [1,2]", "perSecond (3 m)", "5 speedUnit"]
+          @?= linesIn loaded ["attach [1,2]", "perSecond (3 m)", "5 speedUnit"]
     ]
 
 propertyTests :: TestTree
@@ -4062,7 +3734,7 @@ unitTests =
           Left err -> T.isInfixOf "same shape" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "dimension polymorphism" $ do
-        typeOfText "\\r -> r^2" @?= Right "forall r d. Quantity r d -> Quantity r (d^2)"
+        typeOfText "\\r -> r^2" @?= Right "forall d. Num d -> Num (d^2)"
         typeOfText "\\r -> pi * r^2" @?= Right "forall d. Num d -> Num (d^2)"
         typeOfText "\\x -> sqrt x" @?= Right "forall d. Num (d^2) -> Num d"
         typeOfText "\\x -> sqrt (x * x)" @?= Right "forall d. Num d -> Num d"
@@ -4135,7 +3807,7 @@ lintRegressionTests =
     , testCase "a stored polymorphic definition instantiates at several dimensions"
         $ runLines ["let sq x = x * x", ":add", "sq (3 m)", "sq (2 s)", ":type sq"]
           @?= Right
-            ["added sq", "9 m^2", "4 s^2", "forall r d. Quantity r d -> Quantity r (d^2)"]
+            ["added sq", "9 m^2", "4 s^2", "forall d. Num d -> Num (d^2)"]
     , -- Found while designing the type-directed generator, whose pinning
       -- rules lean on how pending constraints meet a let. `k * v` leaves a product
       -- constraint pending because `k` belongs to the enclosing lambda; the
@@ -4724,10 +4396,10 @@ affineTests =
           , "3 dozen"
           , "eggs + 1"
           , ":hash dozen"
-          , ":type dozen"
+          , ":type 1 dozen"
           , ":type eggs"
           ]
-          @?= Right ["3 dozen", "13", "#" <> dozenHash, "Unit", "Num"]
+          @?= Right ["3 dozen", "13", "#" <> dozenHash, "Num", "Num"]
         hashes <-
           either
             (assertFailure . T.unpack)
@@ -4791,10 +4463,10 @@ affineTests =
             ]
         -- A preference is a unit (design §3.10, U7), not an amount.
         case evalP ":prefer 5" of
-          Left err -> T.isInfixOf "a preference is a unit, not an amount" err @? T.unpack err
+          Left err -> T.isInfixOf "expected unit syntax" err @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP ":prefer 1 km/h" of
-          Left err -> T.isInfixOf "a preference is a unit, not an amount" err @? T.unpack err
+          Left err -> T.isInfixOf "expected unit syntax" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "± on tensors: one independent nudge per component" $ do
         evalP "[1, 1, 1] m ± 0.1 m" @?= Right ["[1.0 ± 0.1, 1.0 ± 0.1, 1.0 ± 0.1] m"]
@@ -5588,8 +5260,8 @@ storeTests =
               -- and when km was respelled kilo * 1 metre (design §3.10, U3), and
               -- again when units became a type: speed is the quantity 5 (km/h),
               -- scale of a unit quotient, and km and h are units by declaration.
-              "#rb27b  (current)"
-            , "#3ml3a"
+              "#av4qv  (current)"
+            , "#01d73"
             , "201.168 m"
             , "0 mm"
             , "true"
@@ -5776,7 +5448,7 @@ storeTests =
           Left err -> T.isInfixOf "is not an eval codebase of format" err @? T.unpack err
           Right _ -> assertFailure "opened a store of another format"
     , testCase "a store of an older format is refused and left as it is"
-        $ forM_ [3, 4, 5, 6, 7, 8 :: Int]
+        $ forM_ [3 .. 10 :: Int]
         $ \v -> withTempStore $ \dir -> do
           -- A store as an older eval left it: no types directory, a term file
           -- and a log, none of which this build reads.
@@ -5793,11 +5465,7 @@ storeTests =
                 @?= T.pack dir
                   <> ": this codebase is format "
                   <> T.pack (show v)
-                  <> "; it predates format 10 and cannot be opened: recreate it"
-                  <> " (with the previous eval, `:export` it, respell its quantities for units as a type,"
-                  <> " 60 * s as 60 s and x / s as x / 1 s, the dimensions in its types,"
-                  <> " Num [m s^-1] as Num (m/s), and its charts on spaces, chart degC on Temperature at 273.15 K,"
-                  <> " and `:load` the file into a new codebase)"
+                  <> "; it predates format 11 and cannot be opened: create a fresh codebase for syntax-only units; old first-class-unit programs are not supported"
             Right _ -> assertFailure ("opened a store of format " <> show v)
           snapshot dir >>= (@?= before)
           listDirectory dir >>= (@?= entries) . sort
@@ -5805,7 +5473,7 @@ storeTests =
         _ <- persistLines dir ["let x = 1", ":add"]
         readFile (dir </> "format")
           >>= (@?= "eval codebase " <> show formatVersion <> "\n")
-        formatVersion @?= 10
+        formatVersion @?= 11
         before <- snapshot dir
         (loaded, notes) <- reload dir
         notes @?= []
@@ -5948,7 +5616,7 @@ storeTests =
           -- a store of an older format is refused, and left as it is
           createDirectoryIfMissing True (root </> "old")
           writeFile (root </> "old" </> "format") "eval codebase 2\n"
-          refused (root </> "old") "this codebase is format 2; it predates format 10"
+          refused (root </> "old") "this codebase is format 2; it predates format 11"
           listDirectory (root </> "old") >>= (@?= ["format"])
           readFile (root </> "old" </> "format") >>= (@?= "eval codebase 2\n")
     ]
@@ -7492,7 +7160,7 @@ namespaceTests =
                   , "Body : Num kg -> Body"
                   ]
         expecting (runLinesP (orbitalSetup ++ [":namespace orbital", ":ls"])) $ \outs ->
-          lastN 2 outs @?= ["mu : Num", "period : forall d. Num d -> Num d"]
+          lastN 2 outs @?= ["mu : Num", "period : forall s d. Tensor s d -> Tensor s d"]
         -- Alone at the root: the root's own labels, then the namespaces under it.
         expecting (runLinesP (orbitalSetup ++ [":ls"])) $ \outs ->
           lastN 10 outs
@@ -7508,7 +7176,10 @@ namespaceTests =
           )
           $ \outs ->
             lastN 3 outs
-              @?= ["mu : Num", "period : forall d. Num d -> Num d", "namespace kepler (1 name)"]
+              @?= [ "mu : Num"
+                  , "period : forall s d. Tensor s d -> Tensor s d"
+                  , "namespace kepler (1 name)"
+                  ]
     , testCase
         ":rename a definition, and a namespace with its units, types and fields"
         $ do
@@ -9503,6 +9174,12 @@ dimensionSyntaxTests =
               , ("rot", ["let rot c = rotationOf c"])
               , ("conv", ["let conv p c = (p to c) .- (p to c)"])
               , ("temp", ["let temp p = p .- 0 degC"])
+              , ("shift", ["let shift q = q .+ [1, 0, 0] m"])
+              , ("shiftScalar", ["let shiftScalar q = q .+ 1 K"])
+              , ("shiftBy", ["let shiftBy x q = q .+ [x + 0, x + 0, x + 0] m"])
+              , ("withAxes", [])
+              , ("velocityIn", [":use astro"])
+              , ("stateFrom", [":use astro"])
               ]
         forM_ [[], [":set unicode on"]] $ \unicode ->
           forM_ defs $ \(name, setup) -> do
@@ -9548,7 +9225,55 @@ partFTests :: TestTree
 partFTests =
   testGroup
     "spaces and frames (design §3.10, part F)"
-    [ testCase "F1: kinds; a binder names its frame's space" $ do
+    [ testCase "shared chart configurations cancel before uncertainty arithmetic" $ do
+        runLinesP
+          [ "space Review = Vec 3 m"
+          , "chart root on Review"
+          , "chart parent on root by rotz (30 deg ± 0.1 rad)"
+          , "chart a on parent at [1, 0, 0] m"
+          , "chart b on parent at [2, 0, 0] m"
+          , "([0, 0, 0] a to b) == [-1, 0, 0] b"
+          , "let v = withAxes parent ([1, 0, 0] m)"
+          , "(v from parent to parent) == v"
+          , "(v from a to b) == v"
+          , "chart scaled on parent step km"
+          , "(v from scaled to parent) == v"
+          , "chart moving angle on root by rotz angle"
+          , "let w = withAxes (moving (0 rad)) ([1, 0, 0] m)"
+          , encloses
+              "1e-20"
+              "(w from (moving (0 rad)) to (moving (90 deg))) / 1 m"
+              "[0, -1, 0]"
+          , "chart child angle on (moving angle) at [1, 0, 0] m"
+          , encloses
+              "1e-20"
+              "(([0, 0, 0] (child (0 rad)) from (child (0 rad)) to (moving (90 deg))) .- [0, 0, 0] (moving (90 deg))) / 1 m"
+              "[0, -1, 0]"
+          ]
+          @?= Right (replicate 6 "true")
+    , testCase
+        "restricted frame types print signatures that preserve their constraints"
+        $ do
+          let body = "let shift q = q .+ [1, 0, 0] m"
+          expecting (runLinesP [body, ":type shift"]) $ \outs -> case outs of
+            [ty] -> do
+              ty @?= "forall (s : Space (Vec 3 m)) (c : s). Point c -> Point c"
+              runLinesP [multiline ["shift :: " <> ty, body], ":type shift"] @?= Right [ty]
+              expectError (runLinesP [body, "shift (20 degC)"]) "a vector against a number"
+              expectError
+                (runLinesP [body, "shift :: forall c. Point c -> Point c"])
+                "Space (Vec 3 m)"
+              withTempStore $ \dir -> do
+                stored <- persistLines dir [multiline ["shift :: " <> ty, body], ":add"]
+                (loaded, notes) <- reload dir
+                notes @?= []
+                loaded.codebase.signatures @?= stored.codebase.signatures
+                linesIn loaded [":type shift"] @?= Right [ty]
+                source <- either (assertFailure . T.unpack) pure (exportSource stored Nothing)
+                restored <- either (assertFailure . T.unpack) pure (sessionP [source, ":add"])
+                restored.codebase.signatures @?= stored.codebase.signatures
+            _ -> assertFailure (show outs)
+    , testCase "F1: kinds; a binder names its frame's space" $ do
         runLinesP
           [ multiline
               [ "diffK :: forall (c : Temperature). Point c -> Point c -> Num K"
@@ -9753,7 +9478,7 @@ partFTests =
             [ "forall c. Chart c -> Coords c -> Point c"
             , "forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1"
             , "forall s (c : s). Chart c -> Mat s c"
-            , "forall c n d. Chart c -> Vec n d -> Vec c d"
+            , "forall (s : Space (Vec n d)) (c : s) (n : Len) d d1. Chart c -> Vec n d1 -> Vec c d1"
             , "1.5 m"
             , "Num m"
             ]
@@ -9899,9 +9624,7 @@ partFTests =
           expectError
             (runLinesP (earth ++ ["3 ecef"]))
             "`ecef` takes arguments: a point is written on an applied chart"
-          expectError
-            (runLinesP ["let pt c = 3 c"])
-            "ambiguous: what follows this literal could be a unit or a chart"
+          runLinesP ["let pt c = 3 c", "pt degC"] @?= Right ["3 degC"]
           -- Written as F8 has it, over every space: a number is the coordinate
           -- of a point on a space of numbers only, so the definition is not as
           -- general as its signature (design §3.10, part F, as built).

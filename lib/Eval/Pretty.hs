@@ -26,7 +26,7 @@ module Eval.Pretty (
 import Control.Applicative ((<|>))
 import Data.Char (intToDigit, isAlphaNum)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -622,9 +622,10 @@ renderTermUnits spelling namer isUnitRef = go 0
     -- otherwise (`3 (km * (m / s))`, `3 (u / s)`).
     -- A negative number is written before the quantity, `-3 K`, which
     -- reads back as the same term.
-    (_, [x, u])
+    (_, [x, rawUnit])
       | p == "scale" ->
-          let (lit, level) = case x of
+          let u = fromMaybe rawUnit (unitSyntax rawUnit)
+              (lit, level) = case x of
                 Lit (LTensor ([], [r])) | r < 0 -> (renderRational 20 r, 8)
                 -- Below an application: raised, it is parenthesised.
                 _ -> (go 11 ctx x, 9)
@@ -635,7 +636,7 @@ renderTermUnits spelling namer isUnitRef = go 0
                     then paren (prec > 7) (lit <> " " <> go 7 ctx u)
                     else paren (prec > level) (lit <> " (" <> go 0 ctx u <> ")")
     -- A unit's declaration prints as its body (U7): `unit km = kilo * 1 metre`.
-    (_, [x]) | p == "unit" -> go prec ctx x
+    (_, [x]) | p == "unit" -> go prec ctx (fromMaybe x (compoundSyntax x))
     -- Points and charts read back as they are written (design §3.6, §3.8).
     (_, [s, Lit (LTensor ([], [r]))])
       | p == "pointOn" ->
@@ -706,6 +707,27 @@ renderTermUnits spelling namer isUnitRef = go 0
           ++ one "spinning" ws
       )
   -- A declared unit, or one to a power: what a quantity takes in (U5).
+  -- Invert the internal construction of compound units. In particular,
+  -- scale 1 is scaffolding here, not a literal in the printed unit syntax.
+  unitSyntax :: Term m -> Maybe (Term m)
+  unitSyntax u = case u of
+    PrimApp "unit" [x] -> compoundSyntax x
+    _ | unitAtom u -> Just u
+    _ -> Nothing
+  compoundSyntax :: Term m -> Maybe (Term m)
+  compoundSyntax x = case x of
+    PrimApp op [_, _] | op `elem` ["outer", "div"] -> amountSyntax x
+    Pow{} -> amountSyntax x
+    _ -> Nothing
+  amountSyntax :: Term m -> Maybe (Term m)
+  amountSyntax = \case
+    PrimApp "scale" [Lit (LTensor ([], [1])), u] -> unitSyntax u
+    PrimApp op [a, b]
+      | op `elem` ["outer", "div"] ->
+          (\x y -> PrimApp op [x, y]) <$> amountSyntax a <*> amountSyntax b
+    Pow a n -> (`Pow` n) <$> amountSyntax a
+    _ -> Nothing
+
   unitLeaf :: Term m -> Bool
   unitLeaf = \case
     Pow b _ -> unitAtom b

@@ -82,12 +82,6 @@ data Constraint
     at run time when it never is
     -}
     Fixed Frame
-  | {- | a unit is one number (design §3.10, U9): a quantity of this role
-    has this shape only as an amount. Pending while the role is a variable
-    and the shape is not known to be @[]@ or longer; at generalisation the
-    shape is @[]@, so that the role stays general
-    -}
-    UnitScalar Role Shape
   | {- | a primitive with two readings, chosen by the types it is used at
     once one of them is known (design §3.10, U4, U6)
     -}
@@ -97,7 +91,7 @@ data Constraint
 different operations for a unit and for a chart, so their choice is
 written into the term ('rewriteReadings') and an unknown one at
 generalisation is refused as ambiguous. Arithmetic has no reading to
-choose: it is polymorphic in the role (design §3.10, U9).
+choose: it takes amounts, with unit syntax lowered before inference.
 -}
 data Reading
   = {- | a quantity whose reading the desugarer left to the types, by its
@@ -264,12 +258,6 @@ freshLen offset =
   fresh KLen >>= \case
     ALen (LVar v _) -> pure (LVar v offset)
     _ -> error "fresh KLen"
-
-freshRole :: Infer Role
-freshRole =
-  fresh KRole >>= \case
-    ARole r -> pure r
-    _ -> error "fresh KRole"
 
 freshShape :: Infer Shape
 freshShape =
@@ -710,20 +698,22 @@ solveOne p = \case
     let s1' = applyShape s s1
         s2' = applyShape s s2
         s3' = applyShape s s3
-    case closedLens s1' of
-      Just ls -> do
-        unifyShape p s3' (appendShape ls s2')
-        pure True
-      Nothing -> case (closedLens s2', closedLens s3') of
-        (Just l2, Just l3)
-          | length l3 >= length l2 -> do
-              let k = length l3 - length l2
-              unifyShape p s1' (appendShape (take k l3) SNil)
-              unifyShape p (appendShape (drop k l3) SNil) s2'
-              pure True
-          | otherwise ->
-              failAt p "the result of a product has lower rank than one of its operands"
-        _ -> pure False
+    if s2' == SNil
+      then unifyShape p s3' s1' >> pure True
+      else case closedLens s1' of
+        Just ls -> do
+          unifyShape p s3' (appendShape ls s2')
+          pure True
+        Nothing -> case (closedLens s2', closedLens s3') of
+          (Just l2, Just l3)
+            | length l3 >= length l2 -> do
+                let k = length l3 - length l2
+                unifyShape p s1' (appendShape (take k l3) SNil)
+                unifyShape p (appendShape (drop k l3) SNil) s2'
+                pure True
+            | otherwise ->
+                failAt p "the result of a product has lower rank than one of its operands"
+          _ -> pure False
   EqInstance t -> do
     t' <- resolve t
     case t' of
@@ -768,15 +758,6 @@ solveOne p = \case
       (TOver _ _, TQty _ sh _) | Nothing <- closedLens sh -> pure False
       (TOver _ _, TVar _) -> pure False
       (o, t') -> unify p o t' >> pure True
-  UnitScalar r sh -> do
-    s <- gets (.subst)
-    case (applyRole s r, applyShape s sh) of
-      (RAmount, _) -> pure True
-      (_, SNil) -> pure True
-      (RUnit, SVar v) -> bindVar p v (AShape SNil) >> pure True
-      (RUnit, _) -> failAt p "a unit is one number, not a tensor"
-      (r', SCons{}) -> unifyRole p RAmount r' >> pure True
-      _ -> pure False
   Fixed f -> do
     s <- gets (.subst)
     case (applyFrame s f).slot of
@@ -809,7 +790,7 @@ decide p = \case
     case (atom', res') of
       (TQty r _ _, _) | r /= RAmount -> scaleReading
       (TScale _, _) -> chartReading
-      (TVar _, TQty{}) -> scaleReading
+      (TVar _, TQty{}) -> pure False
       (TVar _, TPoint _) -> chartReading
       (TVar _, _) -> pure False
       (other, _) ->
@@ -840,7 +821,7 @@ decide p = \case
         | any isAmount [v, w] -> axesTo
         | otherwise -> pure False
       (TVar _, v, w)
-        | any isAmount [v, w] -> unitTo
+        | any isAmount [v, w] -> axesTo
         | any isPoint [v, w] -> chartTo
         | otherwise -> pure False
       (TQty{}, _, _) ->
@@ -950,9 +931,6 @@ settle here ctx = do
       failAt
         p
         "the amount between points on a frame of a space not known here: give a signature naming the space, as in forall (c : Inertial)"
-    -- A role still open keeps its quantities scalar (design §3.10, U9), so
-    -- that the role generalises: \a b -> a * b is over amounts and units.
-    UnitScalar _ sh -> unifyShape p sh SNil
     -- A frame still unknown: the run-time conversion checks it.
     Fixed _ -> pure ()
     -- Settled already ('settleReadings').
@@ -979,8 +957,8 @@ settle here ctx = do
 
 {- | The readings still open at a generalisation point that only mention
 variables about to be quantified (design §3.10). A quantity or a @to@ is
-refused as ambiguous: its readings are different operations, and a scheme
-cannot carry the choice.
+settled here. An unresolved quantity suffix denotes a chart; a conversion
+still ambiguous between point and axes conversion requires a signature.
 -}
 settleReadings :: Path -> Vec n Scheme -> Infer ()
 settleReadings here ctx = do
@@ -993,22 +971,31 @@ settleReadings here ctx = do
             && not (any (`elem` envVars) (constraintVars (applyC s c)))
         _ -> False
       (readings, rest) = (filter open st.pending, filter (not . open) st.pending)
-      inOrder = reverse readings
-  forM_ inOrder $ \(p, c) -> case c of
-    Dispatch Quantity{} ->
-      failAt
-        p
-        "ambiguous: what follows this literal could be a unit or a chart; give the definition a signature, as in per :: forall d. Unit d -> Num d"
-    Dispatch Convert{} ->
-      failAt
-        p
-        "ambiguous: `to` here could take a unit or a chart; give the definition a signature that says which"
-    Dispatch ConvertFrom{} ->
-      failAt
-        p
-        "ambiguous: `from … to` here could convert a point or an amount; give the definition a signature that says which"
-    _ -> pure ()
+      -- A chart suffix determines a point type that may settle a surrounding
+      -- conversion. Resolve these before inspecting the other readings.
+      isQuantity = \case (_, Dispatch Quantity{}) -> True; _ -> False
+      inOrder =
+        filter isQuantity (reverse readings)
+          ++ filter (not . isQuantity) (reverse readings)
   put st{pending = rest}
+  forM_ inOrder $ \(p, c) -> case c of
+    Dispatch reading -> do
+      resolved <- decide p reading
+      unless resolved $ case reading of
+        Quantity marker _ lit atom res -> do
+          asPrim p "pointOn" [(1, atom), (0, lit)] res
+          modify'
+            (\current -> current{chosen = Map.insert marker "pointOn" current.chosen})
+        Convert{} ->
+          failAt
+            p
+            "ambiguous: `to` here could convert a point or an amount along chart axes; give the definition a signature that says which"
+        ConvertFrom{} ->
+          failAt
+            p
+            "ambiguous: `from … to` here could convert a point or an amount; give the definition a signature that says which"
+    _ -> pure ()
+  solvePending
 
 applyC :: Subst -> Constraint -> Constraint
 applyC s = \case
@@ -1018,7 +1005,6 @@ applyC s = \case
   Rank sh l -> Rank (applyShape s sh) (applyLen s l)
   OverIs f md t -> OverIs (applyFrame s f) (applyDim s <$> md) (applyType s t)
   Fixed f -> Fixed (applyFrame s f)
-  UnitScalar r sh -> UnitScalar (applyRole s r) (applyShape s sh)
   Dispatch r -> Dispatch $ case r of
     Quantity m w a b c -> Quantity m w (ty a) (ty b) (ty c)
     Convert m a b c -> Convert m (ty a) (ty b) (ty c)
@@ -1041,7 +1027,6 @@ constraintVars = \case
   Rank sh l -> map fst (freeVars (TTensor (SCons l AAnon sh) dimOne))
   OverIs f md t -> map fst (freeVars (TFun (TOver f md) t))
   Fixed f -> map fst (freeVars (TPoint f))
-  UnitScalar r sh -> map fst (freeVars (TQty r sh dimOne))
   Dispatch r -> concatMap (map fst . freeVars) (readingTypes r)
 
 -- Generalisation and instantiation ---------------------------------------------------
@@ -1289,9 +1274,6 @@ infer look p ctx = \case
                   )
           _ -> pure ()
       _ -> pure ()
-    let known = \case
-          RVar _ -> False
-          _ -> True
     -- Primitive types are fully known in shape, so peel one arrow per
     -- argument and report a mismatch at the argument that caused it.
     let go i ty = \case
@@ -1301,20 +1283,7 @@ infer look p ctx = \case
               -- The circular functions are the common place to forget that
               -- angles carry a unit (design §3.2.11).
               a' <- resolve a
-              param' <- resolve param
               case a' of
-                -- An amount and a unit under a product (design §3.10, U9):
-                -- the roles differ.
-                TQty ra _ _
-                  | name `elem` ["outer", "div"]
-                  , TQty rp _ _ <- param'
-                  , known ra && known rp && ra /= rp ->
-                      failAt
-                        p
-                        ( "an amount and a unit together: "
-                            <> (if name == "div" then "/" else "*")
-                            <> " takes two amounts or two units"
-                        )
                 -- A unit's size is one number (design §3.10, U7).
                 TTensor SCons{} _
                   | name == "unit" ->
@@ -1407,13 +1376,12 @@ infer look p ctx = \case
     sc@(Forall vs _) <- generalise ctx te
     (tb, body') <- infer look (1 : p) (VCons sc ctx) body
     pure (tb, TLet h sc (abstractOver vs e') body')
-  -- A power of a number in its role, an amount or a unit (design §3.10, U9).
+  -- A power of a scalar amount. Unit powers are elaborated in unit contexts.
   Pow b n -> do
     (tb, b') <- infer look (0 : p) ctx b
     d <- freshDim
-    r <- freshRole
-    unify (0 : p) (TQty r SNil d) tb
-    pure (TQty r SNil (dimPow (fromIntegral n) d), TPow b' n)
+    unify (0 : p) (numD d) tb
+    pure (numD (dimPow (fromIntegral n) d), TPow b' n)
   Noise k l n -> pure (vecT (LLit (fromIntegral n)), TNoise k l n)
   -- x ± e over any shape (design §3.4): the uncertainty is a scalar applied
   -- to every component, or a tensor of the value's shape; in both cases one
@@ -1556,27 +1524,20 @@ constraint between them.
 primType :: Path -> Text -> Int -> Infer Type
 primType p name argc = do
   t <- case name of
-    -- One role for the operands and the result (design §3.10, U9): two
-    -- amounts, the product relational in its shapes (§4.2), or two units,
-    -- each one number.
+    -- Ordinary products are amounts, relational in their shapes (§4.2).
     "outer" -> do
       s1 <- freshShape
       s2 <- freshShape
       s3 <- freshShape
       d1 <- freshDim
       d2 <- freshDim
-      r <- freshRole
       defer p (Append s1 s2 s3)
-      defer p (UnitScalar r s1)
-      defer p (UnitScalar r s2)
-      pure (TFun (TQty r s1 d1) (TFun (TQty r s2 d2) (TQty r s3 (dimMul d1 d2))))
+      pure (TFun (TTensor s1 d1) (TFun (TTensor s2 d2) (TTensor s3 (dimMul d1 d2))))
     "div" -> do
       s <- freshShape
       d1 <- freshDim
       d2 <- freshDim
-      r <- freshRole
-      defer p (UnitScalar r s)
-      pure (TFun (TQty r s d1) (TFun (TQty r SNil d2) (TQty r s (dimDiv d1 d2))))
+      pure (TFun (TTensor s d1) (TFun (numD d2) (TTensor s (dimDiv d1 d2))))
     "dot" -> do
       s1 <- freshShape
       n <- freshLen 0

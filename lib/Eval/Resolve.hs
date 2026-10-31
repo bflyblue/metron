@@ -1076,6 +1076,7 @@ freeNames = go Set.empty
         <> foldMap (go bound) cl.spin
     S.FromTo v c c1 -> go bound v <> go bound c <> go bound c1
     S.UnitBody a -> go bound a
+    S.UnitSyntax a -> go bound a
   opNames = \case
     S.Infix n -> Set.singleton n
     _ -> Set.empty
@@ -1477,7 +1478,8 @@ tyType env t = case t.node of
     | Map.member n env.params -> TVar <$> useParam env t n KType
     | n == "Bool" -> pure boolT
     | n == "Num" -> pure numT
-    | n == "Unit" -> pure (TUnit dimOne)
+    | n == "Unit" ->
+        bad t "units are syntax, not value types; pass an amount such as 1 km"
     | n == "Amount" ->
         bad t "Amount is a role, not a type: an amount is Num d, or Quantity Amount d"
     | n `elem` builtinTypeNames -> bad t ("`" <> n <> "` needs its arguments")
@@ -1492,11 +1494,10 @@ tyType env t = case t.node of
     | otherwise -> case (hd.text, args) of
         ("Num", [d]) -> TTensor SNil <$> tyDim env d
         -- A unit takes its dimension as Num does (design §3.10, U1).
-        ("Unit", [d]) -> TUnit <$> tyDim env d
+        ("Unit", _) -> bad t "units are syntax, not value types; pass an amount such as 1 km"
         -- A quantity in a role (design §3.10, U9): @Quantity Amount d@ is
         -- @Num d@ and @Quantity Unit d@ is @Unit d@.
-        ("Quantity", [r]) -> (\x -> TQty x SNil dimOne) <$> tyRole env r
-        ("Quantity", [r, d]) -> (`TQty` SNil) <$> tyRole env r <*> tyDim env d
+        ("Quantity", _) -> bad t "quantities are amounts: use Num d or Tensor s d"
         ("Vec", [n]) -> (\l -> TTensor (position l SNil) dimOne) <$> tyLen env n
         ("Vec", [n, d]) -> (\l -> TTensor (position l SNil)) <$> tyLen env n <*> tyDim env d
         ("Mat", [m, n]) ->
@@ -1527,6 +1528,7 @@ tyType env t = case t.node of
   S.TyFun a b -> TFun <$> tyType env a <*> tyType env b
   S.TyInt _ -> bad t "a number is a length, not a type"
   S.TyShape _ -> bad t "a bracket is a shape, not a type"
+  S.TyShapeCons _ _ -> bad t "a shape is not a type; write Tensor (n : s) d"
   S.TyDim _ -> bad t "a dimension is not a type: a quantity of it is Num (m/s)"
   S.TyForall _ _ -> bad t "forall goes only at the head of a signature or an ascription"
 
@@ -1797,6 +1799,7 @@ namedAxes env a n = case namedType env n of
 tyShape :: DataEnv -> S.TyExpr -> Kinds Shape
 tyShape env a = case a.node of
   S.TyShape items -> foldr position SNil <$> mapM (tyLen env) items
+  S.TyShapeCons hd tl -> position <$> tyLen env hd <*> tyShape env tl
   S.TyName p | Map.member p env.params -> SVar <$> useParam env a p KShape
   _ -> bad a "a shape is a list of lengths like [2, 3], or a parameter"
 
@@ -1899,8 +1902,13 @@ tyNames e = case e.node of
   S.TyList a -> tyNames a
   S.TyFun a b -> tyNames a ++ tyNames b
   S.TyShape items -> concatMap tyNames items
+  S.TyShapeCons hd tl -> tyNames hd ++ tyNames tl
   S.TyDim factors -> concatMap (tyNames . fst) factors
-  S.TyForall bs a -> map (.name) bs ++ [s | b <- bs, Just s <- [b.space]] ++ tyNames a
+  S.TyForall bs a ->
+    map (.name) bs
+      ++ [s | b <- bs, Just s <- [b.space]]
+      ++ concat [tyNames t | b <- bs, Just t <- [b.over]]
+      ++ tyNames a
 
 {- | The variables a @forall@ binds, by name (design §4.8): each with its
 id and kind in the scheme, and its companions: for a length, its axis
@@ -1997,8 +2005,14 @@ explicitScheme scope cb outer t0 = do
       sizes =
         Map.fromList [(b.name.text, fromInteger k) | b <- binders, Just k <- [b.size]]
           <> Map.mapMaybe (.size) visible
-      annotatedWith = [(b.name.text, s) | b <- binders, Just s <- [b.space]]
-  case [ n | n <- tyNames body, Map.notMember n.text params, typeVariable scope cb n.text
+      annotatedWith = [(b.name.text, s) | b <- binders, Just s <- [b.space], s.text /= "Len"]
+      bareLengths =
+        Set.fromList [b.name.text | b <- binders, Just s <- [b.space], s.text == "Len"]
+      amounts = [(b.name.text, t) | b <- binders, Just t <- [b.over]]
+  case [ n
+       | n <- concatMap tyNames (body : map snd amounts)
+       , Map.notMember n.text params
+       , typeVariable scope cb n.text
        ] of
     n : _ ->
       Left
@@ -2028,25 +2042,42 @@ explicitScheme scope cb outer t0 = do
       known =
         Map.map (.kind) visible
           <> Map.fromList [(n, KLen) | n <- Map.keys sizes]
+          <> Map.fromList [(n, KLen) | n <- Set.toList bareLengths]
           <> Map.fromList [(n, KFrame) | (n, _) <- annotatedWith]
+          <> Map.fromList [(n, KSpace) | (n, _) <- amounts]
           <> Map.fromList [(s, KSpace) | Right s <- Map.elems annotations]
           <> Map.fromList [(n, KFrame) | n <- framesNamed body, n `elem` own]
   -- Kinds first, then each variable with its companions.
-  (_, kinds) <- runStateT (tyType env body) known
+  (_, kinds) <- runStateT (mapM (tyType env) (body : map snd amounts)) known
   let used =
         [ (n, k)
         | n <- own
         , Just k <- [Map.lookup n kinds]
         ]
       vector = Set.fromList [n | n <- own, Map.member (vectorKey n) kinds]
-      comps = companionsOf (base + length own) used annotations vector ownIds
+      rawComps = companionsOf (base + length own) used annotations vector ownIds
+      comps = rawComps{compAxes = Map.withoutKeys rawComps.compAxes bareLengths}
       env' =
         env
           { axisOf = comps.compAxes <> env.axisOf
           , frames = comps.compFrames <> env.frames
           , spaces = comps.compSpaces <> env.spaces
           }
-  (ty, _) <- runStateT (tyType env' body) kinds
+  constraints <-
+    mapM (\(n, t) -> (n,) . fst <$> runStateT (tyType env' t) kinds) amounts
+  constrained <- foldlM (constrainSpace amounts) comps.compSpaces constraints
+  let refine sp = case sp.slot of
+        SpVar v ->
+          fromMaybe
+            sp
+            ( lookup
+                v
+                [(Map.findWithDefault 0 n ownIds, s) | (n, s) <- Map.toList constrained]
+            )
+        _ -> sp
+      frames = Map.map (\f -> Frame f.slot f.axes (refine f.space)) comps.compFrames
+      finalEnv = env'{spaces = constrained <> env.spaces, frames = frames <> env.frames}
+  (ty, _) <- runStateT (tyType finalEnv body) kinds
   let idOf n = Map.findWithDefault 0 n ownIds
   pure
     ( Forall
@@ -2059,13 +2090,30 @@ explicitScheme scope cb outer t0 = do
               k
               (Map.lookup n comps.compAxes)
               (Map.lookup n sizes)
-              (Map.lookup n comps.compFrames)
-              (Map.lookup n comps.compSpaces)
+              (Map.lookup n frames)
+              (Map.lookup n constrained)
           )
         | (n, k) <- used
         ]
     )
  where
+  constrainSpace amounts spaces (n, t) = case (Map.lookup n spaces, t) of
+    (Just sp, TTensor sh d)
+      | validShape sh -> Right (Map.insert n sp{shape = anonymous sh, dim = d} spaces)
+    _ ->
+      Left
+        ( DataError
+            (maybe t0.span (.span) (lookup n amounts))
+            "a space constraint takes Num d, Vec n d or Tensor s d"
+        )
+  validShape = \case
+    SNil -> True
+    SCons _ _ SNil -> True
+    SVar _ -> True
+    _ -> False
+  anonymous = \case
+    SCons l _ rest -> SCons l AAnon (anonymous rest)
+    sh -> sh
   annotation s
     | Just bv <- Map.lookup s.text outer
     , Just sp <- bv.space =

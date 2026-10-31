@@ -276,11 +276,6 @@ record path sp = lift (modify' (\p -> p{spans = Map.insert (reverse path) sp p.s
 hintAt :: S.Span -> Text -> M ()
 hintAt sp msg = lift (modify' (\p -> p{hints = Map.insert sp msg p.hints}))
 
--- | Advice for a type error at a span that has none yet.
-hintIfNone :: S.Span -> Text -> M ()
-hintIfNone sp msg =
-  lift (modify' (\p -> p{hints = Map.insertWith (\_ old -> old) sp msg p.hints}))
-
 lookupCtx :: Text -> Ctx n -> Maybe (Fin n)
 lookupCtx x = \case
   VNil -> Nothing
@@ -411,15 +406,8 @@ desugar path ctx e = do
         (zip [0 ..] es)
     S.CaseOf scrut alts -> caseOf path ctx e.span scrut alts
     S.Var x -> do
-      -- A unit's name is the unit (design §3.10, U3): where an amount was
-      -- meant, one of it is written so.
       unit <- unitName ctx e
-      when
-        unit
-        ( hintIfNone
-            e.span
-            ("`" <> x <> "` is a unit; where an amount is meant, write `1 " <> x <> "`")
-        )
+      when unit (bareUnit e)
       headApp path ctx e x []
     S.App f a -> do
       let (hd0, args) = spine e
@@ -455,7 +443,12 @@ desugar path ctx e = do
       f' <- desugar (2 : path) ctx f
       pure (Case c' [Alt falseC VNil f', Alt trueC VNil t'])
     -- A unit's declaration (design §3.10, U7): its body made a unit.
-    S.UnitBody a -> (\a' -> PrimApp "unit" [a']) <$> desugar (0 : path) ctx a
+    S.UnitBody a -> do
+      unit <- staticUnit ctx a
+      if unit
+        then desugarUnit path ctx a
+        else (\a' -> PrimApp "unit" [a']) <$> desugar (0 : path) ctx a
+    S.UnitSyntax a -> desugarUnit path ctx a
     -- After a literal the quantity takes the whole unit expression (design
     -- §3.10, U5): the chain of products and quotients is regrouped first.
     S.BinOp op a b -> do
@@ -482,7 +475,9 @@ desugar path ctx e = do
               (hintAt b.span "the unit after `to` has the dimension of the value before it")
             operands [a, b]
             if unit
-              then prim "to" [a, b]
+              then
+                PrimApp "to"
+                  <$> sequence [desugar (0 : path) ctx a, desugarUnit (1 : path) ctx b]
               else readingMarker "to" >>= \m -> prim m [a, b]
           -- Subtracting in a frame (design §3.10, F10): both points
           -- converted to one chart value, then subtracted.
@@ -555,12 +550,15 @@ desugar path ctx e = do
               then prim "pointOn" [unitE, lit]
               else
                 if unit
-                  then prim "scale" [lit, unitE]
+                  then
+                    PrimApp "scale"
+                      <$> sequence [desugar (0 : path) ctx lit, desugarUnit (1 : path) ctx unitE]
                   else readingMarker "quantity" >>= \m -> prim m [lit, unitE]
-          -- An amount and a unit are not multiplied (design §3.10, U2).
+          -- Bare unit expressions are shorthand for one of that unit only
+          -- at the operands of multiplication and division.
           _ | op `elem` [S.Outer, S.Div] -> do
-            mixedHint ctx e a b
-            prim (opPrim op) [a, b]
+            PrimApp (opPrim op)
+              <$> sequence [desugarFactor (0 : path) ctx a, desugarFactor (1 : path) ctx b]
           _ -> prim (opPrim op) [a, b]
     -- Negating a constant is a negative constant, so that `-3` and a literal
     -- negative three are one term with one hash (core.md §6: constants are
@@ -674,7 +672,9 @@ desugar path ctx e = do
               (cl.generators <|> (S.Expr cl.parent.span (S.List []) <$ cl.spin))
       rest <-
         sequence
-          [ optional (3 :: Int) cl.step
+          [ case cl.step of
+              Nothing -> pure nil
+              Just x -> one <$> desugarUnit (0 : 3 : path) ctx x
           , optional 4 cl.origin
           , gens
           , optional 6 cl.spin
@@ -1055,6 +1055,56 @@ staticUnit ctx e = case e.node of
     | op `elem` [S.Outer, S.Div] -> (&&) <$> staticUnit ctx a <*> staticUnit ctx b
   _ -> unitName ctx e
 
+{- | Unit syntax has no ordinary value reading. Keep the internal unit
+representation for suffixes, display targets and chart steps.
+-}
+bareUnit :: S.Expr -> M a
+bareUnit e = do
+  hint <- lift (gets (Map.lookup e.span . (.hints)))
+  failWith
+    ( BadSpecialForm
+        e.span
+        ( "a unit is not an expression: write an amount such as 1 km; bare units are allowed at * and /, in quantity suffixes, after to, and in chart steps"
+            <> maybe "" ("\n  hint: " <>) hint
+        )
+    )
+
+desugarFactor :: Path -> Ctx n -> S.Expr -> M (Term n)
+desugarFactor path ctx e = do
+  unit <- staticUnit ctx e
+  if unit then unitAmount path ctx e else desugar path ctx e
+
+unitAmount :: Path -> Ctx n -> S.Expr -> M (Term n)
+unitAmount path ctx e = do
+  record path e.span
+  u <- desugarUnit (1 : path) ctx e
+  pure (PrimApp "scale" [Lit (LTensor ([], [1])), u])
+
+desugarUnit :: Path -> Ctx n -> S.Expr -> M (Term n)
+desugarUnit path ctx e = do
+  record path e.span
+  unit <- staticUnit ctx e
+  if not unit
+    then
+      failWith
+        ( BadSpecialForm
+            e.span
+            "expected unit syntax, such as km or km/s; a unit cannot be passed as a value"
+        )
+    else case e.node of
+      S.BinOp op a b | op `elem` [S.Outer, S.Div] -> do
+        a' <- unitAmount (0 : 0 : path) ctx a
+        b' <- unitAmount (1 : 0 : path) ctx b
+        pure (PrimApp "unit" [PrimApp (opPrim op) [a', b']])
+      S.Pow a n -> do
+        a' <- unitAmount (0 : 0 : path) ctx a
+        pure (PrimApp "unit" [Pow a' n])
+      _ -> do
+        named <- qualifiedChain ctx e
+        case named.node of
+          S.Var x -> headApp path ctx named x []
+          _ -> bareUnit e
+
 {- | The literal of a quantity and the atoms juxtaposed after it, @9.81 m
 s^-2@ as @9.81@ and @[m, s^-2]@.
 -}
@@ -1158,24 +1208,6 @@ regroup ctx e = case top e of
             <> x
             <> ")"
         )
-    _ -> pure ()
-
-{- | Where a unit's name meets an amount under @*@ or @/@ (design §3.10, U2),
-the error says how to write one of it.
--}
-mixedHint :: Ctx n -> S.Expr -> S.Expr -> S.Expr -> M ()
-mixedHint ctx e a b = do
-  ua <- unitName ctx a
-  ub <- unitName ctx b
-  sa <- staticUnit ctx a
-  sb <- staticUnit ctx b
-  let name x = case x.node of
-        S.Var n -> Just n
-        _ -> Nothing
-      advise n = hintAt e.span ("`" <> n <> "` is a unit; write `1 " <> n <> "`")
-  case (ua && not sb, ub && not sa) of
-    (True, _) | Just n <- name a -> advise n
-    (_, True) | Just n <- name b -> advise n
     _ -> pure ()
 
 -- | A fresh marker of a reading the types choose, @quantity@ or @to@.

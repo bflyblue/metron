@@ -424,7 +424,7 @@ sigType = do
  where
   binder =
     P.choice
-      [ (\n -> TyBinder n Nothing Nothing) <$> name
+      [ (\n -> TyBinder n Nothing Nothing Nothing) <$> name
       , do
           _ <- tok TLParen
           n <- name
@@ -433,11 +433,17 @@ sigType = do
           -- §3.10, F1).
           b <-
             P.choice
-              [ (\(_, k) -> TyBinder n (Just k) Nothing)
+              [ (\(_, k) -> TyBinder n (Just k) Nothing Nothing)
                   <$> match
                     "length"
                     (\case TNum r | denominator r == 1 && r >= 0 -> Just (numerator r); _ -> Nothing)
-              , TyBinder n Nothing . Just <$> qualifiedName
+              , do
+                  _ <- match "Space" (\case TIdent "Space" -> Just (); _ -> Nothing)
+                  _ <- tok TLParen
+                  t <- typeExpr
+                  _ <- tok TRParen
+                  pure (TyBinder n Nothing Nothing (Just t))
+              , (\s -> TyBinder n Nothing (Just s) Nothing) <$> qualifiedName
               ]
           _ <- tok TRParen
           pure b
@@ -502,13 +508,20 @@ parenthesised = do
   t <- typeExpr
   node <-
     P.choice
-      [ TyTuple . (t :) <$> P.some (tok TComma *> typeExpr)
+      [ TyShapeCons t <$> (tok (TOp ":") *> shapeTail)
+      , TyTuple . (t :) <$> P.some (tok TComma *> typeExpr)
       , TyDim <$> dimensionFrom t
       , pure t.node
       ]
   e <- tok TRParen
   pure (TyExpr (spanUnion s e) node)
  where
+  shapeTail = do
+    a <- typeExpr
+    P.option a $ do
+      _ <- tok (TOp ":")
+      b <- shapeTail
+      pure (TyExpr (spanUnion a.span b.span) (TyShapeCons a b))
   dimensionFrom t =
     P.choice
       [ do

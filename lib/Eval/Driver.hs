@@ -1451,7 +1451,7 @@ dimension it applies to. It must be a scalar with a display unit.
 preferenceHint :: Config -> Codebase -> Text -> Either Text (Dim, UnitHint)
 preferenceHint cfg cb text = do
   e <- parseExpr text
-  (_, v) <- evalValue cfg S.rootScope cb text e
+  (_, v) <- evalValue cfg S.rootScope cb text (S.Expr e.span (S.UnitSyntax e))
   -- A preference is a unit (design §3.10, U7), not an amount of one.
   case v of
     VUnit (VTensor [] d (Just h) _) | h.dim == d -> Right (d, h)
