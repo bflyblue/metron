@@ -369,7 +369,7 @@ displayParts printer scale prefs = \case
   renderHint h =
     T.unwords
       [ atomNameWith printer.unitName u.atom
-          <> (if u.power == 1 then "" else exponentText printer.spelling (toInteger u.power))
+          <> (if u.power == 1 then "" else exponentText printer.spelling u.power)
       | u <- filter ((> 0) . (.power)) h.atoms ++ filter ((< 0) . (.power)) h.atoms
       ]
 

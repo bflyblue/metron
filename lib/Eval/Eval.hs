@@ -153,7 +153,7 @@ for the hint to be used).
 and magnitude of a single power of it.
 -}
 data UnitFactor = UnitFactor
-  {atom :: UnitAtom, power :: Int, unitDim :: Dim, unitFactor :: Magnitude}
+  {atom :: UnitAtom, power :: Integer, unitDim :: Dim, unitFactor :: Magnitude}
   deriving stock (Eq, Show)
 
 data UnitHint = UnitHint
@@ -354,8 +354,8 @@ eval cfg rt = go
         -- A power of a unit is a unit (design §3.10, U2).
         VUnit _ ->
           VUnit
-            (num (dimPow (fromIntegral n) d) (unitHintPow p (fromIntegral n) =<< hint) r)
-        _ -> num (dimPow (fromIntegral n) d) (hintPow p (fromIntegral n) =<< hint) r
+            (num (dimPow n d) (unitHintPow p n =<< hint) r)
+        _ -> num (dimPow n d) (hintPow p n =<< hint) r
     -- Fresh unit nudges, one per component (design §3.2.5).
     TNoise k l n ->
       let count = fromInteger n
@@ -579,7 +579,7 @@ mkHintAs cancelling p factors = do
           either
             (const Nothing)
             (Just . mulM p acc)
-            (powM p u.unitFactor (fromIntegral u.power))
+            (powM p u.unitFactor u.power)
       )
       (Exact 1)
       kept
@@ -615,7 +615,7 @@ mergeAtoms = foldl merge
 hintInv :: Precision -> UnitHint -> Maybe UnitHint
 hintInv p a = mkHint p [u{power = negate u.power} | u <- a.atoms]
 
-hintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
+hintPow :: Precision -> Integer -> UnitHint -> Maybe UnitHint
 hintPow p k a = mkHint p [u{power = u.power * k} | u <- a.atoms]
 
 {- | The hint of unit arithmetic (design §3.10, U2): the operands' hints
@@ -628,7 +628,7 @@ unitHintMul p a b = unitHint p (a.atoms ++ b.atoms)
 unitHintDiv :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
 unitHintDiv p a b = unitHint p (a.atoms ++ [u{power = negate u.power} | u <- b.atoms])
 
-unitHintPow :: Precision -> Int -> UnitHint -> Maybe UnitHint
+unitHintPow :: Precision -> Integer -> UnitHint -> Maybe UnitHint
 unitHintPow p k a = unitHint p [u{power = u.power * k} | u <- a.atoms]
 
 {- | A unit's hint from its factors as written (design §3.10, U8, U9).
@@ -767,6 +767,7 @@ runPrim cfg rt prim args = case (prim, args) of
       _ -> do
         (d1, dim1, h1, xs) <- tensor va
         (d2, dim2, h2, ys) <- tensor vb
+        allocation (d1 ++ d2)
         Right
           ( VTensor
               (d1 ++ d2)
@@ -781,7 +782,8 @@ runPrim cfg rt prim args = case (prim, args) of
     (dr, dim2, h2, ys) <- tensor =<< b
     case (reverse dl, dr) of
       (n : d1rev, n' : d2)
-        | n == n' ->
+        | n == n' -> do
+            allocation (reverse d1rev ++ d2)
             let d1 = reverse d1rev
                 stride2 = product d2
                 rows = product d1
@@ -792,13 +794,13 @@ runPrim cfg rt prim args = case (prim, args) of
                           [ mulM p <$> (xs V.! (i * n + c)) <*> (ys V.! (c * stride2 + j))
                           | c <- [0 .. n - 1]
                           ]
-             in Right
-                  ( VTensor
-                      (d1 ++ d2)
-                      (dimMul dim1 dim2)
-                      (combine (hintMul p) h1 h2)
-                      (V.generate (rows * stride2) element)
-                  )
+            Right
+              ( VTensor
+                  (d1 ++ d2)
+                  (dimMul dim1 dim2)
+                  (combine (hintMul p) h1 h2)
+                  (V.generate (rows * stride2) element)
+              )
       _ -> Left (Internal "dot: operand shapes do not contract")
   ("div", [a, b]) -> do
     va <- a
@@ -917,23 +919,24 @@ runPrim cfg rt prim args = case (prim, args) of
     (_, dim2, h2, ys) <- tensor =<< b
     case da of
       [n] ->
-        Right
-          ( VTensor
-              [n, n]
-              (dimMul dim1 dim2)
-              (combine (hintMul p) h1 h2)
-              ( V.generate
-                  (n * n)
-                  ( \k ->
-                      let (j, i) = k `divMod` n
-                       in (\x y x' y' -> subM (mulM p x y) (mulM p x' y'))
-                            <$> (xs V.! j)
-                            <*> (ys V.! i)
-                            <*> (xs V.! i)
-                            <*> (ys V.! j)
-                  )
-              )
-          )
+        allocation [n, n]
+          >> Right
+            ( VTensor
+                [n, n]
+                (dimMul dim1 dim2)
+                (combine (hintMul p) h1 h2)
+                ( V.generate
+                    (n * n)
+                    ( \k ->
+                        let (j, i) = k `divMod` n
+                         in (\x y x' y' -> subM (mulM p x y) (mulM p x' y'))
+                              <$> (xs V.! j)
+                              <*> (ys V.! i)
+                              <*> (xs V.! i)
+                              <*> (ys V.! j)
+                    )
+                )
+            )
       _ -> Left (Internal "wedge of non-vectors")
   -- 3D Hodge star of a bivector: (⋆M) = (M₁₂, M₂₀, M₀₁).
   ("star", [a]) -> do
@@ -1418,6 +1421,26 @@ runPrim cfg rt prim args = case (prim, args) of
 sumM :: [Magnitude] -> Magnitude
 sumM = foldl' addM (Exact 0)
 
+{- | Whether a tensor of these lengths may be allocated: at most
+'componentLimit' components, counted without overflow (design §3.3). A
+product whose operands are each within the limit can exceed it.
+-}
+allocation :: [Int] -> Either EvalError ()
+allocation dims
+  | n > componentLimit =
+      Left
+        ( Eval.Eval.Domain
+            ( "the result would have "
+                <> tshow n
+                <> " components: a tensor has at most "
+                <> tshow componentLimit
+                <> " components"
+            )
+        )
+  | otherwise = Right ()
+ where
+  n = product (map toInteger dims)
+
 -- Index arithmetic ----------------------------------------------------------------------
 
 {- | The literal index positions of @contract@, @permute@ or @slice@: a number or a
@@ -1430,7 +1453,11 @@ positions t = do
   mapM natural xs
  where
   natural = \case
-    Exact r | denominator r == 1, r >= 0 -> Right (fromIntegral (numerator r))
+    Exact r
+      | denominator r == 1
+      , r >= 0
+      , numerator r < componentLimit ->
+          Right (fromInteger (numerator r))
     _ -> Left (Internal "an index position is not a literal natural number")
 
 -- | The row-major strides of a shape.

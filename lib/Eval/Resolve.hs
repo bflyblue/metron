@@ -1725,7 +1725,17 @@ variable its base axes, as many as its space has (design §3.10, F4).
 -}
 tyLen :: DataEnv -> S.TyExpr -> Kinds (Len, Axis)
 tyLen env a = case a.node of
-  S.TyInt k | k >= 0 -> pure (LLit (fromInteger k), AAnon)
+  S.TyInt k
+    | k > componentLimit ->
+        bad
+          a
+          ( "a length of "
+              <> T.pack (show k)
+              <> ": a tensor has at most "
+              <> T.pack (show componentLimit)
+              <> " components"
+          )
+    | k >= 0 -> pure (LLit (fromInteger k), AAnon)
   S.TyName p | Map.member p env.params -> do
     known <- gets (Map.lookup p)
     case known of
@@ -1814,7 +1824,7 @@ tyDim env a = case a.node of
     | otherwise -> bad a ("`" <> n <> "` is not a unit or a dimension variable")
   S.TyDim factors ->
     foldr dimMul dimOne
-      <$> mapM (\(f, k) -> dimPow (fromInteger k) <$> tyDim env f) factors
+      <$> mapM (\(f, k) -> dimPow k <$> tyDim env f) factors
   -- `Num (m s)` reads as an application: say how to write the product.
   S.TyApp hd args
     | Just names <- mapM nameOf args -> bad a (S.juxtaposedHint (hd.text : names))
@@ -2002,6 +2012,19 @@ explicitScheme scope cb outer t0 = do
       bareLengths =
         Set.fromList [b.name.text | b <- binders, Just s <- [b.space], s.text == "Len"]
       amounts = [(b.name.text, t) | b <- binders, Just t <- [b.over]]
+  case [(b, k) | b <- binders, Just k <- [b.size], k > componentLimit] of
+    (b, k) : _ ->
+      Left
+        ( DataError
+            b.name.span
+            ( "a length of "
+                <> T.pack (show k)
+                <> ": a tensor has at most "
+                <> T.pack (show componentLimit)
+                <> " components"
+            )
+        )
+    [] -> pure ()
   case [ n
        | n <- concatMap tyNames (body : map snd amounts)
        , Map.notMember n.text params

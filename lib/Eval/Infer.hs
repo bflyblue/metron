@@ -1383,8 +1383,11 @@ infer look p ctx = \case
     (tb, b') <- infer look (0 : p) ctx b
     d <- freshDim
     unify (0 : p) (numD d) tb
-    pure (numD (dimPow (fromIntegral n) d), TPow b' n)
-  Noise k l n -> pure (vecT (LLit (fromIntegral n)), TNoise k l n)
+    pure (numD (dimPow n d), TPow b' n)
+  Noise k l n
+    | n > componentLimit ->
+        failAt p ("a tensor has at most " <> tshow componentLimit <> " components")
+    | otherwise -> pure (vecT (LLit (fromInteger n)), TNoise k l n)
   -- x ± e over any shape (design §3.4): the uncertainty is a scalar applied
   -- to every component, or a tensor of the value's shape; in both cases one
   -- independent nudge per component.

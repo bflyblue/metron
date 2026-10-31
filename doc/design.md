@@ -1181,6 +1181,15 @@ polymorphic in the whole shape, or (`contract`, `permute`) has a signature
 computed from literal index positions written at the call, the way a
 projection's position is, so unification stays first-order.
 
+**Size.** A tensor has at most ten million components (`componentLimit`).
+Lengths, counts and index positions are machine integers, so one written
+past the limit (`noise 18446744073709551616`, `Vec 18446744073709551616` in
+a signature, a projection `.18446744073709551616`, a position of `contract`
+or `slice`) is refused where it is written, never wrapped, and a product
+whose operands are each within the limit but whose result is not (`outer`,
+`dot`, `wedge`) is refused when it runs: "the result would have 16000000
+components: a tensor has at most 10000000 components".
+
 Tensors are **homogeneous**: all components share one dimension. A position is
 `Vec 3 m`, a velocity `Vec 3 (m/s)`, a rotation `Mat 3 3 1`. A six-element state
 is the tuple `(r, v)`, not a `Vec 6`, and its covariance and state-transition
@@ -3149,7 +3158,8 @@ form for all of them.
 A dimension `δ` is represented as a normalised map from atoms (a base dimension
 `B ∈ {L, M, T, I, Θ, N, J}` or a dimension variable `d`) to non-zero integer
 exponents. `1` is the empty map. Two dimensions are equal iff their maps are
-equal.
+equal. Exponents are unbounded integers, never machine integers that wrap:
+`:type 1 m^18446744073709551616` is `Num (m^18446744073709551616)`.
 
 A shape is unified element-wise: two closed shapes must have the same rank and
 unify position by position, the lengths and then the name slots; a shape

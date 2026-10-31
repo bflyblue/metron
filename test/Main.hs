@@ -942,6 +942,31 @@ endToEndTests =
         $ case evalText "1 +" of
           Left err -> T.isInfixOf "1:4" err @? T.unpack err
           Right _ -> assertFailure "expected an error"
+    , testCase "a dimension's exponent is an unbounded integer, never wrapped" $ do
+        runLines [":type 1 m^18446744073709551616"]
+          @?= Right ["Num (m^18446744073709551616)"]
+        evalText "1 m^18446744073709551616" @?= Right ["1 m^18446744073709551616"]
+        evalText "(1 m^18446744073709551616) / (1 m^18446744073709551616)"
+          @?= Right ["1"]
+        runLines [":type 1 m^-18446744073709551617"]
+          @?= Right ["Num (1/m^18446744073709551617)"]
+    , testCase "a length, count or position past the component limit is refused" $ do
+        let refused src = case evalText src of
+              Left err ->
+                T.isInfixOf "a tensor has at most 10000000 components" err @? T.unpack err
+              Right out -> assertFailure (show out)
+        refused "noise 18446744073709551616"
+        refused "gauss 10000001"
+        refused "[1, 2].18446744073709551616"
+        refused "contract 0 18446744073709551616 [1, 2; 3, 4]"
+        refused "slice 0 18446744073709551616 [1, 2; 3, 4]"
+        refused "f :: Vec 18446744073709551616 -> Num\nlet f v = 1"
+        refused "g :: forall (a : 18446744073709551616). Vec a -> Vec a\nlet g v = v"
+        -- a product of tensors each within the limit can exceed it
+        refused "let v = noise 4000 in outer v v"
+        refused "let v = noise 4000 in wedge v v"
+        refused "let v = noise 4000 in dot (outer v [1]) (outer [1] v)"
+        evalText "let v = noise 3000 in (outer v v).1.2" @?= Right ["0 ± 1"]
     ]
 
 -- Codebase, scratch and versioning -------------------------------------------------

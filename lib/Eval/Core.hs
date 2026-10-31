@@ -49,6 +49,7 @@ module Eval.Core (
   refsWritten,
   inlineRef,
   primArity,
+  componentLimit,
 ) where
 
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
@@ -245,6 +246,14 @@ data ConRef = UserCon Hash Int
 
 -- | An alternative of a 'Case': constructor, field hints, body in scope of the fields.
 data Alt n = forall k. Alt ConRef (Vec k Hint) (Term (Plus k n))
+
+{- | The most components a tensor may have (design §3.3), and so the
+largest length, count or index position a program may write. Lengths are
+machine integers: a larger one is refused with this number, never
+wrapped, and no tensor larger is allocated.
+-}
+componentLimit :: Integer
+componentLimit = 10_000_000
 
 instance Show (Alt n) where
   show (Alt c hs b) = "Alt " ++ show c ++ " " ++ show (vecToList hs) ++ " (" ++ show b ++ ")"

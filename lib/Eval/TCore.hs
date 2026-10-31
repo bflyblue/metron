@@ -716,7 +716,8 @@ primSchemeForLits name lits = case name of
     LTensor ([], [r]) -> integral r
     _ -> Nothing
   integral r
-    | denominator r == 1 && r >= 0 = Just (fromIntegral (numerator r))
+    | denominator r == 1 && r >= 0 && numerator r < componentLimit =
+        Just (fromInteger (numerator r))
     | otherwise = Nothing
 
 -- Lint -------------------------------------------------------------------------
@@ -891,7 +892,7 @@ lint look ctx = \case
     tb <- monoOf b
     case tb of
       -- A power of a number in its role (design §3.10, U9).
-      TTensor SNil d -> mono (numD (dimPow (fromIntegral n) d))
+      TTensor SNil d -> mono (numD (dimPow n d))
       _ -> Left "power of a non-number"
   TNoise _ _ k -> mono (vecT (LLit (fromIntegral k)))
   TUncertain _ _ x e -> do
