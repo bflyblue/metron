@@ -781,6 +781,15 @@ x - x        = (0.85 - 0.85) + (0.05 - 0.05)·e₁ = 0            exactly
 No nudge is created. Slack combines worst-case: it adds under `+` and `-`, and
 scales by `|k|` under multiplication by exact `k`.
 
+A quotient of proportional forms is exact for the same reason: `x / x` is
+`1` and `(3 * x) / x` is `3`, because the same named nudges are the same
+unknowns. Two conditions come first. The denominator's enclosure must
+exclude zero: with `x = 1 ± 1`, `x / x` and `0 / x` are a division by zero,
+as `1 / x` is, since some value in the enclosure is zero. And only named
+nudges cancel: slack is anonymous, so two forms with equal slack are not
+one unknown, and a denominator with slack takes the general path, a
+product with the reciprocal (§3.2.2).
+
 #### 3.2.2 Nonlinear operations add one fresh nudge
 
 `x * y` with both affine, `/` by an affine value, `sqrt`, `sin`, `cos`, `tan`,

@@ -285,11 +285,16 @@ divM _ (Exact a) (Exact b)
   | b == 0 = Left DivideByZero
   | otherwise = Right (Exact (a / b))
 divM p x y
-  -- A quotient of proportional forms is exact: the same nudges with the same
-  -- identities are the same unknowns, so x / x = 1 and (90·u) / u = 90.
-  | midpoint y /= 0
-  , let k = midpoint x / midpoint y
-  , x == scaleM k y =
+  -- A denominator that may be zero is refused before anything cancels, so
+  -- x / x and 0 / x fail as 1 / x does when x's enclosure reaches zero.
+  | lo y <= 0 && hi y >= 0 = Left DivideByZero
+  -- A quotient of proportional forms is exact: the same named nudges are the
+  -- same unknowns, so x / x = 1 and (90·u) / u = 90. Slack is anonymous:
+  -- two equal radii are not one unknown, so a form with slack takes the
+  -- general path.
+  | Affine m ts 0 <- y
+  , let k = midpoint x / m
+  , x == affine (k * m) (Map.map (first (k *)) ts) 0 =
       Right (Exact k)
   | otherwise = mulM p x <$> recipM p y
 

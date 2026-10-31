@@ -4224,6 +4224,28 @@ affineTests =
         evalText "let x = 5 ± 0.1 in x - x" @?= Right ["0"]
         evalText "let x = 5 ± 0.1 in x + 2 * x - 3 * x" @?= Right ["0"]
         evalText "let y = 1 ± 0.1 in y / y" @?= Right ["1"]
+    , testCase "a denominator that may be zero is refused before anything cancels" $ do
+        evalText "let x = 1 ± 1 in 1 / x" @?= Left "error: division by zero"
+        evalText "let x = 1 ± 1 in x / x" @?= Left "error: division by zero"
+        evalText "let x = 1 ± 1 in 0 / x" @?= Left "error: division by zero"
+        evalText "let x = 1 ± 1 in (3 * x) / x" @?= Left "error: division by zero"
+        evalText "let x = 1 ± 2 in x / x" @?= Left "error: division by zero"
+        -- clear of zero, proportional forms still cancel
+        evalText "let x = 2 ± 1.5 in (3 * x) / x" @?= Right ["3"]
+    , testCase "equal slack is not a shared unknown, so it does not cancel" $ do
+        let anonymous = Affine 2 Map.empty 1
+        case divM 24 anonymous anonymous of
+          Right (Exact q) -> assertFailure ("cancelled to " <> show q)
+          Right q -> radius q > 0 @? show q
+          Left err -> assertFailure (show err)
+        -- named nudges beside slack: the slack keeps it from cancelling
+        let named = uncertain Bound (Tagged "s" 0) (Exact 2) (Exact (1 / 2))
+            withSlack = addM named anonymous
+        case divM 24 withSlack withSlack of
+          Right (Exact q) -> assertFailure ("cancelled to " <> show q)
+          Right q -> radius q > 0 @? show q
+          Left err -> assertFailure (show err)
+        divM 24 (scaleM 3 named) named @?= Right (Exact 3)
     , testCase "declared bounds print as mid ± r" $ do
         evalText "5 ± 0.1" @?= Right ["5.0 ± 0.1"]
         evalText "(5 ± 0.1) * (5 ± 0.1)" @?= Right ["25 ± 1"]
