@@ -135,7 +135,7 @@ algebra =
     ("rotateCov", "\\r p -> r @ transpose (r @ transpose p)")
   ]
 
-{- | A body's state (design §3.8): its epoch, its position as an absolute
+{- | A body's state (design §3.8, §3.9): its epoch, its position as an absolute
 point, and its velocity along the base axes, which is the velocity
 relative to the base charts, the inertial frame. @velocityIn c s@ is that
 velocity relative to chart @c@, along @c@'s axes, with the transport
@@ -153,6 +153,8 @@ inverse: a position @pc@ and a velocity @vc@ along @c@'s axes, relative to
 (p − o_abs)@. A moving chart is passed at the state's instant, @velocityIn
 (ecef s.epoch) s@. @R_abs⁻¹@ is the transpose of the rotation: @R@ is
 orthogonal, so the transpose of an enclosure of it encloses its inverse.
+A state is typed by its root's axes, @State eci@: its position and
+velocity are along them, and a chart of another root does not read it.
 -}
 stateStatements :: [Statement]
 stateStatements =
@@ -226,8 +228,8 @@ expanded, @rr' = Φ_rr rr Φ_rrᵀ + Φ_rv rvᵀ Φ_rrᵀ + Φ_rr rv Φ_rvᵀ + 
 symmetric: written with @transpose h_r@ the measurement matrices have a
 known rank, where @h_r \@ p.rr@ alone would default @h_r@ to a vector
 (design §4.2). @inChartCov2 c p@ reads a block covariance as given along
-the axes of chart @c@ and gives it along the base axes: each block is
-@R P Rᵀ@, since the state's rotation is @R@ on positions and on
+the axes of chart @c@ and gives it along its root's axes: each block is
+@R P Rᵀ@ ('rotateCov'), since the state's rotation is @R@ on positions and on
 velocities alike (design §3.8).
 -}
 covarianceBlocks :: [(Text, Text)]

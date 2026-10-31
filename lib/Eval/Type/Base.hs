@@ -57,9 +57,11 @@ data Type
   | -- | a point of the affine space over  d@ (design §3.6)
     TPoint Shape Dim
   | {- | a chart for writing and printing points (design §3.6, §3.8): its
-    shape and dimension, and the name slot of its root's axes, which stage 2
-    of design §3.9 reads ('rotationOf c' along the root); an axis variable
-    or anonymous until then, and never printed
+    shape, along its own axes, and dimension, and the name slot of its
+    root's axes (design §3.9), along which its points lie and its
+    rotation's rows are: named for a chart a declaration made, anonymous
+    for a scalar chart and a written one without a root, printed after a
+    vector chart's type, @Chart (Vec lvlh [m]) eci@
     -}
     TScale Shape Axis Dim
   | -- | a declared data type applied to its parameters (design §2.3); a definition refers to itself as 'selfType'. @Bool@, tuples and lists are declared types too, on the hashes of "Eval.Builtin".

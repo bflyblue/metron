@@ -1076,8 +1076,8 @@ renderTTerm namer = go 0
         )
     TPack _ ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
     TProj b i -> go 11 ctx b <> "." <> T.pack (show i)
-    -- Axis variables are not printed in stage 1 of design §3.9, here as
-    -- in types: their abstractions and applications print as nothing.
+    -- Axis variables print in a scheme's forall only (design §3.9): in
+    -- Typed Core their abstractions and applications print as nothing.
     TTyLam _ KAxis b -> go prec ctx b
     TTyApp b (AAxis _) -> go prec ctx b
     TTyLam v k b -> paren (prec > 0) ("Λ" <> varName v k <> ". " <> go 0 ctx b)
