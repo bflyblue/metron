@@ -1126,7 +1126,7 @@ signedReport session =
   , n.text `notElem` [b.name.text | S.DBind _ b <- session.scratch]
   ]
 
-{- | @area :: Shape -> Num [m^2]@: a name and its signature as written back
+{- | @area :: Shape -> Num (m^2)@: a name and its signature as written back
 in a scope (design §4.8), the name by its shortest spelling.
 -}
 signatureLine :: Spelling -> S.Scope -> Codebase -> Text -> Text
@@ -1490,7 +1490,7 @@ full path; a glob (@*@ anywhere, else a case-insensitive substring; on the
 full path or its last segment), a
 kind flag or a type query searches everything. The type query is a written
 type whose unknown names are variables, matched by unification both ways,
-so @: a -> a@ finds @Num [m] -> Num [m]@ and @: Num -> Num@ finds @a -> a@.
+so @: a -> a@ finds @Num m -> Num m@ and @: Num -> Num@ finds @a -> a@.
 -}
 listNames :: Session -> [Text] -> Either Text [Text]
 listNames session args = do

@@ -197,7 +197,7 @@ primScheme name = case name of
           [nv, dv, xav, xbv]
           (TFun (matA (n, xa) (n, xb) d) (matA (n, xb) (n, xa) (dimInv d)))
       )
-  -- det : Mat n n d -> Num [d^n] needs the length as an exponent; until that
+  -- det : Mat n n d -> Num (d^n) needs the length as an exponent; until that
   -- relation exists, det is on dimensionless matrices. Its rows and
   -- columns may be along two axis sets of one size, as a rotation's are.
   "det" -> Just (Forall [nv, xav, xbv] (TFun (matA (n, xa) (n, xb) dimOne) numT))
@@ -918,7 +918,7 @@ lookupCtx i ctx = case (i, ctx) of
 
 {- | Whether a signature holds of a definition's scheme (design §4.8): the
 signature's type, its own variables held fixed as if they were constants,
-is an instance of the scheme. So @Num [m] -> Num [m]@ holds of @a -> a@,
+is an instance of the scheme. So @Num m -> Num m@ holds of @a -> a@,
 and @a -> a@ does not hold of @Num -> Num@: a signature narrows a
 definition's type and never widens it.
 -}

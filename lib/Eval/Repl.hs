@@ -226,7 +226,7 @@ completions session prev word = case word of
 
 {- | Whether the end of a statement's text is inside a type (design §4.8):
 after a @::@ that no parenthesis has closed since, as 'tokenLevels' reads
-it, so @(3 m :: Num [m]) + spe@ is an expression again.
+it, so @(3 m :: Num m) + spe@ is an expression again.
 -}
 typeOpenAt :: String -> Bool
 typeOpenAt = go (0 :: Int) Nothing
@@ -552,32 +552,27 @@ lexable = T.pack . go False . T.unpack
 
 {- | The coloured tokens, as (start, end, colour). In a type, the name after
 @data@ and after @=@ or @|@ is the type or a constructor being declared:
-yellow even before the session knows it.
+yellow even before the session knows it. A unit is cyan where a dimension
+goes (design §4.1): as an argument, @Num m@, or in a product, @(m/s^2)@;
+elsewhere a name named like a unit is a type, @(g → m) → {g}@.
 -}
 colourTokens :: Level -> Names -> [(Int, Int, Token)] -> [(Int, Int, Colour)]
 colourTokens level names located =
-  go
-    (0 :: Int)
-    Nothing
-    (zip located (tokenLevels level [tok | (_, _, tok) <- located]))
+  go Nothing (zip located (tokenLevels level [tok | (_, _, tok) <- located]))
  where
   shadowed = case level of
     Expression -> binders [tok | (_, _, tok) <- located]
     TypeLevel -> Set.empty
   -- A type's variables shadow units of their names (design §4.8).
-  bound = forallBinders [tok | (_, _, tok) <- located]
-  go _ _ [] = []
-  go depth prev (((s, e, tok), here) : rest) =
-    let depth' = case tok of
-          TLBracket -> depth + 1
-          TRBracket -> max 0 (depth - 1)
-          _ -> depth
-        next = case rest of
+  bound = typeBinders [tok | (_, _, tok) <- located]
+  go _ [] = []
+  go prev (((s, e, tok), here) : rest) =
+    let next = case rest of
           ((_, _, n), _) : _ -> Just n
           [] -> Nothing
-     in [(s, e, c) | Just c <- [colourOf here depth prev next tok]]
-          ++ go depth' (Just tok) rest
-  colourOf here depth prev next = \case
+     in [(s, e, c) | Just c <- [colourOf here prev next tok]]
+          ++ go (Just tok) rest
+  colourOf here prev next = \case
     TKw _ -> Just Magenta
     TIdent "structural" | next == Just (TKw KData) -> Just Magenta
     THashLabel _ -> Just Grey
@@ -588,28 +583,45 @@ colourTokens level names located =
         | n `Set.member` names.typeWords -> Just Yellow
       TypeLevel
         | n `Set.member` bound -> Nothing
-        | depth > 0 -> if n `Set.member` names.unitWords then Just Cyan else Nothing
         | n `Set.member` names.typeWords || n `Set.member` names.conWords -> Just Yellow
         | prev `elem` map Just [TKw KData, TEquals, TBar] -> Just Yellow
+        | n `Set.member` names.unitWords
+        , maybe False argument prev
+            || maybe False multiplies prev
+            || maybe False powered next ->
+            Just Cyan
       _ -> Nothing
     _ -> Nothing
+  -- What a type argument follows: the name it is applied to, or an argument.
+  argument = \case
+    TIdent _ -> True
+    TNum _ -> True
+    TRParen -> True
+    TRBracket -> True
+    _ -> False
+  multiplies = (`elem` [TOp "*", TOp "·", TOp "/"])
+  powered t = multiplies t || t == TOp "^" || case t of TSup _ -> True; _ -> False
 
-{- | The variables @forall@ binds on a line (design §4.8): the names between
-it and the next @.@. As for 'binders', a name bound anywhere on the line is
-a variable everywhere in its types.
+{- | The variables a line's types bind (design §4.8): the names between
+@forall@ and the next @.@, and a @data@ declaration's parameters. As for
+'binders', a name bound anywhere on the line is a variable everywhere in
+its types.
 -}
-forallBinders :: [Token] -> Set Text
-forallBinders = \case
+typeBinders :: [Token] -> Set Text
+typeBinders = \case
   [] -> Set.empty
   TKw KForall : rest ->
     let (region, after) = break (== TOp ".") rest
-     in Set.fromList [n | TIdent n <- region] <> forallBinders after
-  _ : rest -> forallBinders rest
+     in Set.fromList [n | TIdent n <- region] <> typeBinders after
+  TKw KData : TIdent _ : rest ->
+    let (region, after) = break (== TEquals) rest
+     in Set.fromList [n | TIdent n <- region] <> typeBinders after
+  _ : rest -> typeBinders rest
 
 {- | Each token's level. In an expression, what follows @::@ is a type
 (design §4.8): to the end of the statement for a signature, @area ::
-Shape -> Num [m^2]@, and to the closing parenthesis for an ascription,
-@(e :: Num [m])@. The @::@ itself is plain.
+Shape -> Num (m^2)@, and to the closing parenthesis for an ascription,
+@(e :: Num m)@. The @::@ itself is plain.
 -}
 tokenLevels :: Level -> [Token] -> [Level]
 tokenLevels = \case

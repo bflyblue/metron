@@ -25,6 +25,7 @@ module Eval.Syntax (
   declKey,
   Path (..),
   renderPath,
+  juxtaposedHint,
   Use (..),
   renderUse,
   Scope (..),
@@ -184,27 +185,33 @@ data Binding = Binding
 
 {- | A type as written in a @data@ declaration (design §2.3). The sorts
 (types, lengths, shapes, dimensions) are told apart by position when the
-declaration is entered; here a bracket is just a bracket.
+declaration is entered: a lone name is a type, a length, a unit or a
+variable by the argument it is (@Num m@, @Vec n m@, @Num d@; design §4.1).
 -}
 data TyExpr = TyExpr {span :: Span, node :: TyNode}
   deriving stock (Eq, Show)
 
 data TyNode
-  = -- | a type name, a parameter, or a dimension name inside brackets
+  = -- | a type name, a parameter, a unit, or a chart's axes
     TyName Text
-  | -- | a length literal
+  | -- | a length literal, or @1@ in a dimension
     TyInt Integer
-  | -- | a type name applied to arguments: @Num [m]@, @Vec 3 [m]@, @Maybe a@
+  | -- | a type name applied to arguments: @Num m@, @Vec 3 (m/s)@, @Maybe a@
     TyApp Name [TyExpr]
   | -- | @(a, b, …)@: two or more components
     TyTuple [TyExpr]
   | -- | @{a}@: a list
     TyList TyExpr
   | TyFun TyExpr TyExpr
-  | {- | @[…]@: comma-separated items, each a product of powered factors.
-    @[2, 3]@ is a shape, @[kg m^2 s^-2]@ a dimension; @[m / s]@ divides.
+  | -- | @[2, 3]@, @[n, lvlh]@: a shape, its lengths
+    TyShape [TyExpr]
+  | {- | @(kg·m²/s²)@: a dimension written as a product of powered factors
+    (design §4.1), each a name, @1@ or anything the resolver refuses with a
+    hint (@m s@, read as an application). A division negates the exponents
+    of the one factor after it; a parenthesised group's power multiplies
+    its exponents, so the product is flat.
     -}
-    TyBracket [[(TyExpr, Integer)]]
+    TyDim [(TyExpr, Integer)]
   | {- | @forall a (n : 3) d. τ@: the variables of a signature or an
     ascription (design §4.8), only at its head
     -}
@@ -216,6 +223,14 @@ sized, @(a : 3)@ (design §3.9, decision 6).
 -}
 data TyBinder = TyBinder {name :: Name, size :: Maybe Integer}
   deriving stock (Eq, Show)
+
+{- | Juxtaposed names in a dimension, @Num (m s)@, read as an application
+(design §4.1): the refusal, with the product to write instead.
+-}
+juxtaposedHint :: [Text] -> Text
+juxtaposedHint names =
+  "a dimension's product is written with * or ·, not by juxtaposition: write "
+    <> T.intercalate "*" names
 
 {- | @data Name params = Con fields | …@ (design §2.3). A @structural@
 declaration takes its identity from its structure alone; otherwise the

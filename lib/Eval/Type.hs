@@ -74,7 +74,8 @@ import Eval.Type.Base
 {- | Print a type with variables named by kind in order of appearance: @a b c@
 for types, @n m k@ for lengths, @s s1 s2@ for shapes, @d d1 d2@ for
 dimensions (design §4.5). Rank zero, one and two tensors print as @Num@,
-@Vec@ and @Mat@; a dimension follows in brackets unless it is @1@.
+@Vec@ and @Mat@; a dimension follows as their last argument unless it is
+@1@, bare when it is one name and in parentheses otherwise (design §4.1).
 -}
 renderType :: Type -> Text
 renderType = renderTypeIn Ascii
@@ -82,7 +83,7 @@ renderType = renderTypeIn Ascii
 renderScheme :: Scheme -> Text
 renderScheme (Forall _ t) = renderType t
 
--- | 'renderType' in a chosen spelling: @Num [m s⁻²] → Num [m]@ in unicode.
+-- | 'renderType' in a chosen spelling: @Num (m/s²) → Num m@ in unicode.
 renderTypeIn :: Spelling -> Type -> Text
 renderTypeIn spelling t = renderWith spelling (prettyNames (freeVars t)) 0 t
 
@@ -106,7 +107,7 @@ are named by the given function. Variables are named by kind as
 'renderType' names them, each name used once, but a bound variable shadows
 a unit of its name within its type, so a name the type prints otherwise
 is skipped: the base symbols of its dimensions
-(@forall s1 d. Tensor s1 d -> Tensor s1 [s d]@).
+(@forall s1 d. Tensor s1 d -> Tensor s1 (s*d)@).
 
 An axis variable (§3.9, decision 6) beside a length variable is one
 binder with it and prints as that length (@forall n d. Vec n d -> …@);
@@ -264,7 +265,7 @@ baseSymbolsOf = \case
 definition whose type is not a function keeps no free axis variable, so
 its quantified axes are anonymous; a function's are left as they are. A
 stored scheme is its Core's alone and stays general, so that a signature
-can keep a value's axes polymorphic (@off :: forall (a : 3). Vec a [m]@);
+can keep a value's axes polymorphic (@off :: forall (a : 3). Vec a m@);
 this default is what an unsigned name means where it is used.
 -}
 defaultAxes :: Scheme -> Scheme
@@ -296,7 +297,7 @@ renderArg = \case
   AType t -> renderTypeIds t
   ALen l -> renderLen (idNames (lenVars l)) l
   AShape sh -> renderShapeList (idNames (shapeVars sh)) sh
-  ADim d -> renderDimWith (\v -> "d" <> T.pack (show v)) d
+  ADim d -> renderDimArgIn Ascii (\v -> "d" <> T.pack (show v)) d
   -- A type application's name slot prints as nothing (design §3.9).
   AAxis _ -> ""
  where
@@ -325,18 +326,14 @@ renderWithNamed typeName spelling axes names prec = \case
     , not (T.null (dim d)) || sh /= SNil ->
         "(" <> tensor sh <> dim d <> ")"
   TTensor sh d -> tensor sh <> dim d
-  -- A scalar point is `Point [K]`; a point over a vector space, `Point (Vec 3 [m])`.
-  TPoint SNil d -> "Point" <> dim d
-  TPoint sh d -> "Point (" <> tensor sh <> dim d <> ")"
-  -- A chart over a vector space names its root's axes after it (design
-  -- §3.9), when they are named or a variable that prints; a scalar
-  -- chart has no axes to name.
-  TScale SNil _ d -> "Chart" <> dim d
+  -- A point or chart takes a type (design §4.1): `Point (Num K)`, `Point
+  -- (Vec 3 m)`, and `Point Num` when dimensionless. A chart over a vector
+  -- space names its root's axes after it (design §3.9), when they are
+  -- named or a variable that prints; a scalar chart has no axes to name.
+  TPoint sh d -> paren (prec > 10) ("Point " <> over sh d)
+  TScale SNil _ d -> paren (prec > 10) ("Chart " <> over SNil d)
   TScale sh r d ->
-    let rooted = maybe "" (" " <>) (rootText r)
-     in paren
-          (prec > 10 && not (T.null rooted))
-          ("Chart (" <> tensor sh <> dim d <> ")" <> rooted)
+    paren (prec > 10) ("Chart " <> over sh d <> maybe "" (" " <>) (rootText r))
   -- A declared type prints by its short hash here; the driver replaces that
   -- with the current name (design §7.2), so inference needs no name table.
   -- An axis argument, a length's companion, prints with its length (design
@@ -376,21 +373,22 @@ renderWithNamed typeName spelling axes names prec = \case
     SCons n a SNil -> "Vec " <> position False (n, a)
     SCons m a (SCons n b SNil) -> "Mat " <> position False (m, a) <> " " <> position False (n, b)
     sh -> "Tensor " <> renderShapeWith (position True) names sh
-  -- A lone dimension variable prints bare (@Num d@); anything else in
-  -- brackets (@Num [m s^-2]@, @Num [d d1]@).
+  -- What a point or chart is over: a type, parenthesised unless it is a
+  -- lone `Num`.
+  over sh d = paren (sh /= SNil || not (isDimOne d)) (tensor sh <> dim d)
+  -- A dimension is a type argument (design §4.1): one name to the first
+  -- power bare (@Num m@, @Num d@), anything else parenthesised (@Num
+  -- (m/s^2)@, @Num (d·d1)@).
   dim d
     | isDimOne d = ""
-    | [(DVar v, 1)] <- dimAtoms d = " " <> dimName v
-    | otherwise = " " <> renderDimIn spelling dimName d
+    | otherwise = " " <> renderDimArgIn spelling dimName d
   dimName v = Map.findWithDefault ("d" <> T.pack (show v)) v names
   argWith = \case
     (AType t, _) -> renderWithNamed typeName spelling axes names 11 t
     (ALen l, Just x) -> position False (l, x)
     (ALen l, Nothing) -> renderLen names l
     (AShape sh, _) -> renderShapeWith (position True) names sh
-    (ADim d, _)
-      | [(DVar v, 1)] <- dimAtoms d -> dimName v
-      | otherwise -> renderDimIn spelling dimName d
+    (ADim d, _) -> renderDimArgIn spelling dimName d
     (AAxis _, _) -> ""
 
 -- | An argument that fills an axis parameter, a length's companion.

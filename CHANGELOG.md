@@ -813,3 +813,21 @@
   cross`, `rotz`, `euler313` and other literal-built functions now print
   sized binders. A chart of a shape nothing fixes is scalar. Typed Core's
   `TLit` and `TPack` carry their axes.
+- Dimension syntax (design §4.1): a dimension is an ordinary type argument,
+  bare when it is one name to the first power (`Num m`, `Vec 3 m`, `Vec lvlh
+  m`, `Num d`) and in parentheses otherwise (`Num (m/s^2)`, `Num
+  (kg·m²/s²)`, `Num (m²/(s²·K))`, `Num (1/s)`, `Tensor s (d·d1)`), written
+  with `*` or `·`, `/`, powers, parentheses and `1`, `*`, `·` and `/` one
+  precedence to the left. Square brackets in a type are a shape only; the
+  bracket form `Num [m s^-2]` is gone. A name where a dimension goes is a
+  variable when `forall` or a `data` parameter binds it, else a unit,
+  meaning its dimension (`Num km` is `Num m`). `Point` and `Chart` take a
+  type: `Point (Num K)`, `Chart (Num K)`. Juxtaposition (`Num (m s)`) and
+  `@` are refused in a dimension with hints, and `·` lexes as a token of its
+  own, still the contracting product in an expression. Types print the same
+  way everywhere (`:type`, `:ls`, `:edit`, `:export`, `:view`, `sig` log
+  lines, Typed Core, errors), unicode `·` and superscripts or ASCII `*` and
+  `^`, and a dimension standing alone without parentheses: "dimensions
+  differ by m/s". Values print as before. Store format 7, since `sig` lines
+  are text; an older store is refused, to be recreated from an `:export`
+  with its dimensions respelled. No hash changed.
