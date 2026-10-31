@@ -2299,9 +2299,12 @@ decisions:
    bare length `k`; a named set or an axis variable is a tag of its own
    (§6.1).
 9. **Existing primitives.** `slice`, `contract`, `permute` and `timap` move
-   or drop axis sets as they move or drop lengths; `cross`, `norm` and the
-   rotation constructors generalise over `a` with `card a ~ 3`; the `Cov2`
-   blocks are `Mat a a (d^2)`, `Mat a b (d*d1)`.
+   or drop axis sets as they move or drop lengths; `cross`, `norm`, `dual`
+   and the rotation constructors generalise over `a` with `card a ~ 3`
+   (stage 4, below); the `Cov2` blocks are `Mat a a (d^2)`, `Mat a b
+   (d*d1)`. `transformBy` stays over anonymous axes, since no type says
+   "every axis" over axis sets at any rank; `rotateVec` and `rotateCov` are
+   its typed forms.
 
 ```
 cross       : forall (a : 3). Vec a d -> Vec a d1 -> Vec a (d*d1)
@@ -2816,7 +2819,7 @@ decided.
   written on a space's base itself.
 - A chart with `at` (a new origin) mints a frame.
 - A chart with `by` or `spinning` (new axes) mints a frame and its axes, as
-  in §3.9 stage 2b.
+  in §3.9.
 - A chart on a chart with only a `step` (`chart mdegC on degC step mK`,
   `chart degR on kelvin step deltaF`) is a rescaling: it shares its parent's
   frame, its points have the parent's type, and its step is only how they
@@ -2828,7 +2831,7 @@ A frame is named after the chart that mints it, so `chart degC on …` makes
 ITS90`), in separate namespaces as a chart and its axes are. Two
 charts declared alike are two frames, like two `newtype`s over one type. A
 chart with parameters mints one frame for all its arguments: `ecef (100
-unix)` and `ecef (200 unix)` are two chart values of type `Chart ecef`. The relation
+J2000)` and `ecef (200 J2000)` are two chart values of type `Chart ecef`. The relation
 between the levels:
 
 ```
@@ -3257,8 +3260,8 @@ Num                       -- dimensionless
   §3.9 "Known gaps"), not the dimensions'.
 
 In a written type a name in a length position may be a chart's axes, `Vec
-lvlh m`: that chart's number of positions along its minted type (§3.9,
-stage 2b). A named slot prints by name in place of its length; an axis
+lvlh m`: that chart's number of positions along its minted type
+(§3.9). A named slot prints by name in place of its length; an axis
 variable beside a literal length prints as a sized binder, `forall (a :
 3) d. Vec a d -> Vec a d`, and one beside a length variable as that
 variable.
@@ -3289,7 +3292,7 @@ the offset rule below for lengths, element-wise for shapes, Kennedy's algorithm
 for dimensions, syntactic for name slots and roles. A written length variable stands
 for a whole axis set, a length variable and a companion axis variable
 introduced together, and a written literal length for anonymous axes
-(§3.9, stage 1). No term ever appears in a type, which is what keeps this on the
+(§3.9). No term ever appears in a type, which is what keeps this on the
 indexed-types side of the line (Dependent ML, GHC's `DataKinds`) and not in
 dependent-type territory: lengths come only from syntax, literal element counts,
 projection positions, the literal index positions of `contract`,
@@ -3582,7 +3585,7 @@ its positions; a frame's space, shape and dimension are its companions
 (§4.1), so `s` and `d` in the rows above are the space's base axes and
 dimension, solved once the frame is known. `Diff c` reduces to a tensor once
 the space's shape is known. Which slots are shared is listed in §3.9 under
-"Stage 1, as built" and "Stage 2b, as built", and the frame companions in
+"As built", and the frame companions in
 §3.10 under "Part F, as built".
 
 The circular functions take an angle and their inverses return one (§3.2.11):
@@ -3774,8 +3777,8 @@ cases are placeholders that elaboration makes unreachable.
 
 A **signature** `name :: type` (§2.2) says what type a definition is to
 have. The type is written as `:type` prints types (§2.3), in the scope of
-the statement. **Its variables are bound by `forall`** (§3.9, decision 6;
-built in stage 2a): `ident :: forall a. a -> a`, `norm2 :: forall n d. Vec
+the statement. **Its variables are bound by `forall`** (§3.9, decision 6):
+`ident :: forall a. a -> a`, `norm2 :: forall n d. Vec
 n d -> Num (d^2)`, `∀` for `forall`. Every other name in it is a name and
 resolves like one: a built-in type, a declared type, a base unit or a
 unit, by the scope. An unknown lowercase name is an error, not a guessed
@@ -3789,22 +3792,20 @@ error at 1:6
   unknown name `a` in a type; bind it with forall if it is a variable
 ```
 
-and an unknown capitalised name is an unknown type, as before. A type
+and an unknown capitalised name is an unknown type. A type
 without variables needs no `forall`: `area :: Shape -> Num (m^2)`.
 
 - **Kinds come from use**, as a `data` parameter's do (§2.3): `a` in `a ->
   a` is a type, `n` in `Vec n` a length, `s` in `Tensor s d` a shape, `d` a
   dimension. A variable used at two kinds is refused. A length variable
   stands for a whole axis set, its length and a companion axis variable
-  (§3.9, stage 1). A binder that is not used binds nothing.
+  (§3.9). A binder that is not used binds nothing.
 - **A sized binder**, `forall (a : 3) d. Vec a d -> Vec a d`, is a length
   fixed to the literal beside axes of its own: "any three-axis set, the same
-  one throughout". In stage 2a every axis set is anonymous, so it accepts a
-  `Vec 3` and refuses a `Vec 2` with the lengths message, and a definition
-  that holds of it must be polymorphic in those axes (`let keep v = v`
-  is; a definition that adds a literal `Vec 3` is not, since a literal's
-  axes are anonymous until stage 2b). Used as anything but a length, it is
-  refused.
+  one throughout". It accepts a `Vec 3` of any axes and refuses a `Vec 2`
+  with the lengths message, and a definition that holds of it must be
+  polymorphic in those axes (`let keep v = v` is). Used as anything but a
+  length, it is refused.
 - **A binder shadows** a unit, a base unit or a declared type of its name
   throughout its type, brackets included, and, for a signature given with
   its definition, in the types of that body's ascriptions (below); never
@@ -4780,14 +4781,10 @@ whatever came after it: ASCII, declared types by their absolute paths
 (`.Shape`, so the stored `use`s cannot change what it means), and its
 variables bound by `forall` (§4.8), so a variable shadows a unit of its
 name: `sig same forall s d. Tensor s d -> Tensor s d`. On replay it is
-parsed and converted as a `:ls` query is, which reads a type headed by
-`forall` as a signature (§4.8); a line written before `forall` was
-required has none and replays by the query rule, its unknown lowercase
-names variables. It is kept when its name is bound to a definition it
-holds of; otherwise it is skipped with a note. A sized binder is written
-back as its literal in stage 2a, so it reads back with anonymous axes
-(§4.8). Sig lines come after every other line of a sync, so the labels
-they name exist.
+parsed and converted as a written signature is (§4.8), a sized binder
+sized. It is kept when its name is bound to a definition it holds of;
+otherwise it is skipped with a note. Sig lines come after every other line
+of a sync, so the labels they name exist.
 `unsig` is written when a name loses its signature, whether or not it stays
 bound.
 
@@ -4821,7 +4818,7 @@ directory, shadows the user store, and `--codebase DIR` names one explicitly;
 stored codebase, or the namespace `ns`, as source that `:load` reads back:
 in a fresh session, `:load file` then `:add` gives the same labels on the
 same hashes (`names`, `typeNames`, `conNames`, `fieldNames`, `units`,
-`scales`, `signatures`, but for a sized binder's axes in stage 2a, §4.8).
+`charts`, `signatures`).
 Each namespace is a `namespace` block, nested as
 the paths nest, with root definitions outside any block. Each definition
 is rendered as `:edit` renders it (`let name = body`, `unit name = …`,
