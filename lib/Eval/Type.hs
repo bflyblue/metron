@@ -118,7 +118,13 @@ its own and prints by its name.
 renderForallWith :: (Hash -> Text) -> Spelling -> Scheme -> Text
 renderForallWith typeName spelling (Forall _ t) =
   let (absorbed, sized) = axisRoles t
-      vs = [(v, k) | (v, k) <- freeVars t, not (k == KAxis && Map.member v absorbed)]
+      -- A scalar chart's root is not printed, so binds nothing.
+      printed = Set.fromList [x | AVar x <- map snd (positionsOf t) ++ rootsOf t]
+      vs =
+        [ (v, k)
+        | (v, k) <- freeVars t
+        , k /= KAxis || (Map.notMember v absorbed && Set.member v printed)
+        ]
       names = forallNames (baseSymbolsOf t) vs
       axes =
         AxisNames
@@ -174,6 +180,15 @@ positionsOf = \case
     AType t -> positionsOf t
     AShape sh -> shape sh
     _ -> []
+
+-- | The roots of the charts over a vector space in a type: those printed.
+rootsOf :: Type -> [Axis]
+rootsOf = \case
+  TScale SNil _ _ -> []
+  TScale _ r _ -> [r]
+  TData _ as -> concat [rootsOf t | AType t <- as]
+  TFun a b -> rootsOf a ++ rootsOf b
+  _ -> []
 
 {- | A declared type's arguments as written, the axis arguments left out,
 each length with its companion's axes (design §3.9): the @j@-th axis

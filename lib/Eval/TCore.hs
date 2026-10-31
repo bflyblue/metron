@@ -468,8 +468,8 @@ inference solved it. A root chart's positions are along the axes it
 minted and so is its root, unless it is scalar, when its root is
 anonymous; a point on a chart, written ('pointOn') or converted
 ('toScale'), is along the chart's root at every position. A shape still
-unknown when its definition was generalised was taken to be the chart's
-own, so a point on it is along the same shape.
+unknown when its definition was generalised was taken to be
+scalar, so none is still unknown here.
 -}
 chartRelation :: Text -> Type -> [Maybe StaticArg] -> Either Text ()
 chartRelation name ty statics = case (name, ty, statics) of
@@ -483,18 +483,21 @@ chartRelation name ty statics = case (name, ty, statics) of
           require
             (all ((== ANamed h) . snd) ls && r == ANamed h)
             "mkScale: a root chart is along the axes it minted"
-        Nothing -> Right ()
+        Nothing -> Left "mkScale: a chart's shape is unknown"
   ("pointOn", TFun (TScale sh r _) (TFun _ (TPoint t _)), _) -> along sh r t
   ("toScale", TFun (TPoint t _) (TFun (TScale sh r _) _), _) -> along sh r t
   _ -> Right ()
  where
-  along sh r t =
-    require
-      (t == rootward sh r)
-      (name <> ": a point is not along its chart's root at every position")
+  along sh r t = case closedLens sh of
+    Just _ ->
+      require
+        (t == rootward sh r)
+        (name <> ": a point is not along its chart's root at every position")
+    Nothing -> Left (name <> ": a chart's shape is unknown")
 
 {- | A chart's shape with its root's axes at every position: where its
-points lie (design §3.9, stage 2b). A shape still a variable is its own.
+points lie (design §3.9, stage 2b). A shape still a variable is left as
+it is, for the caller to wait on.
 -}
 rootward :: Shape -> Axis -> Shape
 rootward sh r = case closedLens sh of

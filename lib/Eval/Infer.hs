@@ -619,10 +619,12 @@ settle here ctx = do
     -- A rank equation has no default; it waits for the others, which may
     -- fix one of its shapes.
     Rank _ _ -> modify' (\st' -> st'{pending = (p, c) : st'.pending})
-    -- A shape still unknown: a root chart's axes are left as they are,
-    -- and a point on a chart of unknown shape is along that shape.
-    Charted{} -> pure ()
-    Rootward sh _ pt -> unifyShape p pt sh
+    -- A chart's shape still unknown is taken to be scalar, as a product's
+    -- operand of unknown rank is: no type says "the root's axes at every
+    -- position" of a shape variable, and taking the chart's own would
+    -- label a point's base-form numbers with the chart's axes.
+    Charted sh _ _ -> unifyShape p sh SNil >> defer p c
+    Rootward sh _ _ -> unifyShape p sh SNil >> defer p c
   solvePending
   -- Two shapes of equal but unknown rank: no type says that, and picking a
   -- rank would be a guess (design §4.2).

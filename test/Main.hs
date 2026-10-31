@@ -2880,6 +2880,14 @@ namedAxesTests =
                  ]
           )
           @?= Right ["true", "true"]
+        -- A chart of a shape nothing fixes is scalar, as a product's
+        -- operand of unknown rank is: a point's axes are its chart's
+        -- root's, which no type says of a shape variable.
+        runLinesP (frame ++ ["let place c x = pointOn c x", ":type place"])
+          @?= Right ["forall d. Chart d -> Num -> Point d"]
+        expectError
+          (runLinesP (frame ++ ["let place c x = pointOn c x", "place lvlh [1, 2, 3]"]))
+          "a number against a vector"
         -- The wrong rotation is a type error.
         expectError
           ( runLinesP
