@@ -1496,7 +1496,7 @@ tyType env t = case t.node of
         -- A quantity in a role (design §3.10, U9): @Quantity Amount d@ is
         -- @Num d@ and @Quantity Unit d@ is @Unit d@.
         ("Quantity", [r]) -> (\x -> TQty x SNil dimOne) <$> tyRole env r
-        ("Quantity", [r, d]) -> (\x -> TQty x SNil) <$> tyRole env r <*> tyDim env d
+        ("Quantity", [r, d]) -> (`TQty` SNil) <$> tyRole env r <*> tyDim env d
         ("Vec", [n]) -> (\l -> TTensor (position l SNil) dimOne) <$> tyLen env n
         ("Vec", [n, d]) -> (\l -> TTensor (position l SNil)) <$> tyLen env n <*> tyDim env d
         ("Mat", [m, n]) ->

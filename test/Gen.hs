@@ -145,7 +145,7 @@ data Helper
     HNeg
   | -- | @\\x -> x ⊙ x@ : Tensor s d -> Tensor s [d^2]
     HSquare
-  | -- | @\\x -> x * x@, defaulted to Num d -> Num [d^2]
+  | -- | @\\x -> x * x@ : Quantity r d -> Quantity r [d^2], used at amounts
     HSq
   | -- | @\\f x -> f (f x)@
     HTwice
@@ -153,7 +153,10 @@ data Helper
     HConst
   | -- | @\\v -> v.0@ : Tensor (n + 1 : s) d -> Tensor s d
     HFirst
-  | -- | @\\k v -> k * v@ : Num d -> Tensor s d1 -> Tensor s [d d1]
+  | {- | @\\k v -> k * v@ : Quantity r d -> Quantity r d1 -> Quantity r [d
+    d1], used at amounts: a role left open keeps both scalar (design
+    §3.10, U9)
+    -}
     HScale
   | -- | @\\x f -> f x@
     HApplyTo
@@ -209,8 +212,8 @@ helperUse h t = case h of
       then Just ((\k -> [tensor (k : ls) d]) <$> genLen, ByArg 0)
       else Nothing
   HScale -> do
-    (ls, d) <- asTensor t
-    Just ((\d1 -> [numD d1, tensor ls (dimDiv d d1)]) <$> genDim, ByArg 1)
+    ([], d) <- asTensor t
+    Just ((\d1 -> [numD d1, numD (dimDiv d d1)]) <$> genDim, ByArg 1)
   HApplyTo -> Just ((\a -> [a, TFun a t]) <$> genArgType, Never)
   HCompose ->
     Just ((\a b -> [TFun b t, TFun a b, a]) <$> genArgType <*> genArgType, Never)

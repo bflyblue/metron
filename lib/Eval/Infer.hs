@@ -82,28 +82,25 @@ data Constraint
     at run time when it never is
     -}
     Fixed Frame
+  | {- | a unit is one number (design §3.10, U9): a quantity of this role
+    has this shape only as an amount. Pending while the role is a variable
+    and the shape is not known to be @[]@ or longer; at generalisation the
+    shape is @[]@, so that the role stays general
+    -}
+    UnitScalar Role Shape
   | {- | a primitive with two readings, chosen by the types it is used at
-    once one of them is known (design §3.10, U2, U4, U6, U7)
+    once one of them is known (design §3.10, U4, U6)
     -}
     Dispatch Reading
 
-{- | What a 'Dispatch' chooses between. Arithmetic and a unit declaration
-have two readings that are one operation at run time, so the choice is
-static only and an unknown one takes the amount reading at
-generalisation. The quantity rule and @to@ are different operations, so
-their choice is written into the term ('rewriteReadings') and an unknown
-one at generalisation is refused as ambiguous.
+{- | What a 'Dispatch' chooses between. The quantity rule and @to@ are
+different operations for a unit and for a chart, so their choice is
+written into the term ('rewriteReadings') and an unknown one at
+generalisation is refused as ambiguous. Arithmetic has no reading to
+choose: it is polymorphic in the role (design §3.10, U9).
 -}
 data Reading
-  = {- | @*@ or @/@ (@outer@, @div@): its operands and its result, and the
-    shapes and dimensions either reading is made of, made with the
-    primitive's type, before its operands', so that a dimension is solved
-    as it was before units were a type
-    -}
-    Arith Text Type Type Type Parts
-  | -- | @^k@: the base and the result, and the base's dimension
-    Power Integer Dim Type Type
-  | {- | a quantity whose reading the desugarer left to the types, by its
+  = {- | a quantity whose reading the desugarer left to the types, by its
     marker: the literal, what follows it, and the result; @scale@ for a
     unit, @pointOn@ for a chart (U4)
     -}
@@ -119,11 +116,6 @@ data Reading
     @axesFromTo@ for an amount
     -}
     ConvertFrom Text Type Type Type Type
-  | -- | a unit declaration's body, an amount or a unit, and the unit (U7)
-    UnitOf Type Type
-
--- | The operands' and the result's shapes and the operands' dimensions.
-data Parts = Parts Shape Shape Shape Dim Dim
 
 data St = St
   { subst :: Subst
@@ -273,6 +265,12 @@ freshLen offset =
     ALen (LVar v _) -> pure (LVar v offset)
     _ -> error "fresh KLen"
 
+freshRole :: Infer Role
+freshRole =
+  fresh KRole >>= \case
+    ARole r -> pure r
+    _ -> error "fresh KRole"
+
 freshShape :: Infer Shape
 freshShape =
   fresh KShape >>= \case
@@ -322,9 +320,31 @@ unify p expected actual = do
       unifyAxis p f1.axes f2.axes
       unifyShape p f1.space.shape f2.space.shape
       unifyDim p (fromMaybe f1.space.dim m1) (fromMaybe f2.space.dim m2)
-    (TOver f md, TTensor sh d) -> overTensor p f md sh d
-    (TTensor sh d, TOver f md) -> overTensor p f md sh d
-    (TTensor s1 d1, TTensor s2 d2) -> do
+    -- The amount between points is an amount (design §3.10, U9).
+    (TOver f md, TQty r sh d) | r /= RUnit -> unifyRole p RAmount r >> overTensor p f md sh d
+    (TQty r sh d, TOver f md) | r /= RUnit -> unifyRole p RAmount r >> overTensor p f md sh d
+    -- A unit is not an amount (design §3.10, U3): `1 km` is the amount.
+    (TQty RUnit _ _, TQty RAmount _ _) ->
+      failAt
+        p
+        ( "expected "
+            <> renderType e
+            <> ", got "
+            <> renderType a
+            <> ": an amount where a unit goes; a unit is written by its name, km or km/h"
+        )
+    (TQty RAmount _ _, TQty RUnit _ _) ->
+      failAt
+        p
+        ( "expected "
+            <> renderType e
+            <> ", got "
+            <> renderType a
+            <> ": a unit where an amount goes; one of it is written 1 km"
+        )
+    -- One role, then the shapes and dimensions (design §3.10, U9).
+    (TQty r1 s1 d1, TQty r2 s2 d2) -> do
+      unifyRole p r1 r2
       st <- get
       case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
         Right ((), st') -> put st'
@@ -350,33 +370,6 @@ unify p expected actual = do
             <> renderType a
             <> ": an amount and a point; a point has no sum, multiple or unit; use .+ and .-, or to with a chart (design §3.6)"
         )
-    (TUnit d1, TUnit d2) -> do
-      st <- get
-      case runStateT (unifyDim p d1 d2) st of
-        Right ((), st') -> put st'
-        Left (TypeError _ detail) ->
-          failAt
-            p
-            ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
-    -- A unit is not an amount (design §3.10, U3): `1 km` is the amount.
-    (TUnit _, TTensor _ _) ->
-      failAt
-        p
-        ( "expected "
-            <> renderType e
-            <> ", got "
-            <> renderType a
-            <> ": an amount where a unit goes; a unit is written by its name, km or km/h"
-        )
-    (TTensor _ _, TUnit _) ->
-      failAt
-        p
-        ( "expected "
-            <> renderType e
-            <> ", got "
-            <> renderType a
-            <> ": a unit where an amount goes; one of it is written 1 km"
-        )
     _ -> failAt p ("expected " <> renderType e <> ", got " <> renderType a)
  where
   -- Arguments of a declared type, by kind; a kind mismatch cannot happen for
@@ -389,8 +382,24 @@ unify p expected actual = do
     (AAxis a1, AAxis a2) -> unifyAxis p a1 a2
     (AFrame f1, AFrame f2) -> unifyFrameSlot p "frames" f1 f2
     (ASpace s1, ASpace s2) -> unifySpaceSlot p s1 s2
+    (ARole r1, ARole r2) -> unifyRole p r1 r2
     _ ->
       failAt p ("expected " <> renderType expected <> ", got " <> renderType actual)
+
+{- | Two roles (design §3.10, U9): an amount and a unit never meet; the
+callers that can say more say it first.
+-}
+unifyRole :: Path -> Role -> Role -> Infer ()
+unifyRole p x y = do
+  s <- gets (.subst)
+  case (applyRole s x, applyRole s y) of
+    (a, b) | a == b -> pure ()
+    (RVar v, b) -> bindVar p v (ARole b)
+    (a, RVar v) -> bindVar p v (ARole a)
+    _ ->
+      failAt
+        p
+        "an amount and a unit: a unit is written by its name, and one of it is 1 km"
 
 {- | Two frames (design §3.10, F4, F5): one identity, then one axis set and
 one space. Two named frames that differ are two types, reported as what
@@ -718,7 +727,9 @@ solveOne p = \case
   EqInstance t -> do
     t' <- resolve t
     case t' of
-      TTensor _ _ -> pure True
+      -- Equality takes amounts (design §3.10, U9).
+      TUnit _ -> failAt p ("no equality on " <> renderType t')
+      TQty r _ _ -> unifyRole p RAmount r >> pure True
       TPoint _ -> pure True
       TOver _ _ -> pure True
       -- A declared type compares when its fields do (design §4.2): Bool,
@@ -735,6 +746,10 @@ solveOne p = \case
     case t' of
       TTensor SNil _ -> pure True
       TTensor (SVar _) _ -> pure False
+      -- Comparison takes amounts (design §3.10, U9).
+      TQty r@(RVar _) sh d -> do
+        unifyRole p RAmount r
+        solveOne p (OrdInstance (TTensor sh d))
       TPoint f | f.space.shape == SNil -> pure True
       TPoint f | SVar _ <- f.space.shape -> pure False
       TVar _ -> pure False
@@ -750,9 +765,18 @@ solveOne p = \case
   OverIs f md t -> do
     s <- gets (.subst)
     case (overType (applyFrame s f) (applyDim s <$> md), applyType s t) of
-      (TOver _ _, TTensor sh _) | Nothing <- closedLens sh -> pure False
+      (TOver _ _, TQty _ sh _) | Nothing <- closedLens sh -> pure False
       (TOver _ _, TVar _) -> pure False
       (o, t') -> unify p o t' >> pure True
+  UnitScalar r sh -> do
+    s <- gets (.subst)
+    case (applyRole s r, applyShape s sh) of
+      (RAmount, _) -> pure True
+      (_, SNil) -> pure True
+      (RUnit, SVar v) -> bindVar p v (AShape SNil) >> pure True
+      (RUnit, _) -> failAt p "a unit is one number, not a tensor"
+      (r', SCons{}) -> unifyRole p RAmount r' >> pure True
+      _ -> pure False
   Fixed f -> do
     s <- gets (.subst)
     case (applyFrame s f).slot of
@@ -771,47 +795,21 @@ solveOne p = \case
       FrVar _ -> pure False
   Dispatch r -> decide p r
 
-{- | Choose a reading once the types say which (design §3.10). A unit on any
-side of @*@, @/@ or @^@ makes it unit arithmetic and any other known type
-the arithmetic of amounts; an amount and a unit together are refused,
-never converted (U2). A quantity is read by what follows its literal, or
-by its result where that already says; a @to@ by its target, or by its
-value or result. Returns whether the reading was chosen.
+{- | Choose a reading once the types say which (design §3.10). A quantity is
+read by what follows its literal, or by its result where that already
+says; a @to@ by its target, or by its value or result. A quantity of a
+role not yet known after a literal or a @to@ can only be a unit (U9).
+Returns whether the reading was chosen.
 -}
 decide :: Path -> Reading -> Infer Bool
 decide p = \case
-  reading@(Arith name a b r (Parts _ _ _ d1 d2)) -> do
-    ts <- mapM resolve [a, b, r]
-    let units = [() | TUnit _ <- ts]
-        amounts = [() | TTensor _ _ <- ts]
-        known = [() | t <- ts, not (isTypeVar t)]
-    case (units, amounts, known) of
-      (_ : _, _ : _, _) -> failAt p (mixed name)
-      (_ : _, _, _) -> do
-        unify (0 : p) (TUnit d1) a
-        unify (1 : p) (TUnit d2) b
-        unify p (TUnit (if name == "div" then dimDiv d1 d2 else dimMul d1 d2)) r
-        pure True
-      (_, _, _ : _) -> amountReading p reading >> pure True
-      _ -> pure False
-  reading@(Power n d b r) -> do
-    ts <- mapM resolve [b, r]
-    if any isUnit ts
-      then do
-        unify (0 : p) (TUnit d) b
-        unify p (TUnit (dimPow (fromIntegral n) d)) r
-        pure True
-      else
-        if all isTypeVar ts
-          then pure False
-          else amountReading p reading >> pure True
   Quantity marker written lit atom res -> do
     atom' <- resolve atom
     res' <- resolve res
     case (atom', res') of
-      (TUnit _, _) -> scaleReading
+      (TQty r _ _, _) | r /= RAmount -> scaleReading
       (TScale _, _) -> chartReading
-      (TVar _, TTensor _ _) -> scaleReading
+      (TVar _, TQty{}) -> scaleReading
       (TVar _, TPoint _) -> chartReading
       (TVar _, _) -> pure False
       (other, _) ->
@@ -836,7 +834,7 @@ decide p = \case
     val' <- resolve val
     res' <- resolve res
     case (tgt', val', res') of
-      (TUnit _, _, _) -> unitTo
+      (TQty r _ _, _, _) | r /= RAmount -> unitTo
       (TScale _, v, w)
         | any isPoint [v, w] -> chartTo
         | any isAmount [v, w] -> axesTo
@@ -845,7 +843,7 @@ decide p = \case
         | any isAmount [v, w] -> unitTo
         | any isPoint [v, w] -> chartTo
         | otherwise -> pure False
-      (TTensor _ _, _, _) ->
+      (TQty{}, _, _) ->
         failAt
           (1 : p)
           "an amount after `to`, which takes a unit or a chart: write the unit, as in to km or to km/h"
@@ -873,15 +871,10 @@ decide p = \case
             failAt
               (0 : p)
               ("`from … to` converts a point or an amount, not " <> renderType v)
-  UnitOf a r -> do
-    a' <- resolve a
-    case a' of
-      TUnit d -> unify p (TUnit d) r >> pure True
-      TVar _ -> pure False
-      _ -> amountReading p (UnitOf a r) >> pure True
  where
+  -- An amount, or a quantity whose role is not yet known: not a unit.
   isAmount = \case
-    TTensor _ _ -> True
+    TQty r _ _ -> r /= RUnit
     TOver _ _ -> True
     _ -> False
   isPoint = \case
@@ -890,10 +883,6 @@ decide p = \case
   choose marker prim = do
     modify' (\st -> st{chosen = Map.insert marker prim st.chosen})
     pure True
-  mixed name =
-    "an amount and a unit together: "
-      <> (if name == "div" then "/" else "*")
-      <> " takes two amounts or two units"
 
 {- | A reading taken (design §3.10): the primitive's scheme, instantiated,
 at the marker's operands, each by its path, and its result.
@@ -919,52 +908,9 @@ fixed p t =
     TPoint f -> defer p (Fixed f)
     _ -> pure ()
 
-{- | The reading of amounts, which arithmetic and a unit's declaration take
-when the types have not chosen by generalisation (design §3.10, U2): the
-types they had before units were a type, the product's shape constraint
-with them.
--}
-amountReading :: Path -> Reading -> Infer ()
-amountReading p = \case
-  Arith "div" a b r (Parts s _ _ d1 d2) -> do
-    unify (0 : p) (TTensor s d1) a
-    unify (1 : p) (numD d2) b
-    unify p (TTensor s (dimDiv d1 d2)) r
-  Arith _ a b r (Parts s1 s2 s3 d1 d2) -> do
-    defer p (Append s1 s2 s3)
-    unify (0 : p) (TTensor s1 d1) a
-    unify (1 : p) (TTensor s2 d2) b
-    unify p (TTensor s3 (dimMul d1 d2)) r
-  Power n d b r -> do
-    unify (0 : p) (numD d) b
-    unify p (numD (dimPow (fromIntegral n) d)) r
-  UnitOf a r -> do
-    d <- freshDim
-    a' <- resolve a
-    case a' of
-      TTensor (SCons{}) _ ->
-        failAt
-          (0 : p)
-          ( "a unit is one number, not "
-              <> renderType a'
-              <> ": declare it as an amount, 60 s, or a unit, kg*m/s^2"
-          )
-      _ -> pure ()
-    unify (0 : p) (numD d) a
-    unify p (TUnit d) r
-  -- Not reached: these are refused as ambiguous instead.
-  Quantity{} -> pure ()
-  Convert{} -> pure ()
-  ConvertFrom{} -> pure ()
-
 isTypeVar :: Type -> Bool
 isTypeVar = \case
   TVar _ -> True
-  _ -> False
-
-isUnit :: Type -> Bool
-isUnit = \case
-  TUnit _ -> True
   _ -> False
 
 {- | At a generalisation point, constraints that only mention variables about
@@ -1004,6 +950,9 @@ settle here ctx = do
       failAt
         p
         "the amount between points on a frame of a space not known here: give a signature naming the space, as in forall (c : Inertial)"
+    -- A role still open keeps its quantities scalar (design §3.10, U9), so
+    -- that the role generalises: \a b -> a * b is over amounts and units.
+    UnitScalar _ sh -> unifyShape p sh SNil
     -- A frame still unknown: the run-time conversion checks it.
     Fixed _ -> pure ()
     -- Settled already ('settleReadings').
@@ -1031,9 +980,7 @@ settle here ctx = do
 {- | The readings still open at a generalisation point that only mention
 variables about to be quantified (design §3.10). A quantity or a @to@ is
 refused as ambiguous: its readings are different operations, and a scheme
-cannot carry the choice. Arithmetic and a unit's declaration take the
-amount reading (U2), which may install a product's shape constraint for
-'settle' to default after.
+cannot carry the choice.
 -}
 settleReadings :: Path -> Vec n Scheme -> Infer ()
 settleReadings here ctx = do
@@ -1062,10 +1009,6 @@ settleReadings here ctx = do
         "ambiguous: `from … to` here could convert a point or an amount; give the definition a signature that says which"
     _ -> pure ()
   put st{pending = rest}
-  forM_ inOrder $ \(p, c) -> case c of
-    Dispatch r -> amountReading p r
-    _ -> pure ()
-  solvePending
 
 applyC :: Subst -> Constraint -> Constraint
 applyC s = \case
@@ -1075,25 +1018,20 @@ applyC s = \case
   Rank sh l -> Rank (applyShape s sh) (applyLen s l)
   OverIs f md t -> OverIs (applyFrame s f) (applyDim s <$> md) (applyType s t)
   Fixed f -> Fixed (applyFrame s f)
+  UnitScalar r sh -> UnitScalar (applyRole s r) (applyShape s sh)
   Dispatch r -> Dispatch $ case r of
-    Arith n a b c parts -> Arith n (ty a) (ty b) (ty c) parts
-    Power k d b c -> Power k d (ty b) (ty c)
     Quantity m w a b c -> Quantity m w (ty a) (ty b) (ty c)
     Convert m a b c -> Convert m (ty a) (ty b) (ty c)
     ConvertFrom m a b c res -> ConvertFrom m (ty a) (ty b) (ty c) (ty res)
-    UnitOf a b -> UnitOf (ty a) (ty b)
  where
   ty = applyType s
 
 -- | The types a reading is between.
 readingTypes :: Reading -> [Type]
 readingTypes = \case
-  Arith _ a b c _ -> [a, b, c]
-  Power _ _ b c -> [b, c]
   Quantity _ _ a b c -> [a, b, c]
   Convert _ a b c -> [a, b, c]
   ConvertFrom _ a b c r -> [a, b, c, r]
-  UnitOf a b -> [a, b]
 
 constraintVars :: Constraint -> [VarId]
 constraintVars = \case
@@ -1103,6 +1041,7 @@ constraintVars = \case
   Rank sh l -> map fst (freeVars (TTensor (SCons l AAnon sh) dimOne))
   OverIs f md t -> map fst (freeVars (TFun (TOver f md) t))
   Fixed f -> map fst (freeVars (TPoint f))
+  UnitScalar r sh -> map fst (freeVars (TQty r sh dimOne))
   Dispatch r -> concatMap (map fst . freeVars) (readingTypes r)
 
 -- Generalisation and instantiation ---------------------------------------------------
@@ -1350,6 +1289,9 @@ infer look p ctx = \case
                   )
           _ -> pure ()
       _ -> pure ()
+    let known = \case
+          RVar _ -> False
+          _ -> True
     -- Primitive types are fully known in shape, so peel one arrow per
     -- argument and report a mismatch at the argument that caused it.
     let go i ty = \case
@@ -1359,7 +1301,29 @@ infer look p ctx = \case
               -- The circular functions are the common place to forget that
               -- angles carry a unit (design §3.2.11).
               a' <- resolve a
+              param' <- resolve param
               case a' of
+                -- An amount and a unit under a product (design §3.10, U9):
+                -- the roles differ.
+                TQty ra _ _
+                  | name `elem` ["outer", "div"]
+                  , TQty rp _ _ <- param'
+                  , known ra && known rp && ra /= rp ->
+                      failAt
+                        p
+                        ( "an amount and a unit together: "
+                            <> (if name == "div" then "/" else "*")
+                            <> " takes two amounts or two units"
+                        )
+                -- A unit's size is one number (design §3.10, U7).
+                TTensor SCons{} _
+                  | name == "unit" ->
+                      failAt
+                        (i : p)
+                        ( "a unit is one number, not "
+                            <> renderType a'
+                            <> ": declare it as an amount, 60 s, or a unit, kg*m/s^2"
+                        )
                 _
                   | name `elem` ["sin", "cos", "tan"] ->
                       unifyMsg (i : p) param a (name <> " takes an angle: write 1 rad or 45 deg")
@@ -1443,14 +1407,13 @@ infer look p ctx = \case
     sc@(Forall vs _) <- generalise ctx te
     (tb, body') <- infer look (1 : p) (VCons sc ctx) body
     pure (tb, TLet h sc (abstractOver vs e') body')
-  -- A power of an amount or of a unit (design §3.10, U2).
+  -- A power of a number in its role, an amount or a unit (design §3.10, U9).
   Pow b n -> do
     (tb, b') <- infer look (0 : p) ctx b
     d <- freshDim
-    r <- freshType
-    defer p (Dispatch (Power n d tb r))
-    r' <- resolve r
-    pure (r', TPow b' n)
+    r <- freshRole
+    unify (0 : p) (TQty r SNil d) tb
+    pure (TQty r SNil (dimPow (fromIntegral n) d), TPow b' n)
   Noise k l n -> pure (vecT (LLit (fromIntegral n)), TNoise k l n)
   -- x ± e over any shape (design §3.4): the uncertainty is a scalar applied
   -- to every component, or a tensor of the value's shape; in both cases one
@@ -1593,35 +1556,27 @@ constraint between them.
 primType :: Path -> Text -> Int -> Infer Type
 primType p name argc = do
   t <- case name of
-    -- Two amounts or two units (design §3.10, U2), chosen by the operands'
-    -- types: the amounts' product is relational in its shapes (§4.2).
-    _ | name `elem` ["outer", "div"] -> do
-      -- In the order the amounts' types made them, so that dimensions
-      -- solve as they did: div's shape and dimensions; outer's shapes,
-      -- then dimensions.
-      parts <-
-        if name == "div"
-          then do
-            s <- freshShape
-            Parts s s s <$> freshDim <*> freshDim
-          else
-            Parts
-              <$> freshShape
-              <*> freshShape
-              <*> freshShape
-              <*> freshDim
-              <*> freshDim
-      a <- freshType
-      b <- freshType
-      r <- freshType
-      defer p (Dispatch (Arith name a b r parts))
-      pure (TFun a (TFun b r))
-    -- A unit's declaration (U7): an amount, the unit's size, or a unit.
-    "unit" -> do
-      a <- freshType
-      r <- freshType
-      defer p (Dispatch (UnitOf a r))
-      pure (TFun a r)
+    -- One role for the operands and the result (design §3.10, U9): two
+    -- amounts, the product relational in its shapes (§4.2), or two units,
+    -- each one number.
+    "outer" -> do
+      s1 <- freshShape
+      s2 <- freshShape
+      s3 <- freshShape
+      d1 <- freshDim
+      d2 <- freshDim
+      r <- freshRole
+      defer p (Append s1 s2 s3)
+      defer p (UnitScalar r s1)
+      defer p (UnitScalar r s2)
+      pure (TFun (TQty r s1 d1) (TFun (TQty r s2 d2) (TQty r s3 (dimMul d1 d2))))
+    "div" -> do
+      s <- freshShape
+      d1 <- freshDim
+      d2 <- freshDim
+      r <- freshRole
+      defer p (UnitScalar r s)
+      pure (TFun (TQty r s d1) (TFun (TQty r SNil d2) (TQty r s (dimDiv d1 d2))))
     "dot" -> do
       s1 <- freshShape
       n <- freshLen 0

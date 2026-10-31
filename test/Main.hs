@@ -1304,8 +1304,13 @@ typeTests =
         typeOfText "[1, 2] .* [3, 4]" @?= Right "Vec 2"
         typeOfText "[2, 4] / 2" @?= Right "Vec 2"
     , testCase "an unknown-rank product operand defaults at generalisation" $ do
+        -- Amounts: the left operand is a scalar, the right any tensor.
+        typeOfText "\\k v -> (1 * k) * v"
+          @?= Right "forall d s d1. Num d -> Tensor s d1 -> Tensor s (d1*d)"
+        -- A role left open keeps both operands scalar, so that the role
+        -- generalises (design §3.10, U9).
         typeOfText "\\k v -> k * v"
-          @?= Right "forall d s d1. Num d -> Tensor s d1 -> Tensor s (d*d1)"
+          @?= Right "forall r d d1. Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"
         typeOfText "\\a b -> a @ b"
           @?= Right "forall n d s d1. Vec n d -> Tensor (n : s) d1 -> Tensor s (d*d1)"
     , testCase "contraction requires matching inner lengths"
@@ -3338,8 +3343,9 @@ axisSlotTests =
 {- | The readings of design §3.10 (U2, U4, U6, U7), on Core whose stored
 definitions are typed by hand: a unit @km : Unit m@, @hr : Unit s@, an
 amount @len : Num m@ and a chart @cK@ of a frame of its own. Arithmetic,
-powers and a unit's declaration choose a reading statically; a quantity
-or a @to@ marker is resolved by the types and written into the term.
+powers and a unit's declaration are polymorphic in the role (U9); a
+quantity or a @to@ marker is resolved by the types and written into the
+term.
 -}
 readingTests :: TestTree
 readingTests =
@@ -3369,16 +3375,17 @@ readingTests =
         -- The parameter is a unit once the lambda is applied to one.
         typed (App (Lam "u" (Var FZ *. Var FZ)) (ref km))
           @?= Right [Forall [] (TUnit (Dimension.dimPow 2 metre))]
-    , testCase "unknown at generalisation, arithmetic takes the amounts' reading" $ do
+    , testCase "unknown at generalisation, arithmetic generalises over the role" $ do
         fmap (map renderScheme) (typed (Lam "a" (Lam "b" (Var (FS FZ) *. Var FZ))))
-          @?= Right ["Num d -> Tensor s d1 -> Tensor s (d*d1)"]
+          @?= Right ["Quantity r d -> Quantity r d1 -> Quantity r (d*d1)"]
         fmap (map renderScheme) (typed (Lam "u" (Pow (Var FZ) 2)))
-          @?= Right ["Num d -> Num (d^2)"]
-        -- A let generalises its square as one of amounts, so it does not
-        -- take a unit afterwards.
-        expectLeft
-          (typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref km))))
-          "a unit where an amount goes"
+          @?= Right ["Quantity r d -> Quantity r (d^2)"]
+        -- A let generalises its square over the role (design §3.10, U9),
+        -- so it takes a unit afterwards as well as an amount.
+        typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref km)))
+          @?= Right [Forall [] (TUnit (Dimension.dimPow 2 metre))]
+        typed (Let "sq" (Lam "u" (Var FZ *. Var FZ)) (App (Var FZ) (ref len)))
+          @?= Right [Forall [] (numD (Dimension.dimPow 2 metre))]
     , testCase "a quantity after a unit is scale, after a chart pointOn" $ do
         readings (PrimApp (q 0) [num 3, ref km]) @?= Right (Map.singleton (q 0) "scale")
         readings (PrimApp (q 0) [num 20, ref cK])
@@ -3572,10 +3579,9 @@ partUTests =
           (runLinesP ["km + km"])
           "units do not add: this is Unit m, and + and - take amounts"
         expectError (runLinesP ["1 km - m"]) "units do not add"
-        -- Unknown at generalisation, the reading of amounts; known from a
-        -- use, the reading of units.
+        -- Polymorphic in the role (design §3.10, U9): a unit from a use.
         runLinesP [":type \\u -> u * u", "(\\u -> u * u) km"]
-          @?= Right ["forall d. Num d -> Num (d^2)", "km^2"]
+          @?= Right ["forall r d. Quantity r d -> Quantity r (d^2)", "km^2"]
     , testCase "U3: a unit's name is the unit, everywhere" $ do
         expectError
           (runLinesP ["let x = 6 m", "x / s"])
@@ -3922,7 +3928,8 @@ unitTests =
           Left err -> T.isInfixOf "same shape" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "dimension polymorphism" $ do
-        typeOfText "\\r -> r^2" @?= Right "forall d. Num d -> Num (d^2)"
+        typeOfText "\\r -> r^2" @?= Right "forall r d. Quantity r d -> Quantity r (d^2)"
+        typeOfText "\\r -> pi * r^2" @?= Right "forall d. Num d -> Num (d^2)"
         typeOfText "\\x -> sqrt x" @?= Right "forall d. Num (d^2) -> Num d"
         typeOfText "\\x -> sqrt (x * x)" @?= Right "forall d. Num d -> Num d"
         typeOfText "\\a b -> atan2 a b"
@@ -3977,7 +3984,8 @@ lintRegressionTests =
         evalText "[1, 2] m ⊙ [3, 4] s" @?= Right ["[3, 8] m s"]
     , testCase "a stored polymorphic definition instantiates at several dimensions"
         $ runLines ["let sq x = x * x", ":add", "sq (3 m)", "sq (2 s)", ":type sq"]
-          @?= Right ["added sq", "9 m^2", "4 s^2", "forall d. Num d -> Num (d^2)"]
+          @?= Right
+            ["added sq", "9 m^2", "4 s^2", "forall r d. Quantity r d -> Quantity r (d^2)"]
     , -- Found while designing the type-directed generator, whose pinning
       -- rules lean on how pending constraints meet a let. `k * v` leaves a product
       -- constraint pending because `k` belongs to the enclosing lambda; the
