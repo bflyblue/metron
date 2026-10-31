@@ -179,8 +179,8 @@ at every rank:
   No overloading: each has exactly one type.
 - **Rank-specific**: `×` (`cross`), `norm`, `transpose`, `inverse`, `det`,
   `indices` (`Vec n d -> Vec n`, a vector's positions as values),
-  `covariance` (`Vec n d -> Mat n n [d^2]`), `crossCovariance` (`Vec n d1 ->
-  Vec m d2 -> Mat n m [d1 d2]`, the statistical nudges two vectors share,
+  `covariance` (`Vec n d -> Mat n n (d^2)`), `crossCovariance` (`Vec n d1 ->
+  Vec m d2 -> Mat n m (d1*d2)`, the statistical nudges two vectors share,
   design §3.5; arity 2, no Core change), `cholesky` and `expm` (`Mat n n ->
   Mat n n`, dimensionless, the matrix exponential; arity 1), each with a
   fixed-rank signature.

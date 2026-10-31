@@ -672,7 +672,7 @@ cut that tie, as in @\k -> let g = \v -> k * v in g [1, 2]@, which once
 typed its result as any shape at all.
 
 Kennedy's algorithm may solve for the inverse of a variable, giving
-@Num [d^-2] -> Num [d^-3]@ where @Num [d^2] -> Num [d^3]@ means the same
+@Num (1/d^2) -> Num (1/d^3)@ where @Num (d^2) -> Num (d^3)@ means the same
 scheme. A quantified dimension variable that only appears with negative
 exponents is replaced by the inverse of a fresh one, through the
 substitution, so that the elaborated term (zonked with it) and the scheme
@@ -764,7 +764,7 @@ instantiate (Forall vs t) = do
   let m = Map.fromList (zip (map fst vs) args)
   -- Simultaneous, not sequential: a fresh id can equal the next quantified
   -- id, and replacing one variable at a time would then rename twice (lint
-  -- caught `cross` elaborating to `Vec 3 [m] -> Vec 3 [m/s] -> Vec 3 [m^2]`).
+  -- caught `cross` elaborating to `Vec 3 m -> Vec 3 (m/s) -> Vec 3 (m^2)`).
   pure (substOnce m t, args)
 
 applyArgs :: TTerm n -> [Arg] -> TTerm n
@@ -1343,7 +1343,7 @@ checkExhaustive look p ty cs = case dataConstructors look.typeDefOf ty of
 {- | Whether a definition's type can be an instance of a query type, both
 quantified: the type search of @:ls@ (design §7.3). Each side is instantiated
 with fresh variables and the two are unified, so @a -> a@ matches a query
-@Num -> Num@ and @Num [m] -> Num [m]@ matches a query @a -> a@.
+@Num -> Num@ and @Num m -> Num m@ matches a query @a -> a@.
 -}
 matchesQuery :: Scheme -> Scheme -> Bool
 matchesQuery query sc = case runStateT go (St emptySubst 0 axisBase [] (const Nothing) noAnnotations) of

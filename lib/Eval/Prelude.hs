@@ -160,11 +160,11 @@ velocity are along them, and a chart of another root does not read it.
 stateStatements :: [Statement]
 stateStatements =
   [ Data
-      "data State r = State {epoch :: Point [s], pos :: Point (Vec r [m]), vel :: Vec r [m s^-1]}"
+      "data State r = State {epoch :: Point (Num s), pos :: Point (Vec r m), vel :: Vec r (m/s)}"
       ["State", "epoch", "pos", "vel"]
   , Sig
       "velocityIn"
-      "forall (a : 3) (r : 3). Chart (Vec a [m]) r -> State r -> Vec a [m s^-1]"
+      "forall (a : 3) (r : 3). Chart (Vec a m) r -> State r -> Vec a (m/s)"
   , Let
       "velocityIn"
       ( T.unwords
@@ -174,7 +174,7 @@ stateStatements =
       )
   , Sig
       "stateFrom"
-      "forall (a : 3) (r : 3). Chart (Vec a [m]) r -> Point [s] -> Vec a [m] -> Vec a [m s^-1] -> State r"
+      "forall (a : 3) (r : 3). Chart (Vec a m) r -> Point (Num s) -> Vec a m -> Vec a (m/s) -> State r"
   , Let
       "stateFrom"
       ( T.unwords
@@ -219,7 +219,7 @@ the gain @P Hᵀ S⁻¹@ with @H = [H_r | H_v]@, and the update @(I − K H) P@.
 -}
 covarianceData :: Text
 covarianceData =
-  "data Cov2 n d1 d2 = Cov2 {rr :: Mat n n [d1^2], rv :: Mat n n [d1 d2], vv :: Mat n n [d2^2]}"
+  "data Cov2 n d1 d2 = Cov2 {rr :: Mat n n (d1^2), rv :: Mat n n (d1*d2), vv :: Mat n n (d2^2)}"
 
 {- | The block filter over 'covarianceData'. @propagateCov2@ forms the block
 rows of @Φ P@ first and multiplies them by the block columns of @Φᵀ@;

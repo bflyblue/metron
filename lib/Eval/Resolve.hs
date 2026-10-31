@@ -1002,7 +1002,7 @@ mintAxes ns cb = foldl (\acc n -> addTypeDef (axesHash n) (axesDef n) acc) cb ns
 {- | Name the axis type of each chart over a vector space, a type label
 under the chart's own full path (types and terms are separate namespaces,
 so the chart @lvlh@ and its axes @lvlh@ coexist), for written types to
-name (@Vec lvlh [m]@) and for printing. A scalar chart's axes have no
+name (@Vec lvlh m@) and for printing. A scalar chart's axes have no
 positions to name, so its type stays unnamed. A chart cannot take the
 name of a declared type.
 -}
@@ -1259,19 +1259,24 @@ tyType env t = case t.node of
   S.TyList a -> listT <$> tyType env a
   S.TyFun a b -> TFun <$> tyType env a <*> tyType env b
   S.TyInt _ -> bad t "a number is a length, not a type"
-  S.TyBracket _ -> bad t "a bracket is a shape or a dimension, not a type"
+  S.TyShape _ -> bad t "a bracket is a shape, not a type"
+  S.TyDim _ -> bad t "a dimension is not a type: a quantity of it is Num (m/s)"
   S.TyForall _ _ -> bad t "forall goes only at the head of a signature or an ascription"
  where
   -- A written chart's root slot is anonymous (design §3.9, stage 1).
   chart sh = TScale sh AAnon
-  -- `Point [K]` is a scalar point; `Point (Vec 3 [m])` a point over that space.
+  -- A point or chart takes a type (design §4.1): `Point (Num K)` is a
+  -- scalar point, `Point (Vec 3 m)` a point over that space.
   affine mk a = case a.node of
-    S.TyBracket _ -> mk SNil <$> tyDim env a
-    S.TyName p | Map.member p env.params -> mk SNil <$> tyDim env a
+    S.TyName n
+      | Map.notMember n env.params
+      , isJust (unitDim env n) ->
+          bad a ("a point or chart is over a type: write (Num " <> n <> ")")
+    S.TyDim _ -> bad a "a point or chart is over a type: write (Num (…))"
     _ ->
       tyType env a >>= \case
         TTensor sh d -> pure (mk sh d)
-        _ -> bad a "a point or chart is over a dimension or a tensor type"
+        _ -> bad a "a point or chart is over a tensor type, like Num K or Vec 3 m"
 
 -- | A declared type, or the one being declared, applied to its arguments.
 applied :: DataEnv -> S.TyExpr -> Text -> [S.TyExpr] -> Kinds Type
@@ -1290,7 +1295,7 @@ applied env t n args
             <> n
             <> "` is a chart's axes, written where a length goes: Vec "
             <> n
-            <> " [m]"
+            <> " m"
         )
   | Found full <- resolved
   , Just h <- lookupTypeName full env.codebase
@@ -1379,7 +1384,7 @@ tyLen env a = case a.node of
 {- | A name in a length position: a chart's axes (design §3.9, decision
 6), resolved through the type scope to the axis type the chart minted.
 It means as many positions as the chart has, along that type: @Vec lvlh
-[m]@ is a three-vector along lvlh's axes. The number is the chart's own,
+m@ is a three-vector along lvlh's axes. The number is the chart's own,
 read off its type (@card lvlh = 3@, decision 2), so that a signature
 naming the axes holds of a definition of three positions.
 -}
@@ -1409,7 +1414,16 @@ chartAxes env a n =
             <> T.intercalate " and " (map (\f -> "`" <> f <> "`") fulls)
             <> "; write one of them"
         )
-    _ -> bad a ("unknown name `" <> n <> "` in a type")
+    _
+      | isJust (unitDim env n) ->
+          bad
+            a
+            ( "`"
+                <> n
+                <> "` is a unit, not a length: a vector's length comes first, Vec 3 "
+                <> n
+            )
+      | otherwise -> bad a ("unknown name `" <> n <> "` in a type")
  where
   card = \case
     TFun _ r -> card r
@@ -1417,7 +1431,7 @@ chartAxes env a n =
     _ -> Nothing
 
 {- | A chart's root, written after its type (design §3.9): a chart's axes
-by name, or a variable, whose axes it is; @Chart (Vec lvlh [m]) eci@.
+by name, or a variable, whose axes it is; @Chart (Vec lvlh m) eci@.
 -}
 tyRoot :: DataEnv -> S.TyExpr -> Kinds Axis
 tyRoot env r = case r.node of
@@ -1429,45 +1443,51 @@ tyRoot env r = case r.node of
 
 tyShape :: DataEnv -> S.TyExpr -> Kinds Shape
 tyShape env a = case a.node of
-  S.TyBracket items -> foldr position SNil <$> mapM item items
+  S.TyShape items -> foldr position SNil <$> mapM (tyLen env) items
   S.TyName p | Map.member p env.params -> SVar <$> useParam env a p KShape
   _ -> bad a "a shape is a list of lengths like [2, 3], or a parameter"
- where
-  item = \case
-    [(f, 1)] -> tyLen env f
-    _ -> bad a "a shape is a list of lengths like [2, 3]"
 
-{- | A dimension: a bracketed product of base units, units and parameters
-with exponents (@[kg m^2 s^-2]@, @[m / s]@), a lone parameter, or @1@.
+{- | A dimension (design §4.1): a name, which is a variable when it is a
+parameter and otherwise a unit, meaning its dimension (@Num km@ is @Num
+m@); @1@; or a product of them with powers in parentheses, @(kg·m²/s²)@.
 -}
 tyDim :: DataEnv -> S.TyExpr -> Kinds Dim
 tyDim env a = case a.node of
-  S.TyBracket [] -> pure dimOne
-  S.TyBracket [item] -> foldr dimMul dimOne <$> mapM factor item
-  S.TyBracket _ -> bad a "a dimension is one product, not a list"
   S.TyInt 1 -> pure dimOne
-  S.TyName p | Map.member p env.params -> dimVar <$> useParam env a p KDim
+  S.TyName n
+    | Map.member n env.params -> dimVar <$> useParam env a n KDim
+    | Just d <- unitDim env n -> pure d
+    | otherwise -> bad a ("`" <> n <> "` is not a unit or a dimension variable")
+  S.TyDim factors ->
+    foldr dimMul dimOne
+      <$> mapM (\(f, k) -> dimPow (fromInteger k) <$> tyDim env f) factors
+  -- `Num (m s)` reads as an application: say how to write the product.
+  S.TyApp hd args
+    | Just names <- mapM nameOf args -> bad a (S.juxtaposedHint (hd.text : names))
+  S.TyShape _ ->
+    bad
+      a
+      "a bracket is a shape; a dimension is written without one, like m or (m/s^2)"
   _ ->
     bad
       a
-      "a dimension is written in brackets, like [m s^-2], or is a parameter or 1"
+      "a dimension is a unit, a variable, 1, or a product of them in parentheses, like (m/s^2)"
  where
-  factor (f, k) = case f.node of
-    S.TyInt 1 -> pure dimOne
-    S.TyName n
-      | Map.member n env.params ->
-          dimPow (fromInteger k) . dimVar <$> useParam env f n KDim
-      | Just b <- lookup n [(baseSymbol b', b') | b' <- [minBound .. maxBound]] ->
-          pure (dimPow (fromInteger k) (dimBase b))
-      | Found u <- qualifyName TermLabel env.scope env.codebase n
-      , isUnitName u env.codebase
-      , Just r <- lookupName u env.codebase
-      , Just (Forall [] (TTensor SNil d)) <- typeOf r env.codebase ->
-          pure (dimPow (fromInteger k) d)
-    _ ->
-      bad
-        f
-        "a dimension is a product of base units (m kg s A K mol cd rad), units and parameters"
+  nameOf f = case f.node of
+    S.TyName n -> Just n
+    _ -> Nothing
+
+-- | The dimension of a base unit or a unit in scope, by its name.
+unitDim :: DataEnv -> Text -> Maybe Dim
+unitDim env n
+  | Just b <- lookup n [(baseSymbol b', b') | b' <- [minBound .. maxBound]] =
+      Just (dimBase b)
+  | Found u <- qualifyName TermLabel env.scope env.codebase n
+  , isUnitName u env.codebase
+  , Just r <- lookupName u env.codebase
+  , Just (Forall [] (TTensor SNil d)) <- typeOf r env.codebase =
+      Just d
+  | otherwise = Nothing
 
 {- | A type written as a search query (design §7.3): every name that is not
 a built-in type, a declared type, a base unit or a unit is a variable, of
@@ -1516,7 +1536,8 @@ tyNames e = case e.node of
   S.TyTuple ts -> concatMap tyNames ts
   S.TyList a -> tyNames a
   S.TyFun a b -> tyNames a ++ tyNames b
-  S.TyBracket items -> concatMap (concatMap (tyNames . fst)) items
+  S.TyShape items -> concatMap tyNames items
+  S.TyDim factors -> concatMap (tyNames . fst) factors
   S.TyForall bs a -> map (.name) bs ++ tyNames a
 
 {- | The variables a @forall@ binds, by name (design §4.8): each with its
@@ -1551,7 +1572,7 @@ of the definition it is in (the given variables, which stay free in the
 scheme). Every other name is a name and resolves like one; an unknown
 lowercase one is an error. A binder, or a signature's variable in an
 ascription, shadows a unit, a base unit or a declared type of its name
-throughout the type, brackets included. Kinds
+throughout the type, dimensions included. Kinds
 are learned from where the variables are used; a length variable stands
 for a whole axis set, its length and a companion axis variable, and a
 sized binder, @(a : 3)@, for that many axes of its own.

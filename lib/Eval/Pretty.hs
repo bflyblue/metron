@@ -810,9 +810,11 @@ respell src = do
   let edits = respellEdits text toks
       out = applyEdits text edits
   toks' <- either (const Nothing) Just (L.tokenize out)
-  -- A superscript stands for its caret form; nothing else may differ.
+  -- A superscript stands for its caret form, and `·` for the `@` it
+  -- replaces (an expression's matrix product); nothing else may differ.
   let caret = concatMap $ \case
         L.TSup n -> [L.TOp "^"] ++ [L.TOp "-" | n < 0] ++ [L.TNum (fromInteger (abs n))]
+        L.TOp "·" -> [L.TOp "@"]
         t -> [t]
   if not (null edits) && caret (map (.value) toks') == caret (map (.value) toks)
     then Just out

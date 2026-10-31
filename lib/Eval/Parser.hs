@@ -431,56 +431,110 @@ typeAtom :: Parser TyExpr
 typeAtom =
   P.choice
     [ (\n -> TyExpr n.span (TyName n.text)) <$> qualifiedName
-    , (\(sp, k) -> TyExpr sp (TyInt k))
-        <$> match
-          "length"
-          (\case TNum r | denominator r == 1 -> Just (numerator r); _ -> Nothing)
-    , do
-        s <- tok TLParen
-        t <- typeExpr
-        rest <- P.many (tok TComma *> typeExpr)
-        e <- tok TRParen
-        pure (TyExpr (spanUnion s e) (if null rest then t.node else TyTuple (t : rest)))
+    , (\(sp, k) -> TyExpr sp (TyInt k)) <$> integer "length"
+    , parenthesised
     , do
         s <- tok TLBrace
         t <- typeExpr
         e <- tok TRBrace
         pure (TyExpr (spanUnion s e) (TyList t))
-    , do
+    , -- Brackets hold a shape only; a dimension is an argument of its own.
+      do
         s <- tok TLBracket
-        items <- P.sepBy bracketItem (tok TComma)
+        items <- P.sepBy shapeItem (tok TComma)
         e <- tok TRBracket
-        pure (TyExpr (spanUnion s e) (TyBracket items))
+        pure (TyExpr (spanUnion s e) (TyShape items))
     ]
  where
-  -- A product of powered factors, with @/@ negating the exponents after it.
-  bracketItem = do
-    nums <- P.some factor
-    dens <- P.many (tok (TOp "/") *> P.some factor)
-    pure (nums ++ [(f, negate k) | (f, k) <- concat dens])
-  factor = do
+  shapeItem =
+    P.choice
+      [ (\n -> TyExpr n.span (TyName n.text)) <$> qualifiedName
+      , (\(sp, k) -> TyExpr sp (TyInt k)) <$> integer "length"
+      ]
+
+{- | @(…)@: a type in parentheses, a tuple, or a dimension (design §4.1). A
+type followed by @*@, @·@, @/@ or a power is the first factor of a
+dimension, which goes on as a product, left to right: @m/s*kg@ is
+@m·kg/s@. Each later factor is a name, @1@ or a parenthesised group, with
+an optional power.
+-}
+parenthesised :: Parser TyExpr
+parenthesised = do
+  s <- tok TLParen
+  t <- typeExpr
+  node <-
+    P.choice
+      [ TyTuple . (t :) <$> P.some (tok TComma *> typeExpr)
+      , TyDim <$> dimensionFrom t
+      , pure t.node
+      ]
+  e <- tok TRParen
+  pure (TyExpr (spanUnion s e) node)
+ where
+  dimensionFrom t =
+    P.choice
+      [ do
+          k <- power
+          refuseJuxtaposed t
+          rest <- P.many step
+          pure (factorsOf k t ++ concat rest)
+      , (factorsOf 1 t ++) . concat <$> P.some step
+      ]
+  step = do
+    divides <-
+      P.choice
+        [ False <$ tok (TOp "*")
+        , False <$ tok (TOp "·")
+        , True <$ tok (TOp "/")
+        , -- Taken and put back, so the refusal stands at the `@`.
+          do
+            o <- P.getOffset
+            _ <- tok (TOp "@")
+            P.setOffset o
+            fail "`@` is the matrix product; a dimension's product is * or ·"
+        ]
     f <-
       P.choice
         [ (\n -> TyExpr n.span (TyName n.text)) <$> qualifiedName
-        , (\(sp, k) -> TyExpr sp (TyInt k))
-            <$> match
-              "number"
-              (\case TNum r | denominator r == 1 -> Just (numerator r); _ -> Nothing)
+        , (\(sp, k) -> TyExpr sp (TyInt k)) <$> integer "number"
+        , parenthesised
         ]
-    k <-
-      P.option 1
-        $ P.choice
-          [ snd <$> match "superscript" (\case TSup k -> Just k; _ -> Nothing)
-          , do
-              _ <- tok (TOp "^")
-              neg <- P.optional (tok (TOp "-"))
-              (_, k) <-
-                match
-                  "exponent"
-                  (\case TNum r | denominator r == 1 -> Just (numerator r); _ -> Nothing)
-              pure (maybe k (const (negate k)) neg)
-          ]
-    pure (f, k)
+    k <- P.option 1 power
+    refuseJuxtaposed f
+    pure [(g, if divides then negate e else e) | (g, e) <- factorsOf k f]
+  -- A group's power raises each of its factors.
+  factorsOf k f = case f.node of
+    TyDim fs -> [(g, k * e) | (g, e) <- fs]
+    _ -> [(f, k)]
+  -- @m s@ is an application, not a product: say how to write one.
+  refuseJuxtaposed f = do
+    next <- P.optional (P.lookAhead (P.try typeAtom))
+    case next of
+      Nothing -> pure ()
+      Just a -> fail (T.unpack (juxtaposedHint (map spelled [f, a])))
+  spelled f = case f.node of
+    TyName n -> n
+    TyInt k -> T.pack (show k)
+    _ -> "…"
+
+-- | A power: @^2@, @^-2@, or a superscript.
+power :: Parser Integer
+power =
+  P.choice
+    [ snd <$> match "superscript" (\case TSup k -> Just k; _ -> Nothing)
+    , do
+        _ <- tok (TOp "^")
+        neg <- P.optional (tok (TOp "-"))
+        (_, k) <- integer "exponent"
+        pure (maybe k (const (negate k)) neg)
+    ]
+
+-- | An integer literal.
+integer :: String -> Parser (Span, Integer)
+integer label =
+  match
+    label
+    (\case TNum r | denominator r == 1 -> Just (numerator r); _ -> Nothing)
 
 -- Expressions ----------------------------------------------------------------------
 
@@ -521,7 +575,7 @@ opExpr = makeExprParser term table
     , [Prefix (foldr1 (.) <$> P.some (negP P.<|> sqrtP))]
     ,
       [ InfixL (binop Outer <$ opTok "*")
-      , InfixL (binop Dot <$ opTok "@")
+      , InfixL (binop Dot <$ (opTok "@" P.<|> opTok "·"))
       , InfixN (binop Cross <$ opTok "×")
       , InfixL (binop Wedge <$ opTok "/\\")
       , InfixL (binop EMul <$ opTok ".*")
@@ -784,7 +838,7 @@ sectionOp :: Bool -> Parser Op
 sectionOp allowMinus =
   P.choice
     $ [ Outer <$ tok (TOp "*")
-      , Dot <$ tok (TOp "@")
+      , Dot <$ (tok (TOp "@") P.<|> tok (TOp "·"))
       , Cross <$ tok (TOp "×")
       , Wedge <$ tok (TOp "/\\")
       , EMul <$ tok (TOp ".*")

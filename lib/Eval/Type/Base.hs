@@ -61,7 +61,7 @@ data Type
     root's axes (design §3.9), along which its points lie and its
     rotation's rows are: named for a chart a declaration made, anonymous
     for a scalar chart and a written one without a root, printed after a
-    vector chart's type, @Chart (Vec lvlh [m]) eci@
+    vector chart's type, @Chart (Vec lvlh m) eci@
     -}
     TScale Shape Axis Dim
   | -- | a declared data type applied to its parameters (design §2.3); a definition refers to itself as 'selfType'. @Bool@, tuples and lists are declared types too, on the hashes of "Eval.Builtin".

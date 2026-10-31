@@ -20,8 +20,9 @@ module Eval.Dimension (
   isDimOne,
   substDimVar,
   renderDim,
-  renderDimWith,
   renderDimIn,
+  renderDimArgIn,
+  productText,
   renderUnits,
   renderUnitsIn,
   Spelling (..),
@@ -146,18 +147,47 @@ arrowText = \case
   Ascii -> " -> "
   Unicode -> " → "
 
--- | @[m s^-2]@, @[d1 d2^-1]@; the empty dimension renders as @1@.
+{- | A dimension standing alone, as an error message prints it (design
+§4.1): @m/s^2@, @kg*m^2/s^2@, @m^2/(s^2*K)@, @1/s@, and @1@ when
+dimensionless. Positive powers come first in the customary order, then
+@/@ and the negative ones, grouped when there are several.
+-}
 renderDim :: Dim -> Text
-renderDim = renderDimWith (\v -> "d" <> T.pack (show v))
+renderDim = renderDimIn Ascii (\v -> "d" <> T.pack (show v))
 
-renderDimWith :: (Int -> Text) -> Dim -> Text
-renderDimWith = renderDimIn Ascii
-
--- | 'renderDimWith' in a chosen spelling: @[m s⁻²]@ in unicode.
+{- | 'renderDim' in a chosen spelling, its variables named by the
+function: @kg·m²/s²@ in unicode.
+-}
 renderDimIn :: Spelling -> (Int -> Text) -> Dim -> Text
-renderDimIn spelling varName d
-  | isDimOne d = "1"
-  | otherwise = "[" <> renderUnitsWith spelling varName d <> "]"
+renderDimIn spelling varName d = case (ups, downs) of
+  ([], []) -> "1"
+  (_, []) -> product' ups
+  ([], _) -> "1/" <> grouped downs
+  _ -> product' ups <> "/" <> grouped downs
+ where
+  atoms = sortOn (atomRank . fst) (dimAtoms d)
+  ups = [(a, k) | (a, k) <- atoms, k > 0]
+  downs = [(a, negate k) | (a, k) <- atoms, k < 0]
+  product' = T.intercalate (productText spelling) . map (atomText spelling varName)
+  grouped = \case
+    [one] -> atomText spelling varName one
+    many -> "(" <> product' many <> ")"
+
+{- | A dimension as a type argument (design §4.1): one name to the first
+power bare (@m@, @d@), @1@ when dimensionless, anything else in
+parentheses (@(m/s^2)@).
+-}
+renderDimArgIn :: Spelling -> (Int -> Text) -> Dim -> Text
+renderDimArgIn spelling varName d = case dimAtoms d of
+  [] -> "1"
+  [(_, 1)] -> renderDimIn spelling varName d
+  _ -> "(" <> renderDimIn spelling varName d <> ")"
+
+-- | The product sign in a dimension: @*@, or @·@ in unicode.
+productText :: Spelling -> Text
+productText = \case
+  Ascii -> "*"
+  Unicode -> "·"
 
 {- | The base units of a concrete dimension as they follow a printed value:
 @m s^-2@; empty when dimensionless.
@@ -169,25 +199,37 @@ renderUnits = renderUnitsIn Ascii
 renderUnitsIn :: Spelling -> Dim -> Text
 renderUnitsIn spelling d
   | isDimOne d = ""
-  | otherwise = renderUnitsWith spelling (\v -> "d" <> T.pack (show v)) d
-
-renderUnitsWith :: Spelling -> (Int -> Text) -> Dim -> Text
-renderUnitsWith spelling varName d = T.unwords (map atom (sortOn order (dimAtoms d)))
+  | otherwise =
+      T.unwords
+        ( map
+            (atomText spelling (\v -> "d" <> T.pack (show v)))
+            (sortOn order (dimAtoms d))
+        )
  where
-  -- Positive exponents before negative, and within each the customary
-  -- order @kg m s A K mol cd@ (so a joule is @kg m^2 s^-2@), variables last.
-  order (a, k) = (k < 0, rank a)
-  rank = \case
-    Base M -> 0 :: Int
-    Base L -> 1
-    Base T -> 2
-    Base I -> 3
-    Base Θ -> 4
-    Base N -> 5
-    Base J -> 6
-    Base Ang -> 7
-    DVar v -> 8 + v
-  atom (a, k) = name a <> (if k == 1 then "" else exponentText spelling (toInteger k))
-  name = \case
+  -- Positive exponents before negative, each in the customary order (so a
+  -- joule is @kg m^2 s^-2@).
+  order (a, k) = (k < 0, atomRank a)
+
+{- | The customary order of a dimension's atoms, @kg m s A K mol cd rad@,
+variables last.
+-}
+atomRank :: DimAtom -> Int
+atomRank = \case
+  Base M -> 0
+  Base L -> 1
+  Base T -> 2
+  Base I -> 3
+  Base Θ -> 4
+  Base N -> 5
+  Base J -> 6
+  Base Ang -> 7
+  DVar v -> 8 + v
+
+-- | An atom with its exponent, the exponent 1 left out.
+atomText :: Spelling -> (Int -> Text) -> (DimAtom, Int) -> Text
+atomText spelling varName (a, k) =
+  name <> (if k == 1 then "" else exponentText spelling (toInteger k))
+ where
+  name = case a of
     Base b -> baseSymbol b
     DVar v -> varName v
