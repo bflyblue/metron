@@ -388,7 +388,11 @@ tcoreTests =
           ( TLam
               "x"
               BoolT
-              (TPrimApp "add" (TFun numT (TFun numT numT)) [TVr FZ, TLit (LTensor ([], [1]))])
+              ( TPrimApp
+                  "add"
+                  (TFun numT (TFun numT numT))
+                  [TVr FZ, TLit (LTensor ([], [1])) []]
+              )
           )
           @?= Left "argument of add has type Bool, expected Num"
     , testCase
@@ -411,7 +415,7 @@ tcoreTests =
                     (TFun (vecT (LLit 3)) (vecT (LLit 3)))
                 )
                 [ TLam "i" (vecT (LLit n)) (TLam "x" numT (TVr FZ))
-                , TLit (LTensor ([3], [1, 2, 3]))
+                , TLit (LTensor ([3], [1, 2, 3])) [AAnon]
                 ]
         lintClosed noLookup (at 1) @?= Right [Forall [] (vecT (LLit 3))]
         case lintClosed noLookup (at 2) of
@@ -420,11 +424,11 @@ tcoreTests =
     , testCase "lint rejects a mismatched let annotation"
         $ case lintClosed
           noLookup
-          (TLet "x" (Forall [] BoolT) (TLit (LTensor ([], [1]))) (TVr FZ)) of
+          (TLet "x" (Forall [] BoolT) (TLit (LTensor ([], [1])) []) (TVr FZ)) of
           Left err -> T.isPrefixOf "let binder annotated" err @? T.unpack err
           Right sc -> assertFailure (show sc)
     , testCase "lint rejects a type application without an abstraction"
-        $ lintClosed noLookup (TTyApp (TLit (LTensor ([], [1]))) (AType BoolT))
+        $ lintClosed noLookup (TTyApp (TLit (LTensor ([], [1])) []) (AType BoolT))
           @?= Left "type application to a term with no type abstraction"
     ]
 
@@ -2809,12 +2813,23 @@ axisSlotTests =
   testGroup
     "axis slots"
     [ testCase "a named axis set does not unify with anonymous axes"
-        $ typed (prim2 "add" (ref lvlhV) (Lit (LTensor ([3], [1, 2, 3]))))
+        $ typed (prim2 "add" (ref lvlhV) (Noise Bound (Owner "") 3))
           @?= Left
             ( "expected Vec 3, got Vec 3: the axes of "
                 <> showHash lvlh
                 <> " against anonymous axes"
             )
+    , testCase "a literal takes the axes of what it meets (decision 5)"
+        $ typed (prim2 "add" (ref lvlhV) (Lit (LTensor ([3], [1, 2, 3]))))
+          @?= Right [Forall [] (vecAlong lvlh)]
+    , testCase "a local value's free axes are anonymous (decision 5)"
+        $ typed
+          ( Let
+              "off"
+              (Lit (LTensor ([3], [1, 2, 3])))
+              (prim2 "add" (Var FZ) (Noise Bound (Owner "") 3))
+          )
+          @?= Right [Forall [] (TTensor (pos (LLit 3) AAnon SNil) dimOne)]
     , testCase "two named axis sets do not unify"
         $ typed (prim2 "add" (ref lvlhV) (ref eciV))
           @?= Left
@@ -3018,7 +3033,7 @@ polyLets = \case
   TPrimApp _ _ as -> sum (map polyLets as)
   TPow b _ -> polyLets b
   TUncertain _ _ x e -> polyLets x + polyLets e
-  TPack ts -> sum (map polyLets ts)
+  TPack _ ts -> sum (map polyLets ts)
   TProj t _ -> polyLets t
   TTyLam _ _ b -> polyLets b
   TTyApp b _ -> polyLets b
@@ -3038,7 +3053,7 @@ annotations = \case
       ++ concat [map snd (vecToList bs) ++ annotations b | TAlt _ bs b <- alts]
   TPow b _ -> annotations b
   TUncertain _ _ x e -> annotations x ++ annotations e
-  TPack ts -> concatMap annotations ts
+  TPack _ ts -> concatMap annotations ts
   TProj t _ -> annotations t
   TTyLam _ _ b -> annotations b
   TTyApp b arg -> (case arg of AType t -> [t]; _ -> []) ++ annotations b

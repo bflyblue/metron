@@ -42,7 +42,11 @@ data TTerm (n :: Nat) where
   TRef :: Hash -> Maybe Int -> Hint -> TTerm n
   -- | A saturated primitive at a specific type (an instance of 'primScheme').
   TPrimApp :: Text -> Type -> [TTerm n] -> TTerm n
-  TLit :: Lit -> TTerm n
+  {- | A constant at the axes of its positions: a literal is polymorphic in
+  its axes (design §3.9, decision 5), so its frame is the one its use gave
+  it.
+  -}
+  TLit :: Lit -> [Axis] -> TTerm n
   TLam :: Hint -> Type -> TTerm (S n) -> TTerm n
   TApp :: TTerm n -> TTerm n -> TTerm n
   -- | The bound term has the scheme; its abstractions are explicit in it.
@@ -54,7 +58,8 @@ data TTerm (n :: Nat) where
   TPow :: TTerm n -> Integer -> TTerm n
   TNoise :: NudgeKind -> Label -> Integer -> TTerm n
   TUncertain :: NudgeKind -> Label -> TTerm n -> TTerm n -> TTerm n
-  TPack :: [TTerm n] -> TTerm n
+  -- | A stack of tensors, along the axes its new leading position has.
+  TPack :: Axis -> [TTerm n] -> TTerm n
   TProj :: TTerm n -> Int -> TTerm n
   -- | Abstraction over a type-level variable of the given kind.
   TTyLam :: VarId -> Kind -> TTerm n -> TTerm n
@@ -505,7 +510,7 @@ lint look ctx = \case
         Right
         (nth (fromMaybe 0 idx) schemes)
   TPrimApp name ty args -> do
-    let literals = [case a of TLit l -> Just l; _ -> Nothing | a <- args]
+    let literals = [case a of TLit l _ -> Just l; _ -> Nothing | a <- args]
         instanceOf general =
           require
             (ty `isInstanceOf` general)
@@ -540,11 +545,14 @@ lint look ctx = \case
     result <- go ty args
     require (not (isFun result)) ("primitive " <> name <> " is not saturated")
     mono result
-  TLit (LTensor (dims, rs)) -> do
+  TLit (LTensor (dims, rs)) axes -> do
     require
       (length rs == product dims)
       "tensor literal has the wrong number of values for its shape"
-    mono (TTensor (shapeOfDims dims) dimOne)
+    require
+      (length axes == length dims)
+      "tensor literal has the wrong number of axes for its shape"
+    mono (TTensor (foldr (\(k, a) -> SCons (LLit k) a) SNil (zip dims axes)) dimOne)
   TLam _ ty body -> do
     tb <- lint look (VCons (Forall [] ty) ctx) body >>= asMono "lambda body"
     mono (TFun ty tb)
@@ -641,7 +649,7 @@ lint look ctx = \case
       _ ->
         Left
           "± needs a tensor and an uncertainty of its dimension: scalar, of its shape, or its covariance matrix"
-  TPack ts -> do
+  TPack ax ts -> do
     tys <- mapM monoOf ts
     case tys of
       [] -> Left "an empty pack has no element type to lint against"
@@ -649,7 +657,7 @@ lint look ctx = \case
         require
           (all (== TTensor sh d) rest)
           "pack of tensors with different shapes or dimensions"
-        mono (TTensor (SCons (LLit (length ts)) AAnon sh) d)
+        mono (TTensor (SCons (LLit (length ts)) ax sh) d)
       t : _ -> Left ("pack of non-tensors of type " <> renderType t)
   TProj t i -> do
     tt <- monoOf t
@@ -891,8 +899,8 @@ renderTTerm namer = go 0
     TRef h idx (Hint written) -> namer h idx written
     TPrimApp p _ [] -> p
     TPrimApp p _ args -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
-    TLit (LTensor ([], [r])) -> showD r
-    TLit (LTensor (dims, rs)) -> nested dims rs
+    TLit (LTensor ([], [r])) _ -> showD r
+    TLit (LTensor (dims, rs)) _ -> nested dims rs
     TLam (Hint h) ty b ->
       paren
         (prec > 0)
@@ -944,7 +952,7 @@ renderTTerm namer = go 0
             <> go 6 ctx e
             <> renderLabel l
         )
-    TPack ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
+    TPack _ ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
     TProj b i -> go 11 ctx b <> "." <> T.pack (show i)
     -- Axis variables are not printed in stage 1 of design §3.9, here as
     -- in types: their abstractions and applications print as nothing.

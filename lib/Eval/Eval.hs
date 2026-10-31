@@ -298,7 +298,7 @@ eval cfg rt = go
           (_, Just s) -> asChart (UnitNamed s) v
           _ -> Right v
     TPrimApp prim _ args -> runPrim cfg rt prim (zipWith (\i a -> go (child i) env a) [0 ..] args)
-    TLit (LTensor (dims, rs)) -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
+    TLit (LTensor (dims, rs)) _ -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
     -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
     -- A boolean is data like any other: @if@ is a case on its constructor.
     TCon c _ args -> Right (VData c (zipWith (\i a -> go (child i) env a) [0 ..] args))
@@ -368,7 +368,7 @@ eval cfg rt = go
     -- shape the other components have, so an error in one component is
     -- only raised when that component is used. The first component's
     -- display unit is kept.
-    TPack ts ->
+    TPack _ ts ->
       let results = zipWith (\i t -> tensor =<< go (child i) env t) [0 ..] ts
           known = [(dims, d, hint) | Right (dims, d, hint, _) <- results]
        in case (results, known) of

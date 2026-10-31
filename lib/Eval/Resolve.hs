@@ -359,6 +359,14 @@ annotationsWith :: Codebase -> Map.Map Text (Scheme, D.Path) -> Annotations
 annotationsWith cb = Annotations $ \written h idx ->
   case (signatureOf written cb, lookupName written cb) of
     (Just sig, Just r) | r == Reference h idx -> Just sig
+    -- An unsigned value is used with anonymous axes (design §3.9,
+    -- decision 5).
+    (Nothing, Just r)
+      | r == Reference h idx
+      , Just general <- typeOf r cb
+      , let used = defaultAxes general
+      , used /= general ->
+          Just used
     _ -> Nothing
 
 {- | The ascriptions the desugarer found (design §4.8), by marker, each
@@ -383,14 +391,14 @@ ascriptionsIn scope cb outer prefix prov =
       | (k, (marker, t)) <- zip [0 ..] prov.ascriptions
       ]
 
--- | Whether a term references a signed name, so that checking it must see signatures.
+{- | Whether a term references a signed name, or a value whose axes default
+(design §3.9), so that checking it must see signatures.
+-}
 usesSignatures :: Codebase -> Term n -> Bool
-usesSignatures cb t
-  | Map.null cb.signatures = False
-  | otherwise =
-      any
-        (\(h, i, w) -> isJust (annotationsFor cb `signatureAt` (w, h, i)))
-        (Set.toList (refsWritten t))
+usesSignatures cb t =
+  any
+    (\(h, i, w) -> isJust (annotationsFor cb `signatureAt` (w, h, i)))
+    (Set.toList (refsWritten t))
  where
   signatureAt a (w, h, i) = a.signatureFor w h i
 

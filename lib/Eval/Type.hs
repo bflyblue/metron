@@ -53,6 +53,7 @@ module Eval.Type (
   renderForallWith,
   renderForallIn,
   canonicalScheme,
+  defaultAxes,
   renderArg,
 ) where
 
@@ -165,6 +166,25 @@ baseSymbolsOf = \case
     AType t -> baseSymbolsOf t
     ADim d -> dim d
     _ -> Set.empty
+
+{- | The scheme a named value is used at (design §3.9, decision 5): a
+definition whose type is not a function keeps no free axis variable, so
+its quantified axes are anonymous; a function's are left as they are. A
+stored scheme is its Core's alone and stays general, so that a signature
+can keep a value's axes polymorphic (@off :: forall (a : 3). Vec a [m]@);
+this default is what an unsigned name means where it is used.
+-}
+defaultAxes :: Scheme -> Scheme
+defaultAxes sc@(Forall vs t) = case t of
+  TFun _ _ -> sc
+  _
+    | null axes -> sc
+    | otherwise ->
+        Forall
+          [(v, k) | (v, k) <- vs, k /= KAxis]
+          (substOnce (Map.fromList [(v, AAxis AAnon) | v <- axes]) t)
+ where
+  axes = [v | (v, KAxis) <- vs]
 
 {- | A scheme with its variables renumbered from 0 in order of appearance,
 so that two schemes that differ only in their variables' ids are equal.

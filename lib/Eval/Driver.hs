@@ -68,6 +68,7 @@ import Eval.Type (
   Type (..),
   TypeDef (..),
   dataConstructors,
+  defaultAxes,
   renderForallIn,
   renderScheme,
   renderTypeDef,
@@ -531,7 +532,7 @@ command session src = \case
   ("type" : rest) -> keep $ do
     e <- parseExpr (T.unwords rest)
     (_, _, ty, _) <- checkExpr scope ecb (T.unwords rest) e
-    pure [maybe "" (renderForallIn spelling) ty]
+    pure [maybe "" (renderForallIn spelling . defaultAxes) ty]
   -- Without an editor, :edit prints the source it would open (design
   -- §7.3); the REPL opens it, and reads a file for --file.
   ("edit" : args) ->
@@ -1557,7 +1558,7 @@ listNames session args = do
         , kindOk n
         , nameOk n
         , -- A signed name shows, and matches, its signature (design §4.8).
-        Just sc <- [signatureOf n cb <|> typeOf r cb]
+        Just sc <- [signatureOf n cb <|> (defaultAxes <$> typeOf r cb)]
         , typeOk sc
         ]
       types =

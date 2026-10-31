@@ -648,6 +648,19 @@ orient ctx ts = do
     w <- freshDim
     bindVar [] v (ADim (dimInv w))
 
+{- | A named value keeps no free axis variable (design §3.9, decision 5):
+at a local binding whose type is not a function, the axis variables it
+would quantify are anonymous. Those the context or a pending constraint
+holds are not its to fix. (A definition's own scheme stays general; the
+default for a definition is where its name is used, 'defaultAxes'.)
+-}
+defaultValueAxes :: Vec n Scheme -> Type -> Infer ()
+defaultValueAxes ctx t = do
+  (t', vs) <- quantifiable ctx t
+  case t' of
+    TFun _ _ -> pure ()
+    _ -> forM_ [v | (v, KAxis) <- vs] $ \v -> bindVar [] v (AAxis AAnon)
+
 quantify :: Vec n Scheme -> Type -> Infer Scheme
 quantify ctx t = (\(t', quantified) -> Forall quantified t') <$> quantifiable ctx t
 
@@ -813,7 +826,14 @@ infer look p ctx = \case
     -- was waiting for; solve now so later errors print resolved types.
     solvePending
     pure (result, TPrimApp name t (map snd typed))
-  Lit l@(LTensor (dims, _)) -> pure (TTensor (shapeOfDims dims) dimOne, TLit l)
+  -- A literal is polymorphic in its axes (design §3.9, decision 5): its
+  -- frame comes from where it is used.
+  Lit l@(LTensor (dims, _)) -> do
+    axes <- mapM (const freshAxis) dims
+    pure
+      ( TTensor (foldr (\(k, a) -> SCons (LLit k) a) SNil (zip dims axes)) dimOne
+      , TLit l axes
+      )
   -- Data (design §5.1): constructors are typed by the table below, a case by
   -- its scrutinee's constructors, with each alternative binding the fields.
   Con c args -> do
@@ -853,6 +873,7 @@ infer look p ctx = \case
   Let h e body -> do
     (te, e') <- infer look (0 : p) ctx e
     settle (0 : p) ctx
+    defaultValueAxes ctx te
     sc@(Forall vs _) <- generalise ctx te
     (tb, body') <- infer look (1 : p) (VCons sc ctx) body
     pure (tb, TLet h sc (abstractOver vs e') body')
@@ -917,7 +938,9 @@ infer look p ctx = \case
         )
         [0 ..]
         ts
-    pure (TTensor (SCons (LLit (length ts)) AAnon elemShape) elemDim, TPack ts')
+    -- The new leading position's axes come from use, as a literal's do.
+    ax <- freshAxis
+    pure (TTensor (SCons (LLit (length ts)) ax elemShape) elemDim, TPack ax ts')
   Proj t i -> do
     (tt0, t') <- infer look (0 : p) ctx t
     tt <- resolve tt0
@@ -1061,7 +1084,7 @@ zonk s = go
     TVr i -> TVr i
     TRef h i hint -> TRef h i hint
     TPrimApp p ty args -> TPrimApp p (applyType s ty) (map go args)
-    TLit l -> TLit l
+    TLit l axes -> TLit l (map (applyAxis s) axes)
     TLam h ty b -> TLam h (applyType s ty) (go b)
     TApp f a -> TApp (go f) (go a)
     TLet h sc e b -> TLet h (applyScheme s sc) (go e) (go b)
@@ -1077,7 +1100,7 @@ zonk s = go
     TPow b n -> TPow (go b) n
     TNoise k l n -> TNoise k l n
     TUncertain k l x e -> TUncertain k l (go x) (go e)
-    TPack ts -> TPack (map go ts)
+    TPack ax ts -> TPack (applyAxis s ax) (map go ts)
     TProj t i -> TProj (go t) i
     TTyLam v k b -> TTyLam v k (go b)
     TTyApp b arg -> TTyApp (go b) (applyArg s arg)
