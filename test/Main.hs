@@ -1247,6 +1247,90 @@ codebaseTests =
               assertBool "distinct" (T.takeWhile (/= ' ') cur /= old)
             other -> assertFailure (show other)
           Left err -> assertFailure (T.unpack err)
+    , testCase "historical values and functions resolve in expressions and definitions" $ do
+        let setup = ["let f x = x + 1", ":add"]
+            digest = "#" <> hashShownAs setup "f"
+            changed = setup ++ ["let f x = x + 2", ":update"]
+        expecting (runLines (changed ++
+          ["f" <> digest <> " 10", digest <> " 10", "let old = f" <> digest,
+           "old 10", "let f = 99 in f" <> digest <> " 10"])) $ \outs ->
+            lastN 4 outs @?= replicate 4 "11"
+        expecting (runLines (changed ++ [":unname f", "f" <> digest <> " 10"])) $ \outs ->
+          last outs @?= "11"
+    , testCase "hash arguments do not steal measurement labels" $ do
+        let digest = hashText 5
+        expecting (runLines ["let x = 5", ":add", "let ident x = x",
+          "ident (" <> digest <> ")", "let n = 5 ± 1 #sensor", "n - n",
+          "let n2 = 5 ± 1#sensor", "n - n2"]) $ \outs ->
+            lastN 3 outs @?= ["5", "0", "0"]
+    , testCase "historical names respect namespace lookup and explicit absolute paths" $ do
+        let setup = ["namespace lab\n  let f x = x + 1", ":add"]
+            digest = "#" <> hashShownAs setup "lab.f"
+        expecting (runLines (setup ++ ["lab.f" <> digest <> " 3",
+          ":use lab", "f" <> digest <> " 4", ".lab.f" <> digest <> " 5"])) $ \outs -> do
+            take 1 (drop 1 outs) @?= ["4"]
+            lastN 2 outs @?= ["5", "6"]
+    , testCase "hash references validate missing, malformed and ambiguous prefixes" $ do
+        expectError (runLines ["#w"]) "invalid hash prefix"
+        expectError (runLines ["#0000000000000000000000000000000000000000000000000000"])
+          "no stored version matches"
+        expectError (runLines ["let x = 5", ":add", "x" <> hashText 6])
+          "no stored version matches"
+        expectError (runLines ["let x = 5", ":add", hashText 5 <> ".0"])
+          "member index is only valid"
+        let numbers = [0 .. 64]
+            groups = Map.fromListWith (++) [(T.take 2 (hashText n), [n]) | n <- numbers]
+            prefix = case filter ((> 1) . length . snd) (Map.toList groups) of
+              (p, _) : _ -> p
+              [] -> error "65 hashes must share one of 32 initial digits"
+            setup = ["let n" <> T.pack (show n) <> " = " <> T.pack (show n) | n <- [0 :: Int .. 64]]
+        expectError (runLines (setup ++ [":add", prefix])) "ambiguous hash reference"
+    , testCase "recursive-group references select and validate members" $ do
+        let setup = ["let down n = if n == 0 then 0 else down (n - 1)", ":add"]
+            digest = "#" <> hashShownAs setup "down"
+            groupHash = T.takeWhile (/= '.') digest
+        expecting (runLines (setup ++ [digest <> " 3", "down" <> digest <> " 4"])) $ \outs ->
+          lastN 2 outs @?= ["0", "0"]
+        expectError (runLines (setup ++ [groupHash])) "needs a valid .index"
+        expectError (runLines (setup ++ [groupHash <> ".999"])) "needs a valid .index"
+    , testCase "bare hash arguments print with grouping and read back" $ do
+        let setup = ["let ident x = x", "let five = 5", ":add"]
+            fn = hashTerm (Lam (Hint "x") (Var FZ))
+            value = hashTerm (num 5)
+            source = renderTerm (\digest _ _ -> showHash digest) VNil
+              (App (Ref fn Nothing (Hint "")) (Ref value Nothing (Hint "")))
+        source @?= showHash fn <> " (" <> showHash value <> ")"
+        expecting (runLines (setup ++ [source])) $ \outs -> last outs @?= "5"
+    , testCase "historical references do not become dependencies on new local bindings" $ do
+        let setup = ["let x = 5", "let y = x + 1", "let z = y * 2", ":add"]
+        expecting (runLines (setup ++ ["let x = x" <> hashText 5 <> " + 1\nlet newOnly = x * 3",
+          ":update", "x", "y", "z", "newOnly", ":todo"])) $ \outs ->
+          lastN 5 outs @?= ["6", "7", "14", "18", "nothing to do"]
+    , testCase "historical record fields and tensor projections remain postfix operations" $ do
+        let setup = ["data Box = Box {value :: Num}", "let box = Box {value = 7}",
+                     "let vector = [3, 4]", ":add"]
+            boxRef = "box#" <> hashShownAs setup "box"
+            vectorRef = "vector#" <> hashShownAs setup "vector"
+        expecting (runLines (setup ++ [boxRef <> ".value", "(" <> vectorRef <> ").0"])) $ \outs ->
+          lastN 2 outs @?= ["7", "3"]
+    , testCase "historical unit and chart roles come from the referenced version" $ do
+        let setup = ["unit track = 400 m", ":add"]
+            ref = "track#" <> hashShownAs setup "track"
+            changed = setup ++ ["let track = 7", ":update --no-upgrade"]
+        expecting (runLinesP (changed ++ ["5 * " <> ref <> " to m"])) $ \outs ->
+          last outs @?= "2000 m"
+        expectError (runLinesP (changed ++ [ref])) "a unit is not an expression"
+        let chartRef = "degC#" <> hashShownAs [] "degC"
+        expecting (runLinesP ["20 " <> chartRef <> " to degF"]) $ \outs ->
+          last outs @?= "68 degF"
+    , testCase "historical references survive a store reload" $ withTempStore $ \dir -> do
+        let setup = ["let f x = x + 1", ":add"]
+            digest = "#" <> hashShownAs setup "f"
+        _ <- persistLines dir (setup ++ ["let f x = x + 2", ":update",
+          "let previous = f" <> digest, ":add"])
+        (s, notes) <- reload dir
+        notes @?= []
+        linesIn s ["previous 10", "f" <> digest <> " 10", "f 10"] @?= Right ["11", "11", "12"]
     , testCase "alpha-equivalent definitions share a hash"
         $ expecting
           ( outputsWhere

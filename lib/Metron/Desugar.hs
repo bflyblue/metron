@@ -102,7 +102,7 @@ import Metron.Syntax qualified as S
       Span(..),
       TyExpr )
 import Data.Text qualified as T
-    ( intercalate,
+    ( intercalate, any,
       isPrefixOf,
       length,
       replace,
@@ -219,6 +219,8 @@ data Resolved
     ALocal Text
   | -- | A name two @use@d namespaces both offer, as their full paths.
     AAmbiguous [Text]
+  | -- | An explicit reference which cannot select one stored term.
+    AInvalidReference Text
   | -- | A space's declaration, by its hash, for a @%space:@ query (design §3.10, F2).
     ASpaceDecl Hash
 
@@ -387,7 +389,8 @@ it was.
 -}
 qualifiedChain :: Ctx n -> S.Expr -> M S.Expr
 qualifiedChain ctx e = case chain e of
-  Just (x, fields@(_ : _)) | Nothing <- lookupCtx x ctx -> go fields (length fields)
+  Just (x, fields@(_ : _))
+    | not (T.any (== '#') x), Nothing <- lookupCtx x ctx -> go fields (length fields)
   _ -> pure e
  where
   -- The name at the root and each field with the span of the access up to it.
@@ -798,6 +801,7 @@ headApp path ctx hd x args = case lookupCtx x ctx of
         Just i -> applyAll path ctx (\_ -> pure (Var i)) args
         Nothing -> failWith (UnknownName hd.span x)
       Just (AAmbiguous fulls) -> ambiguous hd.span x fulls
+      Just (AInvalidReference message) -> failWith (BadSpecialForm hd.span message)
       Just (AQualified _ _) -> failWith (UnknownName hd.span x)
       Just (ASpaceDecl _) -> failWith (UnknownName hd.span x)
       -- A declared constructor applies like a primitive: saturated, eta-expanded or over-applied.

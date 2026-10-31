@@ -48,7 +48,7 @@ import Metron.Syntax
              TyInt, TyShapeCons, TyTuple) )
 import Data.List.NonEmpty qualified as NE ( fromList, toList )
 import Text.Megaparsec qualified as P
-    ( (<|>),
+    ( (<|>), empty,
       ErrorItem(Label, Tokens),
       PosState(pstateSourcePos, pstateInput, pstateOffset),
       Parsec,
@@ -771,7 +771,7 @@ application = do
     Num _ -> quantity hd
     Vec _ -> quantity hd
     _ -> do
-      args <- P.many atom
+      args <- P.many argument
       pure (foldl (\f a -> Expr (spanUnion f.span a.span) (App f a)) hd args)
  where
   quantity hd = do
@@ -779,7 +779,7 @@ application = do
     pure (foldl (binop Scale) hd units)
   unitAtom = do
     o <- P.getOffset
-    a <- atom
+    a <- argument
     case a.node of
       Num _ ->
         P.setOffset o
@@ -788,6 +788,13 @@ application = do
         P.setOffset o
           >> fail "a literal next to a vector literal: write the multiplication, 2 * [1, 2]"
       _ -> withPower a
+
+-- A trailing #label belongs to the surrounding uncertainty expression.
+-- A bare hash used as an argument must therefore be parenthesised.
+argument :: Parser Expr
+argument = do
+  P.notFollowedBy (match "#label" (\case THashLabel l -> Just l; _ -> Nothing))
+  atom
 
 {- | A primary expression with any glued projections.
 | A primary expression with its glued projections, field accesses and record braces.
@@ -802,9 +809,20 @@ atom = primary >>= postfixes
       , slice acc >>= postfixes
       , match "field" (\case TField f -> Just f; _ -> Nothing)
           >>= \(sp, f) -> postfixes (Expr (spanUnion acc.span sp) (FieldOf acc f))
+      , historical acc >>= postfixes
       , recordBraces acc >>= postfixes
       , pure acc
       ]
+  historical acc = do
+    n <- maybe P.empty pure (referenceName acc)
+    (sp, h) <- P.try $ do
+      pair@(sp, _) <- match "glued hash reference" (\case THashLabel h -> Just h; _ -> Nothing)
+      if acc.span.to == sp.from then pure pair else P.empty
+    referenceSuffix (spanUnion acc.span sp) (n <> "#" <> h)
+  referenceName e = case e.node of
+    Var n | not (T.any (== '#') n) -> Just n
+    FieldOf a f -> (<> ("." <> f)) <$> referenceName a
+    _ -> Nothing
   -- @e._.i@ (§2.10): each wildcard skips an axis, and a position must follow.
   slice acc = do
     wilds <- P.some (match "wildcard" (\case TWild -> Just (); _ -> Nothing))
@@ -825,7 +843,10 @@ atom = primary >>= postfixes
 primary :: Parser Expr
 primary =
   P.choice
-    [ (\(sp, r) -> Expr sp (Num r))
+    [ do
+        (sp, h) <- match "hash reference" (\case THashLabel h -> Just h; _ -> Nothing)
+        referenceSuffix sp ("#" <> h)
+    , (\(sp, r) -> Expr sp (Num r))
         <$> match "number" (\case TNum r -> Just r; _ -> Nothing)
     , (\sp -> Expr sp (Bool True)) <$> kw KTrue
     , (\sp -> Expr sp (Bool False)) <$> kw KFalse
@@ -837,6 +858,15 @@ primary =
     , vecOrMat
     , listLit
     ]
+
+-- The first glued numeric suffix selects a recursive-group member.
+-- Parenthesise the reference before projecting an ordinary value.
+referenceSuffix :: Span -> Text -> Parser Expr
+referenceSuffix sp n = do
+  member <- P.optional (match "cycle member" (\case TProj i -> Just i; _ -> Nothing))
+  pure $ case member of
+    Nothing -> Expr sp (Var n)
+    Just (end, i) -> Expr (spanUnion sp end) (Var (n <> "." <> T.pack (show i)))
 
 {- | @(e)@, a left section @(op e)@, or a right section @(e op)@. @(- e)@ is
 negation, as in Haskell, so @-@ is excluded from left sections.

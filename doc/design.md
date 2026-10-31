@@ -117,6 +117,11 @@ desugaring (§2.9); the type checker never sees it.
   always an exact rational; `9.81` is exactly 981/100. `1/3` is an expression, not a
   literal. Underscores are ignored.
 - **Comments**: `--` to end of line, `{- … -}` nestable blocks.
+- **Historical references**: glued `name#hash` or bare `#hash`, optionally
+  followed by a glued `.index` for a recursive-group member. Hash prefixes
+  use lowercase base32hex (`0-9`, `a-v`) and must identify a unique reference.
+  A bare hash in an application argument or quantity suffix needs parentheses,
+  as in `f (#hash)`, so trailing measurement labels remain unambiguous.
 - **Keywords**: `let`, `in`, `where`, `if`, `then`, `else`, `to`, `true`, `false`,
   `unit`, `chart`, `space`, `on`, `from`, `at`, `case`, `of`, `data`,
   `namespace`, `use`, `forall` (also `∀`). (`as` in
@@ -494,20 +499,24 @@ binary     ::= operator-precedence parse over 'unary' using the table in 2.5,
                '#'label as a postfix just below ± (§3.2.4)
 unary      ::= '-' unary | 'sqrt' unary | power
 power      ::= app [ '^' [ '-' ] natural ]
-app        ::= quantity | atom atom*
+app        ::= quantity | atom argument*
+argument   ::= atom                                      -- not an unparenthesised bare #hash
 quantity   ::= number unitatom+ | vector unitatom+          -- the desugarer regroups a * and / chain after it (2.6)
-unitatom   ::= atom [ '^' [ '-' ] natural ]
+unitatom   ::= argument [ '^' [ '-' ] natural ]
 atom       ::= primary postfix*
 postfix    ::= '.' projection | '.' name                -- glued: a component, or a record field (2.10)
              | ( '._' )+ '.' projection                -- glued: a slice along axis k = the number of '._' (2.10)
              | '{' name '=' expr ( ',' name '=' expr )* '}'    -- record construction or update (2.3)
 projection ::= natural
 primary    ::= number | name | '.' name | 'true' | 'false'     -- '.' name not glued: absolute (7.6)
+             | hashref
              | '(' expr ')' | section | vector | matrix
              | '(' expr ( ',' expr )+ ')'                      -- a tuple
              | '(' expr '::' sigtype ')'                       -- an ascription (4.8)
              | '{' [ expr ( ',' expr )* ] '}'                   -- a list
              | 'case' expr 'of' alts                       -- alts: an indented block, or ; separated
+hashref    ::= [ qualified-name ] '#' hashprefix [ '.' natural ] -- glued when named
+hashprefix ::= ( '0'..'9' | 'a'..'v' )+
 alt        ::= pattern '->' expr
 pattern    ::= '(' name ( ',' name )+ ')' | '{}' | name ':' name | 'true' | 'false' | '_' | name name*
              | qname name*                        -- a qualified or absolute constructor (7.6)
@@ -4258,7 +4267,27 @@ A plain `:update` does the `:upgrade` step immediately and prints the same repor
 
 `:view` renders a `Ref` by its current name when the name still points at that
 hash, as `name#hash` when the name has moved on, and as `#hash` when nothing
-names it. A reference into a cycle prints as `#hash.i`, and `:view` of a cycle
+names it. Both forms can be used in expressions. Named references search the
+name's current binding and history through the usual namespace lookup, even
+after the name is removed. Bare references search all stored terms. Missing
+or ambiguous prefixes are errors; ambiguity reports include full hashes.
+Named references cannot select a version that was never associated with that
+name. They bypass local binders and new definitions in the same binding group.
+The selected term's stored type determines its unit or chart role, rather than
+the current name's flags. References to declared type constructors are not
+term hashes and are outside this syntax.
+
+A bare hash used as an argument is parenthesised: `f (#hash)`. For projection
+from an ordinary historical tensor use `(v#hash).0`; `#hash.0` selects a cycle
+member instead. A glued `name#hash` is a reference, while a separated `#label`
+remains the uncertainty postfix. The name/hash syntax selects a Core reference,
+not a permanent pin: stored dependents still follow the existing upgrade rules.
+An accepted replacement is not itself rewritten during propagation. Thus
+replacing `x = 5` with `x = x#old + 1` gives `6`, not `7`; other dependents
+still upgrade, even if a dependent shares the replacement's hash. A reference
+to a definition's own past is intentional and is not listed as a stale todo.
+
+A reference into a cycle prints as `#hash.i`, and `:view` of a cycle
 member shows that member's body with the other members by their current names.
 Within one input, defining the same name twice is an error rather than a
 rebinding: rebinding is something that happens between inputs. The same

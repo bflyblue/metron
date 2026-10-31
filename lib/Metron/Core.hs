@@ -33,6 +33,7 @@ module Metron.Core (
   -- * Terms
   Hash (..),
   showHash,
+  showFullHash,
   hashHasPrefix,
   Hint (..),
   NudgeKind (..),
@@ -452,6 +453,10 @@ characters of the digest.
 -}
 showHash :: Hash -> Text
 showHash h = "#" <> T.take 5 (base32hex h)
+
+-- | An unabridged reference, for resolving ambiguous short prefixes.
+showFullHash :: Hash -> Text
+showFullHash h = "#" <> base32hex h
 
 {- | Whether a hash's base32hex form starts with the given text (with or
 without the leading @#@).

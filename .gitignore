@@ -1,2 +1,6 @@
 .direnv/
 dist-newstyle/
+.claude/
+.metron/
+result
+result-*

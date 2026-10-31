@@ -636,7 +636,9 @@ renderTermUnits spelling namer isUnitRef = go 0
   go :: Int -> Vec m Text -> Term m -> Text
   go prec ctx t = case t of
     Var i -> lookupVar i ctx
-    Ref h idx (Hint written) -> namer h idx written
+    Ref h idx (Hint written) ->
+      let name = namer h idx written
+       in paren (prec > 10 && T.any (== '#') name) name
     Lit (LTensor ([], [r]))
       | r < 0 -> paren (prec > 8) (renderRational 20 r)
       | otherwise -> renderRational 20 r

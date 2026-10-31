@@ -114,7 +114,8 @@ data Expr = Expr {span :: Span, node :: Node}
 data Node
   = Num Rational
   | Bool Bool
-  | Var Text
+  | -- | A name or an explicit textual hash reference, resolved before Core.
+    Var Text
   | Lam [Name] Expr
   | App Expr Expr
   | -- | @let f x y = e in body@; parameters are sugar for a lambda.

@@ -423,6 +423,7 @@ adjacency = go Nothing
         endsAtom = case prev of
           Just p -> case p.value of
             TIdent _ -> True
+            THashLabel _ -> True
             TRParen -> True
             TRBracket -> True
             TProj _ -> True

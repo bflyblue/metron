@@ -2,14 +2,22 @@ cabal-version:   3.12
 name:            metron
 version:         0.1.0.0
 synopsis:        A pure, unit-aware, content-addressed calculator language
--- description:
-license:
+description:     A calculator language with SI dimensions, tensors, coordinate
+                 charts, uncertainty tracking, and content-addressed definitions.
+homepage:        https://github.com/bflyblue/metron
+bug-reports:     https://github.com/bflyblue/metron/issues
+license:         MIT
+license-file:    LICENSE
 author:          Shaun Sharples
 maintainer:      shaun.sharples@gmail.com
 -- copyright:
 category:        Language
 build-type:      Simple
-extra-doc-files: CHANGELOG.md
+extra-doc-files: CHANGELOG.md README.md TUTORIAL.md doc/core.md doc/design.md doc/style.md
+
+source-repository head
+  type:          git
+  location:      https://github.com/bflyblue/metron.git
 
 common common
   ghc-options:        -Wall

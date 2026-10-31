@@ -1,6 +1,15 @@
 # Changelog
 
 ## Unreleased
+
+- Read historical values and call historical functions with `name#hash` or
+  `#hash`, including recursive-group member suffixes. Resolve prefixes against
+  stored definitions, reject ambiguous matches with full-hash diagnostics,
+  and preserve measurement-label syntax by requiring parentheses around bare
+  hash arguments. Unit and chart roles follow the selected version's type.
+  Updating a definition that refers to its own old version preserves the
+  accepted replacement while upgrading other dependents, including names
+  that previously shared the replacement's content.
 - Rename the project, package, executable, and module namespace to Metron.
   Source exports use `.metron`; default stores use `.metron/` or
   `$XDG_DATA_HOME/metron/`, with a `metron codebase` format marker.

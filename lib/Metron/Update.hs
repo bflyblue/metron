@@ -86,9 +86,9 @@ import Data.Map.Strict qualified as Map
       fromList,
       insert,
       map,
-      mapWithKey )
+      mapWithKey, union, fromListWith )
 import Data.Set qualified as Set
-    ( Set,
+    ( Set, unions, empty, singleton, notMember,
       member,
       union,
       difference,
@@ -132,7 +132,8 @@ appliesTo cb written r w = maybe True (any (writtenAs cb w)) (Map.lookup r writt
 made under.
 -}
 propagateNamed :: Written -> RefMap -> Codebase -> Propagation
-propagateNamed written refmap cb = propagateScoped (appliesTo cb written) Map.empty refmap cb
+propagateNamed written refmap cb =
+  propagateKeeping (Set.unions (Map.elems written)) (appliesTo cb written) Map.empty refmap cb
 
 -- | By hash alone, every written name included: for re-stamping.
 propagateWith :: ConMap -> RefMap -> Codebase -> Propagation
@@ -140,7 +141,14 @@ propagateWith = propagateScoped (\_ _ -> True)
 
 propagateScoped ::
   (Reference -> Text -> Bool) -> ConMap -> RefMap -> Codebase -> Propagation
-propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []) affectedInOrder
+propagateScoped = propagateKeeping Set.empty
+
+-- Accepted replacements keep their bodies even when another name shares
+-- their hash. Other holders of that same content can still be upgraded.
+propagateKeeping ::
+  Set.Set Text -> (Reference -> Text -> Bool) -> ConMap -> RefMap -> Codebase -> Propagation
+propagateKeeping protected applies cons initial cb0 =
+  go cb0 initial Map.empty (Propagation cb0 [] []) affectedInOrder
  where
   initialHashes = Set.fromList (map (.hash) (Map.keys initial))
   oldTypes = Set.fromList (map fst (Map.keys cons))
@@ -202,29 +210,31 @@ propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []
       Just general | signatureHolds (retyped sig) general -> retyped sig
       _ -> sig
 
-  go cb _ acc [] =
+  go cb _ _ acc [] =
     acc
       { codebase = followSignatures cb
       , upgraded = reverse acc.upgraded
       , skipped = reverse acc.skipped
       }
-  go cb refmap acc (h : hs) = case lookupTerm h cb of
-    Nothing -> go cb refmap acc hs
+  go cb refmap rewritten acc (h : hs)
+    | null holders = go cb refmap rewritten acc hs
+    | otherwise = case lookupTerm h cb of
+    Nothing -> go cb refmap rewritten acc hs
     Just t ->
       let t' =
             rewriteRefsWritten
               ( \rh ri w ->
-                  if applies (Reference rh ri) w
+                  if follows (Reference rh ri) w
                     then (\(Reference nh ni) -> (nh, ni)) <$> Map.lookup (Reference rh ri) refmap
                     else Nothing
               )
               (restampTerm id newCon t)
-          holders = [(n, i) | (n, Reference rh i) <- Map.toList cb.names, rh == h]
        in case elaborateClosed (typeLookupFor cb) t' of
             Left err ->
               go
                 cb
                 refmap
+                rewritten
                 acc
                   { skipped = [(n, Reference h i, err.message) | (n, i) <- holders] ++ acc.skipped
                   }
@@ -242,6 +252,7 @@ propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []
                   go
                     cb
                     refmap
+                    rewritten
                     acc
                       { skipped =
                           [ ( m
@@ -262,6 +273,9 @@ propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []
               let h' = hashTerm t'
                   renamed = [(n, Reference h i, Reference h' i) | (n, i) <- holders]
                   refmap' = foldr (\(_, old, new) -> Map.insert old new) refmap renamed
+                  rewritten' = Map.union
+                    (Map.fromListWith Set.union [(old, Set.singleton n) | (n, old, _) <- renamed])
+                    rewritten
                   -- The signature, retyped, holds of the new version: set it
                   -- first, so that the rebinding keeps it.
                   rebind (n, _, new) acc' =
@@ -270,7 +284,13 @@ propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []
                       new
                       (maybe acc' (\s -> setSignature n (retyped s) acc') (signatureOf n acc'))
                   cb' = foldr rebind (addTerm h' t' schemes typed cb) renamed
-               in go cb' refmap' acc{upgraded = reverse renamed ++ acc.upgraded} hs
+               in go cb' refmap' rewritten' acc{upgraded = reverse renamed ++ acc.upgraded} hs
+   where
+    holders = [(n, i) | (n, Reference rh i) <- Map.toList cb.names,
+                       rh == h, Set.notMember n protected]
+    follows r w = case Map.lookup r rewritten of
+      Just labels -> any (writtenAs cb w) labels
+      Nothing -> applies r w
 
 -- | A type with declared types replaced, old hash to new.
 retypeType :: Map Hash Hash -> Type -> Type
@@ -329,6 +349,7 @@ staleReferences cb =
   , let r = Reference rh ri
   , null (namesOf r cb)
   , m <- historicalNamesOf r cb
+  , n /= m -- A replacement's explicit reference to its own past is intentional.
   , writtenAs cb w m
   ]
 
