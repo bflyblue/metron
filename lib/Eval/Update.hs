@@ -237,7 +237,7 @@ retypeType m = \case
   -- follows it too.
   TQty r sh d -> TQty r (shape sh) d
   TPoint f -> TPoint (frame f)
-  TScale f -> TScale (frame f)
+  TChart f -> TChart (frame f)
   TOver f md -> TOver (frame f) md
   t -> t
  where

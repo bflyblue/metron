@@ -181,8 +181,8 @@ resolvedAt cb n = case lookupName n cb of
           ( Resolution
               (h, i)
               (isUnitName n cb)
-              (isScaleName n cb)
-              (isScaleName n cb && moving cb h i)
+              (isChartName n cb)
+              (isChartName n cb && moving cb h i)
           )
       )
   Nothing -> case lookupConName n cb of
@@ -426,7 +426,7 @@ typeVariable scope cb n =
   -- A chart's name is a unit's kin: a rescaling, whose frame is its
   -- parent's, is refused as such where a frame goes (design §3.10, F3).
   isUnit = case qualifyName TermLabel scope cb n of
-    Found u -> isUnitName u cb || isScaleName u cb
+    Found u -> isUnitName u cb || isChartName u cb
     _ -> False
 
 {- | A signature as it is written back (design §4.8): headed by its
@@ -751,7 +751,7 @@ scopedSignature member = \case
 {- | A definition's term, or a cycle's, with the readings the types choose
 written in (design §3.10, U4, U6): each quantity whose literal is followed
 by something its spelling does not make a unit or a chart is @scale@ or
-@pointOn@, each such @to@ the display unit's or @toScale@. They are
+@pointOn@, each such @to@ the display unit's or @toChart@. They are
 inferred with each member's signature as an ascription of its body, and
 with the signatures of the names it uses, so that @per u = 3 u@ under
 @per :: forall d. Unit d -> Num d@ reads @scale@; the term written in
@@ -1161,7 +1161,7 @@ markKind :: S.BindKind -> Text -> Codebase -> Codebase
 markKind kind n cb = case kind of
   S.Plain -> clearFlags n cb
   S.Unit -> markUnit n cb
-  S.ChartDecl -> markScale n cb
+  S.ChartDecl -> markChart n cb
 
 -- | The variables a pattern binds.
 patternNames :: S.Pattern -> [S.Name]
@@ -1308,7 +1308,6 @@ builtinTypeNames =
   , "Tensor"
   , "Point"
   , "Chart"
-  , "Scale"
   , "Diff"
   , "Coords"
   ]
@@ -1513,9 +1512,7 @@ tyType env t = case t.node of
         -- A point and a chart take a frame (design §3.10, F4), and so do
         -- the amounts between its points and its coordinates.
         ("Point", [a]) -> TPoint <$> tyFrame env a
-        ("Chart", [a]) -> TScale <$> tyFrame env a
-        -- The old spelling of @Chart@ (design §3.6).
-        ("Scale", [a]) -> TScale <$> tyFrame env a
+        ("Chart", [a]) -> TChart <$> tyFrame env a
         ("Diff", [a]) -> (`overType` Nothing) <$> tyFrame env a
         ("Coords", [a]) -> (`overType` Just dimOne) <$> tyFrame env a
         (n, _)
@@ -1570,7 +1567,7 @@ tyFrame env a = case a.node of
     Ambiguous fulls -> ambiguousType a n fulls
     NotFound -> case qualifyName TermLabel env.scope env.codebase n of
       Found c
-        | isScaleName c env.codebase
+        | isChartName c env.codebase
         , Just r <- lookupName c env.codebase
         , Just (Forall _ t) <- typeOf r env.codebase
         , Just (FrNamed h) <- (.slot) <$> chartTypeFrame t ->
@@ -1594,7 +1591,7 @@ tyFrame env a = case a.node of
 chartTypeFrame :: Type -> Maybe Frame
 chartTypeFrame = \case
   TFun _ r -> chartTypeFrame r
-  TScale f -> Just f
+  TChart f -> Just f
   _ -> Nothing
 
 {- | A minted frame as a type (design §3.10, F3), read off the type of the

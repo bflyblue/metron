@@ -219,7 +219,7 @@ unitStatement = do
   pure (SLet (Binding (spanUnion s e.span) n [] e Unit))
 
 {- | @chart name params… on parent [at origin] [step unit] [by B [then B
-…]] [spinning ω]@ (design §3.10, F10; @scale@ is the old spelling): a
+…]] [spinning ω]@ (design §3.10, F10): a
 definition whose value is a chart, marked as one. @on@ ends the
 parameters and names the parent, a space or a chart; the other clauses
 come in any order, each running to the next clause word, so no

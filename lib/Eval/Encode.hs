@@ -109,7 +109,7 @@ encType = \case
   -- 0x22, 0x23 and 0x29, a point and a chart over a tensor type, are
   -- retired.
   TPoint f -> word8 0x2B <> encFrame f
-  TScale f -> word8 0x2C <> encFrame f
+  TChart f -> word8 0x2C <> encFrame f
   TOver f md -> word8 0x2D <> encFrame f <> maybe (word8 0) ((word8 1 <>) . encDim) md
   TFun a b -> word8 0x26 <> encType a <> encType b
   TVar v -> word8 0x27 <> varint (fromIntegral v)

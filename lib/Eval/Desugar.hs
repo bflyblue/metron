@@ -127,7 +127,7 @@ index). Names bound locally shadow these; these shadow primitives.
 data Resolution = Resolution
   { ref :: (Hash, Maybe Int)
   , isUnit :: Bool
-  , isScale :: Bool
+  , isChart :: Bool
   , isMoving :: Bool
   -- ^ a chart declared with parameters: a moving chart, a function to a chart (design §3.8)
   }
@@ -548,7 +548,7 @@ desugar path ctx e = do
                 unitE = foldl1 (binop S.Outer) atoms
             mapM_ (refuseMoving ctx asPoint) atoms
             chart <- case atoms of
-              [c] -> isScaleName ctx c
+              [c] -> isChartName ctx c
               _ -> pure False
             unit <- staticUnit ctx unitE
             if chart
@@ -1266,10 +1266,10 @@ fillOperands path prov msg = case Map.lookup path prov.operands of
 {- | Whether an expression is a free name declared with @chart@ (design
 §3.6), or a moving chart applied at a time, @ecef t0@ (§3.8).
 -}
-isScaleName :: Ctx n -> S.Expr -> M Bool
-isScaleName ctx e = case e.node of
+isChartName :: Ctx n -> S.Expr -> M Bool
+isChartName ctx e = case e.node of
   S.App _ _ -> isJust <$> movingChart ctx (fst (spine e))
-  _ -> maybe False ((.isScale) . snd) <$> chartResolution ctx e
+  _ -> maybe False ((.isChart) . snd) <$> chartResolution ctx e
 
 {- | A moving chart's name where a chart is wanted (design §3.8) is refused:
 the chart is a function of time, and a point or a parent needs the chart
@@ -1293,7 +1293,7 @@ asParent x = "apply it, as in chart arm t on (" <> x <> " t) at [1, 0, 0] m"
 movingChart :: Ctx n -> S.Expr -> M (Maybe Text)
 movingChart ctx e =
   ( \case
-      Just (x, r) | r.isScale && r.isMoving -> Just x
+      Just (x, r) | r.isChart && r.isMoving -> Just x
       _ -> Nothing
   )
     <$> chartResolution ctx e

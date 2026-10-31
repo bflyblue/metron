@@ -30,10 +30,10 @@ import Eval.Codebase (
   addStoredUse,
   bindName,
   emptyCodebase,
-  isScaleName,
+  isChartName,
   isUnitName,
   lookupName,
-  markScale,
+  markChart,
   markUnit,
  )
 import Eval.Lexer (prepare)
@@ -635,7 +635,7 @@ stdlibCodebase = do
         old' = prepare old
         flagged =
           (if isUnitName old' cb then markUnit new' else id)
-            . (if isScaleName old' cb then markScale new' else id)
+            . (if isChartName old' cb then markChart new' else id)
      in case lookupName old' cb of
           Just r -> Right (flagged (bindName new' r cb))
           Nothing -> Left ("the library's alias " <> new <> " names nothing: " <> old)

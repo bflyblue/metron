@@ -82,7 +82,7 @@ data Type
   | -- | a point on a frame (design §3.10, F4): @Point c@
     TPoint Frame
   | -- | a chart whose frame is @c@ (design §3.10, F4): @Chart c@
-    TScale Frame
+    TChart Frame
   | {- | an amount along a frame's axes in its space (design §3.10, F4):
     @Diff c@, in the space's dimension, or, with a dimension, @Coords c@,
     the coordinates a point is written with (dimensionless). A synonym:
@@ -258,7 +258,7 @@ applyType :: Subst -> Type -> Type
 applyType s = \case
   TQty r sh d -> TQty (applyRole s r) (applyShape s sh) (applyDim s d)
   TPoint f -> TPoint (applyFrame s f)
-  TScale f -> TScale (applyFrame s f)
+  TChart f -> TChart (applyFrame s f)
   -- A synonym reduces once its space's shape is known.
   TOver f md -> overType (applyFrame s f) (applyDim s <$> md)
   TData h as -> TData h (map (applyArg s) as)
@@ -359,7 +359,7 @@ substOnce m = go
   go = \case
     TQty r sh d -> TQty (role r) (shape sh) (dim d)
     TPoint f -> TPoint (frame f)
-    TScale f -> TScale (frame f)
+    TChart f -> TChart (frame f)
     TOver f md -> overType (frame f) (dim <$> md)
     TData h as -> TData h (map arg as)
     TFun a b -> TFun (go a) (go b)
@@ -434,7 +434,7 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
   go = \case
     TQty r sh d -> role r ++ shape sh ++ [(v, KDim) | v <- dimVars d]
     TPoint f -> frame f
-    TScale f -> frame f
+    TChart f -> frame f
     TOver f md -> frame f ++ maybe [] (\d -> [(v, KDim) | v <- dimVars d]) md
     TData _ as -> concatMap argVars as
     TFun a b -> go a ++ go b

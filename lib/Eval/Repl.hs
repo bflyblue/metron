@@ -118,7 +118,6 @@ keywords =
   [ "let"
   , "unit"
   , "chart"
-  , "scale"
   , "at"
   , "data"
   , "case"
@@ -324,7 +323,7 @@ namesOf :: Session -> Names
 namesOf session =
   Names
     { unitWords =
-        spelled shortestName (Set.toList (cb.units <> cb.scales))
+        spelled shortestName (Set.toList (cb.units <> cb.charts))
           <> Set.fromList (map baseSymbol [minBound .. maxBound])
     , typeWords =
         spelled (shortestNameOf TypeLabel) (Map.keys cb.typeNames)
@@ -337,7 +336,7 @@ namesOf session =
   -- library's `si.km` is a unit written `km` (design §7.6, §7.7).
   spelled short ns = Set.fromList ns <> Set.fromList (map (short session.scope cb) ns)
   builtinTypes =
-    ["Num", "Unit", "Vec", "Mat", "Tensor", "Point", "Chart", "Scale", "Bool"]
+    ["Num", "Unit", "Vec", "Mat", "Tensor", "Point", "Chart", "Bool"]
 
 -- | What a printed line is, for colour.
 data Kind

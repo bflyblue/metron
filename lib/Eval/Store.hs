@@ -3,10 +3,10 @@
 A store is a directory:
 
 @
-format          "eval codebase 9"
+format          "eval codebase 11"
 terms\/\<hex\>    one term per file, in the storage encoding ("Eval.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
-names.log       append-only: time, then  bind name ref | unname name | unit name | scale name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias] | sig name type | unsig name
+names.log       append-only: time, then  bind name ref | unname name | unit name | chart name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias] | sig name type | unsig name
 @
 
 Terms are content-addressed, so they never conflict and are only ever
@@ -21,7 +21,7 @@ and its labels and its stored @use@s are written to the log stamped with time
 0, so they sort before every line of the user's and are the same lines in
 every store, which a merge then recognises. A store is loaded on top of
 the empty codebase; nothing is entered in memory first. A store opens only
-at the current format: an older one is refused, not migrated (design §7.4).
+at the current format; a store of another format is refused (design §7.4).
 -}
 module Eval.Store (
   Store (..),
@@ -71,26 +71,12 @@ formatLine :: Int -> Text
 formatLine v = "eval codebase " <> tshow v
 
 {- | Bumped whenever the store's layout changes: the storage encoding
-('storageVersion', 4), or what a store holds. Format 4 held the standard
-library as seeded labels instead of assuming a prelude entered in memory
-(design §7.7); format 5 held it split by domain into sibling namespaces;
-format 6 (storage version 4) holds @Bool@, tuples and lists as declared
-types; format 7 writes the signatures of its @sig@ lines, which are text,
-with dimensions as type arguments, @Num (m/s)@ and not @Num [m s^-1]@
-(design §4.1); format 8 holds units as a type (design §3.10, part U): a
-quantity is @scale@, a unit's declaration wraps its body, and the library
-is respelled, so every term over a unit is another; format 9 holds spaces
-and frames (design §3.10, part F): a point is typed by its frame, a
-chart's Core names the frame and the space it is on, and the library's
-charts are respelled; format 10 holds roles (design §3.10, U9): a
-signature may say @Quantity r d@, a type encodes a role variable, and a
-definition built from arithmetic alone is polymorphic in its role. A store
-opens only
-at this format: until the language is released, an older store is
-refused, not migrated (core.md §6).
+('storageVersion'), the log's lines, or what a store holds, the library
+included. A store opens only at this format; a store of another format is
+refused with one line (design §7.4).
 -}
 formatVersion :: Int
-formatVersion = 10
+formatVersion = 11
 
 {- | The store to use: the directory given, else a @.eval@ directory found by
 walking up from the working directory, else the user store under
@@ -125,7 +111,7 @@ stdlibSeed = Seed <$> stdlibCodebase
 {- | Create the directory if needed and seed it, or check that an existing
 one is ours. The seed is only looked at to create a store, so opening an
 existing one never enters the library in memory: the store has it. A store
-of an older format is refused and left as it is (design §7.4), and so is
+of another format is refused and left as it is (design §7.4), and so is
 one whose format file says anything else.
 -}
 openStore :: Either Text Seed -> FilePath -> IO (Either Text Store)
@@ -145,21 +131,15 @@ openStore seeding d = do
       line <- T.strip <$> TIO.readFile formatFile
       if line == formatLine formatVersion
         then directories >> pure (Right (Store d))
-        else pure . Left $ case [v | v <- [1 .. formatVersion - 1], line == formatLine v] of
-          [v] ->
+        else pure . Left $ case TR.decimal <$> T.stripPrefix "eval codebase " line of
+          Just (Right (v, "")) ->
             T.pack d
               <> ": this codebase is format "
-              <> tshow v
-              <> "; it predates format "
+              <> tshow (v :: Integer)
+              <> "; this eval opens format "
               <> tshow formatVersion
-              <> " and cannot be opened: recreate it (with the previous eval, `:export` it, respell its quantities for units as a type, 60 * s as 60 s and x / s as x / 1 s, the dimensions in its types, Num [m s^-1] as Num (m/s), and its charts on spaces, chart degC on Temperature at 273.15 K, and `:load` the file into a new codebase)"
           _ ->
-            T.pack d
-              <> " is not an eval codebase of format "
-              <> tshow formatVersion
-              <> " (found \""
-              <> line
-              <> "\"); see core.md on migrations"
+            T.pack d <> " is not an eval codebase (its format file says \"" <> line <> "\")"
  where
   directories = do
     createDirectoryIfMissing True (d </> "terms")
@@ -291,10 +271,10 @@ loadStore store base = do
                 )
                   : notes
               )
-    -- Units and scales are names (design §3.2.12).
+    -- Units and charts are names (design §3.2.12).
     [_, "unit", name] -> (markUnit name cb, notes)
-    [_, "scale", name] -> (markScale name cb, notes)
-    -- A `let` that rebinds a unit or scale name makes it a plain quantity (design §3.2.12).
+    [_, "chart", name] -> (markChart name cb, notes)
+    -- A `let` that rebinds a unit or chart name makes it a plain quantity (design §3.2.12).
     [_, "unflag", name] -> (clearFlags name cb, notes)
     (_ : "prefer" : rest) -> (addPreference (T.unwords rest) cb, notes)
     (_ : "unprefer" : rest) -> (removePreference (T.unwords rest) cb, notes)
@@ -381,8 +361,8 @@ logEntries stamp old new =
         ]
       units =
         [stamp <> " unit " <> n | n <- Set.toList (Set.difference new.units old.units)]
-      scales =
-        [ stamp <> " scale " <> n | n <- Set.toList (Set.difference new.scales old.scales)
+      charts =
+        [ stamp <> " chart " <> n | n <- Set.toList (Set.difference new.charts old.charts)
         ]
       -- A flag a name lost while it stays bound; an unnamed label needs no line.
       unflags =
@@ -391,7 +371,7 @@ logEntries stamp old new =
             Set.toList
               ( Set.union
                   (Set.difference old.units new.units)
-                  (Set.difference old.scales new.scales)
+                  (Set.difference old.charts new.charts)
               )
         , Map.member n new.names
         ]
@@ -463,7 +443,7 @@ logEntries stamp old new =
         ++ unnamedTypes
         ++ unnamedFields
         ++ units
-        ++ scales
+        ++ charts
         ++ prefers
         ++ unprefers
         ++ unflags
@@ -537,7 +517,7 @@ data MergeReport = MergeReport
 {- | Merge the store at the second path into the store at the first (design
 §7.4). The target is opened as 'openStore' does, so it is created and seeded if
 missing; the source must already be a store of the current format, and is
-only read. A store of an older format, either one, is refused (design §7.4).
+only read. A store of another format, either one, is refused (design §7.4).
 -}
 mergeStores ::
   Either Text Seed -> FilePath -> FilePath -> IO (Either Text MergeReport)

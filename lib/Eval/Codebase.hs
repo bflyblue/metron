@@ -22,14 +22,14 @@ module Eval.Codebase (
   markUnit,
   isUnitName,
   unitNameFor,
-  markScale,
-  isScaleName,
+  markChart,
+  isChartName,
   clearFlags,
   addPreference,
   removePreference,
   addStoredUse,
   removeStoredUse,
-  scaleNameFor,
+  chartNameFor,
   lookupName,
   lookupTerm,
   lookupTypes,
@@ -74,8 +74,8 @@ data Codebase = Codebase
   , history :: Map Text [Reference] -- newest first
   , units :: Set.Set Text
   -- ^ names declared with @unit@ (design §3.2.12); label-level metadata like names
-  , scales :: Set.Set Text
-  -- ^ names declared with @chart@, a scale in the store (design §3.6)
+  , charts :: Set.Set Text
+  -- ^ names declared with @chart@ (design §3.6)
   , preferences :: Set.Set Text
   -- ^ display preferences as written (@km/h@), label-level metadata (design §3.2.12)
   , typeDefs :: Map Hash TypeDef
@@ -145,18 +145,18 @@ markUnit n cb = cb{units = Set.insert n cb.units}
 isUnitName :: Text -> Codebase -> Bool
 isUnitName n cb = Set.member n cb.units
 
-markScale :: Text -> Codebase -> Codebase
-markScale n cb = cb{scales = Set.insert n cb.scales}
+markChart :: Text -> Codebase -> Codebase
+markChart n cb = cb{charts = Set.insert n cb.charts}
 
-isScaleName :: Text -> Codebase -> Bool
-isScaleName n cb = Set.member n cb.scales
+isChartName :: Text -> Codebase -> Bool
+isChartName n cb = Set.member n cb.charts
 
 addPreference, removePreference :: Text -> Codebase -> Codebase
 addPreference t cb = cb{preferences = Set.insert t cb.preferences}
 removePreference t cb = cb{preferences = Set.delete t cb.preferences}
 
 clearFlags :: Text -> Codebase -> Codebase
-clearFlags n cb = cb{units = Set.delete n cb.units, scales = Set.delete n cb.scales}
+clearFlags n cb = cb{units = Set.delete n cb.units, charts = Set.delete n cb.charts}
 
 {- | The unit name a reference is used under: the written name when it is a
 unit that still points at this reference, else any current unit name of
@@ -165,8 +165,8 @@ the reference (so a renamed unit prints under its new name), else none.
 unitNameFor :: Reference -> Text -> Codebase -> Maybe Text
 unitNameFor = nameUnder isUnitName
 
-scaleNameFor :: Reference -> Text -> Codebase -> Maybe Text
-scaleNameFor = nameUnder isScaleName
+chartNameFor :: Reference -> Text -> Codebase -> Maybe Text
+chartNameFor = nameUnder isChartName
 
 nameUnder ::
   (Text -> Codebase -> Bool) -> Reference -> Text -> Codebase -> Maybe Text
@@ -228,7 +228,7 @@ bindName n r cb
     _ -> Nothing
 
 {- | Remove a label, whatever it names (a definition, a type or a
-constructor), and with it any unit or scale declaration it carried. The
+constructor), and with it any unit or chart declaration it carried. The
 term and the name's history stay.
 -}
 unbindName :: Text -> Codebase -> Codebase
@@ -239,7 +239,7 @@ unbindName n cb
       cb
         { names = Map.delete n cb.names
         , units = Set.delete n cb.units
-        , scales = Set.delete n cb.scales
+        , charts = Set.delete n cb.charts
         , typeNames = Map.delete n cb.typeNames
         , conNames = Map.delete n cb.conNames
         , signatures = Map.delete n cb.signatures
@@ -304,7 +304,7 @@ bindConName n h i cb =
     { conNames = Map.insert n (h, i) cb.conNames
     , names = Map.delete n cb.names
     , units = Set.delete n cb.units
-    , scales = Set.delete n cb.scales
+    , charts = Set.delete n cb.charts
     , signatures = Map.delete n cb.signatures
     }
 

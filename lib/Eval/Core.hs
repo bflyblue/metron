@@ -446,12 +446,13 @@ primArity = \case
   -- Conversions (design §3.10, F5, F7, F10): a point to a chart, a point
   -- from a configuration of its frame to a chart, and an amount along a
   -- chart's axes, from the space's base axes or from a configuration.
-  "toScale" -> Just 2
+  "toChart" -> Just 2
   "fromTo" -> Just 3
   "toAxes" -> Just 2
   "axesFromTo" -> Just 3
   -- Units (design §3.10): the quantity rule after a unit, and a unit's
-  -- declaration. Both names are keywords, so no source names them.
+  -- declaration. `unit` is a keyword, so no source names it; `scale 3 km`
+  -- is the quantity `3 km`.
   "scale" -> Just 2
   "unit" -> Just 1
   "cholesky" -> Just 1

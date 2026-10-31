@@ -387,7 +387,7 @@ decType =
     0x2A -> TUnit <$> decDim
     0x2E -> TQty <$> decRole <*> decShape <*> decDim
     0x2B -> TPoint <$> decFrame
-    0x2C -> TScale <$> decFrame
+    0x2C -> TChart <$> decFrame
     0x2D ->
       TOver
         <$> decFrame

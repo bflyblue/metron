@@ -107,7 +107,7 @@ data Reading
     Quantity Text (Maybe Text) Type Type Type
   | {- | a @to@ whose reading the desugarer left to the types, by its
     marker: the value, the target, and the result; the display unit's
-    @to@ for a unit, @toScale@ for a point and a chart (U6), @toAxes@ for
+    @to@ for a unit, @toChart@ for a point and a chart (U6), @toAxes@ for
     an amount and a chart (F10)
     -}
     Convert Text Type Type Type
@@ -313,7 +313,7 @@ unify p expected actual = do
     (TData h1 as, TData h2 bs)
       | h1 == h2 && length as == length bs -> zipWithM_ unifyArg as bs
     (TPoint f1, TPoint f2) -> unifyFrame p "points" f1 f2
-    (TScale f1, TScale f2) -> unifyFrame p "charts" f1 f2
+    (TChart f1, TChart f2) -> unifyFrame p "charts" f1 f2
     -- A synonym still residual (design §3.10, F4): its space's shape is not
     -- known, so it unifies through the space, or waits.
     (TOver f1 m1, TOver f2 m2) -> do
@@ -808,7 +808,7 @@ decide p = \case
     res' <- resolve res
     case (atom', res') of
       (TQty r _ _, _) | r /= RAmount -> scaleReading
-      (TScale _, _) -> chartReading
+      (TChart _, _) -> chartReading
       (TVar _, TQty{}) -> scaleReading
       (TVar _, TPoint _) -> chartReading
       (TVar _, _) -> pure False
@@ -835,7 +835,7 @@ decide p = \case
     res' <- resolve res
     case (tgt', val', res') of
       (TQty r _ _, _, _) | r /= RAmount -> unitTo
-      (TScale _, v, w)
+      (TChart _, v, w)
         | any isPoint [v, w] -> chartTo
         | any isAmount [v, w] -> axesTo
         | otherwise -> pure False
@@ -852,9 +852,9 @@ decide p = \case
    where
     unitTo = asPrim p "to" [(0, val), (1, tgt)] res >> choose marker "to"
     chartTo = do
-      asPrim p "toScale" [(0, val), (1, tgt)] res
+      asPrim p "toChart" [(0, val), (1, tgt)] res
       fixed p val
-      choose marker "toScale"
+      choose marker "toChart"
     axesTo = asPrim p "toAxes" [(0, val), (1, tgt)] res >> choose marker "toAxes"
   ConvertFrom marker val src tgt res -> do
     val' <- resolve val
@@ -1124,7 +1124,7 @@ negativeOnly quantified ts =
     TQty _ _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TPoint f -> frameExps f
     TOver f md -> frameExps f ++ maybe [] dimExps md
-    TScale f -> frameExps f
+    TChart f -> frameExps f
     TData _ args -> concatMap argExponents args
     TFun a b -> exponents v a ++ exponents v b
     TVar _ -> []
@@ -1252,7 +1252,7 @@ infer look p ctx = \case
       Nothing -> primType p name (length args)
     -- A point converted with no `from` (design §3.10, F7).
     case t of
-      TFun (TPoint f) _ | name == "toScale" -> defer p (Fixed f)
+      TFun (TPoint f) _ | name == "toChart" -> defer p (Fixed f)
       _ -> pure ()
     typed <- zipWithM (\i a -> infer look (i : p) ctx a) [0 ..] args
     -- A tensor of known rank too small for the positions is reported as
@@ -1332,7 +1332,7 @@ infer look p ctx = \case
                 _
                   | name == "mkChart"
                   , i == 2
-                  , TScale f <- param
+                  , TChart f <- param
                   , SCons{} <- f.space.shape ->
                       unifyMsg
                         (i : p)
@@ -1661,7 +1661,7 @@ zonk s = go
 
 {- | Write the readings inference chose ('readingsOf') into a term (design
 §3.10, U4, U6): a quantity's marker becomes @scale lit u@ or @pointOn c
-lit@, a @to@'s marker the display unit's @to@ or @toScale@. A marker with
+lit@, a @to@'s marker the display unit's @to@ or @toChart@. A marker with
 no reading stays, which hashing refuses as an unknown primitive.
 -}
 rewriteReadings :: Map.Map Text Text -> Term n -> Term n

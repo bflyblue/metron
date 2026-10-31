@@ -1009,8 +1009,6 @@ codebaseTests =
               ]
           ls "--units furl" @?= Right ["unit furlong : Unit m"]
           ls "--charts degC" @?= Right ["chart degC : Chart degC"]
-          -- The old spelling of the flag.
-          ls "--scales degC" @?= Right ["chart degC : Chart degC"]
           ls "--types"
             @?= Right
               ( [ -- The library's types: a body's state, the joint covariance
@@ -2082,7 +2080,7 @@ turnedChartTests =
         (loaded, notes) <- reload dir
         notes @?= []
         loaded.codebase.names @?= s.codebase.names
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         linesIn loaded [":view pf", ":hash pf"]
           @?= linesIn s [":view pf", ":hash pf"]
         linesIn loaded ["[1, 2, 3] pf to eci"] @?= linesIn s ["[1, 2, 3] pf to eci"]
@@ -2316,7 +2314,7 @@ movingChartTests =
         s <- persistLines dir (spinning ++ [":add"])
         (loaded, notes) <- reload dir
         notes @?= []
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         let probe =
               [ ":view spinner"
               , ":hash spinner"
@@ -3298,7 +3296,7 @@ axisSlotTests =
                 [(0, KLen), (1, KAxis)]
                 [
                   [ TTensor (pos (LVar 0 0) (AVar 1) (pos (LLit 3) (ANamed lvlh) SNil)) dimOne
-                  , TScale
+                  , TChart
                       ( Frame
                           (FrNamed lvlh)
                           (ANamed lvlh)
@@ -3472,7 +3470,7 @@ readingTests =
     [ (km, TUnit metre)
     , (hr, TUnit second)
     , (len, numD metre)
-    , (cK, TScale (Frame (FrNamed cK) AAnon (Space (SpNamed cK) SNil kelvin AAnon)))
+    , (cK, TChart (Frame (FrNamed cK) AAnon (Space (SpNamed cK) SNil kelvin AAnon)))
     ]
   look =
     TypeLookup (\k -> (\ty -> [Forall [] ty]) <$> lookup k stored) (const Nothing)
@@ -3929,7 +3927,7 @@ generatorProperty =
     TPoint _ -> "Point"
     TOver _ _ -> "Diff"
     TUnit _ -> "Unit"
-    TScale{} -> "Chart"
+    TChart{} -> "Chart"
     TupleT _ -> "tuple"
     ListT _ -> "list"
     TTensor sh d ->
@@ -4977,7 +4975,7 @@ affineTests =
             , "[0.99512437810945273631…, 0, 0; 0, 1, 0; 0, 0, 1] m^2 s^-2"
             , "true"
             ]
-    , testCase "points: scales, .+ and .-, printing on the written scale" $ do
+    , testCase "points: charts, .+ and .-, printing on the written chart" $ do
         evalP "20 degC" @?= Right ["20 degC"]
         evalP "20 °C .+ 5 K" @?= Right ["25 degC"]
         evalP "20 degC .+ 9 deltaF" @?= Right ["25 degC"]
@@ -5066,10 +5064,10 @@ affineTests =
         case evalP "[1, 2] < [1, 3]" of
           Left err -> T.isInfixOf "no ordering on Vec 2" err @? T.unpack err
           Right v -> assertFailure (show v)
-    , testCase "scale declarations: user scales, :view and :edit read back as written" $ do
+    , testCase "chart declarations: user charts, :view and :edit read back as written" $ do
         runLinesP
           [ "unit mmHg = 133.322 Pa"
-          , "scale bp on Pressure step mmHg"
+          , "chart bp on Pressure step mmHg"
           , "120 bp .+ 10 mmHg"
           , "(120 bp .- 80 bp)"
           ]
@@ -5081,7 +5079,7 @@ affineTests =
         runLinesP [":edit km"]
           @?= Right ["namespace si", "  unit km = kilo * 1 metre"]
     , testCase
-        "chart is the keyword, scale its old spelling: one declaration, one hash"
+        "chart is a keyword: a declaration, its type, :view and :ls"
         $ do
           runLinesP
             [ "unit mmHg = 133.322 Pa"
@@ -5099,16 +5097,9 @@ affineTests =
               , "chart bp : Chart bp"
               , "chart bp"
               ]
-          -- The keyword is a label flag, not part of the hash.
-          let hashOf kw' =
-                runLinesP
-                  ["unit mmHg = 133.322 Pa", kw' <> " bp on Pressure step mmHg", ":hash bp"]
-          hashOf "chart" @?= hashOf "scale"
           typeOfTextP "\\c -> (c :: Chart degC)"
             @?= Right "Chart degC -> Chart degC"
-          typeOfTextP "\\c -> (c :: Scale degC)"
-            @?= Right "Chart degC -> Chart degC"
-          -- `chart` is a keyword now, not a name.
+          -- `chart` is a keyword, not a name.
           case runLinesP ["let chart = 3"] of
             Left _ -> pure ()
             Right v -> assertFailure (show v)
@@ -5336,7 +5327,7 @@ affineTests =
           reloaded <-
             either (assertFailure . T.unpack) pure (sessionP [source, ":add"])
           reloaded.codebase.names @?= original.codebase.names
-          reloaded.codebase.scales @?= original.codebase.scales
+          reloaded.codebase.charts @?= original.codebase.charts
           reloaded.codebase.typeNames @?= original.codebase.typeNames
     , testCase "display units of one dimension cancel against each other" $ do
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
@@ -5528,7 +5519,7 @@ storeTests =
         (loaded, notes) <- reload dir
         notes @?= []
         loaded.codebase.names @?= s.codebase.names
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         loaded.codebase.typeNames @?= s.codebase.typeNames
         linesIn
           loaded
@@ -5553,7 +5544,7 @@ storeTests =
             , "let r = 10 mm ± 0.01 mm #batch7"
             , "let even n = if n == 0 then true else odd (n - 1); let odd n = if n == 0 then false else even (n - 1)"
             , "unit mmHg = 133.322 Pa"
-            , "scale bp on Pressure step mmHg"
+            , "chart bp on Pressure step mmHg"
             , ":add"
             , "let speed = 6 km / h"
             , ":update"
@@ -5565,7 +5556,7 @@ storeTests =
         loaded.codebase.names @?= s.codebase.names
         loaded.codebase.history @?= s.codebase.history
         loaded.codebase.units @?= s.codebase.units
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         loaded.codebase.preferences @?= s.codebase.preferences
         Map.keysSet s.codebase.terms `Set.isSubsetOf` Map.keysSet loaded.codebase.terms
           @? "every term came back"
@@ -5612,7 +5603,7 @@ storeTests =
           loaded.codebase.names @?= s.codebase.names
           loaded.codebase.history @?= s.codebase.history
           loaded.codebase.units @?= s.codebase.units
-          loaded.codebase.scales @?= s.codebase.scales
+          loaded.codebase.charts @?= s.codebase.charts
           loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
           linesIn loaded ["d", "astro.G"]
             @?= Right ["3 km", "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
@@ -5708,7 +5699,7 @@ storeTests =
                 [ "namespace orbital"
                 , "  unit au = 149597870700 m"
                 , "  space Distance = Num m"
-                , "  scale tip on Distance step au"
+                , "  chart tip on Distance step au"
                 , "  data Body = Body {mass :: Num kg, dist :: Num m}"
                 , "  let mu = 3"
                 , "  namespace kepler"
@@ -5726,14 +5717,14 @@ storeTests =
         let settled = Map.adjust (take 1) "mechanics.tip"
         settled loaded.codebase.history @?= settled s.codebase.history
         loaded.codebase.units @?= s.codebase.units
-        loaded.codebase.scales @?= s.codebase.scales
+        loaded.codebase.charts @?= s.codebase.charts
         loaded.codebase.typeNames @?= s.codebase.typeNames
         loaded.codebase.conNames @?= s.codebase.conNames
         loaded.codebase.fieldNames @?= s.codebase.fieldNames
         Map.member "celestial.kepler.anomaly" loaded.codebase.names @? "renamed"
         Map.member "mechanics.mass" loaded.codebase.fieldNames @? "field path"
         Set.member "mechanics.au" loaded.codebase.units @? "unit path"
-        Set.member "mechanics.tip" loaded.codebase.scales @? "scale path"
+        Set.member "mechanics.tip" loaded.codebase.charts @? "chart path"
         Map.member "mechanics.Body" loaded.codebase.typeNames @? "type path"
         Map.member "mechanics.Body" loaded.codebase.conNames @? "constructor path"
         Map.member "orbital.mu" loaded.codebase.history @? "history keeps the old path"
@@ -5768,44 +5759,25 @@ storeTests =
         (loaded, notes) <- reload dir
         length notes @?= 2
         linesIn loaded ["x + y"] @?= Right ["18"]
-    , testCase "a store of a newer format is refused" $ withTempStore $ \dir -> do
-        _ <- persistLines dir ["let x = 1", ":add"]
-        writeFile (dir </> "format") "eval codebase 99\n"
-        opened <- openStore theSeed dir
-        case opened of
-          Left err -> T.isInfixOf "is not an eval codebase of format" err @? T.unpack err
-          Right _ -> assertFailure "opened a store of another format"
-    , testCase "a store of an older format is refused and left as it is"
-        $ forM_ [3, 4, 5, 6, 7, 8 :: Int]
-        $ \v -> withTempStore $ \dir -> do
-          -- A store as an older eval left it: no types directory, a term file
-          -- and a log, none of which this build reads.
-          createDirectoryIfMissing True (dir </> "terms")
-          writeFile (dir </> "format") ("eval codebase " <> show v <> "\n")
-          writeFile (dir </> "names.log") ("1 bind x " <> replicate 64 'a' <> "\n")
-          BS.writeFile (dir </> "terms" </> replicate 64 'a') (BS.pack [0x04, 1])
+    , testCase "a store of another format is refused with one line and left as it is"
+        $ withTempStore
+        $ \dir -> do
+          _ <- persistLines dir ["let x = 1", ":add"]
+          writeFile (dir </> "format") "eval codebase 10\n"
           before <- snapshot dir
           entries <- sort <$> listDirectory dir
           opened <- openStore theSeed dir
           case opened of
             Left err ->
-              err
-                @?= T.pack dir
-                  <> ": this codebase is format "
-                  <> T.pack (show v)
-                  <> "; it predates format 10 and cannot be opened: recreate it"
-                  <> " (with the previous eval, `:export` it, respell its quantities for units as a type,"
-                  <> " 60 * s as 60 s and x / s as x / 1 s, the dimensions in its types,"
-                  <> " Num [m s^-1] as Num (m/s), and its charts on spaces, chart degC on Temperature at 273.15 K,"
-                  <> " and `:load` the file into a new codebase)"
-            Right _ -> assertFailure ("opened a store of format " <> show v)
+              err @?= T.pack dir <> ": this codebase is format 10; this eval opens format 11"
+            Right _ -> assertFailure "opened a store of another format"
           snapshot dir >>= (@?= before)
           listDirectory dir >>= (@?= entries) . sort
     , testCase "a store of the current format opens as it was seeded" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add"]
         readFile (dir </> "format")
           >>= (@?= "eval codebase " <> show formatVersion <> "\n")
-        formatVersion @?= 10
+        formatVersion @?= 11
         before <- snapshot dir
         (loaded, notes) <- reload dir
         notes @?= []
@@ -5925,7 +5897,7 @@ storeTests =
           (loaded, _) <- reload a
           linesIn loaded ["x + y"] @?= Right ["3"]
     , testCase
-        "merging from what is not a store, or from an older store, is refused and touches nothing"
+        "merging from what is not a store, or from a store of another format, is refused and touches nothing"
         $ withTempStore
         $ \root -> do
           let a = root </> "a"
@@ -5944,13 +5916,10 @@ storeTests =
           doesDirectoryExist (root </> "missing") >>= (@?= False)
           _ <- persistLines (root </> "future") ["let x = 1", ":add"]
           writeFile (root </> "future" </> "format") "eval codebase 99\n"
-          refused (root </> "future") "is not an eval codebase of format"
-          -- a store of an older format is refused, and left as it is
-          createDirectoryIfMissing True (root </> "old")
-          writeFile (root </> "old" </> "format") "eval codebase 2\n"
-          refused (root </> "old") "this codebase is format 2; it predates format 10"
-          listDirectory (root </> "old") >>= (@?= ["format"])
-          readFile (root </> "old" </> "format") >>= (@?= "eval codebase 2\n")
+          refused
+            (root </> "future")
+            "this codebase is format 99; this eval opens format 11"
+          readFile (root </> "future" </> "format") >>= (@?= "eval codebase 99\n")
     ]
  where
   mergeInto :: FilePath -> FilePath -> IO MergeReport
@@ -7256,7 +7225,7 @@ exportScript =
       , "namespace orbital"
       , "  unit au = 149597870700 m"
       , "  space Distance = Num m"
-      , "  scale tip on Distance at 1 au step au"
+      , "  chart tip on Distance at 1 au step au"
       , "  data Body = Body {mass :: Num kg, dist :: Num m}"
       , "  let weight b = b.mass * 9.81 m/s^2"
       , "  let size = 3"
@@ -7698,7 +7667,7 @@ namespaceTests =
         same "conNames" (.conNames)
         same "fieldNames" (.fieldNames)
         same "units" (.units)
-        same "scales" (.scales)
+        same "charts" (.charts)
         -- The shadowed root name needs its leading dot inside the block.
         (".size" `T.isInfixOf` source) @? T.unpack source
         -- A prelude term is referenced by name, never exported.
@@ -7844,7 +7813,7 @@ sameLabels a b = do
   a.conNames @?= b.conNames
   a.fieldNames @?= b.fieldNames
   a.units @?= b.units
-  a.scales @?= b.scales
+  a.charts @?= b.charts
 
 -- | @updated n #old -> #new@ and its kin, from the two sessions.
 movedLine :: Text -> Session -> Session -> Text -> Text
@@ -9742,7 +9711,7 @@ partFTests =
         runLinesP
           ( frame
               ++ [ ":type pointOn"
-                 , ":type toScale"
+                 , ":type toChart"
                  , ":type rotationOf"
                  , ":type withAxes"
                  , "([1.5, 2.25, 3] lvlh).0"

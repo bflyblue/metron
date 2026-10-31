@@ -330,7 +330,7 @@ runtimeOf cfg cb = rt
     Runtime
       { typedOf = (`lookupTyped` cb)
       , unitName = \h i written -> unitNameFor (Reference h i) written cb
-      , scaleName = \h i written -> scaleNameFor (Reference h i) written cb
+      , chartName = \h i written -> chartNameFor (Reference h i) written cb
       , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
       }
@@ -597,7 +597,7 @@ command session src = \case
                     spelling
                     scope
                     ecb
-                    (if isScaleName full ecb then "chart " else "")
+                    (if isChartName full ecb then "chart " else "")
                     (short ecb full)
                     r
               Nothing -> viewData spelling scope cb full
@@ -610,7 +610,7 @@ command session src = \case
             new' = newPath new
             flagged =
               (if isUnitName old' cb then markUnit new' else id)
-                . (if isScaleName old' cb then markScale new' else id)
+                . (if isChartName old' cb then markChart new' else id)
         refuseClash cb [(new', "definition")]
         commit
           (flagged (bindName new' r cb))
@@ -954,7 +954,7 @@ relabel keepOld pairs cb = do
     TermLabel
       | Just r <- lookupName o cb ->
           (if isUnitName o cb then markUnit n else id)
-            . (if isScaleName o cb then markScale n else id)
+            . (if isChartName o cb then markChart n else id)
             . maybe id (setSignature n) (if keepOld then Nothing else signatureOf o cb)
             $ bindName n r acc
       | Just (h, i) <- lookupConName o cb -> bindConName n h i acc
@@ -987,7 +987,7 @@ definitionSource spelling scope cb full = case lookupName full cb of
   Just r ->
     let keyword
           | isUnitName full cb = "unit "
-          | isScaleName full cb = "chart "
+          | isChartName full cb = "chart "
           | otherwise = "let "
      in ( \line ->
             map
@@ -1239,7 +1239,7 @@ stdlibUpgrade shipped session =
           }
       flagged n =
         (if isUnitName n shipped then markUnit n else id)
-          . (if isScaleName n shipped then markScale n else id)
+          . (if isChartName n shipped then markChart n else id)
       -- A type, constructor or field label the codebase has never had comes
       -- with the library's type; one it has, the user's or an older
       -- library's, is left alone.
@@ -1524,11 +1524,7 @@ so @: a -> a@ finds @Num m -> Num m@ and @: Num -> Num@ finds @a -> a@.
 listNames :: Session -> [Text] -> Either Text [Text]
 listNames session args = do
   let (before, after) = break (== ":") args
-      -- @--scales@ is the old spelling of @--charts@ (design §3.6).
-      flags =
-        map
-          (\f -> if f == "--scales" then "--charts" else f)
-          (filter (T.isPrefixOf "--") before)
+      flags = filter (T.isPrefixOf "--") before
       words' = filter (not . T.isPrefixOf "--") before
       -- A word that names a namespace lists that namespace (design §7.6);
       -- the others are globs. With no argument at all, the current namespace.
@@ -1562,7 +1558,7 @@ listNames session args = do
       allPaths = "--all" `elem` flags && isNothing nsFilter
       kindOk n
         | "--units" `elem` flags = isUnitName n cb
-        | "--charts" `elem` flags = isScaleName n cb
+        | "--charts" `elem` flags = isChartName n cb
         | "--types" `elem` flags = False
         | otherwise = True
       inNamespace n = maybe True (\ns -> (ns <> ".") `T.isPrefixOf` n) nsFilter
@@ -1655,7 +1651,7 @@ listNames session args = do
   namesText k = tshow k <> (if k == 1 then " name" else " names")
   prefix n
     | isUnitName n cb = "unit "
-    | isScaleName n cb = "chart "
+    | isChartName n cb = "chart "
     | otherwise = ""
   declaration shownType shown h n def =
     renderTypeDef
@@ -1861,7 +1857,7 @@ exportLabels session under = do
     let scope = S.Scope (namespaceOf n) stored
         keyword
           | isUnitName n cb = "unit "
-          | isScaleName n cb = "chart "
+          | isChartName n cb = "chart "
           | otherwise = "let "
      in ( \line ->
             ( namespaceOf n
@@ -2220,7 +2216,7 @@ applyEdit target text session = case reconcile of
         -- A body unchanged under another keyword: @unit km@ became @let km@.
         keyword c n
           | isUnitName n c = "unit"
-          | isScaleName n c = "chart"
+          | isChartName n c = "chart"
           | otherwise = "let" :: Text
         rekeyed =
           [ "updated " <> short n <> ": " <> keyword cb0 n <> " -> " <> keyword staged n
@@ -2360,7 +2356,7 @@ removeKind (k, n) cb = case k of
     cb
       { names = Map.delete n cb.names
       , units = Set.delete n cb.units
-      , scales = Set.delete n cb.scales
+      , charts = Set.delete n cb.charts
       , conNames = Map.delete n cb.conNames
       , signatures = Map.delete n cb.signatures
       }
