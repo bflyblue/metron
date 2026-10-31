@@ -57,7 +57,7 @@ import Eval.Eval
 import Eval.Hash (hashTerm)
 import Eval.Infer qualified as I
 import Eval.Parser (parseExpr, parseProgram, parseType)
-import Eval.Prelude (isLibraryPath, stdlibCodebase, stdlibMoved)
+import Eval.Prelude (isLibraryPath, stdlibCodebase)
 import Eval.Pretty
 import Eval.Resolve
 import Eval.Syntax qualified as S
@@ -714,8 +714,7 @@ command session src = \case
     _ -> Left "usage: :use path [as alias], a use the codebase keeps"
   ["stdlib", "upgrade"] -> do
     lib <- stdlibCodebase
-    moved <- stdlibMoved
-    stdlibUpgrade lib moved session
+    stdlibUpgrade lib session
   -- The codebase as source (design §7.4); the REPL writes it to a file.
   ("export" : args) ->
     exportRequest session args >>= \case
@@ -1176,16 +1175,13 @@ the codebase's. A name the codebase has never had is added, and so is a type
 label, constructor label or field label it has never had. A name still on
 the binding it was seeded with and whose shipped version differs is
 updated, and its dependents are upgraded as @:update@ does. "Still on the
-binding it was seeded with" is read off the history: its one entry, or,
-in a migrated store, that entry after the references the earlier
-libraries gave the name (the moved references, 'stdlibMoved'). A name
-the user rebound or unnamed is kept: the user's choice wins. The codebase
-cannot know which versions earlier libraries shipped, so a name rebound
-by an earlier upgrade counts as the user's.
+binding it was seeded with" is read off the history: it has exactly one
+entry. A name the user rebound or unnamed is kept: the user's choice wins.
+The codebase cannot know which versions earlier libraries shipped, so a
+name rebound by an earlier upgrade counts as the user's.
 -}
-stdlibUpgrade ::
-  Codebase -> [(Text, Reference)] -> Session -> Either Text (Session, [Text])
-stdlibUpgrade shipped moved session =
+stdlibUpgrade :: Codebase -> Session -> Either Text (Session, [Text])
+stdlibUpgrade shipped session =
   let cb0 = session.codebase
       library =
         [ (n, r)
@@ -1195,9 +1191,7 @@ stdlibUpgrade shipped moved session =
       added =
         [ (n, r) | (n, r) <- library, isNothing (lookupName n cb0), null (historyOf n cb0)
         ]
-      untouched n = case historyOf n cb0 of
-        _ : older -> all (\r -> (n, r) `elem` moved) older
-        [] -> False
+      untouched n = length (historyOf n cb0) == 1
       updated =
         [ (n, old, r)
         | (n, r) <- library

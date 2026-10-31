@@ -20,7 +20,6 @@ module Eval.Update (
   Restamped (..),
   restamp,
   restampTerm,
-  retypeType,
   retypeScheme,
   conTypes,
 ) where
@@ -78,7 +77,7 @@ made under.
 propagateNamed :: Written -> RefMap -> Codebase -> Propagation
 propagateNamed written refmap cb = propagateScoped (appliesTo cb written) Map.empty refmap cb
 
--- | By hash alone, every written name included: for migrations and re-stamping.
+-- | By hash alone, every written name included: for re-stamping.
 propagateWith :: ConMap -> RefMap -> Codebase -> Propagation
 propagateWith = propagateScoped (\_ _ -> True)
 

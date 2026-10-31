@@ -8,13 +8,8 @@ that lives in the codebase like any other, with the stored default @use@s
 of 'stdlibDefaultUses'. Labels that name a definition twice (@newton@ and
 @N@) are 'stdlibAliases', bound after the group is entered, as @:alias@
 binds them. The prefix table is generated here rather than typed by hand.
-
-The library as it was in format 4, everything under @std@, is kept
-('stdlib4Source'): the format 4 to 5 migration needs its hashes to know
-which of a store's labels are the old library's (design §7.4).
 -}
 module Eval.Prelude (
-  -- * The library
   stdlibSource,
   stdlibAliases,
   stdlibNames,
@@ -23,25 +18,15 @@ module Eval.Prelude (
   stdlibMovedOut,
   isLibraryPath,
   stdlibCodebase,
-  stdlibHomes,
-  stdlibMoved,
-
-  -- * The format-4 library
-  preludeSource,
-  stdlib4Source,
-  stdlib4Codebase,
-  stdlib4Moved,
 ) where
 
 import Control.Monad (foldM)
 import Data.Bifunctor (first)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, maybeToList)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Eval.Codebase (
   Codebase (..),
-  Reference,
   addStoredUse,
   bindName,
   emptyCodebase,
@@ -56,55 +41,7 @@ import Eval.Parser (parseProgram)
 import Eval.Resolve (processGroup, renderResolveError)
 import Eval.Syntax qualified as S
 
--- The format-4 library's tables ------------------------------------------------
-
-{- These tables are frozen: 'preludeSource' and 'stdlib4Source' are made
-from them, and the migrations and tests rely on their hashes. The current
-library ('stdlibLayout') shares 'prefixes', 'algebra', 'structural' and
-the covariance blocks with them and has its own tables for the rest. -}
-
-{- | Derived and accepted units, in dependency order is not required: the
-prelude is one binding group.
--}
-derived :: [(Text, Text)]
-derived =
-  [ ("N", "kg * m / s^2")
-  , ("J", "N * m")
-  , ("W", "J / s")
-  , ("Pa", "N / m^2")
-  , ("Hz", "1 / s")
-  , ("C", "A * s")
-  , ("V", "W / A")
-  , ("Ω", "V / A")
-  , ("ohm", "V / A")
-  , ("F", "C / V")
-  , ("S", "A / V")
-  , ("T", "V * s / m^2")
-  , ("H", "V * s / A")
-  , ("Wb", "V * s")
-  , -- Two units may share a definition (Bq and Hz are both 1/s): a unit is
-    -- a name, and a value prints under the name it was written with.
-    ("sr", "rad^2")
-  , ("lm", "cd * sr")
-  , ("lx", "lm / m^2")
-  , ("Bq", "1 / s")
-  , ("Gy", "J / kg")
-  , ("Sv", "J / kg")
-  , ("kat", "mol / s")
-  , ("g", "kg / 1000")
-  , ("L", "(m / 10)^3")
-  , ("t", "1000 * kg")
-  , ("min", "60 * s")
-  , ("h", "3600 * s")
-  , ("day", "86400 * s")
-  , ("year", "365.25 * day")
-  , ("AU", "149597870700 * m")
-  , ("deg", "pi / 180 * rad")
-  , ("arcmin", "deg / 60")
-  , ("arcsec", "arcmin / 60")
-  , ("deltaC", "K")
-  , ("deltaF", "5/9 * K")
-  ]
+-- The library's tables -------------------------------------------------------------
 
 -- | The 24 SI prefixes as powers of ten, with @u@ as the ASCII micro.
 prefixes :: [(Text, Int)]
@@ -134,80 +71,6 @@ prefixes =
   , ("y", -24)
   , ("r", -27)
   , ("q", -30)
-  ]
-
-{- | Units that take prefixes: the base units except kg (whose prefixes attach
-to g), the coherent derived units, g and L.
--}
-prefixable :: [Text]
-prefixable =
-  [ "m"
-  , "s"
-  , "A"
-  , "K"
-  , "mol"
-  , "cd"
-  , "rad"
-  , "g"
-  , "N"
-  , "J"
-  , "W"
-  , "Pa"
-  , "Hz"
-  , "C"
-  , "V"
-  , "Ω"
-  , "ohm"
-  , "F"
-  , "S"
-  , "T"
-  , "H"
-  , "Wb"
-  , "lm"
-  , "lx"
-  , "Bq"
-  , "Gy"
-  , "Sv"
-  , "kat"
-  , "L"
-  ]
-
-{- | Constants. SI-2019 defining constants and IAU 2015 nominal values are
-exact. G carries its CODATA 2018 standard uncertainty with the
-statistical kind (design §3.2.11), and the masses are derived from the
-exact nominal GM values and G, so their uncertainty is G's and the error
-budget says so.
--}
-constants :: [(Text, Text)]
-constants =
-  [ ("c", "299792458 * m / s")
-  , ("planck", "6.62607015e-34 * J * s")
-  , ("k_B", "1.380649e-23 * J / K")
-  , ("N_A", "6.02214076e23 / mol")
-  , ("e_charge", "1.602176634e-19 * C")
-  , ("g0", "9.80665 * m / s^2")
-  , ("GM_earth", "3.986004e14 * m^3 / s^2")
-  , ("GM_sun", "1.3271244e20 * m^3 / s^2")
-  , ("R_earth", "6378100 * m")
-  , ("G", "(6.67430e-11 ±σ 1.5e-15) * m^3 / (kg * s^2)")
-  , ("M_earth", "GM_earth / G")
-  , ("M_sun", "GM_sun / G")
-  ]
-
-{- | Charts for points (design §3.6): temperature scales, epochs on the time
-line, gauge pressure. Each is a step unit and an origin.
--}
-scales :: [(Text, Text)]
-scales =
-  [ ("degC", "K at 273.15 K")
-  , ("degF", "deltaF at 459.67 deltaF")
-  , ("degR", "deltaF at 0 deltaF")
-  , ("kelvin", "K at 0 K")
-  , ("JD", "day at 0 day")
-  , ("MJD", "day at 2400000.5 day")
-  , ("J2000", "day at 2451545 day")
-  , ("unix", "s at 2440587.5 day")
-  , ("gauge", "Pa at 101325 Pa")
   ]
 
 {- | Tensor algebra: the 3D Levi-Civita tensor, the cross product as the
@@ -408,69 +271,6 @@ covarianceBlocks =
     , "\\c p -> Cov2 {rr = inChart c p.rr, rv = inChart c p.rv, vv = inChart c p.vv}"
     )
   ]
-
-{- | The library's statements at the root, one per line, as the prelude was
-entered before it moved under @std@ (design §7.7). 'stdlib4Source' is this
-inside a @namespace std@ block; the tests enter both to check that the
-move kept every hash, and build a format-3 store from this one.
--}
-preludeSource :: Text
-preludeSource =
-  T.unlines
-    $ [unitDef n e | (n, e) <- derived]
-      ++ [ unitDef (p <> u) ("10^" <> T.pack (show k) <> " * " <> u)
-         | (p, k) <- prefixes
-         , u <- prefixable
-         , p <> u /= "kg"
-         ]
-      ++ [def n e | (n, e) <- constants]
-      ++ [scaleDef n e | (n, e) <- scales]
-      ++ [def n e | (n, e) <- algebra]
-      ++ [def n e | (n, e) <- structural]
- where
-  def n e = "let " <> n <> " = " <> e
-  unitDef n e = "unit " <> n <> " = " <> e
-  -- The old spelling, @scale@, as the prelude was entered then (design §3.6).
-  scaleDef n e = "scale " <> n <> " = " <> e
-
-{- | Statements the format-4 library gained after it moved under @std@:
-they were never at the root, so they are not in 'preludeSource'.
--}
-stdlib4Additions :: Text
-stdlib4Additions =
-  T.unlines
-    (covarianceData : ["let " <> n <> " = " <> e | (n, e) <- covarianceBlocks])
-
-{- | The library as format 4 seeded it (design §7.7): every statement
-inside @namespace std@.
--}
-stdlib4Source :: Text
-stdlib4Source =
-  T.unlines
-    ( "namespace std"
-        : map ("  " <>) (T.lines preludeSource ++ T.lines stdlib4Additions)
-    )
-
--- | The format-4 library entered, with its stored @use std@.
-stdlib4Codebase :: Either Text Codebase
-stdlib4Codebase = addStoredUse (S.Use "std" Nothing) <$> entered stdlib4Source
-
-{- | The format-4 library's names whose reference the move under @std@
-changed, each with the reference the old root prelude gave the bare name:
-a @±@ is stamped with its definition's full path (design §3.2.4), so
-@std.G@ is not the root @G@, and the masses derived from it differ too.
-The format 3 to 4 migration records these as history (design §7.4).
--}
-stdlib4Moved :: Either Text [(Text, Reference)]
-stdlib4Moved = do
-  new <- stdlib4Codebase
-  old <- entered preludeSource
-  pure
-    [ (full, r)
-    | (n, r) <- Map.toList old.names
-    , let full = "std." <> n
-    , lookupName full new /= Just r
-    ]
 
 -- The library by domain ------------------------------------------------------------
 
@@ -822,48 +622,6 @@ stdlibCodebase = do
      in case lookupName old' cb of
           Just r -> Right (flagged (bindName new' r cb))
           Nothing -> Left ("the library's alias " <> new <> " names nothing: " <> old)
-
-{- | Where each name of the format-4 library lives now: @std.km@ is
-@si.km@, @std.G@ is @astro.G@. A name's home is the label of the current
-library with the same last segment, and where two namespaces have one (the
-hour @time.h@ and Planck's @physics.h@), the one a stored @use@ reaches,
-which is what the bare name meant. The format 4 to 5 migration records the
-old reference in the history of the new home (design §7.4).
--}
-stdlibHomes :: Either Text [(Text, Text)]
-stdlibHomes = do
-  old <- stdlib4Codebase
-  new <- stdlibCodebase
-  let candidates x = [n | n <- Map.keys new.names, S.lastSegment n == x]
-      byDefault = filter (\n -> any (\u -> (u <> ".") `T.isPrefixOf` n) stdlibDefaultUses)
-      home o = case candidates (S.lastSegment o) of
-        [one] -> Just one
-        many -> case byDefault many of
-          [one] -> Just one
-          _ -> Nothing
-  pure [(o, h) | o <- Map.keys old.names, Just h <- [home o]]
-
-{- | The references a current library name had in the libraries before it,
-oldest first, where they differ from its current one: before the split by
-domain, the format-4 library's @std.x@ for its new home, and before that,
-for a name whose move under @std@ changed it, the old root prelude's. The
-migrations record them as history (design §7.4), and @:stdlib upgrade@
-reads a name whose history holds only these below its seeded binding as
-untouched.
--}
-stdlibMoved :: Either Text [(Text, Reference)]
-stdlibMoved = do
-  old <- stdlib4Codebase
-  root <- stdlib4Moved
-  new <- stdlibCodebase
-  homes <- stdlibHomes
-  pure
-    [ (h, r)
-    | (o, h) <- homes
-    , Just current <- [lookupName h new]
-    , r <- [r' | (o', r') <- root, o' == o] ++ maybeToList (lookupName o old)
-    , r /= current
-    ]
 
 -- | Source entered into the empty codebase as one binding group.
 entered :: Text -> Either Text Codebase

@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Control.Monad (foldM, forM_, when)
+import Control.Monad (forM_)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -19,8 +19,6 @@ import Eval.Builtin
 import Eval.Codebase (
   Codebase (..),
   emptyCodebase,
-  isScaleName,
-  isUnitName,
   lookupConName,
   lookupName,
   lookupTypeName,
@@ -38,12 +36,8 @@ import Eval.Lexer qualified as L
 import Eval.Parser
 import Eval.Prelude (
   isLibraryPath,
-  preludeSource,
-  stdlib4Codebase,
   stdlibCodebase,
   stdlibDefaultUses,
-  stdlibHomes,
-  stdlibMoved,
   stdlibMovedOut,
   stdlibNames,
   stdlibNamespaces,
@@ -3234,7 +3228,7 @@ libraryListing =
 librarySize :: Text -> Int
 librarySize ns = length (filter ((ns <> ".") `T.isPrefixOf`) stdlibNames)
 
--- | What a new store is seeded with, and an older store migrated with.
+-- | What a new store is seeded with.
 theSeed :: Either Text Seed
 theSeed = stdlibSeed
 
@@ -4597,246 +4591,6 @@ storeTests =
               ["300000000 m s^-1", "299792458 m s^-1", "1 si.km", "stored use si", "1 km"]
           ls <- T.lines <$> TIO.readFile (dir </> "names.log")
           any (" unuse si" `T.isSuffixOf`) ls @? "an unuse line"
-    , testCase
-        "a format-3 store is migrated: seeded before its log, the old G kept as history"
-        $ withTempStore
-        $ \dir -> do
-          -- A store as the format-3 code wrote it: the prelude in memory at the
-          -- root, only the user's labels in the log, the prelude terms they use
-          -- written beside theirs.
-          createDirectoryIfMissing True (dir </> "terms")
-          createDirectoryIfMissing True (dir </> "types")
-          writeFile (dir </> "format") "eval codebase 3\n"
-          user <-
-            either
-              (assertFailure . T.unpack)
-              pure
-              ( foldM
-                  (\s l -> fst <$> feed s l)
-                  legacyPrelude
-                  ["let c = 3e8 m / s", ":update", "let d = 3 km", "let w = 2 * G", ":add"]
-              )
-          sync (Store dir) legacyPrelude.codebase user.codebase
-          before <- T.lines <$> TIO.readFile (dir </> "names.log")
-          (loaded, notes) <- reload dir
-          notes @?= []
-          -- Format 3 goes to 4, 4 to 5 (the format-4 library is replaced) and 5
-          -- to 6.
-          readFile (dir </> "format") >>= (@?= "eval codebase 6\n")
-          loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
-          isJust (lookupName "std.km" loaded.codebase) @?= False
-          -- The user's own lines are still there, after the seed.
-          afterwards <- T.lines <$> TIO.readFile (dir </> "names.log")
-          lastN (length before) afterwards @?= before
-          linesIn loaded ["c", "physics.c", "1 km", "w"]
-            @?= Right
-              [ "300000000 m s^-1"
-              , "299792458 m s^-1"
-              , "1 km"
-              , "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2"
-              ]
-          -- The seed brings the library's record type, its labels included.
-          linesIn loaded ["(jointCovariance ([1, 2] m ±σ 1 m, [3, 4] m ±σ 1 m)).rr"]
-            @?= Right ["[1, 0; 0, 1] m^2"]
-          expecting (linesIn loaded [":ls si"]) $ \outs ->
-            ("unit km : Num [m]" `elem` outs) @? "the library is listed"
-          -- d and w use the old root prelude's km and G, which are now in the
-          -- history of si.km and astro.G.
-          linesIn loaded [":todo"]
-            @?= Right
-              [ "stale: d uses km#90tke (use :upgrade km)"
-              , "stale: w uses astro.G#e1bms (use :upgrade astro.G)"
-              ]
-          expecting
-            (linesIn loaded [":upgrade si.km", ":upgrade astro.G", ":view d", ":view w", "d"])
-            $ \outs -> lastN 3 outs @?= ["d = 3 * km", "w = 2 * astro.G", "3 km"]
-          -- The old G in astro.G's history is the migration's, not the user's:
-          -- a newer library's G still updates it.
-          moved <- either (assertFailure . T.unpack) pure stdlibMoved
-          newer <-
-            either
-              (assertFailure . T.unpack)
-              pure
-              (sessionP [multiline ["namespace astro", "  let G = 7"], ":update"])
-          case stdlibUpgrade newer.codebase moved loaded of
-            Left err -> assertFailure (T.unpack err)
-            Right (_, outs) ->
-              any ("updated astro.G #" `T.isPrefixOf`) outs @? show outs
-          -- Merged into a store seeded fresh, astro.G still ends on the new G.
-          let fresh = dir </> "fresh"
-          _ <- persistLines fresh []
-          _ <- mergeInto fresh dir
-          (merged, _) <- reload fresh
-          lookupName "astro.G" merged.codebase @?= lookupName "astro.G" seeded.codebase
-          linesIn merged ["w"] @?= Right ["1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2"]
-    , testCase
-        "a format-4 store is re-seeded: the old library's labels go, the user's stay"
-        $ withTempStore
-        $ \dir -> do
-          -- A store as the format-4 code wrote it: the library under std,
-          -- seeded at time 0, then the user's lines.
-          createDirectoryIfMissing True (dir </> "terms")
-          createDirectoryIfMissing True (dir </> "types")
-          seedStore (Store dir) stdlib4Session.codebase
-          writeFile (dir </> "format") "eval codebase 4\n"
-          user <-
-            either
-              (assertFailure . T.unpack)
-              pure
-              ( foldM
-                  (\s l -> fst <$> feed s l)
-                  stdlib4Session
-                  [ "let d = 3 km"
-                  , "let w = 2 * G"
-                  , multiline ["namespace std", "  let mine = 5"]
-                  , ":add"
-                  , multiline ["namespace std", "  let c = 3e8 m / s"]
-                  , ":update"
-                  ]
-              )
-          sync (Store dir) stdlib4Session.codebase user.codebase
-          (loaded, notes) <- reload dir
-          notes @?= []
-          readFile (dir </> "format") >>= (@?= "eval codebase 6\n")
-          loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
-          -- The old library's labels are gone, except the one the user rebound;
-          -- the user's own label under std is kept.
-          isJust (lookupName "std.km" loaded.codebase) @?= False
-          isJust (lookupName "std.G" loaded.codebase) @?= False
-          lookupName "si.km" loaded.codebase @?= lookupName "si.km" seeded.codebase
-          linesIn loaded ["std.mine", "std.c", "1 km", "astro.G"]
-            @?= Right
-              [ "5"
-              , "300000000 m s^-1"
-              , "1 km"
-              , "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"
-              ]
-          -- The user's definitions still use the old library's terms, which
-          -- are in the history of the new homes: stale, and :upgrade moves them.
-          expecting (linesIn loaded [":todo"]) $ \outs -> do
-            any ("stale: d uses km#" `T.isPrefixOf`) outs @? show outs
-            any ("stale: w uses astro.G#" `T.isPrefixOf`) outs @? show outs
-          -- Stale, d still evaluates; its old km is no unit name any more, so it
-          -- prints in base units until it is upgraded.
-          linesIn loaded ["d", "w"]
-            @?= Right ["3000 m", "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2"]
-          expecting
-            (linesIn loaded [":upgrade si.km", ":upgrade astro.G", ":view d", ":todo"])
-            $ \outs -> lastN 2 outs @?= ["d = 3 * km", "nothing to do"]
-          -- The migrated names count as untouched for :stdlib upgrade.
-          moved <- either (assertFailure . T.unpack) pure stdlibMoved
-          newer <-
-            either
-              (assertFailure . T.unpack)
-              pure
-              (sessionP [multiline ["namespace si", "  unit km = 999 * m"], ":update"])
-          case stdlibUpgrade newer.codebase moved loaded of
-            Left err -> assertFailure (T.unpack err)
-            Right (_, outs) -> any ("updated km #" `T.isPrefixOf`) outs @? show outs
-          -- Merged into a store seeded fresh, si.km still ends on the new km.
-          let fresh = dir </> "fresh"
-          _ <- persistLines fresh []
-          _ <- mergeInto fresh dir
-          (merged, _) <- reload fresh
-          lookupName "si.km" merged.codebase @?= lookupName "si.km" seeded.codebase
-    , testCase
-        "a store of format 3, 4 or 5 is re-hashed: Bool, tuples and lists become declared types"
-        $ forM_ [3, 4, 5 :: Int]
-        $ \v -> withTempStore
-          $ \dir -> do
-            -- A store as the format-3 to 5 code wrote it, byte for byte: a type with
-            -- a Bool field (tag 0x20), and terms that build `true`, a tuple and
-            -- `{}` by name, refer to each other and match a tuple by name.
-            createDirectoryIfMissing True (dir </> "terms")
-            createDirectoryIfMissing True (dir </> "types")
-            writeFile (dir </> "format") ("eval codebase " <> show v <> "\n")
-            let old b = Hash (BS.replicate 32 b)
-                hex = T.unpack . hashHex
-                str s = BS.pack [fromIntegral (T.length s)] <> encodeUtf8 s
-                Hash rHash = old 0xaa
-                Hash pHash = old 0xb2
-                Hash xHash = old 0xb1
-                typeR = BS.pack [0, 1, 1, 0x20, 0] <> str "R"
-                termX =
-                  BS.pack [0x11, 0] <> rHash <> BS.pack [0, 1, 0x11] <> str "True" <> BS.pack [0]
-                one = BS.pack [0x03, 0, 0, 1, 1, 1]
-                termP =
-                  BS.pack [0x11]
-                    <> str "Tuple"
-                    <> BS.pack [2]
-                    <> one
-                    <> BS.pack [0x11]
-                    <> str "Nil"
-                    <> BS.pack [0]
-                termZ = BS.pack [0x01] <> xHash <> BS.pack [0] <> str "x"
-                termC =
-                  BS.pack [0x12, 0x01]
-                    <> pHash
-                    <> BS.pack [0]
-                    <> str "p"
-                    <> BS.pack [1]
-                    <> str "Tuple"
-                    <> BS.pack [2]
-                    <> str "a"
-                    <> str "_"
-                    <> BS.pack [0x00, 0]
-            BS.writeFile (dir </> "types" </> hex (old 0xaa)) typeR
-            forM_ [(0xb1, termX), (0xb2, termP), (0xb3, termZ), (0xb4, termC)] $ \(b, bytes) ->
-              BS.writeFile (dir </> "terms" </> hex (old b)) bytes
-            TIO.writeFile
-              (dir </> "names.log")
-              ( T.unlines
-                  [ "1 type R " <> hashHex (old 0xaa)
-                  , "1 con R " <> hashHex (old 0xaa) <> ".0"
-                  , "1 bind x " <> hashHex (old 0xb1)
-                  , "1 bind p " <> hashHex (old 0xb2)
-                  , "1 bind z " <> hashHex (old 0xb3)
-                  , "1 bind c " <> hashHex (old 0xb4)
-                  ]
-              )
-            -- The old forms are read only by the old rules.
-            fmap
-              (alphaEq (Con pairC [Lit (LTensor ([], [1])), Con nilC []]))
-              (decodeStoredV 3 termP)
-              @?= Right True
-            isJust (either (const Nothing) Just (decodeStoredV storageVersion termP))
-              @?= False
-            (loaded, notes) <- reload dir
-            notes @?= []
-            readFile (dir </> "format") >>= (@?= "eval codebase 6\n")
-            linesIn loaded ["x", "p", "z", "c", ":view R", "std.True", "std.Cons 1 std.Nil"]
-              @?= Right ["R true", "(1, {})", "R true", "1", "data R = R Bool", "true", "{1}"]
-            -- The re-hashed type and terms are the ones the same source enters.
-            fresh <-
-              either (assertFailure . T.unpack) pure
-                $ sessionP
-                  [ "data R = R Bool"
-                  , "let x = R true"
-                  , "let p = (1, {})"
-                  , "let z = x"
-                  , "let c = case p of (a, _) -> a"
-                  , ":add"
-                  ]
-            lookupTypeName "R" loaded.codebase @?= lookupTypeName "R" fresh.codebase
-            forM_ ["x", "p", "z", "c"] $ \n ->
-              lookupName n loaded.codebase @?= lookupName n fresh.codebase
-            lookupTypeName "std.Bool" loaded.codebase @?= Just boolHash
-            -- The old files are gone; the log names the new hashes.
-            present <-
-              mapM
-                (\(sub, b) -> doesFileExist (dir </> sub </> hex (old b)))
-                [ ("types", 0xaa)
-                , ("terms", 0xb1)
-                , ("terms", 0xb2)
-                , ("terms", 0xb3)
-                , ("terms", 0xb4)
-                ]
-            present @?= replicate 5 False
-            logText <- TIO.readFile (dir </> "names.log")
-            T.isInfixOf (hashHex (old 0xb1)) logText @?= False
-            -- Opening it again changes nothing.
-            (reopened, _) <- reload dir
-            lookupName "c" reopened.codebase @?= lookupName "c" loaded.codebase
     , testCase "merging two seeded stores brings nothing across for the library"
         $ withTempStore
         $ \root -> do
@@ -4938,13 +4692,47 @@ storeTests =
         (loaded, notes) <- reload dir
         length notes @?= 2
         linesIn loaded ["x + y"] @?= Right ["18"]
-    , testCase "a store of another format is refused" $ withTempStore $ \dir -> do
+    , testCase "a store of a newer format is refused" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add"]
         writeFile (dir </> "format") "eval codebase 99\n"
         opened <- openStore theSeed dir
         case opened of
           Left err -> T.isInfixOf "is not an eval codebase of format" err @? T.unpack err
           Right _ -> assertFailure "opened a store of another format"
+    , testCase "a store of an older format is refused and left as it is"
+        $ forM_ [3, 4, 5 :: Int]
+        $ \v -> withTempStore $ \dir -> do
+          -- A store as an older eval left it: no types directory, a term file
+          -- and a log, none of which this build reads.
+          createDirectoryIfMissing True (dir </> "terms")
+          writeFile (dir </> "format") ("eval codebase " <> show v <> "\n")
+          writeFile (dir </> "names.log") ("1 bind x " <> replicate 64 'a' <> "\n")
+          BS.writeFile (dir </> "terms" </> replicate 64 'a') (BS.pack [0x04, 1])
+          before <- snapshot dir
+          entries <- sort <$> listDirectory dir
+          opened <- openStore theSeed dir
+          case opened of
+            Left err ->
+              err
+                @?= "this codebase is format "
+                  <> T.pack (show v)
+                  <> "; it predates format 6 and cannot be opened: recreate it"
+                  <> " (with the previous eval, `:export` it and `:load` the file into a new codebase)"
+            Right _ -> assertFailure ("opened a store of format " <> show v)
+          snapshot dir >>= (@?= before)
+          listDirectory dir >>= (@?= entries) . sort
+    , testCase "a store of the current format opens as it was seeded" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["let x = 1", ":add"]
+        readFile (dir </> "format")
+          >>= (@?= "eval codebase " <> show formatVersion <> "\n")
+        formatVersion @?= 6
+        before <- snapshot dir
+        (loaded, notes) <- reload dir
+        notes @?= []
+        -- Opening it writes nothing: it is not seeded again.
+        snapshot dir >>= (@?= before)
+        loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
+        linesIn loaded ["x", "1 km"] @?= Right ["1", "1 km"]
     , testCase "merging two stores: both sides' definitions, one file per shared term"
         $ withTempStore
         $ \root -> do
@@ -5057,7 +4845,7 @@ storeTests =
           (loaded, _) <- reload a
           linesIn loaded ["x + y"] @?= Right ["3"]
     , testCase
-        "merging from what is not a store is refused and touches nothing; old formats migrate"
+        "merging from what is not a store, or from an older store, is refused and touches nothing"
         $ withTempStore
         $ \root -> do
           let a = root </> "a"
@@ -5077,13 +4865,12 @@ storeTests =
           _ <- persistLines (root </> "future") ["let x = 1", ":add"]
           writeFile (root </> "future" </> "format") "eval codebase 99\n"
           refused (root </> "future") "is not an eval codebase of format"
-          -- an empty store of format 2 migrates on open, and the report says so
+          -- a store of an older format is refused, and left as it is
           createDirectoryIfMissing True (root </> "old")
           writeFile (root </> "old" </> "format") "eval codebase 2\n"
-          r <- mergeInto a (root </> "old")
-          map (T.isInfixOf "was migrated in place from format 2") r.notes @?= [True]
-          readFile (root </> "old" </> "format")
-            >>= (@?= "eval codebase " <> show formatVersion <> "\n")
+          refused (root </> "old") "this codebase is format 2; it predates format 6"
+          listDirectory (root </> "old") >>= (@?= ["format"])
+          readFile (root </> "old" </> "format") >>= (@?= "eval codebase 2\n")
     ]
  where
   mergeInto :: FilePath -> FilePath -> IO MergeReport
@@ -7234,100 +7021,13 @@ editTests =
 
 -- The standard library (design §7.7) -------------------------------------------------
 
-{- | The library as the old root prelude entered it, before it moved under
-std: the statements of 'preludeSource' at the root, added.
--}
-legacyPrelude :: Session
-legacyPrelude =
-  either (error . T.unpack) id $ do
-    (s, _) <- feed emptySession preludeSource
-    (s', _) <- feed s ":add"
-    pure s'
-
--- | A session on the library as format 4 seeded it: everything under std.
-stdlib4Session :: Session
-stdlib4Session =
-  either
-    (error . T.unpack)
-    (\cb -> emptySession{codebase = cb, staging = cb})
-    stdlib4Codebase
-
 stdlibTests :: TestTree
 stdlibTests =
   testGroup
     "standard library"
-    [ testCase "the move under std kept the hash of every definition without a ±" $ do
-        -- Printed by `:hash km` and `:hash map` in a prelude session at 21cb8e8,
-        -- before the library moved under std: the format-4 library, kept for
-        -- the migrations, still has them. map was #v2enr.0 until format 6
-        -- made lists a declared type, which re-hashed it.
-        linesIn' stdlib4Session [":hash std.km", ":hash std.map"]
-          @?= Right ["#90tke", "#hba29.0"]
-        let old n = lookupName n legacyPrelude.codebase
-            new n = lookupName ("std." <> n) stdlib4Session.codebase
-        old "km" @?= new "km"
-        old "map" @?= new "map"
-        old "degC" @?= new "degC"
-        isJust (new "km") @? "std.km"
-        -- Every library name but the ± ones and what uses them keeps its hash.
-        [ n
-          | n <- Map.keys legacyPrelude.codebase.names
-          , old n /= new n
-          ]
-          @?= ["G", "M_earth", "M_sun"]
-    , testCase "the split by domain: what kept its hash and what did not" $ do
-        let old n = lookupName ("std." <> n) stdlib4Session.codebase
-            new n = lookupName n seeded.codebase
-        -- A definition written as before keeps its hash under its new path.
-        old "map" @?= new "std.map"
-        old "N" @?= new "si.N"
-        old "min" @?= new "time.min"
-        old "degC" @?= new "temperature.degC"
-        old "c" @?= new "physics.c"
-        old "planck" @?= new "physics.h"
-        -- A prefixed unit is now `kilo * metre`, not `10^3 * m`, so its hash
-        -- changed (#90tke before), and so did the hour, now `60 * min`.
-        runLinesP [":hash si.km", ":hash time.hr", ":hash time.h"]
-          @?= Right ["#0sfk8", "#0jn6m", "#0jn6m"]
-        (old "km" /= new "si.km") @? "si.km has a new hash"
-        -- Every name of the format-4 library has a home, and the bare ones
-        -- moved to a namespace no stored use reaches are the documented ones.
-        homes <- either (assertFailure . T.unpack) pure stdlibHomes
-        sort (map fst homes) @?= sort (Map.keys stdlib4Session.codebase.names)
-        lookup "std.h" homes @?= Just "time.h"
-        lookup "std.km" homes @?= Just "si.km"
-        lookup "std.G" homes @?= Just "astro.G"
-        sort
-          [ S.lastSegment o
-          | (o, home) <- homes
-          , not (any (\u -> (u <> ".") `T.isPrefixOf` home) stdlibDefaultUses)
-          ]
-          @?= sort stdlibMovedOut
-    , testCase
-        "every name bare before the split still resolves bare, as the same kind"
-        $ do
-          -- The format-4 library's names as `use std` offered them bare.
-          let old = stdlib4Session.codebase
-              bare = Map.keys old.names ++ Map.keys old.conNames
-              moved = map ("std." <>) stdlibMovedOut
-              kind cb n = (isUnitName n cb, isScaleName n cb)
-          forM_ [n | n <- bare, n `notElem` moved] $ \n -> do
-            let short = S.lastSegment n
-            case qualifyName TermLabel S.rootScope seeded.codebase short of
-              Found full ->
-                when (Map.member n old.names)
-                  $ kind seeded.codebase full
-                    @?= kind old n
-              other -> assertFailure (T.unpack short <> ": " <> show other)
-          forM_ (Map.keys old.typeNames) $ \n ->
-            qualifyName TypeLabel S.rootScope seeded.codebase (S.lastSegment n)
-              @?= Found ("linalg." <> S.lastSegment n)
-          forM_ (Map.keys old.fieldNames) $ \n ->
-            qualifyName FieldLabel S.rootScope seeded.codebase (S.lastSegment n)
-              @?= Found ("linalg." <> S.lastSegment n)
-          -- The moved ones need their namespace.
-          forM_ stdlibMovedOut $ \n ->
-            qualifyName TermLabel S.rootScope seeded.codebase n @?= NotFound
+    [ testCase "the names moved out of the default namespaces need their namespace"
+        $ forM_ stdlibMovedOut
+        $ \n -> qualifyName TermLabel S.rootScope seeded.codebase n @?= NotFound
     , testCase "no name is ambiguous among the namespaces used by default" $ do
         let cb = seeded.codebase
             used n = any (\u -> (u <> ".") `T.isPrefixOf` n) stdlibDefaultUses
@@ -7346,11 +7046,8 @@ stdlibTests =
           )
           @?= sort stdlibNames
     , testCase "a ± definition is stamped with its full path: astro.G is not a root G" $ do
-        -- `:hash G` printed #e1bms at 21cb8e8, when the prelude's G was at the root.
         expecting (runLinesP [":use astro", ":hash G", ":hash astro.G"]) $ \case
-          [_, g, astroG] -> do
-            g @?= astroG
-            (g /= "#e1bms") @? "astro.G has a new hash"
+          [_, g, astroG] -> g @?= astroG
           outs -> assertFailure (show outs)
         expecting
           ( runLinesP
@@ -7361,10 +7058,7 @@ stdlibTests =
               ]
           )
           $ \outs -> case lastN 2 outs of
-            [g, astroG] -> do
-              -- The root G has the hash the root prelude's G had.
-              g @?= "#e1bms"
-              (astroG /= g) @? "astro.G differs from the root G"
+            [g, astroG] -> (astroG /= g) @? "astro.G differs from the root G"
             other -> assertFailure (show other)
     , testCase "std names Bool, Pair and List, the declarations the compiler holds" $ do
         let cb = seeded.codebase
@@ -7559,7 +7253,7 @@ stdlibTests =
                 , ":update"
                 ]
             )
-        case stdlibUpgrade lib [] old of
+        case stdlibUpgrade lib old of
           Left err -> assertFailure (T.unpack err)
           Right (s, outs) -> do
             ("added si.km" `elem` outs) @? "km added"
@@ -7592,7 +7286,7 @@ stdlibTests =
                 emptySession
                 [multiline ["namespace linalg", "  data Cov2 = Cov2"], ":add"]
             )
-        case stdlibUpgrade lib [] old2 of
+        case stdlibUpgrade lib old2 of
           Left err -> assertFailure (T.unpack err)
           Right (s, outs) -> do
             ("added data linalg.Cov2" `notElem` outs) @? "Cov2 kept"

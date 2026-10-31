@@ -76,8 +76,8 @@ options args =
     [] -> (Options Nothing False Nothing, [])
 
 {- | Merge the store at OTHER into this codebase (design §7.4) and say what
-came across. OTHER is only read, apart from a migration to the current
-format, which is reported.
+came across. OTHER is only read, and a store of an older format is
+refused.
 -}
 merge :: Options -> FilePath -> IO ()
 merge opts other = do

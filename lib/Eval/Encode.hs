@@ -87,7 +87,7 @@ kindByte = \case
 
 encType :: Type -> Builder
 -- 0x20 (Bool), 0x24 (tuple) and 0x25 (list) are retired: those types are
--- 0x28 on the built-in hashes (design §6.1), read back from old stores only.
+-- 0x28 on the built-in hashes (design §6.1), and no longer read either.
 encType = \case
   TTensor sh d -> word8 0x21 <> encShape sh <> encDim d
   TPoint sh d -> word8 0x22 <> encShape sh <> encDim d
