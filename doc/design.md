@@ -2927,8 +2927,8 @@ followed by a subtraction:
    includes the frame's motion between them, `(b from (ecef t1) to eci) .-
    (a from (ecef t0) to eci)`.
 
-A shorthand for "convert both to this frame, then subtract" is deferred
-(F10); it would cover only points sharing a configuration.
+`b .- a on (lvlhA t)` is shorthand for the first form (F10); it covers only
+points sharing a configuration.
 
 **F8. The quantity rule for charts** (U4). Any expression of type `Chart c`
 after a literal builds a point, so chart parameters, applied charts (`[1, 2,
@@ -2955,9 +2955,9 @@ chart name params… on parent [at origin] [step unit] [by B [then B …]] [spin
 `on` is required and comes first: it ends the parameters and names the
 parent, a space or a chart (applied, if it has parameters). The other clauses
 come in any order, each running to the next clause word, so no expression in
-them needs parentheses. `on`, `step`, `by`, `then` and `spinning` are words
-only inside a chart declaration and stay free as names elsewhere; `at` is a
-keyword already. An omitted clause is inherited: the origin and the axes are
+them needs parentheses. `step`, `by`, `then` and `spinning` are words only
+inside a chart declaration and stay free as names elsewhere; `at` is a
+keyword already, and so is `on`, which also subtracts in a frame (below). An omitted clause is inherited: the origin and the axes are
 the parent's, and the step is the parent's or, on a space, the space's base
 unit. Which clauses appear decides whether a frame is minted (F3). `unit` and
 `space` keep their `=`, since each binds one expression. The library's
@@ -2986,10 +2986,15 @@ parameters takes `from` as a point does, `v from (ecef t) to eci`. `along` and
 `inChart` are retired into `to`, one for each direction. `withAxes c v` stays:
 it labels a vector that has no frame, which is not a conversion.
 
-**Deferred: a shorthand for "convert both, then subtract".** `b .- a in
-(lvlhA t)` cannot be the spelling, because `let d = b .- a in (lvlhA t)`
-already parses as a `let … in` whose body is `(lvlhA t)`. Another word is
-needed, `on` the likeliest, which would then be a word in expressions too.
+**Subtracting in a frame: `on`** (decided by the owner). `b .- a on c` is
+`(b to c) .- (a to c)`: both points converted to one frame at one
+configuration, then subtracted, `b .- a on (lvlhA t) : Vec lvlhA m`. `on`
+binds like `to`, its left side must be a `.-`, and it is a keyword, the same
+word as a chart declaration's parent clause, meaning "relative to" in both.
+`in` could not serve: `let d = b .- a in (lvlhA t)` already parses as a `let
+… in`. A point on a frame with parameters still needs its configuration, so
+`on` covers only points whose conversion needs no `from`; otherwise the
+desugared `to` is refused as F7 says, and the subtraction is written out.
 **Deferred.** A frame per item of data (F3, §11); constraints over
 `Diff` beyond the pending one (F4); printing values with `·` (§4.1).
 
