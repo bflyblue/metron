@@ -276,6 +276,7 @@ exprDepth e =
     S.Ascribe a _ -> exprDepth a
     S.ChartForm s o g w ->
       maximum [exprDepth s, exprDepth o, maybe 0 exprDepth g, maybe 0 exprDepth w]
+    S.UnitBody a -> exprDepth a
 
 -- Literals and units ------------------------------------------------------------------
 

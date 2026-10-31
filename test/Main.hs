@@ -633,6 +633,7 @@ shape e = case e.node of
   S.Ascribe a _ -> shape a
   S.ChartForm s o g w ->
     foldl (\acc x -> A acc (shape x)) (A (shape s) (shape o)) (catMaybes [g, w])
+  S.UnitBody a -> shape a
 
 parserTests :: TestTree
 parserTests =
@@ -968,7 +969,7 @@ codebaseTests =
           let ls args =
                 runLinesP
                   ( [ "let speed = 7.5 km/s"
-                    , "unit furlong = 201.168 * m"
+                    , "unit furlong = 201.168 m"
                     , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
                     , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
                     ]
@@ -977,7 +978,7 @@ codebaseTests =
           ls ""
             @?= Right
               ( [ "area : Shape -> Num (m^2)"
-                , "unit furlong : Num m"
+                , "unit furlong : Unit m"
                 , "speed : Num (m/s)"
                 , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
                 , "Circle : Num m -> Shape"
@@ -987,12 +988,12 @@ codebaseTests =
               )
           ls "k*m"
             @?= Right
-              [ "unit kilogram : Num kg"
-              , "unit klm : Num (cd*rad^2)"
-              , "unit km : Num m"
-              , "unit kohm : Num (kg*m^2/(s^3*A^2))"
+              [ "unit kilogram : Unit kg"
+              , "unit klm : Unit (cd*rad^2)"
+              , "unit km : Unit m"
+              , "unit kohm : Unit (kg*m^2/(s^3*A^2))"
               ]
-          ls "--units furl" @?= Right ["unit furlong : Num m"]
+          ls "--units furl" @?= Right ["unit furlong : Unit m"]
           ls "--charts degC" @?= Right ["chart degC : Chart (Num K)"]
           -- The old spelling of the flag.
           ls "--scales degC" @?= Right ["chart degC : Chart (Num K)"]
@@ -1038,7 +1039,7 @@ codebaseTests =
                 , ":add"
                 , "let d = 3 meter"
                 , ":add"
-                , "unit meter = 2 * m"
+                , "unit meter = 2 m"
                 ]
           case runLinesP
             (session ++ [":update", "1 km to m", "d to m", ":todo", ":dependents meter"]) of
@@ -1550,27 +1551,38 @@ productTests =
     , testCase "elementwise division by zero fails only for that element" $ do
         evalText "([1, 2] ./ [0, 2]).1" @?= Right ["1"]
         evalText "([1, 2] ./ [0, 2]).0" @?= Left "error: division by zero"
-    , testCase "quantity rule multiplies a literal by a declared unit"
-        $ runLines ["unit dozen = 12", "3 dozen", "3 dozen to 1"]
+    , testCase "quantity rule multiplies a literal by a declared unit" $ do
+        -- A dimensionless unit with no units left in it shows a plain number.
+        runLines ["unit dozen = 12", "3 dozen", "3 dozen to dozen/dozen"]
           @?= Right ["3 dozen", "36"]
-    , testCase "juxtaposition is for units only" $ do
+        -- to takes a unit, not an amount (design §3.10, U6).
+        case runLines ["unit dozen = 12", "3 dozen to 1"] of
+          Left err -> T.isInfixOf "an amount after `to`" err @? T.unpack err
+          Right v -> assertFailure (show v)
+    , testCase "juxtaposition is for units and charts, by type" $ do
         evalP "5 g" @?= Right ["5 g"]
         evalP "3 (m/s)" @?= Right ["3 m s^-1"]
         evalP "90 deg to rad" @?= Right ["1.5707963267948966192… rad"]
+        -- What follows a literal is refused by its type (design §3.10, U4).
         case runLinesP ["let a = [1, 2; 3, 4]", "5 a"] of
-          Left err -> T.isInfixOf "`a` is not a unit" err @? T.unpack err
+          Left err ->
+            T.isInfixOf "`a` is Mat 2 2, not a unit or a chart: write the `*`" err
+              @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP "2 pi" of
-          Left err -> T.isInfixOf "`pi` is not a unit" err @? T.unpack err
+          Left err ->
+            T.isInfixOf "`pi` is Num, not a unit or a chart: write the `*`" err
+              @? T.unpack err
           Right v -> assertFailure (show v)
+        -- A parameter could be either, so a signature must say.
         case evalP "\\m -> 5 m" of
-          Left err -> T.isInfixOf "`m` is not a unit" err @? T.unpack err
+          Left err -> T.isInfixOf "ambiguous: what follows this literal" err @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP "let f x = x in 3 f" of
-          Left err -> T.isInfixOf "`f` is not a unit" err @? T.unpack err
+          Left err -> T.isInfixOf "not a unit or a chart: write the `*`" err @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP "3 (f x)" of
-          Left err -> T.isInfixOf "not a unit expression" err @? T.unpack err
+          Left err -> T.isInfixOf "unknown name `f`" err @? T.unpack err
           Right v -> assertFailure (show v)
         case evalP "3 furlongs" of
           Left err -> T.isInfixOf "unknown name `furlongs`" err @? T.unpack err
@@ -1816,7 +1828,7 @@ turnedChartTests =
                  , -- reading back, by the generator negated
                    encloses
                      "1e-20"
-                     "transformBy (expm (-(rotz (90 deg)))) (([7000000, 1, 0] eci .- [0, 0, 0] lvlh) / m)"
+                     "transformBy (expm (-(rotz (90 deg)))) (([7000000, 1, 0] eci .- [0, 0, 0] lvlh) / 1 m)"
                      "[1, 0, 0]"
                  , "[1, 0, 0] lvlh to eci"
                  , "[7000000, 1, 0] eci to lvlh"
@@ -1847,7 +1859,7 @@ turnedChartTests =
                    , encloses "1e-20" "rotationOf arm" "[0, 0, 1; 1, 0, 0; 0, 1, 0]"
                    , encloses
                        "1e-20"
-                       "transformBy (expm (-(rotx (90 deg))) @ expm (-(rotz (90 deg)))) (([7000001, 1, 7] eci .- [0, 0, 0] arm) / m)"
+                       "transformBy (expm (-(rotx (90 deg))) @ expm (-(rotz (90 deg)))) (([7000001, 1, 7] eci .- [0, 0, 0] arm) / 1 m)"
                        "[1, 2, 3]"
                    , "[7000001, 1, 7] eci to arm"
                    ]
@@ -1900,13 +1912,13 @@ turnedChartTests =
               ++ [ -- the rotated difference: R (cp − cq)
                    encloses
                      "1e-20"
-                     "([1, 2, 3] lvlh .- [0, 5, 0] lvlh) / m"
+                     "([1, 2, 3] lvlh .- [0, 5, 0] lvlh) / 1 m"
                      "expm (rotz (90 deg)) @ [1, -3, 3]"
-                 , encloses "1e-20" "([1, 2, 3] lvlh .- [0, 5, 0] lvlh) / m" "[3, 1, 3]"
+                 , encloses "1e-20" "([1, 2, 3] lvlh .- [0, 5, 0] lvlh) / 1 m" "[3, 1, 3]"
                  , -- q .+ (p .- q) is p, on any charts
                    encloses
                      "1e-20"
-                     "(([4, 5, 6] eci .+ ([1, 2, 3] lvlh .- [4, 5, 6] eci)) .- [1, 2, 3] lvlh) / m"
+                     "(([4, 5, 6] eci .+ ([1, 2, 3] lvlh .- [4, 5, 6] eci)) .- [1, 2, 3] lvlh) / 1 m"
                      "[0, 0, 0]"
                  , "let p = [1, 2, 3] eci"
                  , "let q = [7, 8, 9] eci"
@@ -1914,7 +1926,7 @@ turnedChartTests =
                  , -- an amount along a chart's axes reaches the base axes with inChart
                    encloses
                      "1e-20"
-                     "([0, 0, 0] lvlh .+ inChart lvlh ([1, 0, 0] m) .- [1, 0, 0] lvlh) / m"
+                     "([0, 0, 0] lvlh .+ inChart lvlh ([1, 0, 0] m) .- [1, 0, 0] lvlh) / 1 m"
                      "[0, 0, 0]"
                  , "[1, 2, 3] lvlh .- [0, 5, 0] lvlh"
                  ]
@@ -1954,17 +1966,17 @@ turnedChartTests =
                    "rotateCov (rotationOf eci) " <> pm <> " == " <> pm
                  , "blk :: Cov2 lvlh m (m/s)\nlet blk = Cov2 {rr = "
                      <> pm
-                     <> " * m^2, rv = "
+                     <> " * 1 m^2, rv = "
                      <> pm
-                     <> " * m^2 / s, vv = 2 * "
+                     <> " * 1 m^2/s, vv = 2 * "
                      <> pm
-                     <> " * (m / s)^2}"
+                     <> " * (1 m/s)^2}"
                  , "let turned = inChartCov2 lvlh blk"
-                 , encloses "1e-20" "turned.rr / m^2" "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
-                 , encloses "1e-20" "turned.rv / (m^2 / s)" "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
+                 , encloses "1e-20" "turned.rr / 1 m^2" "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
+                 , encloses "1e-20" "turned.rv / (1 m^2/s)" "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
                  , encloses
                      "1e-20"
-                     "turned.vv / (m / s)^2"
+                     "turned.vv / (1 m/s)^2"
                      "2 * [[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
                  ]
           )
@@ -1973,7 +1985,7 @@ turnedChartTests =
         runLinesP
           [ eci
           , "chart tilt = m at [0, 0, 0] m eci by rotz (30 deg ± 0.001 rad)"
-          , "let v = ([1000, 0, 0] tilt .- [0, 0, 0] eci) / m"
+          , "let v = ([1000, 0, 0] tilt .- [0, 0, 0] eci) / 1 m"
           , -- x = 1000 cos θ, y = 1000 sin θ: bounds near 0.5 and 0.87
             "bound v.0 > 0.4 && bound v.0 < 0.6"
           , "bound v.1 > 0.8 && bound v.1 < 0.95"
@@ -1988,7 +2000,7 @@ turnedChartTests =
           ( frame
               ++ [ encloses
                      "1e-15"
-                     "foldl (\\acc k -> acc + (([k, 0, 0] lvlh to eci) .- [0, 0, 0] lvlh).1 / m) 0 (range 1 100)"
+                     "foldl (\\acc k -> acc + (([k, 0, 0] lvlh to eci) .- [0, 0, 0] lvlh).1 / 1 m) 0 (range 1 100)"
                      "5050"
                  ]
           )
@@ -1997,14 +2009,14 @@ turnedChartTests =
         let pf = "chart pf = m at [0, 2, 0] km eci by rotz (30 deg) then rotx (45 deg)"
         runLinesP [eci, pf, ":view pf"]
           @?= Right
-            ["chart pf = m at [0, 2, 0] km eci by rotz (30 * deg) then rotx (45 * deg)"]
+            ["chart pf = m at [0, 2, 0] km eci by rotz (30 deg) then rotx (45 deg)"]
         let hashAfter def = runLinesP [eci, def, ":hash pf"]
         expecting (runLinesP [eci, pf, ":edit pf"]) $ \outs ->
           hashAfter (T.strip (last outs)) @?= hashAfter pf
     , testCase "design §12: a perifocal chart" $ do
         runLinesP perifocalSession
           @?= Right
-            [ "chart pf = km at [0, 0, 0] km eci by rotz (30 * deg) then rotx (45 * deg) then rotz (60 * deg)"
+            [ "chart pf = km at [0, 0, 0] km eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"
             , "[887785.38831025442775…, 5462310.6012293745031…, 4286607.0498705616718…] eci"
             , "[6999.9999999999999999…, -1.3e-20 ± 9.1e-20, 6e-21 ± 2.4e-20] pf"
             , "[-6.9508252147247766082…, -0.95119863033241545830…, 2.6516504294495532165…] km s^-1"
@@ -2033,7 +2045,7 @@ turnedChartTests =
  where
   eci = "chart eci = m at [0, 0, 0] m"
   frame = [eci, "chart lvlh = m at [7000, 0, 0] km eci by rotz (90 deg)"]
-  fromEci p = "((" <> p <> ") .- [0, 0, 0] eci) / m"
+  fromEci p = "((" <> p <> ") .- [0, 0, 0] eci) / 1 m"
 
 {- | The session of design §12, "A perifocal chart": a chart turned by the
 3-1-3 sequence of an orbit's elements, a point on it, and a covariance
@@ -2120,7 +2132,7 @@ movingChartTests =
           -- the spin is an angular velocity: rad s^-1, not s^-1
           expectError
             ( runLinesP
-                (spinning ++ ["chart bad = m at [0, 0, 0] m eci spinning [0, 0, 1] / s"])
+                (spinning ++ ["chart bad = m at [0, 0, 0] m eci spinning [0, 0, 1] / 1 s"])
             )
             "rad"
     , testCase "a body fixed on a spinning chart: at rest on it, ω × r in the parent" $ do
@@ -2129,20 +2141,20 @@ movingChartTests =
               ++ [ ":use astro"
                  , "let c = spinner t1"
                  , "let p = [7000000, 0, 0] (spinner t1)"
-                 , "let wv = withAxes eci ([0, 0, 1] * (w / rad))"
+                 , "let wv = withAxes eci ([0, 0, 1] * (w / 1 rad))"
                  , -- the inertial velocity of a point turning with the chart
                    "let body = State {epoch = t1, pos = p, vel = wv × (p .- [0, 0, 0] eci)}"
-                 , encloses "1e-15" "velocityIn c body / (m / s)" "[0, 0, 0]"
+                 , encloses "1e-15" "velocityIn c body / (1 m/s)" "[0, 0, 0]"
                  , -- written back: ω × r along the parent's axes, by hand,
                    -- r = 7000 km at θ = w (t1 − t0)
                    encloses
                      "1e-15"
-                     "(stateFrom c t1 ([7000000, 0, 0] m) ([0, 0, 0] m/s)).vel / (m / s)"
+                     "(stateFrom c t1 ([7000000, 0, 0] m) ([0, 0, 0] m/s)).vel / (1 m/s)"
                      "7000000 * (w * 1 s / rad) * [-sin (w * 1000 s), cos (w * 1000 s), 0]"
                  , -- a body at rest in the parent turns backwards on the chart
                    encloses
                      "1e-15"
-                     "velocityIn c (State {epoch = t1, pos = p, vel = [0, 0, 0] m/s}) / (m / s)"
+                     "velocityIn c (State {epoch = t1, pos = p, vel = [0, 0, 0] m/s}) / (1 m/s)"
                      "[0, -7000000 * (w * 1 s / rad), 0]"
                  ]
           )
@@ -2158,15 +2170,15 @@ movingChartTests =
                    , "let pc = withAxes c ([7000, 100, -50] km)"
                    , "let vc = withAxes c ([1, 7.5, 0.2] km/s)"
                    , "let st = stateFrom c t1 pc vc"
-                   , encloses "1e-15" "velocityIn c st / (m / s)" "vc / (m / s)"
+                   , encloses "1e-15" "velocityIn c st / (1 m/s)" "vc / (1 m/s)"
                    , encloses
                        "1e-15"
-                       "along c (st.pos .- [0, 0, 0] (tilted t1)) / m"
-                       "pc / m"
+                       "along c (st.pos .- [0, 0, 0] (tilted t1)) / 1 m"
+                       "pc / 1 m"
                    , encloses
                        "1e-12"
-                       "((st.pos to tilted t1) .- [0, 0, 0] (tilted t1)) / m"
-                       "(st.pos .- [0, 0, 0] (tilted t1)) / m"
+                       "((st.pos to tilted t1) .- [0, 0, 0] (tilted t1)) / 1 m"
+                       "(st.pos .- [0, 0, 0] (tilted t1)) / 1 m"
                    ]
             )
             @?= Right ["stored use astro", "true", "true", "true"]
@@ -2181,7 +2193,7 @@ movingChartTests =
                 ++ [ ":use astro"
                    , "let pc = withAxes (spinner t1) [7000000, 2000, 300]"
                    , "let fd = (pointOn (spinner (t1 .+ 1 ms)) pc .- pointOn (spinner t1) pc) / (1 ms)"
-                   , "let v = (stateFrom (spinner t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
+                   , "let v = (stateFrom (spinner t1) t1 (pc * 1 m) ([0, 0, 0] m/s)).vel"
                    , "let rel = norm (fd - v) / norm v"
                    , "mid rel < 1e-6 && mid rel > 1e-8"
                    , "rel"
@@ -2195,22 +2207,22 @@ movingChartTests =
                 spinning
                   ++ [ ":use astro"
                      , "chart station t = m at [6378, 0, 0] km (spinner t) by roty (30 deg)"
-                     , "let wv = withAxes eci ([0, 0, 1] * (w / rad))"
+                     , "let wv = withAxes eci ([0, 0, 1] * (w / 1 rad))"
                      , "let c = station t1"
                      ]
           runLinesP
             ( station
                 ++ [ -- the station's own spin is none; it turns with the Earth
-                     encloses "1e-25" "spinOf c * s" "wv * s"
+                     encloses "1e-25" "spinOf c * 1 s" "wv * 1 s"
                    , -- its origin moves with the Earth's frame: ω × (R_p a), by hand
                      encloses
                        "1e-12"
-                       "originVelocityOf c / (m / s)"
+                       "originVelocityOf c / (1 m/s)"
                        "6378000 * (w * 1 s / rad) * [-sin (w * 1000 s), cos (w * 1000 s), 0]"
                    , -- a body fixed at the station is at rest relative to it
                      "let p = [1, 2, 3] (station t1)"
                    , "let body = State {epoch = t1, pos = p, vel = wv × (p .- [0, 0, 0] eci)}"
-                   , encloses "1e-12" "velocityIn c body / (m / s)" "[0, 0, 0]"
+                   , encloses "1e-12" "velocityIn c body / (1 m/s)" "[0, 0, 0]"
                    ]
             )
             @?= Right ["stored use astro", "true", "true", "true"]
@@ -2226,13 +2238,13 @@ movingChartTests =
                 ++ [ "chart dish t = m at [0, 0, 10] m (station t) by rotz (0.01 rad/s * (t .- t0)) spinning [0, 0, 0.01] rad/s"
                    , "let pc = withAxes (dish t1) [3, 1, 2]"
                    , "let fd = (pointOn (dish (t1 .+ 1 ms)) pc .- pointOn (dish (t1 .+ -1 ms)) pc) / (2 ms)"
-                   , "let v = (stateFrom (dish t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
-                   , "vmap (\\x -> if abs (mid x) < 1e-11 then 0 else 1) ((fd - v) / (m / s)) == [0, 0, 0]"
-                   , "(fd - v) / (m / s)"
+                   , "let v = (stateFrom (dish t1) t1 (pc * 1 m) ([0, 0, 0] m/s)).vel"
+                   , "vmap (\\x -> if abs (mid x) < 1e-11 then 0 else 1) ((fd - v) / (1 m/s)) == [0, 0, 0]"
+                   , "(fd - v) / (1 m/s)"
                    , encloses
                        "1e-25"
-                       "spinOf (dish t1) * s"
-                       "(wv + inChart (dish t1) ([0, 0, 0.01] / s)) * s"
+                       "spinOf (dish t1) * 1 s"
+                       "(wv + inChart (dish t1) ([0, 0, 0.01] / 1 s)) * 1 s"
                    ]
             )
             @?= Right
@@ -2248,8 +2260,8 @@ movingChartTests =
           , "let wu = 7.2921159e-5 rad/s ± 1e-10 rad/s"
           , "let t0 = 0 unix"
           , "chart wobbly t = m at [0, 0, 0] m eci by rotz (wu * (t .- t0)) spinning [0, 0, 1] * wu"
-          , "let v1 = (stateFrom (wobbly t0) t0 ([7000, 0, 0] km) ([0, 0, 0] m/s)).vel / (m / s)"
-          , "let v2 = (stateFrom (wobbly t0) t0 ([14000, 0, 0] km) ([0, 0, 0] m/s)).vel / (m / s)"
+          , "let v1 = (stateFrom (wobbly t0) t0 ([7000, 0, 0] km) ([0, 0, 0] m/s)).vel / (1 m/s)"
+          , "let v2 = (stateFrom (wobbly t0) t0 ([14000, 0, 0] km) ([0, 0, 0] m/s)).vel / (1 m/s)"
           , -- 7000 km × 1e-10 s^-1 = 7e-4 m/s
             "bound v1.1 > 6.9e-4 && bound v1.1 < 7.1e-4"
           , "bound v2.1 / bound v1.1 > 1.99 && bound v2.1 / bound v1.1 < 2.01"
@@ -2280,14 +2292,14 @@ movingChartTests =
         -- 0.094″ less.
         runLinesP
           ( take 3 spinningEarthSession
-              ++ [ "let g = gmst (9496.5 J2000) / deg"
+              ++ [ "let g = gmst (9496.5 J2000) / 1 deg"
                  , "abs (g - 360 * floor (g / 360) - 100.6608585) < 1e-4"
                  ]
           )
           @?= Right ["true"]
         runLinesP spinningEarthSession
           @?= Right
-            [ "chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] * deg / day"
+            [ "chart earth t = m at [0, 0, 0] m eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg / day"
             , "[-734892.0553385001942 ± 3e-13, 3903932.6219852148939…, 4990000] eci"
             , "stored use astro"
             , "[-284.67928970827302009…, -53.589180086727794658 ± 2.2e-17, 0] m s^-1"
@@ -2303,7 +2315,7 @@ movingChartTests =
     , "let t1 = 1000 unix"
     , "chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w"
     ]
-  fromEci p = "((" <> p <> ") .- [0, 0, 0] eci) / m"
+  fromEci p = "((" <> p <> ") .- [0, 0, 0] eci) / 1 m"
 
 {- | The session of design §12, "A spinning Earth": a chart turned by a
 linear GMST and spinning at its rate, a station fixed on it, and the
@@ -2407,7 +2419,7 @@ rotationTests =
               "1e-20"
               "expm [[0, 1/2, 0, 0], [-1/2, 0, 0, 0], [0, 0, 0, 1/3], [0, 0, -1/3, 0]]"
               ( T.unwords
-                  [ "let a = 0.5 rad in let b = (1/3) * rad in"
+                  [ "let a = 0.5 rad in let b = (1/3) * 1 rad in"
                   , "[[cos a, sin a, 0, 0], [-sin a, cos a, 0, 0],"
                   , "[0, 0, cos b, sin b], [0, 0, -sin b, cos b]]"
                   ]
@@ -2454,7 +2466,7 @@ rotationTests =
           ( encloses
               "1e-20"
               ("expm (" <> near <> ")")
-              "let a = sqrt 6 * rad in [[cos a, sin a, 0], [-sin a, cos a, 0], [0, 0, 1]]"
+              "let a = sqrt 6 * 1 rad in [[cos a, sin a, 0], [-sin a, cos a, 0], [0, 0, 1]]"
           )
           @?= Right ["true"]
         evalP "expm [[1, 2], [3, 4]]"
@@ -2902,7 +2914,7 @@ namedAxesTests =
             ]
         runLinesP
           ( frame
-              ++ [ encloses "1e-20" "inChart lvlh (along lvlh ([1, 2, 3] m)) / m" "[1, 2, 3]"
+              ++ [ encloses "1e-20" "inChart lvlh (along lvlh ([1, 2, 3] m)) / 1 m" "[1, 2, 3]"
                  , encloses "1e-20" "det (rotationOf lvlh)" "1"
                  ]
           )
@@ -2936,7 +2948,10 @@ namedAxesTests =
               ++ [ "let shift q = q .+ [1, 0, 0] m"
                  , ":type shift"
                  , "shift p"
-                 , encloses "1e-20" "(p .+ inChart lvlh (withAxes lvlh off) .- p) / m" "[0, 0, 2]"
+                 , encloses
+                     "1e-20"
+                     "(p .+ inChart lvlh (withAxes lvlh off) .- p) / 1 m"
+                     "[0, 0, 2]"
                  , multiline ["off2 :: forall (a : 3). Vec a m", "let off2 = [0, 0, 2] m"]
                  , ":ls off2"
                  , "p .+ off2"
@@ -3036,7 +3051,7 @@ namedAxesTests =
               , multiline ["k :: Num m", "let k = 3 m"]
               , ":add"
               , multiline
-                  ["let k = 2 s", "chart c = m at [0, 0, 0] m eci by rotz (k / s * 1 rad)"]
+                  ["let k = 2 s", "chart c = m at [0, 0, 0] m eci by rotz (k / 1 s * 1 rad)"]
               ]
           )
           "`k`'s definition has type `Num s`, not as general as its signature `Num m`"
@@ -3105,7 +3120,7 @@ namedAxesTests =
                  , "let st = stateFrom lvlh (0 unix) ([1, 0, 0] m) ([0, 1, 0] m/s)"
                  , ":type st"
                  , ":type st.pos"
-                 , encloses "1e-20" "velocityIn lvlh st / (m / s)" "[0, 1, 0]"
+                 , encloses "1e-20" "velocityIn lvlh st / (1 m/s)" "[0, 1, 0]"
                  ]
           )
           @?= Right
@@ -3942,7 +3957,7 @@ displayTests =
           @?= Right ["8.3167463972692735318… min"]
         evalP "90 min to h" @?= Right ["1.5 h"]
     , testCase "a user-declared unit"
-        $ runLinesP ["unit furlong = 201.168 * m", "1 km to furlong", "8 furlong to km"]
+        $ runLinesP ["unit furlong = 201.168 m", "1 km to furlong", "8 furlong to km"]
           @?= Right ["4.9709695378986717569… furlong", "1.609344 km"]
     , testCase "let-bound quantities are not units, their components are"
         $ runLinesP ["let g = 9.81 m / s^2", "g * (2 s)^2"] @?= Right ["39.24 m"]
@@ -3951,7 +3966,7 @@ displayTests =
     , testCase
         "units are codebase metadata: a renamed unit prints under its current name"
         $ runLinesP
-          [ "unit fathom = 1.8288 * m"
+          [ "unit fathom = 1.8288 m"
           , ":add"
           , "2 fathom"
           , ":alias fm fathom"
@@ -3971,7 +3986,7 @@ displayTests =
     either
       (const "?")
       (T.concat . drop 1)
-      (runLinesP ["unit fathom = 1.8288 * m", ":add", ":hash fathom"])
+      (runLinesP ["unit fathom = 1.8288 m", ":add", ":hash fathom"])
 
 -- Affine arithmetic -----------------------------------------------------------------
 --
@@ -4035,7 +4050,7 @@ affineTests =
         evalText "pi" @?= Right ["3.1415926535897932384…"]
         evalText "exp 1" @?= Right ["2.7182818284590452353…"]
         evalText "log 2" @?= Right ["0.69314718055994530941…"]
-        evalText "tan (pi/4 * rad)" @?= Right ["1.0000000000000000000…"]
+        evalText "tan (pi/4 * 1 rad)" @?= Right ["1.0000000000000000000…"]
         evalText "sqrt 2 * sqrt 2" @?= Right ["2.0000000000000000000…"]
         evalText "exp (-80)" @?= Right ["1.8048513878454151723…e-35"]
         evalText "sinh 1e-20" @?= Right ["1.0000000000000000000…e-20"]
@@ -4103,7 +4118,7 @@ affineTests =
         evalP "(sigma 1 0.1 #a) - (1 ±σ 0.1 #a)" @?= Right ["0"]
         -- and, like within, it is not a unit
         case evalP "3 sigma" of
-          Left err -> T.isInfixOf "`sigma` is not a unit" err @? T.unpack err
+          Left err -> T.isInfixOf "not a unit or a chart: write the `*`" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "noise and gauss are vectors of unit nudges" $ do
         evalText "noise 2" @?= Right ["[0 ± 1, 0 ± 1]"]
@@ -4202,26 +4217,37 @@ affineTests =
         case evalU ["astro"] ":budget M_earth" of
           Right (_ : _ : row : _) -> T.isInfixOf "σ      G" row && T.isInfixOf "100% of σ²" row @? T.unpack row
           other -> assertFailure (show other)
-    , testCase "a unit is a name: a quantity sharing its hash is not one" $ do
+    , testCase "a unit is its own term: an amount of the same size is not one" $ do
         runLinesP ["let x = 1", "x + 2"] @?= Right ["3"]
+        -- A unit's declaration makes its body a unit (design §3.10, U7), so
+        -- the unit and the amount it was declared from are two terms.
         runLinesP
           [ "unit dozen = 12"
           , "let eggs = 12"
           , "3 dozen"
           , "eggs + 1"
           , ":hash dozen"
-          , ":hash eggs"
+          , ":type dozen"
+          , ":type eggs"
           ]
-          @?= Right ["3 dozen", "13", "#" <> dozenHash, "#" <> dozenHash]
+          @?= Right ["3 dozen", "13", "#" <> dozenHash, "Unit", "Num"]
+        hashes <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            (runLinesP ["unit dozen = 12", "let eggs = 12", ":hash dozen", ":hash eggs"])
+        case hashes of
+          [d, e] -> (d /= e) @? "a unit and an amount share a hash"
+          other -> assertFailure (show other)
         case runLinesP ["let x = 1", "5 x"] of
-          Left err -> T.isInfixOf "`x` is not a unit" err @? T.unpack err
+          Left err -> T.isInfixOf "`x` is Num, not a unit or a chart" err @? T.unpack err
           Right v -> assertFailure (show v)
         -- Bq and Hz are one definition and two units; each prints as written.
         runLinesP ["5 Bq", "5 Hz", "1 Bq == 1 Hz"] @?= Right ["5 Bq", "5 Hz", "true"]
     , testCase "a let that rebinds a unit name makes it a quantity"
         $ runLinesP ["let g = 9.81 m / s^2", "g * (2 s)^2", "2 g"]
           @?= Left
-            "error at 1:3\n  2 g\n    ^\n  `g` is not a unit: a value next to a literal must be a unit (5 km, 3 (m/s)); write the `*`"
+            "error at 1:3\n  2 g\n    ^\n  `g` is Num (m/s^2), not a unit or a chart: write the `*`"
     , testCase
         "an alias of a unit is a unit, and a renamed unit prints under its new name"
         $ runLinesP
@@ -4239,7 +4265,7 @@ affineTests =
             , "added d"
             , "removed the label `km`"
             , "5 klick"
-            , "d = 5 * klick"
+            , "d = 5 klick"
             ]
     , testCase ":prefer sets a display unit per dimension; to still wins; it persists" $ do
         runLinesP
@@ -4266,8 +4292,12 @@ affineTests =
             , "removed the preference m/s"
             , "5 km h^-1"
             ]
+        -- A preference is a unit (design §3.10, U7), not an amount.
         case evalP ":prefer 5" of
-          Left err -> T.isInfixOf "has no unit to prefer" err @? T.unpack err
+          Left err -> T.isInfixOf "a preference is a unit, not an amount" err @? T.unpack err
+          Right v -> assertFailure (show v)
+        case evalP ":prefer 1 km/h" of
+          Left err -> T.isInfixOf "a preference is a unit, not an amount" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "± on tensors: one independent nudge per component" $ do
         evalP "[1, 1, 1] m ± 0.1 m" @?= Right ["[1.0 ± 0.1, 1.0 ± 0.1, 1.0 ± 0.1] m"]
@@ -4530,7 +4560,7 @@ affineTests =
           Right v -> assertFailure (show v)
     , testCase "scale declarations: user scales, :view and :edit read back as written" $ do
         runLinesP
-          [ "unit mmHg = 133.322 * Pa"
+          [ "unit mmHg = 133.322 Pa"
           , "scale bp = mmHg at 0 mmHg"
           , "120 bp .+ 10 mmHg"
           , "(120 bp .- 80 bp)"
@@ -4539,14 +4569,14 @@ affineTests =
         runLinesP ["let boil = 100 degC", ":view boil"] @?= Right ["boil = 100 degC"]
         -- The library lives in namespaces, so :edit prints its definitions in their block.
         runLinesP [":edit degC"]
-          @?= Right ["namespace temperature", "  chart degC = K at 273.15 * K"]
+          @?= Right ["namespace temperature", "  chart degC = K at 273.15 K"]
         runLinesP [":edit km"]
-          @?= Right ["namespace si", "  unit km = kilo * (1 * metre)"]
+          @?= Right ["namespace si", "  unit km = kilo * 1 metre"]
     , testCase
         "chart is the keyword, scale its old spelling: one declaration, one hash"
         $ do
           runLinesP
-            [ "unit mmHg = 133.322 * Pa"
+            [ "unit mmHg = 133.322 Pa"
             , "chart bp = mmHg at 0 mmHg"
             , "120 bp .+ 10 mmHg"
             , ":type bp"
@@ -4557,14 +4587,14 @@ affineTests =
             @?= Right
               [ "130 bp"
               , "Chart (Num (kg/(m*s^2)))"
-              , "chart bp = mmHg at 0 * mmHg"
+              , "chart bp = mmHg at 0 mmHg"
               , "chart bp : Chart (Num (kg/(m*s^2)))"
               , "chart bp"
               ]
           -- The keyword is a label flag, not part of the hash.
           let hashOf kw' =
                 runLinesP
-                  ["unit mmHg = 133.322 * Pa", kw' <> " bp = mmHg at 0 mmHg", ":hash bp"]
+                  ["unit mmHg = 133.322 Pa", kw' <> " bp = mmHg at 0 mmHg", ":hash bp"]
           hashOf "chart" @?= hashOf "scale"
           typeOfTextP "\\c -> (c :: Chart (Num K))"
             @?= Right "Chart (Num K) -> Chart (Num K)"
@@ -4581,7 +4611,7 @@ affineTests =
               turn = "{[0, -1, 0; 1, 0, 0; 0, 0, 0]}"
           typeOfTextP "mkChart3"
             @?= Right
-              "forall d s a. Num d -> Tensor s d -> Chart (Tensor s d) a -> Chart (Tensor s d) a"
+              "forall d s a. Unit d -> Tensor s d -> Chart (Tensor s d) a -> Chart (Tensor s d) a"
           -- A turned chart's axes are its declaration's (design §3.9): the
           -- primitive takes the minted constructor no source can write.
           expectError
@@ -4744,8 +4774,8 @@ affineTests =
             , ":view odd"
             ]
             @?= Right
-              [ "chart pf = m at [0, 0, 0] m eci by rotz (30 * deg) then rotx (45 * deg) then rotz (60 * deg)"
-              , "chart odd = m at [0, 0, 0] m eci by (if 1 < 2 then rotz (1 * deg) else rotx (1 * deg)) then rotx (2 * deg)"
+              [ "chart pf = m at [0, 0, 0] m eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"
+              , "chart odd = m at [0, 0, 0] m eci by (if 1 < 2 then rotz (1 deg) else rotx (1 deg)) then rotx (2 deg)"
               ]
           let hashOfChart c = runLinesP [eci, "chart odd = m at [0, 0, 0] m eci by " <> c, ":hash odd"]
           hashOfChart "if 1 < 2 then rotz (1 deg) else rotx (1 deg) then rotx (2 deg)"
@@ -4805,7 +4835,7 @@ affineTests =
         evalP "2 m * 90 deg / rad" @?= Right ["3.1415926535897932384… m"]
         evalP "3 h / min" @?= Right ["180"]
         evalP "1 km / m" @?= Right ["1000"]
-        evalP "(2 km)^2 / m" @?= Right ["4000 km"]
+        evalP "(2 km)^2 / 1 m" @?= Right ["4000 km"]
         evalP "5 km / h" @?= Right ["5 km h^-1"]
         evalP "(3 rad/s) * 2 s" @?= Right ["6 rad"]
     , testCase
@@ -5003,10 +5033,10 @@ storeTests =
             dir
             [ "let speed = 5 km / h"
             , ":prefer kPa"
-            , "unit furlong = 201.168 * m"
+            , "unit furlong = 201.168 m"
             , "let r = 10 mm ± 0.01 mm #batch7"
             , "let even n = if n == 0 then true else odd (n - 1); let odd n = if n == 0 then false else even (n - 1)"
-            , "unit mmHg = 133.322 * Pa"
+            , "unit mmHg = 133.322 Pa"
             , "scale bp = mmHg at 0 mmHg"
             , ":add"
             , "let speed = 6 km / h"
@@ -5039,14 +5069,16 @@ storeTests =
             [ "6 km h^-1"
             , "6 km h^-1"
             , -- These changed when km became kilo * metre and h an alias of hr,
-              -- and when km was respelled kilo * 1 metre (design §3.10, U3).
-              "#9sq9r  (current)"
-            , "#uma3q"
+              -- and when km was respelled kilo * 1 metre (design §3.10, U3), and
+              -- again when units became a type: speed is the quantity 5 (km/h),
+              -- scale of a unit quotient, and km and h are units by declaration.
+              "#rb27b  (current)"
+            , "#3ml3a"
             , "201.168 m"
             , "0 mm"
             , "true"
             , "false"
-            , "r = 10 * mm ± 0.01 * mm #batch7"
+            , "r = 10 mm ± 0.01 mm #batch7"
             , "101.325 kPa"
             ]
     , testCase
@@ -5158,7 +5190,7 @@ storeTests =
             dir
             [ T.unlines
                 [ "namespace orbital"
-                , "  unit au = 149597870700 * m"
+                , "  unit au = 149597870700 m"
                 , "  scale tip = au at 0 au"
                 , "  data Body = Body {mass :: Num kg, dist :: Num m}"
                 , "  let mu = 3"
@@ -5197,7 +5229,7 @@ storeTests =
         linesIn loaded ["dozen * 3", "dozen + 1"] @?= Right ["39", "14"]
         -- and it is no longer a unit the quantity rule accepts
         case linesIn loaded ["3 dozen"] of
-          Left err -> T.isInfixOf "is not a unit" err @? T.unpack err
+          Left err -> T.isInfixOf "`dozen` is Num, not a unit or a chart" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "a type indexed by rank survives a reload" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["data Idx s = Idx (Vec (rank s))", ":add"]
@@ -5227,7 +5259,7 @@ storeTests =
           Left err -> T.isInfixOf "is not an eval codebase of format" err @? T.unpack err
           Right _ -> assertFailure "opened a store of another format"
     , testCase "a store of an older format is refused and left as it is"
-        $ forM_ [3, 4, 5, 6 :: Int]
+        $ forM_ [3, 4, 5, 6, 7 :: Int]
         $ \v -> withTempStore $ \dir -> do
           -- A store as an older eval left it: no types directory, a term file
           -- and a log, none of which this build reads.
@@ -5244,8 +5276,9 @@ storeTests =
                 @?= T.pack dir
                   <> ": this codebase is format "
                   <> T.pack (show v)
-                  <> "; it predates format 7 and cannot be opened: recreate it"
-                  <> " (with the previous eval, `:export` it, respell the dimensions in its types,"
+                  <> "; it predates format 8 and cannot be opened: recreate it"
+                  <> " (with the previous eval, `:export` it, respell its quantities for units as a type,"
+                  <> " 60 * s as 60 s and x / s as x / 1 s, and the dimensions in its types,"
                   <> " Num [m s^-1] as Num (m/s), and `:load` the file into a new codebase)"
             Right _ -> assertFailure ("opened a store of format " <> show v)
           snapshot dir >>= (@?= before)
@@ -5254,7 +5287,7 @@ storeTests =
         _ <- persistLines dir ["let x = 1", ":add"]
         readFile (dir </> "format")
           >>= (@?= "eval codebase " <> show formatVersion <> "\n")
-        formatVersion @?= 7
+        formatVersion @?= 8
         before <- snapshot dir
         (loaded, notes) <- reload dir
         notes @?= []
@@ -5397,7 +5430,7 @@ storeTests =
           -- a store of an older format is refused, and left as it is
           createDirectoryIfMissing True (root </> "old")
           writeFile (root </> "old" </> "format") "eval codebase 2\n"
-          refused (root </> "old") "this codebase is format 2; it predates format 7"
+          refused (root </> "old") "this codebase is format 2; it predates format 8"
           listDirectory (root </> "old") >>= (@?= ["format"])
           readFile (root </> "old" </> "format") >>= (@?= "eval codebase 2\n")
     ]
@@ -6013,7 +6046,7 @@ dataTests =
             ]
             @?= Right ["1 T", "T (300 K)", "Num K -> Temp", "3"]
           case runLinesP ["data Temp = T (Num K)", "1 T"] of
-            Left err -> T.isInfixOf "`T` is not a unit" err @? T.unpack err
+            Left err -> T.isInfixOf "is Num K -> Temp, not a unit or a chart" err @? T.unpack err
             Right v -> assertFailure (show v)
     , testCase "the type grammar" $ do
         let ok src = case parseType src of
@@ -6333,7 +6366,7 @@ replTests =
           @?= [R.Note]
         map
           fst
-          (R.classify (Right ["area : Shape -> Num (m^2)", "unit furlong : Num m"]))
+          (R.classify (Right ["area : Shape -> Num (m^2)", "unit furlong : Unit m"]))
           @?= [R.Signature, R.Signature]
         map
           fst
@@ -6492,8 +6525,8 @@ replTests =
             <> " ("
             <> unit' "m"
             <> "^2)"
-        R.paint names R.Signature "unit furlong : Num m"
-          @?= keyword' "unit" <> " furlong : " <> type' "Num" <> " " <> unit' "m"
+        R.paint names R.Signature "unit furlong : Unit m"
+          @?= keyword' "unit" <> " furlong : " <> type' "Unit" <> " " <> unit' "m"
         -- A unit is cyan where a dimension goes: an argument, or in a product.
         R.paint names R.Signature "g : Num (kg·m/s²) -> Vec 3 (1/s)"
           @?= "g : "
@@ -6699,9 +6732,9 @@ exportScript =
   [ multiline
       [ "let size = 10"
       , "let d = 2 km"
-      , "unit furlong = 201.168 * m"
+      , "unit furlong = 201.168 m"
       , "namespace orbital"
-      , "  unit au = 149597870700 * m"
+      , "  unit au = 149597870700 m"
       , "  scale tip = au at 1 au"
       , "  data Body = Body {mass :: Num kg, dist :: Num m}"
       , "  let weight b = b.mass * 9.81 m/s^2"
@@ -6716,7 +6749,7 @@ exportScript =
       , "namespace mechanics"
       , "  let g0 = 9.80665 m/s^2"
       , "  let fall t = g0 * t^2 / 2"
-      , "  let useOrbital = orbital.kepler.anomaly 1 2 + orbital.weight orbital.earth / g0 / kg"
+      , "  let useOrbital = orbital.kepler.anomaly 1 2 + orbital.weight orbital.earth / g0 / 1 kg"
       , "  data Probe = Probe {body :: orbital.Body, place :: Num m}"
       , "  let probePlace p = p.place"
       ]
@@ -6922,7 +6955,7 @@ namespaceTests =
           ( runLinesP
               [ multiline
                   [ "namespace orbital"
-                  , "  unit au = 149597870700 * m"
+                  , "  unit au = 149597870700 m"
                   , "  data Body = Body {mass :: Num kg}"
                   , "  let mu = 3"
                   ]
@@ -6932,7 +6965,7 @@ namespaceTests =
           )
           $ \outs ->
             lastN 4 outs
-              @?= [ "unit au : Num m"
+              @?= [ "unit au : Unit m"
                   , "mu : Num"
                   , "data Body = Body {mass :: Num kg}"
                   , "Body : Num kg -> Body"
@@ -6975,7 +7008,7 @@ namespaceTests =
           let setup =
                 [ multiline
                     [ "namespace orbital"
-                    , "  unit au = 149597870700 * m"
+                    , "  unit au = 149597870700 m"
                     , "  data Body = Body {mass :: Num kg}"
                     , "  let earth = Body {mass = 6 kg}"
                     ]
@@ -7058,7 +7091,7 @@ namespaceTests =
               , ":view d"
               ]
           )
-          $ \outs -> last outs @?= "d = 2 * km"
+          $ \outs -> last outs @?= "d = 2 km"
     , testCase "printing: the shortest spelling that resolves back" $ do
         -- A use makes a name print bare.
         expecting
@@ -7091,7 +7124,7 @@ namespaceTests =
               , "d"
               ]
           )
-          $ \outs -> lastN 3 outs @?= ["d = 2 * si.km", "e = km", "2 si.km"]
+          $ \outs -> lastN 3 outs @?= ["d = 2 si.km", "e = km", "2 si.km"]
         -- A root name with the spelling the library has takes a leading dot.
         expecting
           ( runLinesP
@@ -7205,7 +7238,7 @@ namespaceTests =
         toks ".orbital.period" @?= Right [TAbs "orbital", TField "period"]
     , testCase "units and types across namespaces" $ do
         let setup =
-              [ multiline ["namespace orbital", "  unit au = 149597870700 * m"]
+              [ multiline ["namespace orbital", "  unit au = 149597870700 m"]
               , ":add"
               , multiline
                   [ "namespace orbital"
@@ -7239,7 +7272,7 @@ editScript =
       [ "let size = 10"
       , "let trip = 2 km"
       , "let area w h = w * h"
-      , "unit furlong = 201.168 * m"
+      , "unit furlong = 201.168 m"
       , "namespace orbital"
       , "  data Body = Body {mass :: Num kg, dist :: Num m}"
       , "  let weight b = b.mass * 9.81 m/s^2"
@@ -7386,11 +7419,14 @@ editTests =
         (s', outs) <- edited EditCodebase file s
         outs @?= ["added orbital.z"]
         snd <$> feed s' "orbital.z" @?= Right ["21"]
-        -- The same body under another keyword is an update of the label.
+        -- The same body under another keyword is another term: a unit's
+        -- declaration makes its body a unit (design §3.10, U7).
         plain <- editFileOf s [] >>= replaceOnce "unit furlong" "let furlong"
         (s2, outs2) <- edited EditCodebase plain s
-        outs2 @?= ["updated furlong: unit -> let"]
-        expectError (snd <$> feed s2 "2 furlong") "`furlong` is not a unit"
+        outs2 @?= [movedLine "updated" s s2 "furlong"]
+        expectError
+          (snd <$> feed s2 "2 furlong")
+          "`furlong` is Num m, not a unit or a chart"
     , testCase "(e) a definition moved between blocks is removed and added" $ do
         s <- editSession
         file <-
@@ -7431,7 +7467,7 @@ editTests =
           whole <-
             editFileOf s []
               >>= replaceOnce "dist :: Num m}" "dist :: Num m, spin :: Num}"
-              >>= replaceOnce "Body (6 * kg) (1 * km)" "Body (6 * kg) (1 * km) 3"
+              >>= replaceOnce "Body (6 kg) (1 km)" "Body (6 kg) (1 km) 3"
               >>= replaceOnce "Body mass _ ->" "Body mass _ _ ->"
           (s2, outs2) <- edited EditCodebase whole s
           outs2
@@ -7448,11 +7484,10 @@ editTests =
             editFileOf s ["orbital.Body"]
               >>= replaceOnce "dist :: Num m}" "dist :: Num m, spin :: Num}"
           (_, outs3) <- edited (EditName "orbital.Body") added s
-          map (T.takeWhile (/= '#')) outs3
-            @?= [ "updated data orbital.Body"
-                , "left orbital.earth on "
-                , "left orbital.weight on "
-                ]
+          -- The two users left, in an order their hashes decide.
+          take 1 outs3 @?= ["updated data orbital.Body"]
+          sort (map (T.takeWhile (/= '#')) (drop 1 outs3))
+            @?= ["left orbital.earth on ", "left orbital.weight on "]
     , testCase "(g) a type error refuses the edit and changes nothing" $ do
         s <- editSession
         file <- editFileOf s [] >>= replaceOnce "  let x = 3\n" "  let x = 3 m + 1\n"
@@ -7510,9 +7545,9 @@ editTests =
     , testCase "(j) :edit si includes the library; :edit alone never touches it" $ do
         s <- editSession
         file <- editFileOf s ["si"]
-        ("unit km = kilo * (1 * metre)" `T.isInfixOf` file) @? "si.km is in the file"
+        ("unit km = kilo * 1 metre" `T.isInfixOf` file) @? "si.km is in the file"
         file' <-
-          replaceOnce "unit km = kilo * (1 * metre)\n" "unit km = 1001 * m\n" file
+          replaceOnce "unit km = kilo * 1 metre\n" "unit km = 1001 m\n" file
         (s', outs) <- edited (EditNamespace "si") file' s
         -- The library's own users are in the file; the user's are propagated,
         -- two independent ones in an order their hashes decide.
@@ -7627,7 +7662,7 @@ stdlibTests =
           outs -> assertFailure (show outs)
         expecting
           ( runLinesP
-              [ "let G = (6.67430e-11 ±σ 1.5e-15) * m^3 / (kg * s^2)"
+              [ "let G = (6.67430e-11 ±σ 1.5e-15) * 1 m^3 kg^-1 s^-2"
               , ":add"
               , ":hash G"
               , ":hash astro.G"
@@ -7736,8 +7771,8 @@ stdlibTests =
         runLinesP [":ls"] @?= Right libraryListing
         expecting (runLinesP [":ls si"]) $ \outs -> do
           length outs @?= librarySize "si"
-          ("unit km : Num m" `elem` outs) @? "km"
-          ("unit newton : Num (kg*m/s^2)" `elem` outs) @? "newton"
+          ("unit km : Unit m" `elem` outs) @? "km"
+          ("unit newton : Unit (kg*m/s^2)" `elem` outs) @? "newton"
           ("kilo : Num" `elem` outs) @? "kilo"
         expecting (runLinesP [":ls temperature"]) $ \outs ->
           ("chart degC : Chart (Num K)" `elem` outs) @? "degC"
@@ -7747,7 +7782,7 @@ stdlibTests =
         expecting (runLinesP [":ls linalg"]) $ \outs ->
           length outs @?= librarySize "linalg" + 1 - 3
         expecting (runLinesP [":ls --all"]) $ \outs -> do
-          ("unit si.km : Num m" `elem` outs) @? "full paths with --all"
+          ("unit si.km : Unit m" `elem` outs) @? "full paths with --all"
           length outs @?= length stdlibNames + 3 - 6
         runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
     , testCase "a root name shadows the library's: c and physics.c" $ do
@@ -7777,7 +7812,7 @@ stdlibTests =
           (runLinesP [":use astro", ":unname astro.AU", "1 AU"])
           "unknown name `AU`"
         runLinesP [":edit si.km"]
-          @?= Right ["namespace si", "  unit km = kilo * (1 * metre)"]
+          @?= Right ["namespace si", "  unit km = kilo * 1 metre"]
     , testCase ":uses, :unuse and :use for the stored uses" $ do
         let stored = ["use " <> u <> " (stored)" | u <- stdlibDefaultUses]
             withoutSi = ["use " <> u <> " (stored)" | u <- stdlibDefaultUses, u /= "si"]
@@ -8444,7 +8479,7 @@ annotationTests =
             , ":type g"
             , ":view g"
             ]
-            @?= Right ["f = \\x -> x + 1 * m", "3 m", "forall a. a -> a", "g = \\x -> x"]
+            @?= Right ["f = \\x -> x + 1 m", "3 m", "forall a. a -> a", "g = \\x -> x"]
           expectError
             ( runLinesP
                 [ multiline

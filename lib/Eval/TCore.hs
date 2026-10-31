@@ -135,12 +135,13 @@ primScheme name = case name of
   -- a spinning one have axes of their own, read off their first argument
   -- ('primSchemeFor'); a translated chart, in a parent of its own shape and
   -- dimension, shares its parent's axes and root (design §3.9). The origin
-  -- is an amount along the parent's axes.
+  -- is an amount along the parent's axes, the step a unit (design §3.10,
+  -- U7).
   "mkChart3" ->
     Just
       ( Forall
           [sv, dv, rv]
-          (TFun (numD d) (TFun sd (TFun (chartOf s) (chartOf s))))
+          (TFun (TUnit d) (TFun sd (TFun (chartOf s) (chartOf s))))
       )
   -- A point is stored from the base origin along the base axes, so its
   -- type is along the chart's root (design §3.9, stage 2b): the
@@ -167,7 +168,8 @@ primScheme name = case name of
   "or" -> mono (TFun boolT (TFun boolT boolT))
   "not" -> mono (TFun boolT boolT)
   "pi" -> mono numT
-  "to" -> Just (Forall [sv, dv] (TFun sd (TFun (numD d) sd)))
+  -- An amount shown in a unit (design §3.10, U6).
+  "to" -> Just (Forall [sv, dv] (TFun sd (TFun (TUnit d) sd)))
   -- The quantity rule after a unit (design §3.10, U4): a dimensionless
   -- literal of any shape times one unit, an amount.
   "scale" -> Just (Forall [sv, dv] (TFun (TTensor s dimOne) (TFun (TUnit d) sd)))
@@ -318,8 +320,9 @@ primScheme name = case name of
           [nv, dv, d2v, xav, rv]
           (TFun (chartOf (pos n xa)) (TFun (vecA n AAnon d2) (vecA n xa d2)))
       )
+  -- A base unit is a unit (design §3.10, U1).
   _ -> case baseUnit name of
-    Just b -> mono (numD (dimBase b))
+    Just b -> mono (TUnit (dimBase b))
     Nothing -> Nothing
  where
   sv = (0, KShape)
@@ -388,14 +391,14 @@ primSchemeFor name statics = case name of
   "mkScale" -> Just $ tagged $ \_ tag ->
     Forall
       [sv, dv, rv]
-      (TFun tag (TFun (numD d) (TFun (TTensor s d) (TScale s root d))))
+      (TFun tag (TFun (TUnit d) (TFun (TTensor s d) (TScale s root d))))
   "mkChart4" -> Just $ tagged $ \h tag ->
     Forall
       [nv, dv, xav, xbv, rv]
       ( TFun
           tag
           ( TFun
-              (numD d)
+              (TUnit d)
               ( TFun
                   (vecA n xa d)
                   ( TFun
@@ -411,7 +414,7 @@ primSchemeFor name statics = case name of
       ( TFun
           tag
           ( TFun
-              (numD d)
+              (TUnit d)
               ( TFun
                   (vecA three xa d)
                   ( TFun

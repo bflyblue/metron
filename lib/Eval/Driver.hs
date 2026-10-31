@@ -367,17 +367,32 @@ checkExpr scope cb src e = do
       (Left . renderResolveErrorWith Map.empty src)
       Right
       (ascriptionsIn scope cb Map.empty [] checkProv)
+  -- The readings the types choose (design §3.10, U4, U6), written into both
+  -- terms: their markers are named alike.
+  chosen <-
+    if I.hasReadingMarkers checkTerm
+      then
+        either
+          (Left . typeErr checkProv)
+          Right
+          (I.readingsOf (annotationsWith cb asc) (typeLookupFor cb) checkTerm)
+      else Right Map.empty
+  let read' = I.rewriteReadings chosen
   (schemes, typed) <-
     either
       (Left . typeErr checkProv)
       Right
-      (I.elaborateClosedWith (annotationsWith cb asc) (typeLookupFor cb) checkTerm)
+      ( I.elaborateClosedWith
+          (annotationsWith cb asc)
+          (typeLookupFor cb)
+          (read' checkTerm)
+      )
   linted <-
     either
       (Left . ("internal error: elaboration produced ill-typed core: " <>))
       Right
       (lintClosed (typeLookupFor cb) typed)
-  pure (term, typed, listToMaybe schemes, linted)
+  pure (read' term, typed, listToMaybe schemes, linted)
  where
   typeErr prov err = case provenanceAt err.path prov of
     Just (sp, hint) -> S.renderSpanError (Just src) sp (withHint hint err.message)
@@ -1430,11 +1445,18 @@ preferenceHint :: Config -> Codebase -> Text -> Either Text (Dim, UnitHint)
 preferenceHint cfg cb text = do
   e <- parseExpr text
   (_, v) <- evalValue cfg S.rootScope cb text e
+  -- A preference is a unit (design §3.10, U7), not an amount of one.
   case v of
-    VTensor [] d (Just h) _ | h.dim == d -> Right (d, h)
-    VTensor [] _ Nothing _ ->
+    VUnit (VTensor [] d (Just h) _) | h.dim == d -> Right (d, h)
+    VUnit _ ->
       Left ("`" <> text <> "` has no unit to prefer; write one, as in :prefer km/h")
-    _ -> Left ("a preference must be a scalar unit expression, not `" <> text <> "`")
+    VTensor{} ->
+      Left
+        ( "a preference is a unit, not an amount: write it as one, as in :prefer km/h, not `"
+            <> text
+            <> "`"
+        )
+    _ -> Left ("a preference must be a unit expression, not `" <> text <> "`")
 
 {- | Recompute the evaluated preferences from the codebase's texts, as after a
 load or a change. A text that no longer evaluates (its unit was unnamed) is
