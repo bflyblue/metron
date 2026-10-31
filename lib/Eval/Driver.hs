@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 {- | Runs source text through the whole pipeline for the CLI and the tests
 (design §7.3, §7.5).
 
@@ -26,103 +28,186 @@ module Eval.Driver (
   refreshPreferences,
 ) where
 
-import Control.Applicative ((<|>))
-import Control.Monad (foldM, when)
-import Data.Bifunctor (first)
-import Data.Char (isDigit)
-import Data.Containers.ListUtils (nubOrd)
-import Data.Either (fromRight)
-import Data.Graph (flattenSCC, stronglyConnComp)
-import Data.List (partition, sortOn)
-import Data.Map.Lazy qualified as LazyMap
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
-import Data.Set qualified as Set
-import Data.Text (Text)
-import Data.Text qualified as T
-import Data.Vector qualified as V
-import Eval.Affine (
-  Collapsed (..),
-  Magnitude (..),
-  addM,
-  collapse,
- )
-import Eval.Builtin
+import Control.Applicative ( (<|>) )
+import Control.Monad ( foldM )
+import Data.Containers.ListUtils ( nubOrd )
+import Data.Either ( fromRight )
+import Data.List ( partition, sortOn )
+import Data.Maybe ( fromMaybe, isJust, isNothing, mapMaybe )
+import Data.Text ( Text )
+import Eval.Affine ( Collapsed(..), Magnitude(..), addM, collapse )
+import Eval.Builtin ( pattern TupleC, frameDefMoving, pairC )
 import Eval.Codebase
+    ( addPreference,
+      addStoredUse,
+      addTerm,
+      bindConName,
+      bindFieldName,
+      bindName,
+      bindTypeName,
+      clearFlags,
+      conNameOf,
+      dependents,
+      fieldNamesOf,
+      findByPrefix,
+      historicalNamesOf,
+      historyOf,
+      isChartName,
+      isUnitName,
+      lookupConName,
+      lookupFieldName,
+      lookupName,
+      lookupTerm,
+      lookupTypeDef,
+      lookupTypeName,
+      lookupTyped,
+      markChart,
+      markUnit,
+      removePreference,
+      removeStoredUse,
+      showReference,
+      signatureOf,
+      typeOf,
+      unbindName,
+      Codebase(preferences, terms, derived, typeDefs, names, typeNames,
+               conNames, fieldNames, uses),
+      Reference(hash, Reference) )
+import Eval.Command ( commandHelp )
+import Eval.Compile
+    ( checkExpr,
+      evalExpr,
+      evalValue,
+      renderEvalError,
+      renderResolveErrorWith,
+      CheckedExpr(CheckedExpr) )
 import Eval.Core
-import Eval.Desugar
-import Eval.Dimension (Dim, Spelling (..), dimMul, dimPow, renderDimIn)
-import Eval.Eval
-import Eval.Hash (hashTerm)
-import Eval.Infer qualified as I
-import Eval.Parser (parseExpr, parseProgram, parseType)
-import Eval.Prelude (isLibraryPath, stdlibCodebase)
+    ( inlineRef,
+      refs,
+      showHash,
+      vecLength,
+      ConRef(UserCon),
+      Term(Cycle) )
+import Eval.Desugar ( DesugarError(UnknownName) )
+import Eval.Dimension ( dimMul, dimPow, renderDimIn )
+import Eval.Edit
+    ( EditRequest(..),
+      EditScope(..),
+      editRequest,
+      editScopeArgs,
+      editorNote,
+      applyEdit )
+import Eval.UnitHint ( hintPow, hintProduct, UnitHint(pinned) )
+import Eval.Eval ( covarianceMatrix, precisionOf, Config(nonlinear, Config, precision, sigma, unicode), EvalError(Internal), Value(VData, VTensor) )
+import Eval.Hash ( hashTerm )
+import Eval.Parser ( parseExpr, parseProgram, parseType )
+import Eval.Prelude ( isLibraryPath, stdlibCodebase )
 import Eval.Pretty
-import Eval.Resolve
-import Eval.Syntax qualified as S
-import Eval.TCore
-import Eval.Type (
-  Arg (..),
-  Scheme (..),
-  Type (..),
-  TypeDef (..),
-  VarId,
-  dataConstructors,
-  defaultAxes,
-  freeVars,
-  renderForallIn,
-  renderScheme,
-  renderTypeDef,
-  selfType,
-  varArg,
- )
+    ( displayParts,
+      renderBudget,
+      renderExact,
+      renderRough,
+      renderValue,
+      renderValueWith,
+      respell,
+      Printer(refName) )
+import Eval.Resolve.Error ( renderResolveError, ResolveError(Desugar) )
+import Eval.NameResolution ( disjointness, isNamespace, namespaceLabels, qualifyName, qualifyWith, shortestName, shortestNameOf, LabelKind(TypeLabel, FieldLabel), Qualified(Found) )
+import Eval.Type.Syntax ( queryScheme )
+import Eval.Resolve ( processGroup, typeLookupFor )
+import Eval.Session.Names
+    ( argPath,
+      argPaths,
+      labelKinds,
+      labelNoun,
+      labelsText,
+      namespaceLine,
+      relabel,
+      removeLabel )
+import Eval.Session.Preferences
+    ( preferenceHint, refreshPreferences )
+import Eval.Session.Types
+    ( emptySession, LastExpr(..), Session(..) )
+import Eval.Source
+    ( definitionLine,
+      exportRequest,
+      exportSource,
+      nameTypes,
+      printerFor,
+      refNamer,
+      signatureLine,
+      spellingOf,
+      upgradeReport,
+      viewData,
+      viewTyped )
+import Eval.TCore ( lintClosed )
+import Eval.Type
+    ( varArg,
+      Scheme(Forall),
+      Type(TFun, TData),
+      TypeDef(constructors, params),
+      dataConstructors,
+      defaultAxes,
+      renderForallIn,
+      renderScheme,
+      renderTypeDef )
 import Eval.Update
-
-data Session = Session
-  { codebase :: Codebase
-  , scratch :: [S.Decl]
-  -- ^ pending definitions, oldest first
-  , sources :: Map Text Text
-  -- ^ the input text each pending definition came from, for error excerpts
-  , staging :: Codebase
-  -- ^ codebase with the scratch entered on top; what expressions see
-  , config :: Config
-  -- ^ evaluation settings, changed with @:set@
-  , preferred :: Preferences
-  -- ^ the codebase's preference texts, evaluated to hints keyed by dimension (design §3.2.12)
-  , lastExpr :: Maybe LastExpr
-  {- ^ the last expression statement that evaluated, which expressions and
-  inspection commands see as @it@ (design §7.3); never stored
-  -}
-  , scope :: S.Scope
-  {- ^ the current namespace, set with @:namespace@, and the @use@s in
-  effect (design §7.6); never stored
-  -}
-  }
-
-{- | An expression as it was checked: its Core, types and Typed Core, and the
-codebase it was checked against, whose terms it may reference after the
-scratch that defined them has changed.
--}
-data LastExpr = LastExpr
-  { term :: Term Z
-  , schemes :: [Scheme]
-  , typed :: TTerm Z
-  , base :: !Codebase
-  }
-
-emptySession :: Session
-emptySession =
-  Session
-    emptyCodebase
-    []
-    Map.empty
-    emptyCodebase
-    defaultConfig
-    Map.empty
-    Nothing
-    S.rootScope
+    ( propagateNamed,
+      restamp,
+      staleReferences,
+      Propagation(skipped, Propagation, codebase, upgraded),
+      Restamped(terms, types, codebase) )
+import Eval.Infer qualified as I
+    ( elaborateClosed, matchesQuery, TypeError(message) )
+import Data.Map.Strict qualified as Map
+    ( delete,
+      Map,
+      empty,
+      keys,
+      member,
+      toList,
+      union,
+      fromList,
+      fromListWith,
+      insert )
+import Eval.Syntax qualified as S
+    ( declKey,
+      flatten,
+      isSignature,
+      lastSegment,
+      qualify,
+      renderSpanError,
+      renderUse,
+      Binding(name),
+      DataDecl(name),
+      Decl(..),
+      Name(span, text),
+      Pos(Pos),
+      Scope(uses, namespace),
+      Span(Span),
+      Use(alias, Use, path) )
+import Data.Set qualified as Set
+    ( member, union, fromList, null, singleton, toList )
+import Data.Text qualified as T
+    ( any,
+      breakOn,
+      drop,
+      intercalate,
+      isInfixOf,
+      isPrefixOf,
+      isSuffixOf,
+      length,
+      null,
+      splitOn,
+      strip,
+      stripPrefix,
+      stripStart,
+      takeWhile,
+      toLower,
+      unwords,
+      words,
+      pack,
+      unpack )
+import Data.Vector qualified as V ( fromList, take, toList )
 
 {- | A session on a seeded codebase (design §7.7): the standard library
 entered by domain as one group and added, with its six stored default
@@ -259,187 +344,6 @@ propose session src decls = do
             "`it` is the last result and cannot be stored; paste its definition (:view it) instead"
     err -> renderResolveErrorWith sources' src err
 
--- | Type errors point into the input that defined the offending name.
-renderResolveErrorWith :: Map Text Text -> Text -> ResolveError -> Text
-renderResolveErrorWith sources src = \case
-  TypeErrorIn n sp msg ->
-    S.renderSpanError
-      (Just (Map.findWithDefault src n.text sources))
-      (fromMaybe n.span sp)
-      ("in `" <> n.text <> "`: " <> msg)
-  DuplicateDefinition n ->
-    S.renderSpanError
-      (Just src)
-      n.span
-      ("`" <> n.text <> "` is defined twice in the same group")
-  Desugar (UnknownName sp n) -> S.renderSpanError (Just src) sp ("unknown name `" <> n <> "`")
-  Desugar (BadSpecialForm sp msg) -> S.renderSpanError (Just src) sp msg
-  DataError sp msg -> S.renderSpanError (Just src) sp msg
-  SignatureError key sp msg ->
-    S.renderSpanError (Just (Map.findWithDefault src key sources)) sp msg
-  err@(LintFailure _ _) -> renderResolveError err
-
--- | Desugar, typecheck and elaborate, lint, evaluate, print.
-evalExpr ::
-  Config ->
-  Preferences ->
-  S.Scope ->
-  Codebase ->
-  Text ->
-  S.Expr ->
-  Either Text (Text, LastExpr)
-evalExpr cfg prefs scope cb src e = do
-  (_, v, le) <- evalChecked cfg scope cb src e
-  out <-
-    either
-      (Left . renderEvalError)
-      Right
-      (renderValue (printerFor cfg scope cb) cfg.precision prefs v)
-  pure (out, le)
-
-{- | Evaluate an expression. An expression typed at the prompt belongs to no
-definition; its own hash stands in as the site of any @±@ in it (design
-§3.2.4), so re-evaluating the same text gives the same nudges.
--}
-evalValue ::
-  Config -> S.Scope -> Codebase -> Text -> S.Expr -> Either Text (Hash, Value)
-evalValue cfg scope cb src e = (\(h, v, _) -> (h, v)) <$> evalChecked cfg scope cb src e
-
--- | 'evalValue', keeping what was checked, to become @it@.
-evalChecked ::
-  Config ->
-  S.Scope ->
-  Codebase ->
-  Text ->
-  S.Expr ->
-  Either Text (Hash, Value, LastExpr)
-evalChecked cfg scope cb src e = do
-  (term, typed, scheme, linted) <- checkExpr scope cb src e
-  case scheme of
-    Just sc
-      | not (null (openInValue sc typed)) ->
-          Left
-            ( S.renderSpanError
-                (Just src)
-                e.span
-                ( "ambiguous: nothing fixes the shape or dimension of this value, of type "
-                    <> renderScheme sc
-                    <> "; give an empty tensor a type, as in ([] :: Vec 0 m)"
-                )
-            )
-    _ -> Right ()
-  let h = hashTerm term
-  v <-
-    either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cfg cb) h typed)
-  pure (h, v, LastExpr term linted typed cb)
-
-{- | The length, shape and dimension variables an expression leaves open in
-its value, outside any function, that its evaluation needs (design §3.3).
-Nothing fixes them, so a value that needs one, an empty tensor alone
-(@[]@ is @Tensor (0 : s) d@), has no shape or dimension to be built or
-printed with. Inside a function they are the function's to receive, and
-a value that never consults one, a constructor with no fields of a type
-with a dimension parameter, is built without it. The typed term is the
-expression's, abstracted over the scheme's variables.
--}
-openInValue :: Scheme -> TTerm Z -> [VarId]
-openInValue (Forall vs t) typed =
-  [v | (v, k) <- vs, v `elem` inValue t, neededAtRuntime v k typed]
- where
-  inValue = \case
-    TFun _ _ -> []
-    TData _ as -> concatMap inArg as
-    ty -> map fst (freeVars ty)
-  inArg = \case
-    AType ty -> inValue ty
-    a -> map fst (freeVars (TData selfType [a]))
-
-{- | The runtime for one evaluation under a configuration. Every definition's
-value is shared by all the references to it in that evaluation: a lazy
-table over the codebase, each entry evaluated when first used, so that a
-turned chart's rotation (design §3.8) is computed once and not once per
-mention of the chart.
--}
-runtimeOf :: Config -> Codebase -> Runtime
-runtimeOf cfg cb = rt
- where
-  rt =
-    Runtime
-      { typedOf = (`lookupTyped` cb)
-      , unitName = \h i written -> unitNameFor (Reference h i) written cb
-      , chartName = \h i written -> chartNameFor (Reference h i) written cb
-      , typeDefOf = (`lookupTypeDef` cb)
-      , shared = (`Map.lookup` values)
-      }
-  values = LazyMap.mapWithKey (\h (_, t) -> evalDefinition cfg rt h t) cb.derived
-
-{- | Desugar, typecheck, elaborate and lint an expression against a codebase.
-Returns the Core, the Typed Core, the inferred type and the types lint
-found, which are what a stored term carries.
--}
-checkExpr ::
-  S.Scope ->
-  Codebase ->
-  Text ->
-  S.Expr ->
-  Either Text (Term Z, TTerm Z, Maybe Scheme, [Scheme])
-checkExpr scope cb src e = do
-  (term, prov) <-
-    either
-      (Left . renderResolveErrorWith Map.empty src . Desugar)
-      Right
-      (desugarClosed (resolverFor scope cb) e)
-  -- Uses of signed names see their signatures, and ascriptions narrow
-  -- (design §4.8): with any, the term inferred is the one desugared with
-  -- their markers, while the term hashed and kept stays the plain one.
-  (checkTerm, checkProv) <-
-    if null prov.ascriptions
-      then Right (term, prov)
-      else
-        either
-          (Left . renderResolveErrorWith Map.empty src . Desugar)
-          Right
-          (desugarMarked "" "" (resolverFor scope cb) VNil e)
-  asc <-
-    either
-      (Left . renderResolveErrorWith Map.empty src)
-      Right
-      (ascriptionsIn scope cb Map.empty [] checkProv)
-  -- The readings the types choose (design §3.10, U4, U6), written into both
-  -- terms: their markers are named alike.
-  chosen <-
-    if I.hasReadingMarkers checkTerm
-      then
-        either
-          (Left . typeErr checkProv)
-          Right
-          (I.readingsOf (annotationsWith cb asc) (typeLookupFor cb) checkTerm)
-      else Right Map.empty
-  let read' = I.rewriteReadings chosen
-  (schemes, typed) <-
-    either
-      (Left . typeErr checkProv)
-      Right
-      ( I.elaborateClosedWith
-          (annotationsWith cb asc)
-          (typeLookupFor cb)
-          (read' checkTerm)
-      )
-  linted <-
-    either
-      (Left . ("internal error: elaboration produced ill-typed core: " <>))
-      Right
-      (lintClosed (typeLookupFor cb) typed)
-  pure (read' term, typed, listToMaybe schemes, linted)
- where
-  typeErr prov err = case provenanceAt err.path prov of
-    Just (sp, hint) ->
-      S.renderSpanError
-        (Just src)
-        sp
-        (withHint hint (fillOperands err.path prov err.message))
-    Nothing -> S.renderSpanError (Just src) e.span (fillOperands err.path prov err.message)
-
 -- Commands ----------------------------------------------------------------------
 
 command :: Session -> Text -> [Text] -> Either Text (Session, [Text])
@@ -573,7 +477,7 @@ command session src = \case
       VTensor dims d hint buf | length dims <= 1 -> do
         xs <- components buf
         let covHint = unpinned (hintPow (precisionOf cfg) 2 =<< hint)
-            covValue = covarianceMatrix (dimPow 2 d) covHint xs xs
+            covValue = covarianceMatrix cfg (dimPow 2 d) covHint xs xs
             scalarVar = case covValue of
               VTensor _ d' h' cs -> VTensor [] d' h' (V.take 1 cs)
               other -> other
@@ -589,7 +493,7 @@ command session src = \case
             xs <- components buf1
             ys <- components buf2
             let p = precisionOf cfg
-                block d hh = covarianceMatrix d (unpinned hh)
+                block d hh = covarianceMatrix cfg d (unpinned hh)
             rr <- shown (block (dimPow 2 d1) (hintPow p 2 =<< h1) xs xs)
             rv <- shown (block (dimMul d1 d2) (hintProduct p h1 h2) xs ys)
             vv <- shown (block (dimPow 2 d2) (hintPow p 2 =<< h2) ys ys)
@@ -612,7 +516,7 @@ command session src = \case
   -- §3.9, decision 5): when not a function, its free axes anonymous.
   ("type" : rest) -> keep $ do
     e <- parseExpr (T.unwords rest)
-    (_, _, ty, _) <- checkExpr scope ecb (T.unwords rest) e
+    CheckedExpr _ _ ty _ <- checkExpr scope ecb (T.unwords rest) e
     pure [maybe "" (renderForallIn spelling . defaultAxes) ty]
   -- Without an editor, :edit prints the source it would open (design
   -- §7.3); the REPL opens it, and reads a file for --file.
@@ -810,13 +714,7 @@ command session src = \case
       (Nothing, source) -> Right (session, [source | not (T.null source)])
       (Just file, _) -> Left ("only the REPL writes files; :export there to write " <> T.pack file)
   _ ->
-    Left
-      ( "commands: :add  :update [--no-upgrade]  :upgrade name  :todo  :scratch  :forget name  :edit [name|namespace]  :type expr\n"
-          <> "          :ls [glob|namespace] [--all|--units|--charts|--types] [: type]  :view name  :core name  :hash name  :names #hash\n"
-          <> "          :history name  :dependents name  :alias new old  :unname name  :rename old new  :move name… namespace\n"
-          <> "          :namespace [path|.]  :uses  :use path [as alias]  :unuse path  :export [namespace] [file]  :stdlib upgrade\n"
-          <> "          :exact expr  :budget expr  :covariance expr  :set [precision n | sigma k | unicode on|off]  :prefer [unit]  :unprefer unit  :colour on|off"
-      )
+    Left commandHelp
  where
   cb = session.staging
   scope = session.scope
@@ -943,185 +841,6 @@ command session src = \case
       Nothing -> Right ()
   _ = src
 
-{- | A name given to a command: relative to the current namespace, through
-the uses, or absolute with a leading dot (design §7.6).
--}
-argPath :: S.Scope -> Codebase -> Text -> Text
-argPath scope c n = case argPaths scope c n of
-  [full] -> full
-  _ -> n
-
-{- | Every full path a name given to a command may mean: one, or, when the
-uses offer it as several (a type in one namespace and a term in another,
-@time.TT@ and @si.TT@, or two terms), each of them, types first and then by
-path. A name that nothing offers is itself.
--}
-argPaths :: S.Scope -> Codebase -> Text -> [Text]
-argPaths scope c n
-  | Just p <- T.stripPrefix "." n = [p]
-  | otherwise = case qualifyWith c.uses known scope n of
-      Found full -> [full]
-      Ambiguous fulls -> sortOn (\p -> (not (isLabel TypeLabel c p), p)) fulls
-      NotFound -> [n]
- where
-  known x =
-    isLabel TermLabel c x
-      || isLabel TypeLabel c x
-      || isLabel FieldLabel c x
-      || Map.member x c.history
-      || isNamespace c x
-
-{- | A word naming a stored namespace: relative to the current one, else
-from the root; absolute with a leading dot.
--}
-namespaceArg :: Session -> Text -> Maybe Text
-namespaceArg session w
-  | Just p <- T.stripPrefix "." w = if isNamespace cb p then Just p else Nothing
-  | not (null session.scope.namespace)
-  , here <- S.qualify session.scope.namespace w
-  , isNamespace cb here =
-      Just here
-  | isNamespace cb w = Just w
-  | otherwise = Nothing
- where
-  cb = session.codebase
-
--- | @namespace orbital@, or the root.
-namespaceLine :: [Text] -> Text
-namespaceLine = \case
-  [] -> "namespace . (the root)"
-  ns -> "namespace " <> T.intercalate "." ns
-
--- | @1 label@, @5 labels@.
-labelsText :: Int -> Text
-labelsText k = T.pack (show k) <> (if k == 1 then " label" else " labels")
-
--- | What a label names, for messages.
-labelNoun :: Codebase -> Text -> Text
-labelNoun cb n
-  | Map.member n cb.names = "definition"
-  | Map.member n cb.conNames = "constructor"
-  | Map.member n cb.typeNames = "type"
-  | Map.member n cb.fieldNames = "field"
-  | otherwise = "name"
-
--- | The labels of each kind among some paths: a type and its constructor of one name are two.
-labelKinds :: Codebase -> [Text] -> [(Text, LabelKind)]
-labelKinds cb paths =
-  [(p, k) | p <- paths, k <- [TermLabel, TypeLabel, FieldLabel], isLabel k cb p]
-
--- | Remove a label of every kind; history keeps it.
-removeLabel :: Text -> Codebase -> Codebase
-removeLabel n = unbindName n . unbindName ("." <> n)
-
-{- | Relabel (design §7.2, §7.6): each new path gets the labels of every kind
-its old path has, with their unit and chart flags, and unless aliasing the
-old labels go. History keeps both. All or nothing: a new path that is
-already a label of the same kind, two old paths given one new path, or a
-new path that would be both a label and a namespace refuses the whole
-change. Returns the codebase and the number of labels given.
--}
-relabel :: Bool -> [(Text, Text)] -> Codebase -> Either Text (Codebase, Int)
-relabel keepOld pairs cb = do
-  let moves = [(o, n, k) | (o, n) <- pairs, (_, k) <- labelKinds cb [o]]
-      base = if keepOld then cb else foldr (removeLabel . fst) cb pairs
-      clashes =
-        [ n
-        | (i, (o, n, k)) <- zip [0 :: Int ..] moves
-        , (o /= n && isLabel k base n)
-            || any (\(_, n', k') -> n' == n && k' == k) (take i moves)
-        ]
-  case clashes of
-    n : _ -> Left ("`" <> n <> "` is already a label; nothing was changed")
-    [] -> Right ()
-  case disjointness
-    base
-    [(n, labelNoun cb o, S.Span (S.Pos 1 1) (S.Pos 1 1)) | (o, n, _) <- moves] of
-    Just (_, msg) -> Left (msg <> "; nothing was changed")
-    Nothing -> Right ()
-  pure (foldl copy base moves, length moves)
- where
-  -- A signature moves with its name, and an alias, being the hash, is
-  -- unsigned (design §4.8).
-  copy acc (o, n, k) = case k of
-    TermLabel
-      | Just r <- lookupName o cb ->
-          (if isUnitName o cb then markUnit n else id)
-            . (if isChartName o cb then markChart n else id)
-            . maybe id (setSignature n) (if keepOld then Nothing else signatureOf o cb)
-            $ bindName n r acc
-      | Just (h, i) <- lookupConName o cb -> bindConName n h i acc
-    TypeLabel | Just h <- lookupTypeName o cb -> bindTypeName n h acc
-    FieldLabel | Just (h, i, j) <- lookupFieldName o cb -> bindFieldName n h i j acc
-    _ -> acc
-
-{- | @:edit@ (design §7.5): a stored definition or a data declaration as
-source to paste back. A name outside the current namespace is printed in a
-@namespace@ block, its names relative to that block (design §7.6), for
-pasting at the root.
--}
-editSource :: Spelling -> S.Scope -> Codebase -> Text -> Either Text [Text]
-editSource spelling scope cb full
-  | ns == scope.namespace = definitionSource spelling scope cb full
-  | null ns = definitionSource spelling scope{S.namespace = []} cb full
-  | otherwise =
-      (\ls -> ("namespace " <> T.intercalate "." ns) : map ("  " <>) ls)
-        <$> definitionSource spelling scope{S.namespace = ns} cb full
- where
-  ns = init (T.splitOn "." full)
-
-{- | A stored definition or data declaration as source in a scope: @let@,
-@unit@ or @chart@ and the name relative to the scope's namespace, or the
-@data@ declaration. Declared types are named in the scope too.
--}
-definitionSource ::
-  Spelling -> S.Scope -> Codebase -> Text -> Either Text [Text]
-definitionSource spelling scope cb full = case lookupName full cb of
-  Just r ->
-    let keyword
-          | isUnitName full cb = "unit "
-          | isChartName full cb = "chart "
-          | otherwise = "let "
-     in ( \line ->
-            map
-              (nameTypes scope cb)
-              (signatureSource spelling cb full ++ [line])
-        )
-          <$> definitionLine spelling scope cb keyword (S.lastSegment full) r
-  Nothing -> map (nameTypes scope cb) <$> viewData spelling scope cb full
-
-{- | The line @name :: type@ that goes before a signed definition's @let@
-in source (design §4.8), as a block of the scope writes it; none for a
-name without a signature. Declared types print by hash, for 'nameTypes'.
--}
-signatureSource :: Spelling -> Codebase -> Text -> [Text]
-signatureSource spelling cb full =
-  [ S.lastSegment full <> " :: " <> signatureText spelling sig
-  | Just sig <- [signatureOf full cb]
-  ]
-
--- | A declared type as it could be written again (design §7.2), named in a scope.
-viewData :: Spelling -> S.Scope -> Codebase -> Text -> Either Text [Text]
-viewData spelling scope cb n =
-  case lookupTypeName n cb >>= \h -> (h,) <$> lookupTypeDef h cb of
-    Just (h, def) ->
-      pure
-        [ renderTypeDef
-            spelling
-            (shortestNameOf TypeLabel scope cb n)
-            [ maybe
-                (showHash h <> "." <> T.pack (show i))
-                (shortestName scope cb)
-                (conNameOf h i cb)
-            | i <- [0 .. length def.constructors - 1]
-            ]
-            [ map (fmap S.lastSegment) (fieldNamesOf h i (length fs) cb)
-            | (i, fs) <- zip [0 ..] def.constructors
-            ]
-            def
-        ]
-    Nothing -> Left ("unknown name `" <> n <> "`")
-
 {- | Store scratch definitions whose names are new (or unchanged). A name
 that exists with a different definition is a conflict.
 -}
@@ -1240,33 +959,6 @@ signedReport session =
   , n.text `notElem` [b.name.text | S.DBind _ b <- session.scratch]
   ]
 
-{- | @area :: Shape -> Num (m^2)@: a name and its signature as written back
-in a scope (design §4.8), the name by its shortest spelling.
--}
-signatureLine :: Spelling -> S.Scope -> Codebase -> Text -> Text
-signatureLine spelling scope cb n =
-  shortestName scope cb n
-    <> " :: "
-    <> maybe "?" (signatureText spelling) (signatureOf n cb)
-
--- | What propagation did, with names spelled by the given namer (design §7.6).
-upgradeReport :: (Text -> Text) -> Propagation -> [Text]
-upgradeReport short result =
-  [ "upgraded "
-      <> short n
-      <> " "
-      <> showReference old
-      <> " -> "
-      <> showReference new
-  | (n, old, new) <- result.upgraded
-  ]
-    ++ [ "left " <> short n <> " on " <> showReference r <> ": " <> why
-       | (n, r, why) <- result.skipped
-       ]
-
-{- | Move every current definition still using an old version of a name to
-its current version, where it typechecks.
--}
 upgrade :: Text -> Session -> Either Text (Session, [Text])
 upgrade n session = case lookupName n session.codebase of
   Nothing -> Left ("unknown name `" <> n <> "`")
@@ -1429,197 +1121,6 @@ forget n session
                 , ["forgot `" <> n <> "`"]
                 )
 
-{- | Print the definition behind a reference (design §7.2). Cycle members
-are shown one at a time, with the other members by name.
--}
-viewReference ::
-  Spelling -> S.Scope -> Codebase -> Reference -> Either Text Text
-viewReference spelling scope cb (Reference h idx) = case lookupTerm h cb of
-  Nothing -> Left ("missing term " <> showHash h)
-  Just t -> case (idx, t) of
-    (Nothing, _) -> Right (renderTermUnits spelling (refNamer scope cb) (unitRef cb) VNil t)
-    (Just i, Cycle hints bodies) ->
-      let memberName j (Hint hint) =
-            shortestName
-              scope
-              cb
-              (fromMaybe hint (listToMaybe (namesOf (Reference h (Just j)) cb)))
-          ctx = vecAppend (vecMapIndexed memberName hints) VNil
-       in case vecIndex i bodies of
-            Just body -> Right (renderTermUnits spelling (refNamer scope cb) (unitRef cb) ctx body)
-            Nothing -> Left ("no member " <> T.pack (show i) <> " in " <> showHash h)
-    (Just _, _) -> Left (showHash h <> " is not a cycle")
-
-{- | A definition as a line of source: its keyword, its name and its body.
-A chart's leading lambdas are its parameters, written before the @=@
-(@chart ecef t = …@, design §3.8), since a chart's right-hand side is not
-an expression.
--}
-definitionLine ::
-  Spelling -> S.Scope -> Codebase -> Text -> Text -> Reference -> Either Text Text
-definitionLine spelling scope cb keyword shown r = case (keyword, r.index, lookupTerm r.hash cb) of
-  ("chart ", Nothing, Just t) ->
-    let (ps, body) = renderParamsUnits spelling (refNamer scope cb) (unitRef cb) t
-     in Right (keyword <> T.unwords (shown : ps ++ [body]))
-  _ ->
-    (\body -> keyword <> shown <> " = " <> body)
-      <$> viewReference spelling scope cb r
-
--- | Print the Typed Core behind a reference (design §5.3), for inspection.
-viewTyped :: S.Scope -> Codebase -> Reference -> Either Text Text
-viewTyped scope cb (Reference h idx) = case lookupTyped h cb of
-  Nothing -> Left ("no typed core for " <> showHash h)
-  Just t -> case (idx, t) of
-    (Nothing, _) -> Right (renderTTerm (refNamer scope cb) VNil t)
-    (Just i, TCycle _ members bodies) ->
-      let memberName j (Hint hint, _) =
-            shortestName
-              scope
-              cb
-              (fromMaybe hint (listToMaybe (namesOf (Reference h (Just j)) cb)))
-          ctx = vecAppend (vecMapIndexed memberName members) VNil
-       in case vecIndex i bodies of
-            Just body -> Right (renderTTerm (refNamer scope cb) ctx body)
-            Nothing -> Left ("no member " <> T.pack (show i) <> " in " <> showHash h)
-    (Just _, _) -> Left (showHash h <> " is not a cycle")
-
-vecMapIndexed :: forall a b k. (Int -> a -> b) -> Vec k a -> Vec k b
-vecMapIndexed f = go 0
- where
-  go :: forall m. Int -> Vec m a -> Vec m b
-  go _ VNil = VNil
-  go i (VCons x xs) = VCons (f i x) (go (i + 1) xs)
-
-{- | A current name, else a stale @name#hash@, else a bare @#hash@, each
-spelled as shortly as the scope allows (design §7.6).
--}
-
--- | Whether a reference prints as a unit, for a chart's origin (design §3.8).
-unitRef :: Codebase -> UnitRef
-unitRef cb h idx written = isJust (unitNameFor (Reference h idx) written cb)
-
-refNamer :: S.Scope -> Codebase -> RefNamer
-refNamer scope cb h idx written =
-  let r = Reference h idx
-      short = shortestName scope cb
-   in -- `it` only stands in when nothing else names the reference.
-      case filter (/= "it") (namesOf r cb) ++ filter (== "it") (namesOf r cb) of
-        -- The name the author wrote, while it still points here; else any current name.
-        ns | written `elem` ns -> short written
-        n : _ -> short n
-        [] -> case historicalNamesOf r cb of
-          n : _ -> short n <> showReference r
-          [] -> showReference r
-
-{- | How values print in a session: names for references, units and record
-fields from the codebase, in the configured spelling. A record's fields
-print by their last segment, as a record is built (design §7.6).
--}
-printerFor :: Config -> S.Scope -> Codebase -> Printer
-printerFor cfg scope cb =
-  Printer
-    { refName = refNamer scope cb
-    , fieldNames = \h i arity -> map (fmap S.lastSegment) (fieldNamesOf h i arity cb)
-    , spelling = spellingOf cfg
-    , unitName = shortestName scope cb
-    , nonlinear = cfg.nonlinear
-    }
-
--- | The spelling output uses (design §7.3, @:set unicode@).
-spellingOf :: Config -> Spelling
-spellingOf cfg = if cfg.unicode then Unicode else Ascii
-
-renderEvalError :: EvalError -> Text
-renderEvalError = \case
-  DivideByZero -> "error: division by zero"
-  Domain msg -> "error: " <> msg
-  Undecided msg -> "error: cannot decide " <> msg
-  Internal msg -> "internal error: " <> msg
-  UnknownRef h -> "error: unknown reference " <> showHash h
-  BadCycleIndex i -> "error: bad cycle index " <> T.pack (show i)
-  Unsupported msg -> "not implemented: " <> msg
-  ChartStep name why ->
-    "error: "
-      <> maybe "a chart" ("chart " <>) name
-      <> " has no invertible coordinates: "
-      <> why
-
-{- | Evaluate a preference text (@km/h@) to the unit it names and the exact
-dimension it applies to. It must be a scalar with a display unit.
--}
-preferenceHint :: Config -> Codebase -> Text -> Either Text (Dim, UnitHint)
-preferenceHint cfg cb text = do
-  e <- parseExpr text
-  (_, v) <- evalValue cfg S.rootScope cb text (S.Expr e.span (S.UnitSyntax e))
-  -- A preference is a unit (design §3.10, U7), not an amount of one.
-  case v of
-    VUnit (VTensor [] d (Just h) _) | h.dim == d -> Right (d, h)
-    VUnit _ ->
-      Left ("`" <> text <> "` has no unit to prefer; write one, as in :prefer km/h")
-    VTensor{} ->
-      Left
-        ( "a preference is a unit, not an amount: write it as one, as in :prefer km/h, not `"
-            <> text
-            <> "`"
-        )
-    _ -> Left ("a preference must be a unit expression, not `" <> text <> "`")
-
-{- | Recompute the evaluated preferences from the codebase's texts, as after a
-load or a change. A text that no longer evaluates (its unit was unnamed) is
-dropped from the evaluated set but kept in the codebase.
--}
-refreshPreferences :: Session -> Either Text Session
-refreshPreferences session =
-  let hints =
-        [ (d, h)
-        | t <- Set.toList session.staging.preferences
-        , Right (d, h) <- [preferenceHint session.config session.staging t]
-        ]
-   in Right session{preferred = Map.fromList hints}
-
-{- | Declared types and their constructors print by hash (@#a3f9k@,
-@#a3f9k.1@) wherever a type or a value is rendered; here those become the
-current names (design §7.2), spelled for the scope (design §7.6). A type
-without a name keeps its hash.
--}
-nameTypes :: S.Scope -> Codebase -> Text -> Text
-nameTypes scope cb
-  | Map.null cb.typeDefs = id
-  | otherwise = go
- where
-  go t = case T.breakOn "#" t of
-    (before, rest) | T.null rest -> before
-    (before, rest) ->
-      let (hex, after) = T.span isBase32 (T.drop 1 rest)
-          (idx, after') = case T.uncons after of
-            Just ('.', more)
-              | (ds, more') <- T.span isDigit more
-              , not (T.null ds) ->
-                  (Just (read (T.unpack ds) :: Int), more')
-            _ -> (Nothing, after)
-       in case [h | h <- Map.keys cb.typeDefs, showHash h == "#" <> hex] of
-            h : _
-              | Just i <- idx
-              , Just c <- conNameOf h i cb ->
-                  before <> shortestName scope cb c <> go after'
-              | Nothing <- idx
-              , Just n <- typeNameOf h cb ->
-                  before <> shortestNameOf TypeLabel scope cb n <> go after'
-            _ -> before <> "#" <> go (T.drop 1 rest)
-  isBase32 c = isDigit c || (c >= 'a' && c <= 'v')
-
-{- | @:ls [glob|namespace] [--all | --units | --charts | --types] [: type]@
-(design §7.3): names in the codebase with their types, one per line,
-sorted. Alone, the current namespace's own labels (the root's at the
-root), then a line for each namespace directly under it with the number of
-names in it (@namespace si (800 names)@). A word that names a namespace
-lists everything under it, relative to it; @--all@ lists everything by its
-full path; a glob (@*@ anywhere, else a case-insensitive substring; on the
-full path or its last segment), a
-kind flag or a type query searches everything. The type query is a written
-type whose unknown names are variables, matched by unification both ways,
-so @: a -> a@ finds @Num m -> Num m@ and @: Num -> Num@ finds @a -> a@.
--}
 listNames :: Session -> [Text] -> Either Text [Text]
 listNames session args = do
   let (before, after) = break (== ":") args
@@ -1819,648 +1320,6 @@ absorbLast session le = case session.lastExpr of
         linted <- either (Left . ("internal error: " <>)) Right (lintClosed look typed')
         pure le{term = term', schemes = linted, typed = typed'}
   _ -> pure le
-
--- Export (design §7.4) --------------------------------------------------------------
-
-{- | @:export [path] [file]@: what to export and where. No argument, or
-@.@, is the whole codebase; a word that names a namespace (relative to the
-current one, or absolute) is that namespace; any other single word is the
-file when it looks like a path (it has a @/@ or a @.@), and otherwise most
-likely a misspelt namespace, which is refused rather than written to a
-file of that name. With two words, the first is the path and the second
-the file. Returns the file, if any, and the source.
--}
-exportRequest :: Session -> [Text] -> Either Text (Maybe FilePath, Text)
-exportRequest session = \case
-  [] -> (Nothing,) <$> exportSource session Nothing
-  [w]
-    | w == "." -> (Nothing,) <$> exportSource session Nothing
-    | Just ns <- namespaceArg session w ->
-        (Nothing,) <$> exportSource session (Just ns)
-    | T.any (`elem` ['/', '.']) w ->
-        (Just (T.unpack w),) <$> exportSource session Nothing
-    | otherwise ->
-        Left
-          ( "`"
-              <> w
-              <> "` is not a namespace; to write a file give a path like "
-              <> w
-              <> ".ev"
-          )
-  [p, f]
-    | p == "." -> (Just (T.unpack f),) <$> exportSource session Nothing
-    | Just ns <- namespaceArg session p ->
-        (Just (T.unpack f),) <$> exportSource session (Just ns)
-    | otherwise -> Left ("`" <> p <> "` is not a namespace")
-  _ -> Left "usage: :export [namespace] [file]"
-
-{- | The stored codebase, or the namespace at a path, as source that @:load@
-reads back (design §7.4): every label, except the standard library's namespaces
-unless one is the path asked for, as a @namespace@ block per
-namespace, nested as the paths nest, with root definitions outside any
-block. The codebase's stored @use@s head it as @use@ statements (design
-§7.7), and every name is spelled for them: a @use@ in a file comes before
-the root, so a root name that a stored @use@ also offers prints with its
-leading dot, and the text means the same in any codebase that has the
-library. Types come first, each after the types it uses, then the terms,
-each after what it references and a cycle's members together. Inside a
-block, names print as that block's scope spells them (design §7.6). The
-pending scratch is not exported; a closing comment says so. A definition
-that refers to a version no name points at any more cannot be written as
-source, and refuses the export.
--}
-exportSource :: Session -> Maybe Text -> Either Text Text
-exportSource session = \case
-  Just p -> exportLabels session ((p <> ".") `T.isPrefixOf`)
-  Nothing -> exportLabels session (not . isLibraryPath)
-
-{- | 'exportSource' for the labels whose full paths pass a test: the
-definitions, and the types with their constructors and fields.
--}
-exportLabels :: Session -> (Text -> Bool) -> Either Text Text
-exportLabels session under = do
-  case [ (n, r)
-       | (n, Reference h _) <- terms
-       , Just t <- [lookupTerm h cb]
-       , r <- Set.toList (refsWithIndex t)
-       , null (namesOf (uncurry Reference r) cb)
-       ] of
-    (n, (h, i)) : _ ->
-      Left
-        ( "cannot export: `"
-            <> n
-            <> "` uses "
-            <> refNamer S.rootScope cb h i ""
-            <> ", which no name points at; :upgrade or :update it first"
-        )
-    [] -> Right ()
-  typeItems <- mapM typeItem orderedTypes
-  termItems <- concat <$> mapM termItems' orderedTerms
-  let body = nest [] (typeItems ++ termItems)
-      header = ["use " <> S.renderUse u | not (null body), u <- stored]
-      pendingNote =
-        [ "-- not exported: "
-            <> T.pack (show (Set.size (Set.fromList (map (.name.text) session.scratch))))
-            <> " pending definitions (:add or :update them first)"
-        | not (null session.scratch)
-        ]
-  pure (T.intercalate "\n" (header ++ body ++ pendingNote))
- where
-  -- The stored uses are written as statements, so they spell the names as
-  -- a file's uses do, before the root, and not as the codebase's fallback.
-  stored = session.codebase.uses
-  cb = session.codebase{uses = []}
-  terms = [(n, r) | (n, r) <- Map.toList cb.names, under n]
-  -- A chart's frame and axes are minted again by its declaration (design
-  -- §3.10, F3).
-  types =
-    [ (n, h)
-    | (n, h) <- Map.toList cb.typeNames
-    , under n
-    , not
-        ( maybe
-            False
-            (\d -> isAxesDef d || isJust (frameDefMoving d))
-            (lookupTypeDef h cb)
-        )
-    ]
-  namespaceOf n = init (T.splitOn "." n)
-  -- Types after the types their fields use.
-  orderedTypes =
-    dependencyOrder
-      [ ((n, h), n, maybe [] (defRefs h) (lookupTypeDef h cb))
-      | (n, h) <- types
-      ]
-  defRefs self def =
-    let used = Set.delete self (foldMap (foldMap typeRefs) def.constructors)
-     in [n | (n, h) <- types, h `Set.member` used]
-  typeItem (n, _) =
-    let scope = S.Scope (namespaceOf n) stored
-     in (namespaceOf n,) . map (nameTypes scope cb) <$> viewData Ascii scope cb n
-  -- Terms by hash, so that a cycle's members and aliases stay together,
-  -- after what they reference.
-  byHash = Map.fromListWith (++) [(r.hash, [(n, r)]) | (n, r) <- terms]
-  keyOf = Map.map (minimum . map fst) byHash
-  orderedTerms =
-    dependencyOrder
-      [ ( sortOn (\(n, r) -> (r.index, n)) members
-        , Map.findWithDefault "" h keyOf
-        , maybe
-            []
-            (mapMaybe (`Map.lookup` keyOf) . Set.toList . Set.delete h . refs)
-            (lookupTerm h cb)
-        )
-      | (h, members) <- Map.toList byHash
-      ]
-  termItems' = mapM $ \(n, r) ->
-    let scope = S.Scope (namespaceOf n) stored
-        keyword
-          | isUnitName n cb = "unit "
-          | isChartName n cb = "chart "
-          | otherwise = "let "
-     in ( \line ->
-            ( namespaceOf n
-            , map
-                (nameTypes scope cb)
-                (signatureSource Ascii cb n ++ [line])
-            )
-        )
-          <$> definitionLine Ascii scope cb keyword (S.lastSegment n) r
-  -- Open and close blocks as the namespaces of consecutive items change.
-  nest :: [Text] -> [([Text], [Text])] -> [Text]
-  nest _ [] = []
-  nest current ((ns, ls) : rest) =
-    let common = length (takeWhile id (zipWith (==) current ns))
-        opens =
-          [ indent k <> "namespace " <> seg
-          | (k, seg) <- zip [common ..] (drop common ns)
-          ]
-     in opens ++ map (indent (length ns) <>) ls ++ nest ns rest
-  indent k = T.replicate (2 * k) " "
-
-{- | Dependencies first; among what is ready, what stays in the namespace of
-the last item, then by namespace and name, so that an export reopens as few
-blocks as it can (design §7.4). Each node is an item, its key (a full
-path) and the keys it depends on; mutually dependent nodes come out
-together.
--}
-dependencyOrder :: [(a, Text, [Text])] -> [a]
-dependencyOrder nodes = map fst (go [] Set.empty (Map.keysSet comps))
- where
-  comps =
-    Map.fromList
-      ( zip
-          [0 :: Int ..]
-          (map flattenSCC (stronglyConnComp [((a, k), k, ds) | (a, k, ds) <- nodes]))
-      )
-  compOf = Map.fromList [(k, i) | (i, members) <- Map.toList comps, (_, k) <- members]
-  depsOf = Map.fromList [(k, ds) | (_, k, ds) <- nodes]
-  compDeps i =
-    Set.delete
-      i
-      ( Set.fromList
-          [ j
-          | (_, k) <- Map.findWithDefault [] i comps
-          , d <- Map.findWithDefault [] k depsOf
-          , Just j <- [Map.lookup d compOf]
-          ]
-      )
-  key i = minimum (map snd (Map.findWithDefault [] i comps))
-  space i = init (T.splitOn "." (key i))
-  go current done remaining
-    | Set.null remaining = []
-    | otherwise =
-        let ready = [i | i <- Set.toList remaining, compDeps i `Set.isSubsetOf` done]
-            pick = case sortOn (\i -> (space i /= current, space i, key i)) ready of
-              i : _ -> i
-              -- Not reachable: the components form a DAG.
-              [] -> Set.findMin remaining
-         in Map.findWithDefault [] pick comps
-              ++ go (space pick) (Set.insert pick done) (Set.delete pick remaining)
-
--- | The declared types a type mentions.
-typeRefs :: Type -> Set.Set Hash
-typeRefs = \case
-  TData h args -> Set.insert h (foldMap argRefs args)
-  TFun a b -> typeRefs a <> typeRefs b
-  _ -> Set.empty
- where
-  argRefs = \case
-    AType t -> typeRefs t
-    _ -> Set.empty
-
--- Edit (design §7.3) ----------------------------------------------------------------
-
--- | What an @:edit@ round trip covers (design §7.3).
-data EditScope
-  = -- | @:edit@: the stored codebase but the library under @std@
-    EditCodebase
-  | -- | @:edit orbital@: the labels under a namespace, by its full path
-    EditNamespace Text
-  | -- | @:edit period@: one definition or type, by its full path; nothing is removed
-    EditName Text
-  deriving stock (Eq, Show)
-
--- | What @:edit …@ asks for.
-data EditRequest
-  = {- | Open an editor on the scope: the file to open (or why there is
-    none), and what to print instead when there is no editor.
-    -}
-    EditOpen EditScope (Either Text Text) [Text]
-  | -- | @:edit --file path@: reconcile the file as it is, without an editor.
-    EditResume EditScope FilePath
-  deriving stock (Eq, Show)
-
-{- | @:edit [name|namespace]@ and @:edit --file path [name|namespace]@
-(design §7.3). No argument, or @.@, is the codebase without @std@; a word
-naming a stored namespace (relative to the current one, else from the
-root, or absolute with a leading dot) is that namespace; any other word is
-a definition or type. The file is the scope as 'exportSource' writes it,
-under a header that says what saving does. What prints without an editor
-is the source it would open: for one name, the pasteable statement
-@:edit@ always printed (spelled for the session, and a pending definition
-too); for a namespace or the codebase, the export.
--}
-editRequest :: Session -> [Text] -> Either Text EditRequest
-editRequest session = \case
-  "--file" : p : rest -> (`EditResume` T.unpack p) <$> scopeOf rest
-  ["--file"] -> Left usage
-  args -> do
-    target <- scopeOf args
-    case target of
-      EditName full -> do
-        paste <-
-          editSource (spellingOf session.config) session.scope session.staging full
-        pure (EditOpen target (editFile session target) paste)
-      _ -> do
-        file <- editFile session target
-        body <- editBody session target
-        pure (EditOpen target (Right file) [body | not (T.null body)])
- where
-  usage = "usage: :edit [name|namespace], or :edit --file path [name|namespace]"
-  scopeOf = \case
-    [] -> Right EditCodebase
-    ["."] -> Right EditCodebase
-    [w]
-      | Just ns <- namespaceArg session w -> Right (EditNamespace ns)
-      | otherwise -> Right (EditName (argPath session.scope session.staging w))
-    _ -> Left usage
-
--- | The scope as the source 'exportSource' writes.
-editBody :: Session -> EditScope -> Either Text Text
-editBody session = \case
-  EditCodebase -> exportSource session Nothing
-  EditNamespace ns -> exportSource session (Just ns)
-  -- A cycle's members come together: one alone would re-enter as another term.
-  EditName full -> exportLabels session $ case lookupName full session.codebase of
-    Just (Reference h (Just _)) ->
-      \n -> n == full || ((.hash) <$> lookupName n session.codebase) == Just h
-    _ -> (== full)
-
--- | The file an editor opens: a header saying what saving does, then the source.
-editFile :: Session -> EditScope -> Either Text Text
-editFile session target = do
-  case target of
-    EditName full
-      | not (isLabel TermLabel cb full || isLabel TypeLabel cb full) ->
-          Left
-            ( "`"
-                <> shortestName session.scope session.staging full
-                <> "` is not stored; :add or :update it before editing it in place"
-            )
-    _ -> Right ()
-  body <- editBody session target
-  pure (T.unlines (editHeader target ++ [body | not (T.null body)]))
- where
-  cb = session.codebase
-
--- | What saving the file does (design §7.3), as comments.
-editHeader :: EditScope -> [Text]
-editHeader target =
-  map
-    ("-- " <>)
-    ( [ ":edit" <> args <> ": " <> what <> " as source."
-      , "When you save and quit, the file is entered as one group, all or nothing:"
-      , "  a definition or type that is new is added;"
-      , "  one whose text changed is updated, and its dependents upgraded, as :update does;"
-      ]
-        ++ removal
-        ++ [ "Blocks are full paths from the root: the current :namespace does not change"
-           , "what this file means."
-           , "On an error nothing changes, and the file is kept to fix and resume with"
-           , ":edit --file. Quit without saving to change nothing."
-           ]
-    )
- where
-  (args, what) = case target of
-    EditCodebase -> ("", "the codebase, but the library under std,")
-    EditNamespace ns -> (" " <> ns, "the namespace " <> ns)
-    EditName full -> (" " <> full, full)
-  removal = case target of
-    EditName full ->
-      [ "  nothing is removed; deleting " <> full <> " is refused (:unname removes it)."
-      ]
-    _ ->
-      [ "  a label here that the file no longer defines is removed, as :unname does;"
-      , "  history keeps it. A definition moved to another namespace block is removed"
-      , "  and added under its new path. Deleting everything is refused."
-      ]
-
-{- | The arguments that name a scope again in a command, @ orbital@; with a
-leading dot outside the root, where a word is relative.
--}
-editScopeArgs :: Session -> EditScope -> Text
-editScopeArgs session = \case
-  EditCodebase -> ""
-  EditNamespace ns -> " " <> dotted ns
-  EditName full -> " " <> dotted full
- where
-  dotted p = if null session.scope.namespace then p else "." <> p
-
-{- | The note under what @:edit@ prints when it opens no editor (scripted,
-one-shot, or no @VISUAL@ or @EDITOR@), saying why.
--}
-editorNote :: Text -> Text
-editorNote why = "note: " <> why <> "; this is the source :edit would open"
-
-{- | Reconcile an edited file with the codebase (design §7.3). The file is
-read as a program from the root with no @use@ of the session, as it was
-written: its own @use@ lines and @namespace@ blocks say what every name
-means. Its definitions and types are entered as one group on top of the
-codebase. By full path: a label the file defines that the codebase did
-not have is added; one bound to another reference is updated, or
-upgraded when its old term with the group's new references put in is the
-new term (only what it uses moved); a label of the scope (a definition,
-type, constructor or field) that the file does not define is removed, as
-@:unname@ does, except for one name, where nothing is removed. Then
-propagation moves the dependents outside the file, as @:update@ does. All
-or nothing: a parse, type or namespace error, an expression, a file that
-no longer defines the one name, one that would remove every label of the
-scope, or a pending scratch that would no longer check, changes nothing.
--}
-applyEdit :: EditScope -> Text -> Session -> Either Text (Session, [Text])
-applyEdit target text session = case reconcile of
-  Left err -> Left (nameTypes session.scope naming err)
-  Right (s, outs) -> Right (s, map (nameTypes s.scope s.staging) outs)
- where
-  cb0 = session.codebase
-  -- An error names the file's own types, as the staging codebase does for
-  -- an input.
-  naming = case parseProgram text of
-    Right stmts ->
-      let (decls, _, _) = S.flatten S.rootScope stmts
-       in fromRight cb0 (processGroup cb0 [d | d@(S.DData _ _) <- decls])
-    Left _ -> cb0
-  short0 = shortestName session.scope cb0
-  inTarget n = case target of
-    EditCodebase -> not (isLibraryPath n)
-    EditNamespace ns -> (ns <> ".") `T.isPrefixOf` n
-    EditName _ -> False
-  scopeText = case target of
-    EditCodebase -> "the codebase"
-    EditNamespace ns -> "`" <> ns <> "`"
-    EditName full -> "`" <> short0 full <> "`"
-  reconcile = do
-    stmts <- parseProgram text
-    let (decls, exprs, _) = S.flatten S.rootScope stmts
-    case exprs of
-      (_, e) : _ ->
-        Left
-          ( S.renderSpanError
-              (Just text)
-              e.span
-              "an edited file holds definitions; evaluate expressions at the prompt"
-          )
-      [] -> Right ()
-    case [b.name | S.DBind _ b <- decls, b.name.text == "it"] of
-      n : _ ->
-        Left
-          ( S.renderSpanError
-              (Just text)
-              n.span
-              "`it` is the last result and cannot be defined; choose another name"
-          )
-      [] -> Right ()
-    -- A definition the file writes without its signature line loses its
-    -- signature (design §4.8), before the group is checked against it.
-    let fileSigned = [n.text | S.DSig _ n _ <- decls]
-        unsigned =
-          [ b.name.text
-          | S.DBind _ b <- decls
-          , isJust (signatureOf b.name.text cb0)
-          , b.name.text `notElem` fileSigned
-          ]
-    staged <-
-      first
-        (renderResolveErrorWith Map.empty text)
-        (processGroup (foldr dropSignature cb0 unsigned) decls)
-    let defined = Set.fromList (concatMap declLabels decls)
-    case target of
-      EditName full
-        | not
-            (Set.member (TermLabel, full) defined || Set.member (TypeLabel, full) defined) ->
-            Left
-              ( "the file no longer defines `"
-                  <> short0 full
-                  <> "`; use :unname to remove it"
-              )
-      _ -> Right ()
-    let inScope =
-          [ (k, n)
-          | (k, ns) <-
-              [ (TermLabel, Map.keys cb0.names ++ Map.keys cb0.conNames)
-              , (TypeLabel, Map.keys cb0.typeNames)
-              , (FieldLabel, Map.keys cb0.fieldNames)
-              ]
-          , n <- ns
-          , inTarget n
-          ]
-        removed = filter (`Set.notMember` defined) inScope
-    when (not (null inScope) && length removed == length inScope)
-      $ Left
-        ( "the file defines nothing in "
-            <> scopeText
-            <> "; if you mean to remove it all, use :unname"
-            <> ( case target of
-                   EditNamespace ns -> " " <> ns
-                   _ -> " on its names and namespaces"
-               )
-        )
-    let termNames = [b.name.text | S.DBind _ b <- decls]
-        added = [n | n <- termNames, isNothing (lookupName n cb0)]
-        changed =
-          [ (n, old, new)
-          | n <- termNames
-          , Just old <- [lookupName n cb0]
-          , Just new <- [lookupName n staged]
-          , old /= new
-          ]
-        refmap = Map.fromList [(old, new) | (_, old, new) <- changed]
-        written = Map.fromListWith Set.union [(old, Set.singleton n) | (n, old, _) <- changed]
-        dataNames = [d.name.text | S.DData _ d <- decls]
-        -- The types the file replaced, and their constructors by name.
-        replaced =
-          [ (n, old, new)
-          | n <- dataNames
-          , Just old <- [lookupTypeName n cb0]
-          , Just new <- [lookupTypeName n staged]
-          , old /= new
-          ]
-        cons =
-          Map.fromList
-            [ (old, new)
-            | (c, old@(h, _)) <- Map.toList cb0.conNames
-            , h `elem` [o | (_, o, _) <- replaced]
-            , Just new <- [lookupConName c staged]
-            ]
-        newCon = \case
-          UserCon h i | Just (h', i') <- Map.lookup (h, i) cons -> UserCon h' i'
-          c -> c
-        -- Only what it uses moved: its old term with the new references and
-        -- constructors put in is the new term.
-        follows (_, old, new) = case lookupTerm old.hash cb0 of
-          Just t ->
-            hashTerm
-              ( rewriteRefsWritten
-                  ( \rh ri w ->
-                      if appliesTo cb0 written (Reference rh ri) w
-                        then (\(Reference nh ni) -> (nh, ni)) <$> Map.lookup (Reference rh ri) refmap
-                        else Nothing
-                  )
-                  (restampTerm id newCon t)
-              )
-              == new.hash
-          Nothing -> False
-        (followed, updated) = partition follows changed
-        -- A body unchanged under another keyword: @unit km@ became @let km@.
-        keyword c n
-          | isUnitName n c = "unit"
-          | isChartName n c = "chart"
-          | otherwise = "let" :: Text
-        rekeyed =
-          [ "updated " <> short n <> ": " <> keyword cb0 n <> " -> " <> keyword staged n
-          | n <- termNames
-          , isJust (lookupName n cb0)
-          , lookupName n cb0 == lookupName n staged
-          , keyword cb0 n /= keyword staged n
-          ]
-        types =
-          [ ( if Map.member n cb0.typeNames
-                then "updated data "
-                else "added data "
-            )
-              <> shortestNameOf TypeLabel session.scope staged n
-          | n <- dataNames
-          , lookupTypeName n cb0 /= lookupTypeName n staged
-          ]
-        -- A type outside the file whose fields use a replaced type keeps
-        -- the old one.
-        typesLeft =
-          [ "left data "
-              <> shortestNameOf TypeLabel session.scope final n
-              <> " on the old version of "
-              <> shortestNameOf TypeLabel session.scope final r
-          | (n, h) <- Map.toList final.typeNames
-          , n `notElem` dataNames
-          , Just def <- [lookupTypeDef h final]
-          , let used = foldMap (foldMap typeRefs) def.constructors
-          , (r, old, _) <- replaced
-          , Set.member old used
-          ]
-        -- A removed type takes its constructors and fields with it.
-        goneTypes =
-          Set.fromList [h | (TypeLabel, n) <- removed, Just h <- [lookupTypeName n cb0]]
-        removals =
-          [ line
-          | (k, n) <- removed
-          , line <- case k of
-              TermLabel
-                | Map.member n cb0.names -> ["removed " <> short0 n]
-                | Just (h, _) <- lookupConName n cb0
-                , not (Set.member h goneTypes) ->
-                    ["removed constructor " <> short0 n]
-              TypeLabel -> ["removed data " <> shortestNameOf TypeLabel session.scope cb0 n]
-              FieldLabel
-                | Just (h, _, _) <- lookupFieldName n cb0
-                , not (Set.member h goneTypes) ->
-                    ["removed field " <> n]
-              _ -> []
-          ]
-        result =
-          propagateScoped
-            (appliesTo cb0 written)
-            cons
-            refmap
-            (foldr removeKind staged removed)
-        final = result.codebase
-        short = shortestName session.scope final
-        -- Dependents of what was removed are left on it.
-        removedTerms = Set.fromList [n | (TermLabel, n) <- removed, Map.member n cb0.names]
-        staleBefore = Set.fromList (staleReferences cb0)
-        stale =
-          [ "left "
-              <> short n
-              <> " stale: it uses "
-              <> short0 m
-              <> showReference r
-              <> ", which was removed"
-          | entry@(n, r, m) <- staleReferences final
-          , Set.notMember entry staleBefore
-          , Set.member m removedTerms
-          ]
-        report =
-          types
-            ++ ["added " <> short n | n <- added]
-            ++ [ "updated " <> short n <> " " <> showReference old <> " -> " <> showReference new
-               | (n, old, new) <- updated
-               ]
-            ++ rekeyed
-            ++ removals
-            ++ [ "upgraded "
-                   <> short n
-                   <> " "
-                   <> showReference old
-                   <> " -> "
-                   <> showReference new
-               | (n, old, new) <- followed
-               ]
-            ++ upgradeReport short result
-            ++ typesLeft
-            ++ stale
-            ++ signatureChanges
-        -- Signatures given, changed or taken away on names still defined (design §4.8).
-        signatureChanges =
-          [ (if isJust new then "signed " else "unsigned ") <> short n
-          | n <- Set.toList (Map.keysSet cb0.signatures <> Map.keysSet final.signatures)
-          , Map.member n final.names
-          , let new = signatureOf n final
-          , -- A signature that only followed a replaced type is unchanged.
-          ( retypeScheme (Map.fromList [(o, nw) | (_, o, nw) <- replaced])
-              <$> signatureOf n cb0
-          )
-            /= new
-          ]
-    if null report
-      then Right (session, ["nothing changed"])
-      else do
-        staging' <-
-          first
-            ( \err ->
-                "the pending definitions would not check after this edit; nothing was changed:\n"
-                  <> renderResolveError err
-            )
-            (processGroup final session.scratch)
-        s <- refreshPreferences session{codebase = final, staging = staging'}
-        pure (s, report)
-
--- | The labels a declaration defines, by kind and full path.
-declLabels :: S.Decl -> [(LabelKind, Text)]
-declLabels = \case
-  -- A chart labels its frame too (design §3.10, F3).
-  S.DBind _ b ->
-    (TermLabel, b.name.text) : [(TypeLabel, b.name.text) | b.kind == S.ChartDecl]
-  S.DData _ d ->
-    (TypeLabel, d.name.text)
-      : [(TermLabel, c.text) | (c, _) <- d.constructors]
-      ++ [(FieldLabel, n.text) | (_, fs) <- d.constructors, S.FieldDecl (Just n) _ <- fs]
-  -- A signature labels nothing: it belongs to its definition (design §4.8).
-  S.DSig{} -> []
-  -- A space labels its type (design §3.10, F2).
-  S.DSpace _ n _ -> [(TypeLabel, n.text)]
-
--- | Remove one label of one kind; history keeps a definition's.
-removeKind :: (LabelKind, Text) -> Codebase -> Codebase
-removeKind (k, n) cb = case k of
-  TermLabel ->
-    cb
-      { names = Map.delete n cb.names
-      , units = Set.delete n cb.units
-      , charts = Set.delete n cb.charts
-      , conNames = Map.delete n cb.conNames
-      , signatures = Map.delete n cb.signatures
-      }
-  TypeLabel -> cb{typeNames = Map.delete n cb.typeNames}
-  FieldLabel -> unbindName ("." <> n) cb
 
 {- | A pending signature whose definition has not arrived (design §4.8): it
 waits in the scratch, and storing the scratch refuses until it does.

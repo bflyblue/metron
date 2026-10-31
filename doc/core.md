@@ -18,6 +18,7 @@ whole is in [design.md](design.md); this is the companion that owns §5.
 8. What is coming, and what it will cost
 9. Correctness strategy
 10. Distance from System FC
+11. Implementation boundaries
 
 ---
 
@@ -494,3 +495,40 @@ Core is small so that it can be made correct, and these are the means:
 Structurally we are GHC's Core as it stood before coercions, with tensors
 built in beside `case`, and with content addressing that FC never needed. The
 remaining differences are intended.
+
+## 11. Implementation boundaries
+
+The implementation keeps syntax, checking, numerical work, and session
+operations separate. These are the starting points for changes:
+
+| Responsibility | Module |
+|---|---|
+| Untyped terms and scope-safe vectors | `Eval.Core` |
+| Typed terms and independent lint | `Eval.TCore` |
+| Primitive arities, base units, runtime type requirements | `Eval.Primitive` |
+| Primitive schemes and static-argument specialization | `Eval.Primitive.Types` |
+| Type and shape representation | `Eval.Type.Base` |
+| Scheme matching and signature checks | `Eval.Type.Match` |
+| Surface type syntax and declaration kind checking | `Eval.Type.Syntax` |
+| Names and namespaces | `Eval.NameResolution` |
+| Binding-group compilation and storage entry | `Eval.Resolve` |
+| Run elaboration, then independent lint | `Eval.Check` |
+| Expression compilation, diagnostics, and evaluation | `Eval.Compile` |
+| Rational approximations and matrix algorithms | `Eval.Numerical.Approx`, `Eval.Numerical.Linear` |
+| Affine uncertainty propagation | `Eval.Affine` |
+| Display-unit algebra and cancellation modes | `Eval.UnitHint` |
+| Source views and dependency-ordered export | `Eval.Source` |
+| Edit planning and reconciliation | `Eval.Edit` |
+| Shared session state, naming, and preferences | `Eval.Session.*` |
+| Command descriptions for help and completion | `Eval.Command` |
+| Input and command orchestration | `Eval.Driver` |
+
+`Eval.Check` preserves inferred schemes and linted schemes separately. It
+does not merge inference with lint or make either checker call the other.
+Stored Core uses the linted schemes; annotation-sensitive checking remains
+a distinct step. `Eval.Compile.CheckedExpr` names the results of expression
+checking rather than returning a positional tuple.
+
+The numerical modules do not import the evaluator or session types. The
+plain renderer used by semantic tests lives in `test/Support/Render.hs`;
+user-facing printing remains in `Eval.Pretty`.

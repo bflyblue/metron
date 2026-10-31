@@ -47,17 +47,37 @@ module Eval.Codebase (
   dropSignature,
 ) where
 
-import Data.List (sortOn)
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
-import Data.Set qualified as Set
-import Data.Text (Text)
-import Data.Text qualified as T
+import Data.List ( sortOn )
+import Data.Map.Strict ( Map )
+import Data.Maybe ( fromMaybe )
+import Data.Text ( Text )
 import Eval.Core
-import Eval.Syntax (Use (..))
-import Eval.TCore (TTerm, signatureHolds)
-import Eval.Type (Scheme, TypeDef (..), canonicalScheme)
+    ( hashHasPrefix,
+      refsWritten,
+      showHash,
+      Hash,
+      Label(Axes),
+      Nat(Z),
+      Term )
+import Eval.Syntax ( Use(..) )
+import Eval.TCore ( TTerm )
+import Eval.Type ( Scheme, TypeDef(..), canonicalScheme )
+import Eval.Type.Match ( signatureHolds )
+import Data.Map.Strict qualified as Map
+    ( delete,
+      insertWith,
+      empty,
+      keys,
+      lookup,
+      member,
+      toList,
+      findWithDefault,
+      insert,
+      update )
+import Data.Set qualified as Set
+    ( Set, member, delete, empty, insert, toList )
+import Data.Text qualified as T
+    ( isSuffixOf, null, stripPrefix, pack )
 
 {- | A reference to a definition: a hash, plus a member index when the hashed
 term is a 'Cycle'.

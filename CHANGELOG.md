@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Separate numerical approximations and matrix algorithms, primitive metadata
+  and signatures, type matching and type syntax, and display-unit algebra
+  into focused modules. Session compilation, source export, editing, naming,
+  and preferences no longer live in the command driver. Elaboration and
+  independent Core lint share one orchestration step. Remove unused entry
+  points, consolidate indexed-vector helpers, move the test printer into
+  test support, and derive command completion and help from shared metadata.
+
+- Follow-up correctness fixes: a zero first-order statistical model no
+  longer proves exact equality. Mixed bound/statistical coefficients are
+  marked unsupported for uncertainty summaries rather than treated as
+  independent errors. Non-linearity checks catch symmetric derivative
+  changes and use global derivative bounds where available. Covariance
+  reports refuse marked values too. `expm` currently refuses statistical
+  inputs rather than silently dropping their uncertainty. Cholesky and
+  covariance construction require established symmetry, not just overlap.
+
 - Statistical nudges propagate to first order only, and a σ never becomes a
   bound: non-linear remainders and domain checks use the bound enclosure,
   a remainder that multiplies a statistical nudge is a fresh statistical

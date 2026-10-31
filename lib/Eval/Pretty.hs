@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 {- | User-facing rendering (design §3.2.10, §7.2): values as decimals, and
 Core terms back to surface syntax for @:view@.
 -}
@@ -23,30 +25,88 @@ module Eval.Pretty (
   respell,
 ) where
 
-import Control.Applicative ((<|>))
-import Data.Char (intToDigit, isAlphaNum)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust, mapMaybe)
-import Data.Ratio (denominator, numerator, (%))
-import Data.Text (Text)
-import Data.Text qualified as T
-import Data.Vector qualified as V
-import Eval.Affine hiding (Builtin)
-import Eval.Affine qualified as A
-import Eval.Builtin
+import Control.Applicative ( (<|>) )
+import Data.Char ( intToDigit, isAlphaNum )
+import Data.Maybe ( fromMaybe, isJust, mapMaybe )
+import Data.Ratio ( denominator, numerator, (%) )
+import Data.Text ( Text )
+import Eval.Affine
+    ( decimalExponent,
+      roundAt,
+      sqrtApprox,
+      collapse,
+      divM,
+      midpoint,
+      nonLinearAt,
+      nudges,
+      sigmaOf,
+      skewOf,
+      Collapsed(variance, mid, bound),
+      Magnitude(Affine, Exact),
+      Nudge(origin, kind),
+      Origin(Declared, Tagged),
+      Skew(ratioSq, operation) )
+import Eval.Builtin ( pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, pattern TupleC )
 import Eval.Core
-import Eval.Dimension (
-  Spelling (..),
-  arrowText,
-  exponentText,
-  productText,
-  renderUnitsIn,
- )
-import Eval.Eval
+    ( renderLabel,
+      showHash,
+      vecAppend,
+      vecMap,
+      vecToList,
+      Alt(Alt),
+      ConRef(UserCon),
+      Fin(..),
+      Hash,
+      Hint(Hint),
+      Lit(LTensor),
+      Nat(Z),
+      NudgeKind(..),
+      Term(..),
+      Vec(..) )
+import Eval.Dimension
+    ( Spelling(..),
+      arrowText,
+      exponentText,
+      productText,
+      renderUnitsIn )
+import Eval.UnitHint ( Preferences, UnitAtom(..), UnitFactor(power, atom), UnitHint(atoms, pinned, dim, factor) )
+import Eval.Eval ( pattern VBool, coordinatesOn, Applied(Applied), Chart(dim, name, applied, step, dims, origin), EvalError(Internal), Value(..) )
+import Eval.Primitive ( baseUnit )
+import Eval.TCore ( patternText )
+import Eval.Type ( conText )
+import Eval.Affine qualified as A ( Origin(Builtin) )
 import Eval.Lexer qualified as L
-import Eval.Syntax qualified as S
-import Eval.TCore (baseUnit, patternText)
-import Eval.Type (conText)
+    ( prepare,
+      tokenize,
+      Keyword(KFalse, KTrue),
+      Located(span, value),
+      Token(TOp, TIdent, TRParen, TRBracket, TProj, TWild, TField, TAbs,
+            TNum, TSup, TKw, TPlusMinus, TArrow, TLambda) )
+import Data.Map.Strict qualified as Map ( lookup )
+import Eval.Syntax qualified as S ( Pos(Pos), Span(from, to) )
+import Data.Text qualified as T
+    ( concat,
+      all,
+      any,
+      drop,
+      dropWhileEnd,
+      intercalate,
+      isPrefixOf,
+      isSuffixOf,
+      justifyLeft,
+      justifyRight,
+      length,
+      null,
+      replicate,
+      splitOn,
+      take,
+      takeWhile,
+      uncons,
+      unsnoc,
+      unwords,
+      pack,
+      unpack )
+import Data.Vector qualified as V ( head, toList )
 
 -- Numbers ------------------------------------------------------------------------
 

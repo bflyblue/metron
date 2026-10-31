@@ -37,12 +37,13 @@ module Eval.Syntax (
   renderSpanError,
 ) where
 
-import Data.List.NonEmpty (NonEmpty)
-import Data.List.NonEmpty qualified as NE
-import Data.Text (Text)
+import Data.List.NonEmpty ( NonEmpty )
+import Data.Text ( Text )
+import Eval.Core ( NudgeKind )
+import GHC.Records ( HasField(..) )
+import Data.List.NonEmpty qualified as NE ( toList )
 import Data.Text qualified as T
-import Eval.Core (NudgeKind)
-import GHC.Records (HasField (..))
+    ( pack, intercalate, length, lines, replicate, splitOn )
 
 -- | A 1-based line and column.
 data Pos = Pos {line :: !Int, col :: !Int}

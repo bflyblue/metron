@@ -81,27 +81,57 @@ module Eval.Affine (
   sqrtApprox,
 ) where
 
-import Crypto.Hash.SHA256 qualified as SHA256
-import Data.Bifunctor (first)
-import Data.ByteString (ByteString)
-import Data.ByteString qualified as BS
-import Data.ByteString.Builder (Builder, byteString, toLazyByteString, word8)
-import Data.List (sortOn)
-import Data.Map.Strict (Map)
+import Data.Bifunctor ( first )
+import Data.ByteString ( ByteString )
+import Data.ByteString.Builder
+    ( Builder, byteString, toLazyByteString, word8 )
+import Data.List ( sortOn )
+import Data.Map.Strict ( Map )
+import Data.Maybe ( catMaybes )
+import Data.Ord ( Down(..) )
+import Data.Ratio ( denominator, numerator, (%) )
+import Data.Text ( Text )
+import Eval.Core ( Hash(..), NudgeKind(..) )
+import Eval.Encode ( sint, text, varint )
+import Eval.Numerical.Approx
+    ( atanApprox,
+      coshApprox,
+      decimalExponent,
+      expApprox,
+      logApprox,
+      piApprox,
+      precisionExponent,
+      roundAt,
+      roundUpAt,
+      scaleA,
+      sinCosApprox,
+      sinhApprox,
+      sqrtApprox,
+      tolerance,
+      Approx,
+      Precision,
+      isqrt )
+import Data.ByteString qualified as BS ( length )
 import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes)
-import Data.Ord (Down (..))
-import Data.Ratio (denominator, numerator, (%))
-import Data.Text (Text)
-import Data.Text qualified as T
-import Eval.Core (Hash (..), NudgeKind (..))
-import Eval.Encode (sint, text, varint)
-import GHC.Num (integerLog2)
+    ( null,
+      delete,
+      insertWith,
+      unionWith,
+      elems,
+      empty,
+      filter,
+      size,
+      toList,
+      intersectionWith,
+      map,
+      mapMaybe,
+      singleton )
+import Crypto.Hash.SHA256 qualified as SHA256 ( hashlazy )
+import Data.Text qualified as T ( pack )
 
 -- Types -----------------------------------------------------------------------------
 
 -- | Working precision in digits.
-type Precision = Int
 
 newtype NudgeId = NudgeId ByteString
   deriving stock (Eq, Ord, Show)
@@ -351,10 +381,10 @@ markedBy sk x = case sk of
 
 {- | Product. One exact side is a scaling; two affine sides linearise. The
 quadratic leftover splits by kind (design §3.2): bound by bound is a
-rigorous bound, as before; bound by statistical is statistical, the
-bound part at its worst, a fresh statistical nudge; statistical by
-statistical is second order, measured against the first-order σ and not
-carried.
+rigorous bound, as before; bound by statistical is a correction measured
+with the bound part at its worst. That correction and statistical by
+statistical terms are measured against the first-order σ, not carried
+as independent random variables.
 -}
 mulM :: Precision -> Magnitude -> Magnitude -> Magnitude
 mulM _ (Exact a) y = scaleM a y
@@ -404,8 +434,10 @@ mulM p x y =
 
 {- | The result of a non-linear operation (design §3.2): its linear part,
 the bound remainder as a fresh bound nudge (the midpoint's rounding
-joins it), the statistical remainder as a fresh statistical nudge, and
-the measure of non-linearity it carries, compacted.
+joins it), and measures for discarded statistical corrections. A mixed
+correction shares the original randomness and must not be added as an
+independent statistical nudge. Its size relative to the retained sigma
+is recorded, just like a discarded statistical quadratic term.
 -}
 opResult ::
   Text ->
@@ -417,16 +449,17 @@ opResult ::
   Magnitude ->
   Magnitude
 opResult name p operands boundSize statSize sk base =
-  finish
-    p
-    ( withFreshOf
-        Stat
-        name
-        p
-        operands
-        statSize
-        (withFresh name p operands boundSize (markedBy sk base))
-    )
+  finish p (withFresh name p operands boundSize (markedBy (skews [sk, mixed]) base))
+ where
+  firstSigma = statSigma p base
+  mixed
+    | statSize == 0 = Nothing
+    | firstSigma == 0 = Just (Skew Nothing name)
+    | otherwise =
+        Just
+          (Skew
+            (Just (roundUpSig 3 ((statSize / firstSigma) ^ (2 :: Int))))
+            (name <> ": uncertain statistical coefficient"))
 
 -- | Round up to @k@ significant digits: an upper bound stays one.
 roundUpSig :: Int -> Rational -> Rational
@@ -463,6 +496,8 @@ divM p x y
   -- two equal radii are not one unknown, so a form with slack takes the
   -- general path.
   | Affine m _ 0 _ <- y
+  , Nothing <- skewOf x
+  , Nothing <- skewOf y
   , let k = midpoint x / m
   , x == scaleM k y =
       Right (Exact k)
@@ -509,34 +544,6 @@ withFresh name p operands size base =
                 addCoeff
                 (builtinId Bound name p operands)
                 (size', Nudge Bound (Builtin name))
-                ts
-            )
-            s
-            (skewOf base)
-
-{- | Add a fresh nudge of a kind, named after the operation, its operands
-and the precision. A statistical one is a remainder that involves a
-statistical nudge (design §3.2), which a bound must never hold.
--}
-withFreshOf ::
-  NudgeKind ->
-  Text ->
-  Precision ->
-  [Magnitude] ->
-  Rational ->
-  Magnitude ->
-  Magnitude
-withFreshOf k name p operands size base
-  | k == Bound = withFresh name p operands size base
-  | size == 0 = base
-  | otherwise =
-      let (m, ts, s) = parts base
-       in affine
-            m
-            ( Map.insertWith
-                addCoeff
-                (builtinId Stat name p operands)
-                (size, Nudge Stat (Builtin name))
                 ts
             )
             s
@@ -608,220 +615,6 @@ nudgeLimit :: Int
 nudgeLimit = 64
 
 -- | The decimal exponent of the leading digit: @decimalExponent 0.0123 = -2@.
-decimalExponent :: Rational -> Int
-decimalExponent r
-  | r == 0 = 0
-  | a >= 1 = length (takeWhile (<= a) (iterate (* 10) 1)) - 1
-  | otherwise = negate (length (takeWhile (> a) (iterate (/ 10) 1)))
- where
-  a = abs r
-
-{- | The exponent of the last of @p@ significant digits of a value:
-@precisionExponent 3 123.4 = 0@, @precisionExponent 3 0.01234 = -4@.
--}
-precisionExponent :: Precision -> Rational -> Int
-precisionExponent p r = decimalExponent r - p + 1
-
--- | Round to a multiple of @10^e@.
-roundAt :: Int -> Rational -> Rational
-roundAt e r
-  | e >= 0 = fromInteger (round (r / unit) * (10 ^ e))
-  | otherwise = round (r * recip unit) % (10 ^ negate e)
- where
-  unit = 10 ^^ e :: Rational
-
--- | Round up to a multiple of @10^e@: an upper bound stays one.
-roundUpAt :: Int -> Rational -> Rational
-roundUpAt e r = fromInteger (ceiling (r / unit)) * unit
- where
-  unit = 10 ^^ e :: Rational
-
--- Rigorous elementary functions on rationals -------------------------------------------
---
--- Each returns an approximation and a bound on its absolute error, good to
--- @p@ digits in the sense of the module header.
-
-type Approx = (Rational, Rational)
-
--- | The absolute error allowed at @p@ digits for a result of size @v@.
-tolerance :: Precision -> Rational -> Rational
-tolerance p v = 10 ^^ precisionExponent p v
-
--- | Floor of the square root of a non-negative integer.
-isqrt :: Integer -> Integer
-isqrt 0 = 0
--- Newton's method from a power of two above the root: starting from n
--- itself took one step per halving, thousands of big divisions for the
--- long rationals an uncertain value's endpoints become.
-isqrt n = go (2 ^ (integerLog2 n `div` 2 + 1))
- where
-  go x =
-    let y = (x + n `div` x) `div` 2
-     in if y >= x then x else go y
-
-{- | @√r@ for @r ≥ 0@, from below, with its error. The error is at most
-@1/(d·10^p)@ and relative to the result at most @10^-p@.
--}
-sqrtApprox :: Precision -> Rational -> Approx
-sqrtApprox p r
-  | r == 0 = (0, 0)
-  | otherwise =
-      let d = denominator r
-          n = numerator r
-          s = 10 ^ p :: Integer
-       in (isqrt (n * d * s * s) % (d * s), 1 % (d * s))
-
-{- | Sum a series whose terms shrink by at least half from one to the next
-once below the target, until a term drops below it; the remainder is
-bounded by twice the first omitted term.
--}
-sumSeries :: Rational -> [Rational] -> Approx
-sumSeries target = go 0
- where
-  go acc (t : rest)
-    | abs t < target = (acc, 2 * abs t)
-    | otherwise = go (acc + t) rest
-  go acc [] = (acc, 0)
-
-scaleA :: Rational -> Approx -> Approx
-scaleA k (v, e) = (k * v, abs k * e)
-
-addA :: Approx -> Approx -> Approx
-addA (a, e) (b, f) = (a + b, e + f)
-
-{- | @e^x@. Halve the argument until it is small, sum the series, square back.
-Squaring doubles the relative error each time, so the series is summed
-with two guard digits per halving.
--}
-expApprox :: Precision -> Rational -> Approx
-expApprox p x
-  | x == 0 = (1, 0)
-  | otherwise =
-      let k = length (takeWhile (> 1 % 4) (iterate (/ 2) (abs x)))
-          q = p + 2 * k + 4
-          r = x / (2 ^ k)
-          terms = scanl (\t n -> t * r / fromInteger n) 1 [1 :: Integer ..]
-          -- The square is rounded at its own last digit, and its error
-          -- bound rounded up there: rounded at the last digit of the value
-          -- squared, a small result lost every digit (e^-200 came out as
-          -- 0), and only a working precision of hundreds of digits found
-          -- it, which took seconds for e^-10000.
-          square (s, e) =
-            let ss = s * s
-                at = precisionExponent q ss
-                s' = roundAt at ss
-             in (s', roundUpAt at (2 * abs s * e + e * e + abs (ss - s')))
-       in iterate square (sumSeries (tolerance q 1) terms) !! k
-
--- | @atanh z@ for @|z| < 1@, relative to its size.
-atanhApprox :: Precision -> Rational -> Approx
-atanhApprox p z
-  | z == 0 = (0, 0)
-  | otherwise =
-      let terms = [z ^ (2 * n + 1) / fromInteger (2 * n + 1) | n <- [0 :: Integer ..]]
-          (s, e) = sumSeries (tolerance (p + 4) z) terms
-       in (s, e / (1 - z * z))
-
-ln2Approx :: Precision -> Approx
-ln2Approx p = scaleA 2 (atanhApprox p (1 % 3))
-
--- | @ln x@ for @x > 0@: reduce by powers of two, then @2·atanh((y−1)/(y+1))@.
-logApprox :: Precision -> Rational -> Approx
-logApprox p x
-  | x == 1 = (0, 0)
-  | otherwise =
-      let (k, y) = reduce (0 :: Integer) x
-          z = (y - 1) / (y + 1)
-       in addA (scaleA (fromInteger k) (ln2Approx (p + 4))) (scaleA 2 (atanhApprox p z))
- where
-  reduce k y
-    | y >= 2 = reduce (k + 1) (y / 2)
-    | y < 1 = reduce (k - 1) (y * 2)
-    | otherwise = (k, y)
-
--- | @π@ by Machin's formula.
-piApprox :: Precision -> Approx
-piApprox p =
-  addA
-    (scaleA 16 (atanSmall (p + 4) (1 % 5)))
-    (scaleA (-4) (atanSmall (p + 4) (1 % 239)))
-
--- | @atan x@ for @|x| ≤ 1/4@ by the alternating series, relative to its size.
-atanSmall :: Precision -> Rational -> Approx
-atanSmall p x
-  | x == 0 = (0, 0)
-  | otherwise =
-      sumSeries
-        (tolerance (p + 2) x)
-        [ (if even n then 1 else -1) * x ^ (2 * n + 1) / fromInteger (2 * n + 1)
-        | n <- [0 :: Integer ..]
-        ]
-
--- | @atan x@ for any @x@.
-atanApprox :: Precision -> Rational -> Approx
-atanApprox p x
-  | x < 0 = scaleA (-1) (atanApprox p (negate x))
-  | x > 1 =
-      addA
-        (scaleA (1 % 2) (piApprox (p + 2)))
-        (scaleA (-1) (atanApprox (p + 2) (recip x)))
-  | x > 1 % 4 =
-      -- atan x = 2·atan (x / (1 + √(1 + x²))); the map y ↦ x/(1+y) has slope
-      -- of size at most one on this range, so the root's error passes through.
-      let (sq, se) = sqrtApprox (p + 6) (1 + x * x)
-          (a, ae) = atanApprox (p + 2) (x / (1 + sq))
-       in (2 * a, 2 * (ae + se))
-  | otherwise = atanSmall p x
-
-{- | @sin x@ and @cos x@: reduce modulo @2π@, then Taylor series. The sine is
-summed relative to the reduced argument's size, so tiny angles keep their
-digits.
--}
-sinCosApprox :: Precision -> Rational -> (Approx, Approx)
-sinCosApprox p x =
-  let (piV, piE) = piApprox (p + 8)
-      k = round (x / (2 * piV)) :: Integer
-      r = x - 2 * fromInteger k * piV
-      reductionErr = 2 * abs (fromInteger k) * piE
-      sinTerms =
-        scanl
-          (\t n -> negate t * r * r / fromInteger ((2 * n) * (2 * n + 1)))
-          r
-          [1 :: Integer ..]
-      cosTerms =
-        scanl
-          (\t n -> negate t * r * r / fromInteger ((2 * n - 1) * (2 * n)))
-          1
-          [1 :: Integer ..]
-      (s, se) =
-        if r == 0
-          then (0, 0)
-          else sumSeries (tolerance (p + 6) (min 1 (abs r))) sinTerms
-      (c, ce) = sumSeries (tolerance (p + 6) 1) cosTerms
-   in ((s, se + reductionErr), (c, ce + reductionErr))
-
-{- | @sinh x@ by its series for @|x| ≤ 1@ (the exponential difference would
-cancel), and by exponentials beyond.
--}
-sinhApprox :: Precision -> Rational -> Approx
-sinhApprox p x
-  | x == 0 = (0, 0)
-  | abs x <= 1 =
-      sumSeries
-        (tolerance (p + 2) x)
-        ( scanl
-            (\t n -> t * x * x / fromInteger ((2 * n) * (2 * n + 1)))
-            x
-            [1 :: Integer ..]
-        )
-  | otherwise =
-      scaleA
-        (1 % 2)
-        (addA (expApprox (p + 2) x) (scaleA (-1) (expApprox (p + 2) (negate x))))
-
-coshApprox :: Precision -> Rational -> Approx
-coshApprox p x = scaleA (1 % 2) (addA (expApprox (p + 2) x) (expApprox (p + 2) (negate x)))
-
 -- Lifting approximations to magnitudes -------------------------------------------------
 
 {- | Apply a function to a magnitude given approximations of @f@ and @f'@
@@ -829,11 +622,11 @@ coshApprox p x = scaleA (1 % 2) (addA (expApprox (p + 2) x) (expApprox (p + 2) (
 first order. The remainder over the bound enclosure and both
 approximation errors become one fresh bound nudge. The parts that
 involve a statistical nudge, the slope's change across the bound
-enclosure and the slope's own error, each times σ, become one fresh
-statistical nudge, never a bound. The second-order statistical term is
-measured, not carried: @|f''(m)|·σ²@ against the first-order @|f'(m)|·σ@,
-with @f''(m)·σ@ read as the change of @f'@ from @m − σ@ to @m + σ@,
-halved, and unbounded when either point leaves the function's domain.
+enclosure and the slope's own error, each times σ, are measured against
+the retained σ, never made independent nudges or bounds. The statistical
+correction is measured, not carried: the largest change of @f'@ from
+the midpoint to @m − σ@ or @m + σ@, relative to @|f'(m)|@, unbounded
+when either point leaves the function's domain.
 -}
 liftWith ::
   Text ->
@@ -857,7 +650,7 @@ liftWith name p inDomain f f' remainderOver spread x =
         | sigma == 0 = Nothing
         | not (inDomain (m - sigma) && inDomain (m + sigma)) = Just (Skew Nothing name)
         | otherwise =
-            let change = abs (fst (f' (m + sigma)) - fst (f' (m - sigma))) / 2
+            let change = maximum [abs (fst (f' z) - fm') | z <- [m - sigma, m + sigma]]
              in if change == 0
                   then Nothing
                   else
@@ -912,7 +705,7 @@ liftBounded ::
   Magnitude ->
   Magnitude
 liftBounded name p f f' b x =
-  liftWith
+  markedBy measured $ liftWith
     name
     p
     (const True)
@@ -921,6 +714,13 @@ liftBounded name p f f' b x =
     (\_ _ -> b * boundRadius x * boundRadius x / 2)
     (b * boundRadius x)
     x
+ where
+  sigma = statSigma p x
+  slope = abs (fst (f' (midpoint x)))
+  measured
+    | sigma == 0 || b == 0 = Nothing
+    | slope == 0 = Just (Skew Nothing name)
+    | otherwise = Just (Skew (Just (roundUpSig 3 ((b * sigma / slope) ^ (2 :: Int)))) name)
 
 -- | Square root. Exact for perfect squares of exact inputs.
 sqrtM :: Precision -> Magnitude -> Either ArithError Magnitude
@@ -1179,9 +979,9 @@ markedText sk =
 -- Comparison -------------------------------------------------------------------------------
 
 {- | Design §3.2.9: @a < b@ is decided when @|mid (a − b)| > bound + k·σ@,
-and never when the difference is marked non-linear, since a mean and a σ
-do not describe a skewed result; a difference exactly zero is equal
-whatever it went through.
+and never when the difference is marked non-linear. A zero linear model
+does not prove equality when any statistical remainder was discarded,
+even below the warning threshold.
 -}
 compareM ::
   Decide -> Precision -> Magnitude -> Magnitude -> Either ArithError Ordering
@@ -1191,9 +991,11 @@ compareM decide p a b =
       k = decide.sigma
       sigma = sigmaOf p c
       approx r = tshow (fromRational r :: Double)
-   in if c.mid == 0 && c.bound == 0 && c.variance == 0
+      zeroModel = c.mid == 0 && c.bound == 0 && c.variance == 0
+      marked = if zeroModel then skewOf d else nonLinearAt decide.nonlinear d
+   in if zeroModel && null (skewOf d)
         then Right EQ
-        else case nonLinearAt decide.nonlinear d of
+        else case marked of
           Just sk ->
             Left
               ( Undecided

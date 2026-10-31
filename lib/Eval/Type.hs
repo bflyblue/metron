@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 {- | Types, kinds and schemes (design §4.1).
 
 There is one namespace of variables, each with a 'Kind'. Every kind is an
@@ -48,11 +50,14 @@ module Eval.Type (
   applyScheme,
   substOnce,
   freeVars,
+  typeRefs,
   numT,
   numD,
   vecT,
   vecD,
   shapeOfDims,
+  closedLens,
+  appendShape,
   renderType,
   renderScheme,
   renderTypeIn,
@@ -68,18 +73,108 @@ module Eval.Type (
   renderArg,
 ) where
 
-import Control.Applicative ((<|>))
-import Data.List (nubBy)
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
-import Data.Set qualified as Set
-import Data.Text (Text)
-import Data.Text qualified as T
+import Control.Applicative ( (<|>) )
+import Data.List ( nubBy )
+import Data.Map.Strict ( Map )
+import Data.Maybe ( fromMaybe )
+import Data.Text ( Text )
 import Eval.Builtin
-import Eval.Core (ConRef (..), Hash (..), Label (..), showHash)
+    ( pattern BoolT,
+      pattern ListT,
+      pattern TupleT,
+      builtinConName,
+      builtinDefs,
+      frameDefMoving,
+      isAxesDef )
+import Eval.Core ( ConRef(..), Hash(..), Label(..), showHash )
 import Eval.Dimension
+    ( arrowText,
+      baseSymbol,
+      dimAtoms,
+      dimOne,
+      dimVars,
+      isDimOne,
+      renderDimArgIn,
+      DimAtom(Base, DVar),
+      Spelling(Ascii) )
 import Eval.Type.Base
+    ( appendShape,
+      applyArg,
+      applyAxis,
+      applyDim,
+      applyFrame,
+      applyLen,
+      applyRole,
+      applyScheme,
+      applyShape,
+      applySpace,
+      applyType,
+      closedLens,
+      emptySubst,
+      freeVars,
+      numD,
+      numT,
+      overType,
+      rankLen,
+      selfType,
+      shapeOfDims,
+      spaceLens,
+      structuralLabel,
+      substOnce,
+      varArg,
+      vecD,
+      vecT,
+      Arg(..),
+      Axis(..),
+      Frame(..),
+      FrameSlot(..),
+      Kind(..),
+      Len(..),
+      Role(..),
+      Scheme(..),
+      Shape(..),
+      Space(..),
+      SpaceSlot(..),
+      Subst,
+      Type(..),
+      TypeDef(..),
+      TypeLookup(..),
+      VarId,
+      typeRefs )
+import Data.Map.Strict qualified as Map
+    ( insertWith,
+      elems,
+      empty,
+      keysSet,
+      lookup,
+      member,
+      notMember,
+      restrictKeys,
+      toList,
+      union,
+      withoutKeys,
+      findWithDefault,
+      fromList,
+      insert,
+      mapMaybe )
+import Data.Set qualified as Set
+    ( Set,
+      member,
+      notMember,
+      union,
+      empty,
+      fromList,
+      insert,
+      singleton,
+      size )
+import Data.Text qualified as T
+    ( intercalate,
+      isInfixOf,
+      isPrefixOf,
+      null,
+      unwords,
+      pack,
+      singleton )
 
 -- Rendering ---------------------------------------------------------------------
 

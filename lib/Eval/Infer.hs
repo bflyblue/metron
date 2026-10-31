@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 {- | Hindley-Milner inference over Core (design §4.5) and elaboration to Typed
 Core (§5.3) in one pass: every node is typed and rebuilt with explicit
 annotations, kinded abstractions at generalisation points and kinded
@@ -26,34 +28,110 @@ module Eval.Infer (
   hasReadingMarkers,
   Annotations (..),
   noAnnotations,
-  inferClosed,
   matchesQuery,
 ) where
 
-import Control.Monad (foldM, forM_, unless, zipWithM, zipWithM_)
-import Control.Monad.State.Strict (StateT, get, gets, modify', put, runStateT)
-import Control.Monad.Trans.Class (lift)
-import Data.Bifunctor (second)
-import Data.List (isSuffixOf, minimumBy, nubBy)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
-import Data.Ord (comparing)
-import Data.Ratio (numerator)
-import Data.Text (Text)
-import Data.Text qualified as T
+import Control.Monad ( foldM, forM_, unless, zipWithM, zipWithM_ )
+import Control.Monad.State.Strict
+    ( StateT, get, gets, modify', put, runStateT )
+import Control.Monad.Trans.Class ( lift )
+import Data.Bifunctor ( second )
+import Data.List ( isSuffixOf, minimumBy, nubBy )
+import Data.Maybe ( fromMaybe )
+import Data.Ord ( comparing )
+import Data.Ratio ( numerator )
+import Data.Text ( Text )
 import Eval.Builtin
+    ( pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, pattern TupleT, boolT, frameDefMoving )
 import Eval.Core
-import Eval.Desugar (
-  Path,
-  ascriptionMarker,
-  isFromMarker,
-  isQuantityMarker,
-  isToMarker,
-  unmarked,
- )
+    ( componentLimit,
+      showHash,
+      vecAppend,
+      vecLength,
+      vecMap,
+      vecToList,
+      vecTraverse,
+      vecZip3,
+      vecZipWith,
+      Alt(..),
+      ConRef(..),
+      Fin(..),
+      Hash,
+      Hint(..),
+      Lit(LTensor),
+      Nat(Z),
+      NudgeKind(Stat),
+      Term(..),
+      Vec(..) )
+import Eval.Desugar
+    ( Path,
+      ascriptionMarker,
+      isFromMarker,
+      isQuantityMarker,
+      isToMarker,
+      unmarked )
 import Eval.Dimension
-import Eval.TCore
+    ( dimAtoms,
+      dimDiv,
+      dimFromAtoms,
+      dimInv,
+      dimMul,
+      dimOne,
+      dimPow,
+      dimVar,
+      dimVars,
+      isDimOne,
+      renderDim,
+      Dim,
+      DimAtom(DVar, Base) )
+import Eval.Primitive.Types
+    ( primScheme, primSchemeFor, StaticArg(..) )
+import Eval.TCore ( TAlt(..), TTerm(..) )
 import Eval.Type
+    ( appendShape,
+      applyArg,
+      applyAxis,
+      applyDim,
+      applyFrame,
+      applyLen,
+      applyRole,
+      applyScheme,
+      applyShape,
+      applyType,
+      closedLens,
+      emptySubst,
+      freeVars,
+      numD,
+      numT,
+      overType,
+      rankLen,
+      substOnce,
+      vecT,
+      Arg(..),
+      Axis(..),
+      Frame(space, axes, slot),
+      FrameSlot(..),
+      Kind(..),
+      Len(..),
+      Role(..),
+      Scheme(..),
+      Shape(..),
+      Space(base, dim, shape, slot),
+      SpaceSlot(..),
+      Subst,
+      Type(..),
+      TypeDef(params),
+      TypeLookup(typeDefOf, schemesOf),
+      VarId,
+      conText,
+      dataConstructors,
+      equalityArgs,
+      renderType,
+      withBuiltins )
+import Data.Map.Strict qualified as Map
+    ( Map, empty, lookup, fromList, insert )
+import Data.Text qualified as T
+    ( concat, intercalate, isPrefixOf, isSuffixOf, unwords, pack )
 
 {- | A type error at a path into the term being checked. Inside a 'Cycle' the
 path starts with the member index.
@@ -202,9 +280,6 @@ elaborating annots look term = do
       settle [] VNil
       sc@(Forall vs _) <- generalise VNil t
       pure ([sc], abstractOver vs tt)
-
-inferClosed :: TypeLookup -> Term Z -> Either TypeError [Scheme]
-inferClosed look term = fst <$> elaborateClosed look term
 
 -- | Wrap a term in the abstractions of a scheme.
 abstractOver :: [(VarId, Kind)] -> TTerm n -> TTerm n
@@ -1706,16 +1781,6 @@ indices = go 0
   go :: Int -> Vec m a -> Vec m Int
   go _ VNil = VNil
   go i (VCons _ xs) = VCons i (go (i + 1) xs)
-
-vecZip3 :: Vec k a -> Vec k b -> Vec k c -> Vec k (a, b, c)
-vecZip3 as bs cs = case (as, bs, cs) of
-  (VNil, VNil, VNil) -> VNil
-  (VCons a as', VCons b bs', VCons c cs') -> VCons (a, b, c) (vecZip3 as' bs' cs')
-
-vecZipWith :: (a -> b -> c) -> Vec k a -> Vec k b -> Vec k c
-vecZipWith f as bs = case (as, bs) of
-  (VNil, VNil) -> VNil
-  (VCons a as', VCons b bs') -> VCons (f a b) (vecZipWith f as' bs')
 
 -- Data ---------------------------------------------------------------------------------
 

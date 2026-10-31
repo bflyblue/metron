@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Support.Render (render)
 import Control.Monad (forM_)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
@@ -59,10 +60,13 @@ import Eval.Prelude (
  )
 import Eval.Pretty
 import Eval.Repl qualified as R
-import Eval.Resolve (LabelKind (..), Qualified (..), qualifyName, queryScheme)
+import Eval.NameResolution ( LabelKind (..), Qualified (..), qualifyName )
+import Eval.Type.Syntax ( queryScheme )
 import Eval.Store
 import Eval.Syntax qualified as S
 import Eval.TCore
+import Eval.Primitive.Types
+import Eval.Type.Match
 import Eval.Type
 import Eval.Unicode qualified as U
 import Gen (exprDepth, genProgram, instanceOf)
@@ -4376,7 +4380,7 @@ affineTests =
         $ do
           evalText "6.67430e-11 ±σ 1.5e-15" @?= Right ["6.67430e-11 ±σ 1.5e-15"]
           evalText "(6.67430e-11 ±σ 1.5e-15) * (2 ± 0.1)"
-            @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12)"]
+            @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12) (non-linear: mul: uncertain statistical coefficient, second-order term 5% of the first-order σ; a mean and a σ do not describe it)"]
           -- σ by σ is second order: measured, never a bound (design §3.2)
           evalText "(1 ±σ 0.1) * (1 ±σ 0.1)"
             @?= Right
@@ -4402,8 +4406,9 @@ affineTests =
         refused
           "mid of a value marked non-linear by mul"
           (evalText "let n = 0 ±σ 1 in mid (n * n)")
-        -- what does not depend on its statistical part is still decided
-        evalText "let n = 0 ±σ 1 in (n * n) == (n * n)" @?= Right ["true"]
+        -- The discarded remainder has no identity: equal linear models
+        -- alone cannot prove either equality or cancellation.
+        refused "marked non-linear" (evalText "let n = 0 ±σ 1 in (n * n) == (n * n)")
         evalText "let n = 0 ±σ 1 in bound (n * n)" @?= Right ["0"]
         -- the mark propagates
         marked "mul" (evalText "let n = 0 ±σ 1 in n * n + 5")
@@ -4420,6 +4425,29 @@ affineTests =
         -- :budget names the operation
         expecting (runLines [":budget let n = 0 ±σ 1 in n * n"]) $ \out ->
           any (T.isInfixOf "non-linear: mul, second-order term unbounded") out @? show out
+    , testCase "discarded statistical remainders cannot establish exact equality" $ do
+        let refused src = case evalText src of
+              Left err -> T.isInfixOf "marked non-linear" err @? T.unpack err
+              Right out -> assertFailure (show out)
+        refused "let n = 0 ±σ 1 in n*n == 0"
+        refused "let n = 0 ±σ 1 in let q = 0 ±σ 2 in n*n == q*q"
+        refused "let n = 0 ±σ 1 in sin (n * rad) == n"
+        refused "let n = 0 ±σ 1 in sinh n == n"
+        refused "sd (sinh (0 ±σ 10))"
+        refused "let n = 0 ±σ 1 in sd ((1 ± 1) * n)"
+        refused "let n = 0 ±σ 1 in covariance [(1 ± 1) * n]"
+        refused "let n = 0 ±σ 1 in crossCovariance [n*n] [n]"
+        -- Even below the warning threshold, a discarded remainder
+        -- prevents an exact equality proof.
+        refused "let n = 0 ±σ 0.00001 in sin (n * rad) == n"
+        evalText "let n = 0 ±σ 1 in n - n" @?= Right ["0"]
+    , testCase "expm refuses statistical inputs instead of erasing them" $ do
+        let refused src = case evalP src of
+              Left err -> T.isInfixOf "expm with statistical uncertainty is not supported" err @? T.unpack err
+              Right out -> assertFailure (show out)
+        refused "let n = 0 ±σ 1 in expm [n, 0; 0, 0]"
+        refused "let n = 0 ±σ 1 in expm [0, n; -n, 0]"
+        refused "let n = 0 ±σ 1 in expm [n*n, 0; 0, 0]"
     , testCase "a small relative σ stays first order and unmarked" $ do
         let g = "(6.67430e-11 ±σ 1.5e-15)"
         evalText ("sqrt " <> g) @?= Right ["8.169639e-6 ±σ 9.2e-11"]
@@ -4429,11 +4457,11 @@ affineTests =
         -- the delta method's second-order term, |f''|·σ² against |f'|·σ
         evalText "exp (0 ±σ 0.1)"
           @?= Right
-            [ "1.0 ±σ 0.1 (non-linear: exp, second-order term 10% of the first-order σ; a mean and a σ do not describe it)"
+              [ "1.0 ±σ 0.1 (non-linear: exp, second-order term 11% of the first-order σ; a mean and a σ do not describe it)"
             ]
         evalText "sqrt (100 ±σ 10)"
           @?= Right
-            [ "10.0 ±σ 0.5 (non-linear: sqrt, second-order term 5% of the first-order σ; a mean and a σ do not describe it)"
+              [ "10.0 ±σ 0.5 (non-linear: sqrt, second-order term 5.4% of the first-order σ; a mean and a σ do not describe it)"
             ]
         -- the threshold is a setting
         runLines [":set nonlinear 10", "(1 ±σ 0.1) * (1 ±σ 0.1)"]
@@ -4703,9 +4731,9 @@ affineTests =
         -- enclosures that do not overlap
         evalP "cholesky [4, 2 ± 0.1; 3, 3]"
           @?= Left "error: cholesky needs a symmetric matrix: entries .0.1 and .1.0 differ"
-        -- enclosures that may be equal pass
+        -- Overlap is not proof of symmetry.
         evalP "cholesky [4, 2 ± 0.1; 2, 3]"
-          @?= Right ["[2, 0; 1, 1.4142135623730950488…]"]
+          @?= Left "error: cholesky needs a symmetric matrix: symmetry of entries .0.1 and .1.0 cannot be established"
         evalP "[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2" @?= Right ["[0 ±σ 1, 0.0 ±σ 1.0] m"]
     , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
         runLinesP

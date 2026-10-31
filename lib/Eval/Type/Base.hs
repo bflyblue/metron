@@ -42,20 +42,34 @@ module Eval.Type.Base (
   applyScheme,
   substOnce,
   freeVars,
+  typeRefs,
   numT,
   numD,
   vecT,
   vecD,
   shapeOfDims,
+  closedLens,
+  appendShape,
 ) where
 
-import Data.ByteString qualified as BS
-import Data.List (nubBy)
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
-import Eval.Core (Hash (..), Label (..))
+import Data.List ( nubBy )
+import Data.Map.Strict ( Map )
+import Data.Maybe ( fromMaybe )
+import Eval.Core ( Hash(..), Label(..) )
 import Eval.Dimension
+    ( dimAtoms,
+      dimFromAtoms,
+      dimMul,
+      dimOne,
+      dimPow,
+      dimVar,
+      dimVars,
+      substDimVar,
+      Dim,
+      DimAtom(DVar) )
+import Data.ByteString qualified as BS ( replicate )
+import Data.Map.Strict qualified as Map ( empty, lookup )
+import Data.Set qualified as Set ( Set, empty, insert )
 
 {- | The kinds of variables. 'KAxis' is the kind of the name slot of a
 shape position (design §3.9, §4.1): an axis variable. 'KFrame' and
@@ -502,3 +516,25 @@ declarations of the same shape are one type.
 -}
 structuralLabel :: Label
 structuralLabel = Tag ""
+
+-- | The positions, lengths and axes, of a shape that ends in @[]@.
+closedLens :: Shape -> Maybe [(Len, Axis)]
+closedLens = \case
+  SNil -> Just []
+  SCons l a rest -> ((l, a) :) <$> closedLens rest
+  SVar _ -> Nothing
+
+appendShape :: [(Len, Axis)] -> Shape -> Shape
+appendShape ls tl = foldr (uncurry SCons) tl ls
+
+
+-- | The declared types a type mentions.
+typeRefs :: Type -> Set.Set Hash
+typeRefs = \case
+  TData h args -> Set.insert h (foldMap argRefs args)
+  TFun a b -> typeRefs a <> typeRefs b
+  _ -> Set.empty
+ where
+  argRefs = \case
+    AType t -> typeRefs t
+    _ -> Set.empty

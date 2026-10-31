@@ -13,8 +13,9 @@ unit (design §3.2.12). A number is the rank-zero case with a buffer of
 one. Elements are magnitudes (design §3.2): exact rationals, or affine
 forms once an approximation or a declared uncertainty has entered.
 Magnitudes are always in SI base units; the display unit says how to
-print them. The dimension vector and the display unit exist only for
-printing: types are checked before evaluation.
+print them. The dimension vector also supplies runtime metadata for empty tensors
+and mapped results; display units affect printing only. Types are checked
+before evaluation.
 -}
 module Eval.Eval (
   Value (..),
@@ -32,7 +33,6 @@ module Eval.Eval (
   UnitFactor (..),
   Chart (..),
   Applied (..),
-  turned,
   coordinatesOn,
   Preferences,
   hintPow,
@@ -47,42 +47,144 @@ module Eval.Eval (
   TyEnv,
   apply,
   scalar,
-  render,
 ) where
 
-import Control.Monad (foldM, when, zipWithM)
-import Data.Bifunctor (first)
-import Data.List (nub, transpose)
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust)
-import Data.Ratio (denominator, numerator)
-import Data.Text (Text)
-import Data.Text qualified as T
-import Data.Vector (Vector)
-import Data.Vector qualified as V
-import Eval.Affine hiding (Builtin)
+import Control.Monad ( foldM, when, zipWithM )
+import Data.Bifunctor ( first )
+import Data.Map.Strict ( Map )
+import Data.Maybe ( catMaybes, fromMaybe, isJust )
+import Data.Ratio ( denominator, numerator )
+import Data.Text ( Text )
+import Data.Vector ( Vector )
+import Eval.Affine
+    ( Precision,
+      absM,
+      acosM,
+      addM,
+      asinM,
+      atan2M,
+      atanM,
+      boundRadius,
+      ceilM,
+      collapse,
+      compareM,
+      cosM,
+      coshM,
+      crossCovarianceRows,
+      divM,
+      equalM,
+      expM,
+      floorM,
+      logM,
+      midpoint,
+      mulM,
+      negM,
+      nonLinearAt,
+      piM,
+      powM,
+      roundM,
+      sinM,
+      sinhM,
+      sqrtM,
+      subM,
+      tanM,
+      tanhM,
+      tidyM,
+      uncertain,
+      unitNoise,
+      ArithError(..),
+      Collapsed(variance, bound),
+      Decide(..),
+      Magnitude(Exact),
+      Origin(Declared, Tagged),
+      Skew(operation) )
 import Eval.Builtin
+    ( pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, boolC, frameDefMoving, spaceOf )
 import Eval.Core
+    ( componentLimit,
+      vecAppend,
+      vecIndex,
+      vecMapIndexed,
+      vecToList,
+      ConRef(..),
+      Fin(..),
+      Hash(..),
+      Hint(Hint),
+      Label(Tag),
+      Lit(LTensor),
+      Nat(Z, S),
+      Plus,
+      Vec(..) )
 import Eval.Dimension
-import Eval.TCore
-import Eval.Type (
-  Arg (..),
-  Kind (..),
-  Len (..),
-  Shape (..),
-  Space (..),
-  Type (..),
-  TypeDef,
-  VarId,
-  conText,
-  freeVars,
-  selfType,
-  spaceLens,
-  substOnce,
-  varArg,
-  pattern TTensor,
- )
+    ( dimAtoms,
+      dimBase,
+      dimDiv,
+      dimFromAtoms,
+      dimInv,
+      dimMul,
+      dimOne,
+      dimPow,
+      dimRoot,
+      BaseDim(T, Ang),
+      Dim,
+      DimAtom(Base) )
+import Eval.Numerical.Linear
+    ( choleskyRows, determinant, invert, matrixExp )
+import Eval.Primitive ( baseUnit, primArity, typedPrims )
+import Eval.TCore ( TAlt(TAlt), TTerm(..) )
+import Eval.Type
+    ( Arg(..),
+      Kind(..),
+      Len(..),
+      Shape(..),
+      Space(..),
+      Type(..),
+      TypeDef,
+      VarId,
+      conText,
+      freeVars,
+      selfType,
+      spaceLens,
+      substOnce,
+      varArg,
+      pattern TTensor )
+import Eval.UnitHint
+    ( combine,
+      hintInv,
+      hintMul,
+      hintPow,
+      hintProduct,
+      mergeAtoms,
+      mkHint,
+      mkHintAs,
+      smallerUnit,
+      unitHintDiv,
+      unitHintMul,
+      unitHintPow,
+      HintMode(PreserveExpression),
+      Preferences,
+      UnitAtom(..),
+      UnitFactor(..),
+      UnitHint(..) )
+import Data.Map.Strict qualified as Map ( null, empty, insert )
+import Data.Text qualified as T ( intercalate, pack )
+import Data.Vector qualified as V
+    ( (!),
+      all,
+      concat,
+      concatMap,
+      empty,
+      fromList,
+      generate,
+      head,
+      imap,
+      length,
+      map,
+      replicate,
+      singleton,
+      slice,
+      toList,
+      zipWith )
 
 {- | Evaluation parameters: the number of significant digits printed, the
 number of standard deviations a comparison must clear to be decided (design
@@ -167,36 +269,6 @@ the path is the Core path and survives re-elaboration.
 -}
 data Site = Site {definition :: Hash, path :: [Int]}
 
--- | A factor of a display unit: a declared unit by reference, or a base unit.
-data UnitAtom
-  = UnitNamed Text
-  | UnitBase Text
-  deriving stock (Eq, Ord, Show)
-
-{- | How to print a value: the unit atoms with exponents, the unit's
-magnitude in base units, and its dimension (which must match the value's
-for the hint to be used).
--}
-
-{- | One named unit in a display hint, raised to a power, with the dimension
-and magnitude of a single power of it.
--}
-data UnitFactor = UnitFactor
-  {atom :: UnitAtom, power :: Integer, unitDim :: Dim, unitFactor :: Magnitude}
-  deriving stock (Eq, Show)
-
-data UnitHint = UnitHint
-  { atoms :: [UnitFactor]
-  -- ^ in order of first appearance, so @V A@ prints as written
-  , factor :: Magnitude
-  -- ^ the product of the atoms
-  , dim :: Dim
-  -- ^ the product of the atoms
-  , pinned :: Bool
-  -- ^ set by @to@: an explicit choice that a display preference must not override (design §3.2.12)
-  }
-  deriving stock (Eq, Show)
-
 {- | A chart (design §3.10): a step, an origin and axes relative to its
 parent. Points store frame coordinates with the step applied. Local
 offsets and generators let conversions stop at a shared configuration;
@@ -278,10 +350,6 @@ instance Eq Applied where
 
 instance Show Applied where
   show (Applied xs) = "Applied <" ++ show (length xs) ++ " arguments>"
-
--- | A chart with a generator on it or on any chart above it.
-turned :: Chart -> Bool
-turned c = isJust c.rotation
 
 data Value
   = -- | lengths, dimension, display unit, flat row-major elements in SI base units
@@ -568,13 +636,6 @@ originOf site l i = case l of
   -- No uncertainty carries an axes stamp; it would be its site's.
   _ -> Declared site.definition (reverse site.path) i
 
-vecMapIndexed :: forall a b k. (Int -> a -> b) -> Vec k a -> Vec k b
-vecMapIndexed f = walk 0
- where
-  walk :: forall m. Int -> Vec m a -> Vec m b
-  walk _ VNil = VNil
-  walk i (VCons x xs) = VCons (f i x) (walk (i + 1) xs)
-
 tshow :: (Show a) => a -> Text
 tshow = T.pack . show
 
@@ -616,11 +677,6 @@ neededAtRuntime v k body = k `elem` [KLen, KShape, KDim] && go body
     TCycle _ _ bodies -> any go (vecToList bodies)
   mentions t = v `elem` map fst (freeVars t)
 
--- | The primitives whose result's dimension comes from their type.
-typedPrims :: [Text]
-typedPrims = ["vmap", "vzipWith", "timap"]
-
--- | A type under the type-level arguments in force.
 resolveType :: TyEnv -> Type -> Type
 resolveType tenv
   | Map.null tenv = id
@@ -735,87 +791,6 @@ appear with opposite signs cancel ( rad^-1@ is a number,  m^-1@ is
 recomputed from what is left. Nothing when a factor cannot be raised to its
 power, which drops the hint.
 -}
-mkHint :: Precision -> [UnitFactor] -> Maybe UnitHint
-mkHint = mkHintAs True
-
-{- | 'mkHint', cancelling units of one dimension or not: a unit's own hint
-is its expression as written (design §3.10, U8), so @km/m@ stays @km/m@
-until a quantity of it is taken.
--}
-mkHintAs :: Bool -> Precision -> [UnitFactor] -> Maybe UnitHint
-mkHintAs cancelling p factors = do
-  let kept = filter ((/= 0) . (.power)) (if cancelling then cancel factors else factors)
-  total <-
-    foldM
-      ( \acc u ->
-          either
-            (const Nothing)
-            (Just . mulM p acc)
-            (powM p u.unitFactor u.power)
-      )
-      (Exact 1)
-      kept
-  pure
-    ( UnitHint
-        kept
-        total
-        (foldr (dimMul . (\u -> dimPow u.power u.unitDim)) dimOne kept)
-        False
-    )
- where
-  -- Within a dimension, mixed signs collapse onto the first-written unit
-  -- with the net power.
-  cancel us = concatMap reduce (groupOn (.unitDim) us)
-  reduce group@(u : _)
-    | any ((> 0) . (.power)) group && any ((< 0) . (.power)) group =
-        [u{power = sum (map (.power) group)}]
-  reduce group = group
-  groupOn key xs = [[x | x <- xs, key x == k] | k <- nub (map key xs)]
-
-hintMul :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
-hintMul p a b = mkHint p (mergeAtoms a.atoms b.atoms)
-
--- | Two hints' atoms, a unit written in both taking the sum of its powers.
-mergeAtoms :: [UnitFactor] -> [UnitFactor] -> [UnitFactor]
-mergeAtoms = foldl merge
- where
-  merge acc u
-    | any ((== u.atom) . (.atom)) acc =
-        [if x.atom == u.atom then x{power = x.power + u.power} else x | x <- acc]
-    | otherwise = acc ++ [u]
-
-hintInv :: Precision -> UnitHint -> Maybe UnitHint
-hintInv p a = mkHint p [u{power = negate u.power} | u <- a.atoms]
-
-hintPow :: Precision -> Integer -> UnitHint -> Maybe UnitHint
-hintPow p k a = mkHint p [u{power = u.power * k} | u <- a.atoms]
-
-{- | The hint of unit arithmetic (design §3.10, U2): the operands' hints
-combined as written, nothing cancelled between units of one dimension,
-and a unit written twice taking the sum of its powers.
--}
-unitHintMul :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
-unitHintMul p a b = unitHint p (a.atoms ++ b.atoms)
-
-unitHintDiv :: Precision -> UnitHint -> UnitHint -> Maybe UnitHint
-unitHintDiv p a b = unitHint p (a.atoms ++ [u{power = negate u.power} | u <- b.atoms])
-
-unitHintPow :: Precision -> Integer -> UnitHint -> Maybe UnitHint
-unitHintPow p k a = unitHint p [u{power = u.power * k} | u <- a.atoms]
-
-{- | A unit's hint from its factors as written (design §3.10, U8, U9).
-When every unit cancels, as in @km/km@, the factors stay as written, so
-that the unit prints as an expression that reads back as a unit and not
-as the number one.
--}
-unitHint :: Precision -> [UnitFactor] -> Maybe UnitHint
-unitHint p written
-  | not (null written) && all ((== 0) . (.power)) merged =
-      mkHintAs False p written
-  | otherwise = mkHintAs False p merged
- where
-  merged = mergeAtoms [] written
-
 {- | Two units combined (design §3.10, U2): their magnitudes and dimensions
 as two numbers', their hints as written.
 -}
@@ -831,34 +806,6 @@ unitOp f dimF hintF x y = do
   (my, dy, hy) <- scalarFull y
   m <- f mx my
   Right (VUnit (num (dimF dx dy) (combine hintF hx hy) m))
-
-{- | The unit a sum prints in: the smaller of its operands', so that a + b and
-b + a print alike (design §3.2.12); the left one when they are equal.
--}
-smallerUnit :: UnitHint -> UnitHint -> Maybe UnitHint
-smallerUnit a b = Just (if midpoint b.factor < midpoint a.factor then b else a)
-
-{- | Display preferences (design §3.2.12): a unit per exact dimension, used
-for a value whose own unit was not chosen with @to@.
--}
-type Preferences = Map Dim UnitHint
-
-{- | The display unit of a product or quotient of two values: combine when
-both have one, keep the one that exists otherwise.
--}
-combine ::
-  (UnitHint -> UnitHint -> Maybe UnitHint) ->
-  Maybe UnitHint ->
-  Maybe UnitHint ->
-  Maybe UnitHint
-combine f (Just a) (Just b) = f a b
-combine _ (Just a) Nothing = Just a
-combine _ Nothing (Just b) = Just b
-combine _ Nothing Nothing = Nothing
-
--- | The display unit of a product, as @outer@ gives it its operands'.
-hintProduct :: Precision -> Maybe UnitHint -> Maybe UnitHint -> Maybe UnitHint
-hintProduct p = combine (hintMul p)
 
 -- Primitives -------------------------------------------------------------------------
 
@@ -1073,7 +1020,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("covariance", [a]) -> do
     (_, d, _, buf) <- tensor =<< a
     xs <- sequence (V.toList buf)
-    Right (covarianceMatrix (dimPow 2 d) Nothing xs xs)
+    Right (covarianceMatrix cfg (dimPow 2 d) Nothing xs xs)
   -- Σ cᵢ c'ⱼᵀ over the statistical nudges the two vectors share: exact, in
   -- the product of their dimensions and display units, as for outer.
   ("crossCovariance", [a, b]) -> do
@@ -1081,7 +1028,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
     (_, d2, h2, ys) <- tensor =<< b
     as <- sequence (V.toList xs)
     bs <- sequence (V.toList ys)
-    Right (covarianceMatrix (dimMul d1 d2) (hintProduct p h1 h2) as bs)
+    Right (covarianceMatrix cfg (dimMul d1 d2) (hintProduct p h1 h2) as bs)
   ("inverse", [a]) -> do
     (dims, d, _, buf) <- tensor =<< a
     case dims of
@@ -1294,7 +1241,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
     (_, _, uh) <- scalarFull =<< u
     -- A unit written twice is one (design §3.10, U9): to dozen/dozen
     -- shows a plain number.
-    let shown h = (\h' -> h'{pinned = True}) <$> mkHintAs False p (mergeAtoms [] h.atoms)
+    let shown h = (\h' -> h'{pinned = True}) <$> mkHintAs PreserveExpression p (mergeAtoms [] h.atoms)
     Right (VTensor dims d (shown =<< uh) buf)
   -- Charts (design §3.10, F3, F10). The frame and axes a chart mints are
   -- type-level tags with nothing to compute; every clause is a list of
@@ -1660,183 +1607,6 @@ unflatten dims k = zipWith (\s n -> (k `div` s) `mod` n) (strides dims) dims
 
 -- Linear algebra ----------------------------------------------------------------------
 
-{- | A usable pivot: the entry of largest midpoint among those whose
-enclosure excludes zero, by row position.
--}
-pivotIn :: Int -> [Magnitude] -> Maybe Int
-pivotIn from column =
-  case [(abs (midpoint x), i) | (i, x) <- zip [0 ..] column, i >= from, excludesZero x] of
-    [] -> Nothing
-    cands -> Just (snd (maximum cands))
- where
-  excludesZero x = midpoint x - boundRadius x > 0 || midpoint x + boundRadius x < 0
-
-singular :: Text -> [Magnitude] -> ArithError
-singular what column
-  | all (== Exact 0) column = Eval.Affine.Domain (what <> " of a singular matrix")
-  | otherwise =
-      Eval.Affine.Undecided (what <> " of a matrix whose enclosure may be singular")
-
--- | Determinant by Gaussian elimination with partial pivoting on midpoints.
-determinant :: Precision -> Int -> [[Magnitude]] -> Either ArithError Magnitude
-determinant p n = go 0 (Exact 1)
- where
-  go k acc rows
-    | k == n = Right acc
-    | otherwise =
-        let column = map (!! k) rows
-         in case pivotIn 0 column of
-              Nothing
-                | all (== Exact 0) column -> Right (Exact 0)
-                | otherwise -> Left (singular "det" column)
-              Just i -> do
-                let pivotRow = rows !! i
-                    others = [r | (j, r) <- zip [0 ..] rows, j /= i]
-                    pv = pivotRow !! k
-                    -- Moving row i to the front is i transpositions.
-                    sign = if even i then 1 else -1
-                reduced <- mapM (eliminate k pivotRow pv) others
-                go (k + 1) (scaleM sign (mulM p acc pv)) reduced
-  eliminate k pivotRow pv r = do
-    f <- divM p (r !! k) pv
-    pure (zipWith (\a b -> subM a (mulM p f b)) r pivotRow)
-
--- | Inverse by Gauss-Jordan elimination on the augmented matrix.
-invert :: Precision -> Int -> [[Magnitude]] -> Either ArithError [[Magnitude]]
-invert p n rows0 =
-  go
-    0
-    [ r ++ [if i == j then Exact 1 else Exact 0 | j <- [0 .. n - 1]]
-    | (i, r) <- zip [0 ..] rows0
-    ]
- where
-  go k rows
-    | k == n = Right (map (drop n) rows)
-    | otherwise =
-        let column = map (!! k) rows
-         in case pivotIn k column of
-              Nothing -> Left (singular "inverse" (drop k column))
-              Just i -> do
-                let swapped = [rows !! swap j | j <- [0 .. n - 1]]
-                    swap j
-                      | j == k = i
-                      | j == i = k
-                      | otherwise = j
-                    pivotRow = swapped !! k
-                    pv = pivotRow !! k
-                normalised <- mapM (\x -> divM p x pv) pivotRow
-                let eliminate r = let f = r !! k in zipWith (\a b -> subM a (mulM p f b)) r normalised
-                go
-                  (k + 1)
-                  [if j == k then normalised else eliminate r | (j, r) <- zip [0 ..] swapped]
-
-{- | The exponential of a square matrix of enclosures (design §3.3).
-
-/A single plane/. @B@ is split into its antisymmetric part
-@A = (B − Bᵀ) / 2@ and its symmetric part @S = (B + Bᵀ) / 2@, as affine
-forms. For every matrix in the enclosure the real @A@ is antisymmetric,
-whatever its forms look like, and when it is a single plane, @A³ = −t A@
-with @t = Σ_{i<j} a_ij²@, then @A^(k+2) = −t Aᵏ@ and the series collapses
-to Rodrigues' formula @I + f(t) A + g(t) A²@ with @f = sin θ / θ@ and
-@g = (1 − cos θ) / θ²@, @θ² = t@, both entire in @t@ ("Eval.Affine"
-'sincSqM', 'coscSqM'), so @θ@ near zero divides by nothing. Every
-antisymmetric matrix is a single plane when @n ≤ 3@; beyond, an exact @A@
-is checked exactly and an uncertain one takes the series. When @S@ is
-exactly zero this is @exp B@. When it is not but its bound @σ@ (the
-∞-norm of @|midpoint| + bound radius@, which bounds @‖S‖₂@ for a symmetric
-matrix) is below @10^−p@, as it is when @B@ was built antisymmetric
-through a product whose two entries got two fresh nudges (@θ * (b ∧ a) /
-norm c@), then @‖exp (A + S) − exp A‖₂ ≤ e^σ − 1 ≤ 2σ@ (@exp (τA)@ is
-orthogonal, and the logarithmic norm of @A + S@ is at most @σ@), and every
-entry gets @2σ@ as a fresh nudge of its own.
-
-/Otherwise/, the series with scaling and squaring. @β@ is the ∞-norm (the
-largest row sum) of @|midpoint| + bound radius@, an exact rational that bounds
-@‖B‖∞@ for every matrix in the enclosure; it is submultiplicative and
-bounds every entry. With @s@ the least power for which @β' = β / 2ˢ ≤ 1/2@
-and @A = B / 2ˢ@ (exact scaling), the sum of @Aᵏ / k!@ for @k < K@ is
-formed in affine arithmetic, @K@ the first with @β'ᴷ / K! @ below
-@10^−(p+4+s)@ (a guard digit per squaring). The remainder
-@Σ_{k≥K} Aᵏ / k!@ has ∞-norm at most @β'ᴷ / K! · 1 / (1 − β' / (K+1))
-≤ 2 β'ᴷ / K!@, so every entry gets that as a fresh bound nudge of its own
-(named with its position, so that no two entries share an unknown), and
-the result is squared @s@ times, rigorously. @β = 0@ is the zero matrix,
-whose exponential is exactly @I@.
--}
-matrixExp ::
-  Precision -> Int -> [[Magnitude]] -> Either ArithError [[Magnitude]]
-matrixExp p n b
-  | singlePlane && sigma == 0 = rodrigues
-  | singlePlane && sigma <= 10 ^^ negate (p - 4) =
-      positioned "expm: symmetric part" (2 * sigma) <$> rodrigues
-  | beta == 0 = Right identity
-  | otherwise =
-      Right
-        (iterate (\m -> tidy (matMul m m)) (positioned "expm" remainder partial) !! s)
- where
-  identity =
-    [[if i == j then Exact 1 else Exact 0 | j <- [0 .. n - 1]] | i <- [0 .. n - 1]]
-  at i j = b !! i !! j
-  matMul x y = [[sumM (zipWith (mulM p) row col) | col <- transpose y] | row <- x]
-  -- An independent fresh nudge on every entry, named with its position.
-  positioned name size m =
-    [ [ enclose name p (Exact (fromIntegral (i * n + j)) : concat b) size x
-      | (j, x) <- zip [0 :: Int ..] row
-      ]
-    | (i, row) <- zip [0 :: Int ..] m
-    ]
-  normBound m = maximum (0 : [sum [abs (midpoint x) + boundRadius x | x <- row] | row <- m])
-  -- Rodrigues
-  anti =
-    [ [scaleM (1 / 2) (subM (at i j) (at j i)) | j <- [0 .. n - 1]]
-    | i <- [0 .. n - 1]
-    ]
-  sigma =
-    normBound
-      [ [scaleM (1 / 2) (addM (at i j) (at j i)) | j <- [0 .. n - 1]]
-      | i <- [0 .. n - 1]
-      ]
-  t =
-    sumM
-      [ mulM p (anti !! i !! j) (anti !! i !! j)
-      | i <- [0 .. n - 1]
-      , j <- [i + 1 .. n - 1]
-      ]
-  singlePlane =
-    n <= 3
-      || ( all (all isExact) anti
-             && all
-               (all (== Exact 0))
-               ( zipWith
-                   (zipWith addM)
-                   (matMul anti (matMul anti anti))
-                   (map (map (mulM p t)) anti)
-               )
-         )
-  rodrigues = do
-    f <- sincSqM p t
-    g <- coscSqM p t
-    Right
-      [ [addM d (addM (mulM p f x) (mulM p g y)) | (d, x, y) <- zip3 drow xrow yrow]
-      | (drow, xrow, yrow) <- zip3 identity anti (matMul anti anti)
-      ]
-  -- The series
-  beta = normBound b
-  s = length (takeWhile (> 1 / 2) (iterate (/ 2) beta))
-  beta' = beta / 2 ^ s
-  scaled = map (map (scaleM (recip (2 ^ s)))) b
-  tol = 10 ^^ negate (p + 4 + s) :: Rational
-  factorial k = fromInteger (product [1 .. k]) :: Rational
-  top = until (\k -> beta' ^ k / factorial k < tol) (+ 1) (1 :: Integer)
-  powers =
-    scanl
-      (\m k -> tidy (map (map (scaleM (recip (fromInteger k)))) (matMul m scaled)))
-      identity
-      [1 .. top - 1]
-  tidy = map (map (tidyM p))
-  partial = foldr1 (zipWith (zipWith addM)) powers
-  remainder = 2 * beta' ^ top / factorial top
-
 -- Charts ------------------------------------------------------------------------------
 
 {- | The edges from source to their common configuration, then down to the
@@ -2009,51 +1779,6 @@ rotateVector p n r v =
     n
     (\i -> sumM [mulM p (r V.! (i * n + j)) (v V.! j) | j <- [0 .. n - 1]])
 
-{- | A plain rendering for tests. Forces every element. Exact magnitudes
-print as @n/d@ in base units, affine ones as an approximate @mid±r@, and
-dimensions are omitted; decimal output with units is "Eval.Pretty"'s job.
--}
-render :: Value -> Either EvalError Text
-render = \case
-  VTensor dims _ _ buf -> do
-    rs <- sequence (V.toList buf)
-    pure (nested dims rs)
-  VPoint dims _ _ buf -> ("point " <>) . nested dims <$> sequence (V.toList buf)
-  VChart _ -> Right "<chart>"
-  VBool True -> Right "true"
-  VBool False -> Right "false"
-  VData c fields -> do
-    parts <- mapM (>>= render) fields
-    pure
-      ( case c of
-          TupleC _ -> "(" <> T.intercalate ", " parts <> ")"
-          _ -> T.unwords (conText c : parts)
-      )
-  VClosure _ -> Right "<function>"
-  VTyAbs{} -> Right "<polymorphic value>"
-  VUnit v -> ("unit " <>) <$> render v
- where
-  magnitude = \case
-    Exact r -> frac r
-    m ->
-      let c = collapse m
-       in tshow (fromRational c.mid :: Double)
-            <> "±"
-            <> tshow (fromRational (c.bound + sigmaOf 6 c) :: Double)
-  frac r
-    | denominator r == 1 = tshow (numerator r)
-    | otherwise = tshow (numerator r) <> "/" <> tshow (denominator r)
-  nested dims rs = case dims of
-    [] -> maybe "[]" magnitude (headMay rs)
-    [_] -> brackets (map magnitude rs)
-    d : rest ->
-      let stride = product rest
-       in brackets [nested rest (take stride (drop (i * stride) rs)) | i <- [0 .. d - 1]]
-  brackets xs = "[" <> T.intercalate ", " xs <> "]"
-  headMay = \case
-    x : _ -> Just x
-    [] -> Nothing
-
 chunksOf :: Int -> [a] -> [[a]]
 chunksOf n xs
   | null xs = []
@@ -2063,64 +1788,18 @@ chunksOf n xs
 magnitudes (design §3.5), in the given dimension and display unit. Shared
 by @covariance@, @crossCovariance@ and the REPL's @:covariance@.
 -}
-covarianceMatrix :: Dim -> Maybe UnitHint -> [Magnitude] -> [Magnitude] -> Value
-covarianceMatrix d hint as bs =
+covarianceMatrix :: Config -> Dim -> Maybe UnitHint -> [Magnitude] -> [Magnitude] -> Value
+covarianceMatrix cfg d hint as bs =
   VTensor
     [length as, length bs]
     d
     hint
-    (V.fromList [Right (Exact c) | row <- crossCovarianceRows as bs, c <- row])
-
-{- | Cholesky–Banachiewicz on enclosures (design §3.5): @L Lᵀ = P@ with @L@
-lower triangular. A pivot whose enclosure reaches zero or below means the
-matrix may not be positive definite, which is a domain error.
-
-It reads only the lower triangle, so the matrix is checked symmetric
-first: a pair @m.i.j@, @m.j.i@ that is provably unequal, exact and
-different or decided different at the stated sigma as a comparison is
-(design §3.2.9), is refused by its entries, after the given text. A pair
-the enclosures cannot tell apart passes.
--}
-choleskyRows ::
-  Text -> Decide -> Precision -> [[Magnitude]] -> Either ArithError [[Magnitude]]
-choleskyRows what decide p a = mapM_ symmetric pairs >> go 0 []
+    (V.fromList [entry a b c | (a, row) <- zip as (crossCovarianceRows as bs), (b, c) <- zip bs row])
  where
-  n = length a
-  pairs = [(i, j) | i <- [0 .. n - 1], j <- [i + 1 .. n - 1]]
-  symmetric (i, j) = case compareM decide p ((a !! i) !! j) ((a !! j) !! i) of
-    Right ord
-      | ord /= EQ ->
-          Left
-            ( Eval.Affine.Domain
-                ( what
-                    <> ": entries ."
-                    <> tshow i
-                    <> "."
-                    <> tshow j
-                    <> " and ."
-                    <> tshow j
-                    <> "."
-                    <> tshow i
-                    <> " differ"
-                )
-            )
-    _ -> Right ()
-  go i done
-    | i == n = Right done
-    | otherwise = do
-        row <- rowFor i done
-        go (i + 1) (done ++ [row])
-  rowFor i done = do
-    let entry j prev
-          | j > i = Right (Exact 0)
-          | otherwise = do
-              let rowJ = if j == i then prev else done !! j
-                  s = foldl addM (Exact 0) [mulM p (prev !! k) (rowJ !! k) | k <- [0 .. j - 1]]
-                  rest = subM ((a !! i) !! j) s
-              if i == j
-                then sqrtM p rest
-                else divM p rest ((done !! j) !! j)
-    foldM (\acc j -> (\x -> acc ++ [x]) <$> entry j acc) [] [0 .. n - 1]
+  entry a b c
+    | any (isJust . nonLinearAt cfg.nonlinear) [a, b] =
+        Left (Eval.Eval.Domain "covariance of a value marked non-linear is not supported")
+    | otherwise = Right (Exact c)
 
 {- | Pair the fields of a constructor with an alternative's binders; the
 counts agree by lint.

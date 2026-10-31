@@ -24,34 +24,78 @@ module Eval.Update (
   conTypes,
 ) where
 
-import Data.Bifunctor (first)
-import Data.Foldable (foldlM)
-import Data.Graph (flattenSCC, stronglyConnComp)
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
-import Data.Set qualified as Set
-import Data.Text (Text)
-import Eval.Builtin (axesHash)
+import Data.Bifunctor ( first )
+import Data.Foldable ( foldlM )
+import Data.Graph ( flattenSCC, stronglyConnComp )
+import Data.Map.Strict ( Map )
+import Data.Maybe ( fromMaybe )
+import Data.Text ( Text )
+import Eval.Builtin ( axesHash )
 import Eval.Codebase
+    ( addTerm,
+      addTypeDef,
+      bindName,
+      historicalNamesOf,
+      lookupName,
+      lookupTerm,
+      lookupTypeDef,
+      namesOf,
+      setSignature,
+      signatureOf,
+      typeOf,
+      writtenAs,
+      Codebase(names, typeNames, conNames, fieldNames, signatures),
+      Reference(hash, Reference) )
 import Eval.Core
-import Eval.Hash (hashTerm, hashTypeDef)
-import Eval.Infer
-import Eval.Resolve (storeTerm, typeLookupFor)
-import Eval.TCore (signatureHolds)
-import Eval.Type (
-  Arg (..),
-  Axis (..),
-  Frame (..),
-  FrameSlot (..),
-  Scheme (..),
-  Shape (..),
-  Space (..),
-  SpaceSlot (..),
-  Type (..),
-  TypeDef (..),
-  renderScheme,
- )
+    ( conTypes,
+      refsWithIndex,
+      refsWritten,
+      rewriteRefs,
+      rewriteRefsWritten,
+      showHash,
+      vecMap,
+      Alt(Alt),
+      ConRef(..),
+      Hash,
+      Label(SpaceLabel, Owner, Axes, FrameLabel),
+      Term(..) )
+import Eval.Hash ( hashTerm, hashTypeDef )
+import Eval.Infer ( elaborateClosed, TypeError(message) )
+import Eval.Resolve ( storeTerm, typeLookupFor )
+import Eval.Type
+    ( Arg(..),
+      Axis(..),
+      Frame(..),
+      FrameSlot(..),
+      Scheme(..),
+      Shape(..),
+      Space(..),
+      SpaceSlot(..),
+      Type(..),
+      TypeDef(..),
+      renderScheme )
+import Eval.Type.Match ( signatureHolds )
+import Data.Map.Strict qualified as Map
+    ( null,
+      elems,
+      empty,
+      keys,
+      lookup,
+      toList,
+      findWithDefault,
+      fromList,
+      insert,
+      map,
+      mapWithKey )
+import Data.Set qualified as Set
+    ( Set,
+      member,
+      union,
+      difference,
+      disjoint,
+      fromList,
+      null,
+      toList )
 
 type RefMap = Map Reference Reference
 

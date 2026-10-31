@@ -19,26 +19,27 @@ module Eval.Prelude (
   stdlibCodebase,
 ) where
 
-import Control.Monad (foldM)
-import Data.Bifunctor (first)
-import Data.Maybe (fromMaybe)
-import Data.Text (Text)
+import Control.Monad ( foldM )
+import Data.Bifunctor ( first )
+import Data.Maybe ( fromMaybe )
+import Data.Text ( Text )
+import Eval.Codebase
+    ( Codebase(..),
+      addStoredUse,
+      bindName,
+      emptyCodebase,
+      isChartName,
+      isUnitName,
+      lookupName,
+      markChart,
+      markUnit )
+import Eval.Lexer ( prepare )
+import Eval.Parser ( parseProgram )
+import Eval.Resolve ( processGroup )
+import Eval.Resolve.Error ( renderResolveError )
+import Eval.Syntax qualified as S ( flatten, rootScope, Use(Use) )
 import Data.Text qualified as T
-import Eval.Codebase (
-  Codebase (..),
-  addStoredUse,
-  bindName,
-  emptyCodebase,
-  isChartName,
-  isUnitName,
-  lookupName,
-  markChart,
-  markUnit,
- )
-import Eval.Lexer (prepare)
-import Eval.Parser (parseProgram)
-import Eval.Resolve (processGroup, renderResolveError)
-import Eval.Syntax qualified as S
+    ( isPrefixOf, unlines, unwords, pack )
 
 -- The library's tables -------------------------------------------------------------
 

@@ -16,17 +16,30 @@ module Eval.Encode (
   encType,
 ) where
 
-import Crypto.Hash.SHA256 qualified as SHA256
-import Data.Bits (shiftR, (.&.), (.|.))
-import Data.ByteString (ByteString)
-import Data.ByteString qualified as BS
+import Data.Bits ( shiftR, (.&.), (.|.) )
+import Data.ByteString ( ByteString )
 import Data.ByteString.Builder
-import Data.ByteString.Lazy qualified as BL
-import Data.Text (Text)
-import Data.Text.Encoding qualified as TE
-import Eval.Core (Hash (..), Label (..))
-import Eval.Dimension
+    ( Builder, word8, byteString, toLazyByteString )
+import Data.Text ( Text )
+import Eval.Core ( Hash(..), Label(..) )
+import Eval.Dimension ( dimAtoms, Dim, DimAtom(DVar, Base) )
 import Eval.Type.Base
+    ( Arg(..),
+      Axis(..),
+      Frame(space, slot, axes),
+      FrameSlot(..),
+      Kind(..),
+      Len(..),
+      Role(..),
+      Shape(..),
+      Space(base, slot, shape, dim),
+      SpaceSlot(..),
+      Type(..),
+      TypeDef(label, params, constructors) )
+import Data.ByteString.Lazy qualified as BL ( toStrict )
+import Data.ByteString qualified as BS ( length, pack, empty )
+import Crypto.Hash.SHA256 qualified as SHA256 ( hash )
+import Data.Text.Encoding qualified as TE ( encodeUtf8 )
 
 -- | Length-prefixed UTF-8.
 text :: Text -> Builder

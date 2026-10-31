@@ -768,30 +768,38 @@ apart (decided by the owner).
 - **Three parts of a remainder.** Bound by bound is a fresh bound nudge, as
   before, with the midpoint's rounding. A part that is first order in a
   statistical nudge but scaled by a bound one, a product's `Bₓ·S_y`, or a
-  function's slope changing across the bound enclosure, is a fresh
-  **statistical** nudge whose σ takes the bound part at its worst
+  function's slope changing across the bound enclosure, has size
   (`rB(x)·σ(y) + rB(y)·σ(x)` for a product, the slope's largest change over
   the bound enclosure times σ for a function, plus the slope's own
-  approximation error times σ). Decided here: it is statistical because it
-  multiplies a statistical nudge, and it is not counted as non-linearity,
-  since given the bound unknowns it is still Gaussian, only of uncertain
-  width. Statistical by statistical is second order and is not carried.
+  approximation error times σ). This correction shares the original
+  randomness, so it is not added as an independent statistical nudge.
+  Instead its size is measured relative to the retained first-order σ;
+  it is unbounded when that σ is zero. Above the configured threshold,
+  `sd`, `mid`, comparisons and covariance summaries refuse the result.
+  Below it, the reported σ is explicitly the first-order approximation,
+  not a worst-case σ over the bounded coefficients.
+  Statistical by statistical is second order and is not carried.
 - **The measure.** A product measures `√((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²)` against
-  the first-order σ; a function measures `|f''(m)|·σ`, read as half the
-  change of `f'` from `m − σ` to `m + σ`, against `|f'(m)|`, unbounded when
+  the first-order σ; a function measures the largest change of `f'` from
+  its midpoint to either `m − σ` or `m + σ`, against `|f'(m)|`, unbounded when
   either point leaves the domain (`recip`, `sqrt`, `log`) or when `f'(m) =
   0` (`cos` at 0). `abs` is linear unless its kink lies within σ of the bound
   enclosure, then unbounded. The measure is kept squared and exact, rounded
   up to three digits, and a value keeps the largest measure, with its
-  operation, of everything it was computed from (`Skew`); a value exactly
-  zero after cancellation, such as `n*n − n*n`, is equal whatever it went
-  through.
+  operation, of everything it was computed from (`Skew`). Functions with a
+  global second-derivative bound also use that bound across σ, so equal
+  endpoint derivatives cannot hide oscillation. A zero first-order model
+  does not establish equality if it has discarded a statistical remainder,
+  even below the warning threshold. In particular `n*n == n*n` is currently
+  undecidable: discarded remainders have no identity. Linear cancellation
+  such as `n - n` remains exact.
 - **The threshold** is `:set nonlinear` in percent, default 1, and is
   applied where a value is used, not where it is computed: printing adds
   "(non-linear: mul, second-order term 7.1% of the first-order σ; a mean and
   a σ do not describe it)"; `:budget` adds the same line; a comparison, and
   `floor`, `ceil` and `round`, which are comparisons with the integers,
-  refuse; and `mid` and `sd` refuse, so that `sd (n*n)` is not a
+  refuse; and `mid`, `sd`, `covariance`, `crossCovariance` and `:covariance`
+  refuse, so that `sd (n*n)` is not a
   misleading `0`. `bound` still answers: the bound part is rigorous. A
   value whose first-order σ is zero after such a step, `n*n`, prints its
   midpoint without the `…` that would promise every digit (§3.2.10):
@@ -1629,9 +1637,9 @@ C = [[1, 3], [2, 0]]      C Cᵀ = [[1 + 9, 2 + 0], [2 + 0, 4 + 0]] = [[10, 2], 
 Var(x₁) = 1² + 3² = 10, Var(x₂) = 2² = 4, Cov(x₁, x₂) = 1·2 + 3·0 = 2. Through
 linear steps this is exactly the textbook `J P Jᵀ`, because the coefficients
 transform by `J`. Through nonlinear steps it is first-order propagation, the same
-approximation an extended Kalman filter makes. The fresh remainder nudge from each
-nonlinear step is a *bound*, not a variance, so the view reports it separately as
-a bias term.
+approximation an extended Kalman filter makes. Only the remainder from bounded
+inputs is a rigorous bound. Discarded statistical corrections are tracked by
+the non-linearity measure; covariance summaries refuse marked results.
 
 There is no "reading" to choose: each nudge knows its kind. `±` contributes to the
 bound, `±σ` to the covariance, and the printing, comparison, budget and covariance
@@ -1657,13 +1665,12 @@ ordinary function on a homogeneous vector, exact in the coefficients, and
 `cholesky : Mat n n (d^2) -> Mat n n d` is its inverse on positive-definite
 matrices (it fails with a domain error when a pivot's enclosure reaches zero).
 Both `cholesky` and `v ±σ P` read only the lower triangle, so they first
-check that the matrix is symmetric: a pair `P.i.j`, `P.j.i` that is
-provably unequal, exact and different or decided different at the stated
-sigma as a comparison is (§3.2.9), is refused by its entries.
+check that the matrix is symmetric: every pair `P.i.j`, `P.j.i` must be
+established equal. Unequal and undecidable pairs are refused by their entries.
 `cholesky [1, 100; 0, 1]` fails with "cholesky needs a symmetric matrix:
 entries .0.1 and .1.0 differ", and `[0, 0] ±σ [1, 100; 0, 1]` with "±σ
-needs a symmetric covariance: …". A pair whose enclosures may be equal
-passes, and the lower entry is the one used.
+needs a symmetric covariance: …". Overlapping enclosures alone do not prove
+symmetry; use the same uncertain value for both entries.
 The REPL view `:covariance e` prints the covariance of a vector, or the variance
 of a number, followed by the **bound box**: each component's rigorous radius
 from the bound nudges, which has no variance and is reported beside it:
@@ -2295,6 +2302,10 @@ dimensions and wait on §3.7's route A.
   (above). In `linalg`, `rotateVec r v` (`r @ v`), `rotateCov r p` (`r @ p
   @ rᵀ`) and `inChartCov2 c p`, a `Cov2` block by block.
 - **`expm : Mat n n -> Mat n n`**, dimensionless, a rigorous enclosure:
+  statistical inputs (including marked results with no surviving statistical
+  coefficient) are currently refused. The bounded series does not yet
+  propagate their statistical remainder. This restriction also applies to
+  chart rotations evaluated through `expm`.
   Rodrigues for a single plane (any antisymmetric matrix when `n ≤ 3`, an
   exact one checked beyond), the exponential series with scaling and
   squaring otherwise (§3.3). `expm (-B)` is the inverse of `expm B` within

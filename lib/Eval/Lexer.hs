@@ -16,19 +16,43 @@ module Eval.Lexer (
   showToken,
 ) where
 
-import Data.Char (isAlphaNum, isDigit, isLetter)
-import Data.Functor (($>))
-import Data.Maybe (fromMaybe)
-import Data.Ratio ((%))
-import Data.Text (Text)
-import Data.Text qualified as T
-import Data.Text.Normalize (NormalizationMode (NFC), normalize)
-import Data.Void (Void)
-import Eval.Core (NudgeKind (..), componentLimit)
-import Eval.Syntax (Pos (..), Span (..))
-import Text.Megaparsec hiding (Pos, Token, Tokens)
-import Text.Megaparsec.Char
+import Data.Char ( isAlphaNum, isDigit, isLetter )
+import Data.Functor ( ($>) )
+import Data.Maybe ( fromMaybe )
+import Data.Ratio ( (%) )
+import Data.Text ( Text )
+import Data.Text.Normalize ( NormalizationMode(NFC), normalize )
+import Data.Void ( Void )
+import Eval.Core ( NudgeKind(..), componentLimit )
+import Eval.Syntax ( Pos(..), Span(..) )
+import Text.Megaparsec
+    ( (<|>),
+      Parsec,
+      SourcePos(sourceColumn, sourceLine),
+      MonadParsec(takeWhileP, eof, takeWhile1P, notFollowedBy, try),
+      optional,
+      getSourcePos,
+      oneOf,
+      runParser,
+      satisfy,
+      errorBundlePretty,
+      unPos,
+      choice,
+      many,
+      some )
+import Text.Megaparsec.Char ( char, digitChar, space1, string )
 import Text.Megaparsec.Char.Lexer qualified as L
+    ( skipBlockCommentNested, skipLineComment, space )
+import Data.Text qualified as T
+    ( pack,
+      cons,
+      drop,
+      filter,
+      length,
+      map,
+      replicate,
+      toLower,
+      unpack )
 
 data Keyword
   = KLet

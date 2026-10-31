@@ -25,6 +25,23 @@ library
   hs-source-dirs:  lib
   exposed-modules:
     , Eval.Affine
+    , Eval.Command
+    , Eval.Edit
+    , Eval.Session.Preferences
+    , Eval.Compile
+    , Eval.Source
+    , Eval.Session.Names
+    , Eval.Session.Types
+    , Eval.Check
+    , Eval.Type.Syntax
+    , Eval.NameResolution
+    , Eval.Resolve.Error
+    , Eval.UnitHint
+    , Eval.Numerical.Linear
+    , Eval.Numerical.Approx
+    , Eval.Type.Match
+    , Eval.Primitive.Types
+    , Eval.Primitive
     , Eval.Builtin
     , Eval.Codebase
     , Eval.Core
@@ -85,6 +102,7 @@ test-suite eval-test
   main-is:        Main.hs
   other-modules:
     , Gen
+    , Support.Render
   build-depends:
     , base ^>=4.21.0.0
     , bytestring
@@ -98,3 +116,4 @@ test-suite eval-test
     , tasty-quickcheck
     , text
     , time
+    , vector

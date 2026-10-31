@@ -22,6 +22,9 @@ module Eval.Core (
   vecToList,
   vecLength,
   vecMap,
+  vecMapIndexed,
+  vecZip3,
+  vecZipWith,
   vecTraverse,
   vecIndex,
   vecAppend,
@@ -52,15 +55,17 @@ module Eval.Core (
   componentLimit,
 ) where
 
-import Data.Bits (shiftL, shiftR, (.&.), (.|.))
-import Data.ByteString (ByteString)
-import Data.ByteString qualified as BS
-import Data.Kind (Type)
-import Data.Set (Set)
-import Data.Set qualified as Set
-import Data.String (IsString (..))
-import Data.Text (Text)
+import Data.Bits ( shiftL, shiftR, (.&.), (.|.) )
+import Data.ByteString ( ByteString )
+import Data.Kind ( Type )
+import Data.Set ( Set )
+import Data.String ( IsString(..) )
+import Data.Text ( Text )
+import Eval.Primitive ( primArity )
+import Data.ByteString qualified as BS ( unpack )
+import Data.Set qualified as Set ( empty, singleton )
 import Data.Text qualified as T
+    ( pack, dropWhile, isPrefixOf, take )
 
 -- Type-level naturals ------------------------------------------------------
 
@@ -123,6 +128,23 @@ vecAppend :: Vec k a -> Vec n a -> Vec (Plus k n) a
 vecAppend xs ys = case xs of
   VNil -> ys
   VCons x rest -> VCons x (vecAppend rest ys)
+
+vecMapIndexed :: forall a b k. (Int -> a -> b) -> Vec k a -> Vec k b
+vecMapIndexed f = walk 0
+ where
+  walk :: forall m. Int -> Vec m a -> Vec m b
+  walk _ VNil = VNil
+  walk i (VCons x xs) = VCons (f i x) (walk (i + 1) xs)
+
+vecZip3 :: Vec k a -> Vec k b -> Vec k c -> Vec k (a, b, c)
+vecZip3 as bs cs = case (as, bs, cs) of
+  (VNil, VNil, VNil) -> VNil
+  (VCons a as', VCons b bs', VCons c cs') -> VCons (a, b, c) (vecZip3 as' bs' cs')
+
+vecZipWith :: (a -> b -> c) -> Vec k a -> Vec k b -> Vec k c
+vecZipWith f as bs = case (as, bs) of
+  (VNil, VNil) -> VNil
+  (VCons a as', VCons b bs') -> VCons (f a b) (vecZipWith f as' bs')
 
 -- | A vector of statically unknown length.
 data SomeVec a = forall k. SomeVec (Vec k a)
@@ -379,112 +401,6 @@ rewriteRefs f = go
 eta-expand partial applications; the evaluator and type checker rely on
 'PrimApp' nodes being saturated.
 -}
-primArity :: Text -> Maybe Int
-primArity = \case
-  "add" -> Just 2
-  "sub" -> Just 2
-  "outer" -> Just 2
-  "emul" -> Just 2
-  "ediv" -> Just 2
-  "div" -> Just 2
-  "eq" -> Just 2
-  "ne" -> Just 2
-  "lt" -> Just 2
-  "le" -> Just 2
-  "gt" -> Just 2
-  "ge" -> Just 2
-  "and" -> Just 2
-  "or" -> Just 2
-  "neg" -> Just 1
-  "not" -> Just 1
-  "abs" -> Just 1
-  "floor" -> Just 1
-  "ceil" -> Just 1
-  "round" -> Just 1
-  -- Known to the desugarer and type checker now; implemented in the
-  -- evaluator with affine arithmetic and linear algebra (roadmap 3 and 4).
-  "sqrt" -> Just 1
-  "sin" -> Just 1
-  "cos" -> Just 1
-  "tan" -> Just 1
-  "asin" -> Just 1
-  "acos" -> Just 1
-  "atan" -> Just 1
-  "sinh" -> Just 1
-  "cosh" -> Just 1
-  "tanh" -> Just 1
-  "exp" -> Just 1
-  "log" -> Just 1
-  "atan2" -> Just 2
-  "to" -> Just 2
-  "dot" -> Just 2
-  "wedge" -> Just 2
-  "star" -> Just 1
-  "norm" -> Just 1
-  "transpose" -> Just 1
-  -- Contraction and index permutation (design §4.2): the leading arguments
-  -- are literal index positions, and the type is computed from them.
-  "contract" -> Just 3
-  "permute" -> Just 2
-  -- A slice along axis k at position i (design §2.10): both literal.
-  "slice" -> Just 3
-  "inverse" -> Just 1
-  "det" -> Just 1
-  "vmap" -> Just 2
-  "indices" -> Just 1
-  "vzipWith" -> Just 3
-  "timap" -> Just 2
-  "pi" -> Just 0
-  -- The seven SI base units (design §3.2.11).
-  "m" -> Just 0
-  "kg" -> Just 0
-  "s" -> Just 0
-  "A" -> Just 0
-  "K" -> Just 0
-  "mol" -> Just 0
-  "cd" -> Just 0
-  "rad" -> Just 0
-  -- A chart (design §3.10, F3, F10): on a space or on a parent chart, with
-  -- the frame and the axes it mints, if any, and its clauses, each a list
-  -- of none or one (the generators a list of any number).
-  "mkRoot" -> Just 7
-  "mkChart" -> Just 7
-  "pointOn" -> Just 2
-  "pointAdd" -> Just 2
-  "pointSub" -> Just 2
-  -- Conversions (design §3.10, F5, F7, F10): a point to a chart, a point
-  -- from a configuration of its frame to a chart, and an amount along a
-  -- chart's axes, from the space's base axes or from a configuration.
-  "toChart" -> Just 2
-  "fromTo" -> Just 3
-  "toAxes" -> Just 2
-  "axesFromTo" -> Just 3
-  -- Units (design §3.10): the quantity rule after a unit, and a unit's
-  -- declaration. `unit` is a keyword, so no source names it; `scale 3 km`
-  -- is the quantity `3 km`.
-  "scale" -> Just 2
-  "unit" -> Just 1
-  "cholesky" -> Just 1
-  "covariance" -> Just 1
-  "crossCovariance" -> Just 2
-  -- The parts of an enclosure (design §3.2.9), to write a comparison policy.
-  "mid" -> Just 1
-  "bound" -> Just 1
-  "sd" -> Just 1
-  -- Rotations (design §3.3, §3.8): the matrix exponential, a matrix
-  -- applied along every axis of a tensor, and the rotation of a chart.
-  "expm" -> Just 1
-  "transformBy" -> Just 2
-  "rotationOf" -> Just 1
-  "withAxes" -> Just 2
-  -- A chart's kinematics (design §3.8): its absolute angular velocity and
-  -- the velocity of its origin, both along the base axes, and its origin
-  -- from the space's base origin (design §3.10, part F, as built).
-  "spinOf" -> Just 1
-  "originVelocityOf" -> Just 1
-  "originOf" -> Just 1
-  _ -> Nothing
-
 -- Renaming and weakening ------------------------------------------------------
 
 {- | Apply a renaming of free variables, lifting it under binders. The one use

@@ -32,26 +32,84 @@ module Eval.Desugar (
   Resolved (..),
   ConInfo (..),
   FieldInfo (..),
-  desugarIn,
   renderDesugarError,
 ) where
 
-import Control.Applicative ((<|>))
-import Control.Monad (foldM, when, zipWithM)
-import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
-import Control.Monad.State.Strict (StateT, gets, modify', runStateT)
-import Control.Monad.Trans.Class (lift)
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust)
-import Data.Ratio (denominator, numerator)
-import Data.Text (Text)
-import Data.Text qualified as T
+import Control.Applicative ( (<|>) )
+import Control.Monad ( foldM, when, zipWithM )
+import Control.Monad.Reader ( ReaderT, asks, local, runReaderT )
+import Control.Monad.State.Strict
+    ( StateT, gets, modify', runStateT )
+import Control.Monad.Trans.Class ( lift )
+import Data.Map.Strict ( Map )
+import Data.Maybe ( fromMaybe, isJust )
+import Data.Ratio ( denominator, numerator )
+import Data.Text ( Text )
 import Eval.Builtin
+    ( axesTag,
+      boolC,
+      boolHash,
+      builtinCons,
+      consC,
+      falseC,
+      frameTag,
+      listHash,
+      maxTupleArity,
+      nilC,
+      trueC,
+      tupleC,
+      tupleHash )
 import Eval.Core
+    ( primArity,
+      componentLimit,
+      vecAppend,
+      vecFromList,
+      vecMap,
+      weakenBy,
+      Alt(..),
+      ConRef(..),
+      Fin(..),
+      Hash,
+      Hint(Hint),
+      Label(Tag, Owner),
+      Lit(..),
+      Nat(Z),
+      NudgeKind(Stat, Bound),
+      Plus,
+      SomeVec(SomeVec),
+      Term(Proj, Pack, Ref, Noise, Uncertain, App, Lam, Lit, PrimApp,
+           Pow, Con, Let, Var, Case),
+      Vec(..) )
+import Eval.Primitive ( baseUnit )
+import Eval.Type ( conText )
+import Data.Map.Strict qualified as Map
+    ( (!), empty, lookup, notMember, fromList, insert )
 import Eval.Syntax qualified as S
-import Eval.TCore (baseUnit)
-import Eval.Type (conText)
+    ( lastSegment,
+      spanUnion,
+      ChartClauses(spin, parent, parameterised, generators, step,
+                   origin),
+      Expr(..),
+      Name(..),
+      Node(Vec, Ascribe, Bool, Tuple, CaseOf, Lam, If, UnitBody,
+           UnitSyntax, Let, SectionL, SectionR, Proj, Slice, Record, FromTo,
+           ChartForm, List, Labelled, Neg, Pow, BinOp, App, FieldOf, Var,
+           Num),
+      Op(..),
+      PatNode(PVar, PWild, PCon),
+      Pattern(..),
+      Pos(line, col),
+      Span(..),
+      TyExpr )
+import Data.Text qualified as T
+    ( intercalate,
+      isPrefixOf,
+      length,
+      replace,
+      replicate,
+      splitAt,
+      stripPrefix,
+      pack )
 
 -- | Child positions from the root of a Core term.
 type Path = [Int]
@@ -206,11 +264,6 @@ desugarDefinition ::
 desugarDefinition name resolve = desugarMember name resolve VNil
 
 -- | Desugar under a context of already-bound names (innermost first).
-desugarIn ::
-  Resolver -> Ctx n -> S.Expr -> Either DesugarError (Term n, Provenance)
-desugarIn = desugarMember ""
-
--- | A member of a binding group, by name, under the group's context.
 desugarMember ::
   Text -> Resolver -> Ctx n -> S.Expr -> Either DesugarError (Term n, Provenance)
 desugarMember name resolve ctx e =

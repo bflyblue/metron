@@ -71,17 +71,28 @@ module Eval.Builtin (
   pattern ConsC,
   builtinCons,
   builtinConName,
-  builtinTypeName,
 ) where
 
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Text (Text)
-import Data.Text qualified as T
-import Eval.Core (ConRef (..), Hash, Label (..))
-import Eval.Dimension (Dim)
-import Eval.Encode (hashTypeDef)
+import Data.Map.Strict ( Map )
+import Data.Text ( Text )
+import Eval.Core ( ConRef(..), Hash, Label(..) )
+import Eval.Dimension ( Dim )
+import Eval.Encode ( hashTypeDef )
 import Eval.Type.Base
+    ( selfType,
+      structuralLabel,
+      Arg(AType),
+      Axis(AAnon, ANamed),
+      Kind(KType),
+      Len(LLit),
+      Shape(SCons, SNil),
+      Space(Space),
+      SpaceSlot(SpNamed),
+      Type(TData, TVar, TTensor),
+      TypeDef(constructors, TypeDef, label) )
+import Data.Map.Strict qualified as Map
+    ( lookup, toList, findWithDefault, fromList )
+import Data.Text qualified as T ( pack )
 
 -- The declarations ----------------------------------------------------------------
 
@@ -349,14 +360,7 @@ builtinConName = \case
   ConsC -> Just "Cons"
   _ -> Nothing
 
--- | The name a built-in type's declaration is written under.
-builtinTypeName :: Hash -> Maybe Text
-builtinTypeName h
-  | h == boolHash = Just "Bool"
-  | h == listHash = Just "List"
-  | Just k <- tupleArity h = Just (tupleName k)
-  | otherwise = Nothing
-
+-- | The conventional name for a tuple declaration.
 tupleName :: Int -> Text
 tupleName = \case
   2 -> "Pair"

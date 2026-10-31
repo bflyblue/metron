@@ -10,19 +10,73 @@ module Eval.Parser (
 ) where
 
 import Control.Monad.Combinators.Expr
-import Data.Bifunctor (first)
-import Data.List.NonEmpty (NonEmpty (..))
-import Data.List.NonEmpty qualified as NE
-import Data.Maybe (fromMaybe, isJust)
-import Data.Ratio (denominator, numerator)
-import Data.Set qualified as Set
-import Data.Text (Text)
-import Data.Text qualified as T
-import Data.Void (Void)
-import Eval.Core (NudgeKind)
+    ( Operator(InfixR, Prefix, InfixL, Postfix, InfixN),
+      makeExprParser )
+import Data.Bifunctor ( first )
+import Data.List.NonEmpty ( NonEmpty(..) )
+import Data.Maybe ( fromMaybe, isJust )
+import Data.Ratio ( denominator, numerator )
+import Data.Text ( Text )
+import Data.Void ( Void )
+import Eval.Core ( NudgeKind )
 import Eval.Lexer
+    ( showToken, tokenize, Keyword(..), Located(..), Token(..) )
 import Eval.Syntax
+    ( juxtaposedHint,
+      renderPath,
+      spanUnion,
+      BindKind(Plain, Unit, ChartDecl),
+      Binding(span, Binding, name, params, body),
+      ChartClauses(ChartClauses),
+      DataDecl(DataDecl),
+      Expr(..),
+      FieldDecl(ty, FieldDecl),
+      Name(..),
+      Node(Vec, ChartForm, Lam, Let, If, Neg, Labelled, FromTo, BinOp,
+           Pow, App, Proj, FieldOf, Slice, Record, Num, Bool, Var, SectionL,
+           SectionR, Ascribe, Tuple, List, CaseOf),
+      Op(..),
+      PatNode(PVar, PCon, PWild),
+      Path(Path),
+      Pattern(Pattern),
+      Pos(line, Pos, col),
+      Span(..),
+      Statement(..),
+      TyBinder(TyBinder),
+      TyExpr(..),
+      TyNode(TyDim, TyForall, TyFun, TyApp, TyList, TyShape, TyName,
+             TyInt, TyShapeCons, TyTuple) )
+import Data.List.NonEmpty qualified as NE ( fromList, toList )
 import Text.Megaparsec qualified as P
+    ( (<|>),
+      ErrorItem(Label, Tokens),
+      PosState(pstateSourcePos, pstateInput, pstateOffset),
+      Parsec,
+      SourcePos(sourceLine, sourceName, SourcePos),
+      MonadParsec(try, token, notFollowedBy, eof, lookAhead),
+      Stream(..),
+      optional,
+      anySingle,
+      getInput,
+      getOffset,
+      runParser,
+      setInput,
+      setOffset,
+      errorBundlePretty,
+      mkPos,
+      unPos,
+      choice,
+      option,
+      many,
+      sepBy,
+      sepBy1,
+      sepEndBy,
+      some,
+      TraversableStream(reachOffset),
+      VisualStream(..) )
+import Data.Set qualified as Set ( singleton )
+import Data.Text qualified as T
+    ( pack, any, intercalate, lines, unwords, unpack )
 
 -- Token stream ---------------------------------------------------------------
 

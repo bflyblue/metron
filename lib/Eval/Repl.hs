@@ -32,31 +32,56 @@ module Eval.Repl (
   needsMore,
 ) where
 
-import Control.Applicative ((<|>))
-import Control.Monad (guard)
-import Data.Char (isAlphaNum, isDigit, isLetter, isSpace)
-import Data.List (isPrefixOf, nub, sort, sortOn)
+import Control.Applicative ( (<|>) )
+import Control.Monad ( guard )
+import Data.Char ( isAlphaNum, isDigit, isLetter, isSpace )
+import Data.List ( isPrefixOf, nub, sort, sortOn )
+import Data.Maybe ( fromMaybe, isJust )
+import Data.Set ( Set )
+import Data.Text ( Text )
+import Eval.Codebase ( Codebase(..) )
+import Eval.Command ( commands )
+import Eval.Dimension ( baseSymbol )
+import Eval.Driver ( Session(..) )
+import Eval.Lexer
+    ( Keyword(..),
+      Located(..),
+      Token(..),
+      prepare,
+      showToken,
+      tokenize )
+import Eval.NameResolution ( LabelKind(..), shortestName, shortestNameOf )
+import Eval.Syntax ( Pos(..), Span(..), lastSegment )
+import Data.Map.Strict qualified as Map ( keys )
 import Data.List.NonEmpty qualified as NE
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, isJust)
-import Data.Set (Set)
+    ( groupWith, last, toList )
 import Data.Set qualified as Set
-import Data.Text (Text)
+    ( member, notMember, empty, fromList, toList )
 import Data.Text qualified as T
-import Eval.Codebase (Codebase (..))
-import Eval.Dimension (baseSymbol)
-import Eval.Driver (Session (..))
-import Eval.Lexer (
-  Keyword (..),
-  Located (..),
-  Token (..),
-  prepare,
-  showToken,
-  tokenize,
- )
-import Eval.Resolve (LabelKind (..), shortestName, shortestNameOf)
-import Eval.Syntax (Pos (..), Span (..), lastSegment)
-import Eval.Unicode qualified as U
+    ( concat,
+      all,
+      any,
+      breakOn,
+      drop,
+      dropWhile,
+      intercalate,
+      isInfixOf,
+      isPrefixOf,
+      isSuffixOf,
+      length,
+      null,
+      splitAt,
+      splitOn,
+      stripPrefix,
+      stripStart,
+      take,
+      takeWhile,
+      takeWhileEnd,
+      uncons,
+      unsnoc,
+      pack,
+      unpack )
+import Eval.Unicode qualified as U ( matching )
 
 -- Completion ------------------------------------------------------------------
 
@@ -70,47 +95,6 @@ data Completion = Completion
   , isFinished :: Bool
   }
   deriving stock (Eq, Show)
-
--- | The commands completed after a @:@ at the start of a line.
-commands :: [String]
-commands =
-  [ ":add"
-  , ":update"
-  , ":upgrade"
-  , ":todo"
-  , ":scratch"
-  , ":forget"
-  , ":edit"
-  , ":type"
-  , ":ls"
-  , ":view"
-  , ":core"
-  , ":lint"
-  , ":hash"
-  , ":names"
-  , ":history"
-  , ":dependents"
-  , ":alias"
-  , ":unname"
-  , ":rename"
-  , ":move"
-  , ":namespace"
-  , ":uses"
-  , ":use"
-  , ":unuse"
-  , ":export"
-  , ":stdlib"
-  , ":exact"
-  , ":budget"
-  , ":covariance"
-  , ":set"
-  , ":prefer"
-  , ":unprefer"
-  , ":load"
-  , ":quit"
-  , ":store"
-  , ":colour"
-  ]
 
 -- | The lexer's keywords ("Eval.Lexer").
 keywords :: [String]

@@ -38,32 +38,95 @@ module Eval.Store (
   mergeStores,
 ) where
 
-import Control.Monad (foldM, foldM_, forM_, unless, void, when)
-import Data.ByteString qualified as BS
-import Data.Either (lefts, rights)
-import Data.List (sortOn)
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
-import Data.Set (Set)
-import Data.Set qualified as Set
-import Data.Text (Text)
-import Data.Text qualified as T
-import Data.Text.IO qualified as TIO
-import Data.Text.Read qualified as TR
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Control.Monad ( foldM, foldM_, forM_, unless, void, when )
+import Data.Either ( lefts, rights )
+import Data.List ( sortOn )
+import Data.Map.Strict ( Map )
+import Data.Maybe ( fromMaybe )
+import Data.Set ( Set )
+import Data.Text ( Text )
+import Data.Time.Clock.POSIX ( getPOSIXTime )
 import Eval.Codebase
-import Eval.Core
-import Eval.Dimension (Spelling (..))
+    ( addPreference,
+      addStoredUse,
+      addTypeDef,
+      bindConName,
+      bindFieldName,
+      bindName,
+      bindTypeName,
+      clearFlags,
+      dropSignature,
+      emptyCodebase,
+      lookupName,
+      markChart,
+      markUnit,
+      removePreference,
+      removeStoredUse,
+      setSignature,
+      typeNameOf,
+      typeOf,
+      unbindName,
+      Codebase(terms, signatures, uses, fieldNames, preferences, units,
+               charts, typeNames, conNames, names, typeDefs),
+      Reference(..) )
+import Eval.Core ( refs, showHash, Hash, Nat(Z), Term )
+import Eval.Dimension ( Spelling(..) )
 import Eval.Hash
-import Eval.Parser (parseType)
-import Eval.Prelude (stdlibCodebase)
-import Eval.Resolve (renderResolveError, signatureScheme, storeTerm)
-import Eval.Syntax (Use (..), renderUse, rootScope)
-import Eval.TCore (signatureHolds)
-import Eval.Type (Scheme, TypeDef (..), renderSignature)
+    ( encodeTypeDef,
+      hashTypeDef,
+      decodeStored,
+      decodeTypeDef,
+      encodeStored,
+      hashFromHex,
+      hashHex,
+      hashTerm )
+import Eval.Parser ( parseType )
+import Eval.Prelude ( stdlibCodebase )
+import Eval.Resolve.Error ( renderResolveError )
+import Eval.Type.Syntax ( signatureScheme )
+import Eval.Resolve ( storeTerm )
+import Eval.Syntax ( Use(..), renderUse, rootScope )
+import Eval.Type ( Scheme, TypeDef(..), renderSignature )
+import Eval.Type.Match ( signatureHolds )
 import System.Directory
-import System.FilePath
+    ( canonicalizePath,
+      createDirectoryIfMissing,
+      doesDirectoryExist,
+      doesFileExist,
+      doesPathExist,
+      getCurrentDirectory,
+      getXdgDirectory,
+      listDirectory,
+      renameFile,
+      XdgDirectory(XdgData) )
+import System.FilePath ( (</>), takeDirectory )
+import Data.ByteString qualified as BS
+    ( ByteString, readFile, writeFile )
+import Data.Map.Strict qualified as Map
+    ( difference,
+      keys,
+      lookup,
+      member,
+      toList,
+      fromList,
+      fromListWith,
+      insert )
+import Data.Set qualified as Set
+    ( member, union, difference, empty, insert, toList )
+import Data.Text qualified as T
+    ( lines,
+      null,
+      splitOn,
+      strip,
+      stripPrefix,
+      unlines,
+      unwords,
+      words,
+      pack,
+      unpack )
+import Data.Text.IO qualified as TIO
+    ( appendFile, readFile, writeFile )
+import Data.Text.Read qualified as TR ( decimal )
 
 newtype Store = Store {dir :: FilePath}
 
