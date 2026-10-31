@@ -1859,7 +1859,12 @@ turnedChartTests =
                   ]
         runLinesP
           ( pf
-              ++ [ encloses "1e-20" "rotationOf pf" "euler313 (30 deg) (45 deg) (60 deg)"
+              ++ [ -- rows along eci and columns along pf, against a rotation
+                   -- along one axis set: Rᵀ E is the identity
+                   encloses
+                     "1e-20"
+                     "transpose (rotationOf pf) @ euler313 (30 deg) (45 deg) (60 deg)"
+                     "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]"
                  , encloses
                      "1e-20"
                      (fromEci "[1, 2, 3] pf")
@@ -1900,20 +1905,26 @@ turnedChartTests =
             , "true"
             , "[3.0000000000000000000…, 0.99999999999999999999…, 3] m"
             ]
-    , testCase "a covariance and a Cov2 block through inChart are R P Rᵀ" $ do
+    , testCase "a covariance and a Cov2 block through rotateCov are R P Rᵀ" $ do
         let pm = "[[4, 1, 0], [1, 9, 0], [0, 0, 1]]"
         typeOfTextP "inChart"
-          @?= Right "forall n a d s d1. Chart (Vec n d) a -> Tensor s d1 -> Tensor s d1"
+          @?= Right
+            "forall n a d s d1. Chart (Vec n d) a -> Tensor (n : s) d1 -> Tensor (a : s) d1"
+        typeOfTextP "rotateCov"
+          @?= Right "forall n m d d1. Mat n m d -> Mat m m d1 -> Mat n n [d^2 d1]"
         runLinesP
           ( frame
               ++ [ encloses
                      "1e-20"
-                     ("inChart lvlh " <> pm)
+                     ("rotateCov (rotationOf lvlh) " <> pm)
                      ("rotationOf lvlh @ " <> pm <> " @ transpose (rotationOf lvlh)")
-                 , encloses "1e-20" ("inChart lvlh " <> pm) "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
+                 , encloses
+                     "1e-20"
+                     ("rotateCov (rotationOf lvlh) " <> pm)
+                     "[[9, -1, 0], [-1, 4, 0], [0, 0, 1]]"
                  , -- an unturned chart's is exactly the identity
-                   "inChart eci " <> pm <> " == " <> pm
-                 , "let blk = Cov2 {rr = "
+                   "rotateCov (rotationOf eci) " <> pm <> " == " <> pm
+                 , "blk :: Cov2 lvlh [m] [m s^-1]\nlet blk = Cov2 {rr = "
                      <> pm
                      <> " * m^2, rv = "
                      <> pm
@@ -2010,8 +2021,7 @@ perifocalSession =
   , "(rp to eci) to pf"
   , "let vp = inChart pf ([0, 7.5, 0] km/s)"
   , "vp to km/s"
-  , "let p = [[1, 0, 0], [0, 4, 0], [0, 0, 9]] km^2"
-  , "inChart pf p to km^2"
+  , "rotateCov (rotationOf pf) ([[1, 0, 0], [0, 4, 0], [0, 0, 9]] km^2) to km^2"
   ]
 
 {- | Design §3.8: moving charts. A chart declared with parameters is a
@@ -2039,7 +2049,7 @@ movingChartTests =
             )
             @?= Right
               [ "chart spinner t = m at [0, 0, 0] m eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w"
-              , "forall (a : 3) b. Point [s] -> Chart (Vec a [m]) b"
+              , "Point [s] -> Chart (Vec spinner [m]) eci"
               , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
               , "[6981397.0116296611947…, -509995.84901098588542…, 0] (spinner (1000 unix))"
               , "chart (spinner (1000 unix))"
@@ -2091,7 +2101,7 @@ movingChartTests =
               ++ [ ":use astro"
                  , "let c = spinner t1"
                  , "let p = [7000000, 0, 0] (spinner t1)"
-                 , "let wv = [0, 0, 1] * (w / rad)"
+                 , "let wv = withAxes eci ([0, 0, 1] * (w / rad))"
                  , -- the inertial velocity of a point turning with the chart
                    "let body = State {epoch = t1, pos = p, vel = wv × (p .- [0, 0, 0] eci)}"
                  , encloses "1e-15" "velocityIn c body / (m / s)" "[0, 0, 0]"
@@ -2117,13 +2127,13 @@ movingChartTests =
                 ++ [ ":use astro"
                    , "chart tilted t = m at [100, -20, 30] km (spinner t) by rotx (30 deg) spinning [0.1, 0, 0] * w"
                    , "let c = tilted t1"
-                   , "let pc = [7000, 100, -50] km"
-                   , "let vc = [1, 7.5, 0.2] km/s"
+                   , "let pc = withAxes c ([7000, 100, -50] km)"
+                   , "let vc = withAxes c ([1, 7.5, 0.2] km/s)"
                    , "let st = stateFrom c t1 pc vc"
                    , encloses "1e-15" "velocityIn c st / (m / s)" "vc / (m / s)"
                    , encloses
                        "1e-15"
-                       "transformBy (transpose (rotationOf c)) (st.pos .- [0, 0, 0] (tilted t1)) / m"
+                       "along c (st.pos .- [0, 0, 0] (tilted t1)) / m"
                        "pc / m"
                    , encloses
                        "1e-12"
@@ -2141,7 +2151,7 @@ movingChartTests =
           runLinesP
             ( spinning
                 ++ [ ":use astro"
-                   , "let pc = [7000000, 2000, 300]"
+                   , "let pc = withAxes (spinner t1) [7000000, 2000, 300]"
                    , "let fd = (pointOn (spinner (t1 .+ 1 ms)) pc .- pointOn (spinner t1) pc) / (1 ms)"
                    , "let v = (stateFrom (spinner t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
                    , "let rel = norm (fd - v) / norm v"
@@ -2157,7 +2167,7 @@ movingChartTests =
                 spinning
                   ++ [ ":use astro"
                      , "chart station t = m at [6378, 0, 0] km (spinner t) by roty (30 deg)"
-                     , "let wv = [0, 0, 1] * (w / rad)"
+                     , "let wv = withAxes eci ([0, 0, 1] * (w / rad))"
                      , "let c = station t1"
                      ]
           runLinesP
@@ -2186,7 +2196,7 @@ movingChartTests =
           runLinesP
             ( station
                 ++ [ "chart dish t = m at [0, 0, 10] m (station t) by rotz (0.01 rad/s * (t .- t0)) spinning [0, 0, 0.01] rad/s"
-                   , "let pc = [3, 1, 2]"
+                   , "let pc = withAxes (dish t1) [3, 1, 2]"
                    , "let fd = (pointOn (dish (t1 .+ 1 ms)) pc .- pointOn (dish (t1 .+ -1 ms)) pc) / (2 ms)"
                    , "let v = (stateFrom (dish t1) t1 (pc * m) ([0, 0, 0] m/s)).vel"
                    , "vmap (\\x -> if abs (mid x) < 1e-11 then 0 else 1) ((fd - v) / (m / s)) == [0, 0, 0]"
@@ -2491,7 +2501,7 @@ rotationTests =
           @?= Right ["[4, 3; 2, 1] km"]
         evalP "transformBy [[0, 1], [1, 0]] (5 km)" @?= Right ["5 km"]
         typeOfTextP "transformBy"
-          @?= Right "forall n a s d. Mat n a -> Tensor s d -> Tensor s d"
+          @?= Right "forall n s d. Mat n n -> Tensor s d -> Tensor s d"
         typeOfTextP "transformBy (expm (rotz (10 deg))) ([1, 2, 3] m)"
           @?= Right "Vec 3 [m]"
     , testCase "transformBy refuses an axis of another length, at run time" $ do
@@ -3706,8 +3716,8 @@ affineTests =
         evalText "det [[0, 0], [0, 0]]" @?= Right ["0"]
         -- det is polymorphic in the size, with no static size check, and is
         -- on dimensionless matrices only (design §4.3, §4.6).
-        typeOfTextP "det" @?= Right "forall n. Mat n n -> Num"
-        typeOfTextP "\\a -> det a + 1" @?= Right "forall n. Mat n n -> Num"
+        typeOfTextP "det" @?= Right "forall n a. Mat n a -> Num"
+        typeOfTextP "\\a -> det a + 1" @?= Right "forall n a. Mat n a -> Num"
         runLinesP ["let d a = det a", "d [[2, 0, 0], [0, 3, 0], [0, 0, 4]] + d [[2]]"]
           @?= Right ["26"]
         evalP "det ([[1 m, 0 m], [0 m, 2 m]] / (1 m))" @?= Right ["2"]
@@ -4016,12 +4026,13 @@ affineTests =
           , "([1, 2, 3] site).0"
           , ":type ([1, 2, 3] site).0"
           , "[1, 2, 3] site == [1, 2, 3] site"
-          , "scale eci = km at [0, 0, 0] km"
-          , "[7000, 0, 0] eci to site"
+          , -- a chart in km, translated from site, is on site's axes
+            "scale ground = km at [-100, -200, 0] m site"
+          , "[7000, 0, 0] ground to site"
           ]
           @?= Right
             [ "[1, 2, 3] site"
-            , "Point (Vec 3 [m])"
+            , "Point (Vec site [m])"
             , "[1, 2, 3] m"
             , "[1001, 1002, 1003] site"
             , "1 site"
@@ -4029,6 +4040,16 @@ affineTests =
             , "true"
             , "[6999900, -200, 0] site"
             ]
+        -- Two charts with no parent name axes of their own (design §3.9,
+        -- decision 7): no `to` between them.
+        expectError
+          ( runLinesP
+              [ "scale site = m at [100, 200, 0] m"
+              , "scale eci = km at [0, 0, 0] km"
+              , "[7000, 0, 0] eci to site"
+              ]
+          )
+          "a point is along its chart's root: the axes of eci against the axes of site"
         typeOfTextP "\\p v -> p .+ v"
           @?= Right "forall s d. Point (Tensor s d) -> Tensor s d -> Point (Tensor s d)"
         case runLinesP ["scale site = m at [100, 200, 0] m", "[1, 2, 3] site + [1, 1, 1] m"] of
@@ -4036,7 +4057,7 @@ affineTests =
           Right v -> assertFailure (show v)
         case runLinesP
           ["scale site = m at [100, 200, 0] m", "[1, 2, 3] site < [2, 3, 4] site"] of
-          Left err -> T.isInfixOf "no ordering on Point (Vec 3 [m])" err @? T.unpack err
+          Left err -> T.isInfixOf "no ordering on Point (Vec site [m])" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "points compare and have no sum" $ do
         evalP "20 degC < 70 degF" @?= Right ["true"]
@@ -4112,11 +4133,13 @@ affineTests =
           typeOfTextP "mkChart3"
             @?= Right
               "forall d s a. Num d -> Tensor s d -> Chart (Tensor s d) a -> Chart (Tensor s d) a"
-          typeOfTextP "mkChart4"
-            @?= Right
-              "forall d n a b. Num d -> Vec n d -> Chart (Vec n d) a -> {Mat b b} -> Chart (Vec n d) a"
+          -- A turned chart's axes are its declaration's (design §3.9): the
+          -- primitive takes the minted constructor no source can write.
+          expectError
+            (runLinesP [eci, "mkChart4 m ([0, 0, 0] m) eci " <> turn])
+            "mkChart4 takes the axes a chart declaration mints first"
           typeOfTextP "rotationOf"
-            @?= Right "forall n a d b. Chart (Vec n d) a -> Mat b n"
+            @?= Right "forall n a d. Chart (Vec n d) a -> Mat a n"
           -- The origin is an amount in the parent; points are amounts from the
           -- base origin, so a difference across the tree is a plain difference.
           runLinesP
@@ -4133,26 +4156,23 @@ affineTests =
               , "chart: step 1 at [6378000, 0, 0] m"
               ]
           -- A generator: exact, or scaled by an approximate angle, is a bivector.
-          runLinesP [eci, "mkChart4 m ([0, 0, 0] m) eci " <> turn]
-            @?= Right ["chart: step 1 at [0, 0, 0] m"]
-          runLinesP
-            [eci, "mkChart4 m ([0, 0, 0] m) eci {[0, -1, 0; 1, 0, 0; 0, 0, 0] * pi / 6}"]
-            @?= Right ["chart: step 1 at [0, 0, 0] m"]
+          let turnedBy gs = [eci, "chart t = m at [1, 0, 0] m eci by " <> gs, "[0, 0, 0] t"]
+          runLinesP (turnedBy "[0, -1, 0; 1, 0, 0; 0, 0, 0]") @?= Right ["[0, 0, 0] t"]
+          runLinesP (turnedBy "[0, -1, 0; 1, 0, 0; 0, 0, 0] * pi / 6")
+            @?= Right ["[0, 0, 0] t"]
           let refused lines' needle = case runLinesP lines' of
                 Left err -> T.isInfixOf needle err @? T.unpack err
                 Right v -> assertFailure (show v)
           refused
-            [eci, "mkChart4 m ([0, 0, 0] m) eci {[0, 1, 0; 1, 0, 0; 0, 0, 0]}"]
+            (turnedBy "[0, 1, 0; 1, 0, 0; 0, 0, 0]")
             "the generator of a chart must be antisymmetric: a bivector, such as rotz θ or a ∧ b"
           -- Every generator of the list is checked.
           refused
-            [ eci
-            , "mkChart4 m ([0, 0, 0] m) eci {rotz (30 deg), [1, 0, 0; 0, 0, 0; 0, 0, 0]}"
-            ]
+            (turnedBy "rotz (30 deg) then [1, 0, 0; 0, 0, 0; 0, 0, 0]")
             "must be antisymmetric"
           -- No generator is axis-aligned; an unnamed chart prints its points
           -- from the base origin.
-          runLinesP [eci, "pointOn (mkChart4 m ([1, 0, 0] m) eci {}) [1, 2, 3]"]
+          runLinesP [eci, "pointOn (mkChart3 m ([1, 0, 0] m) eci) [1, 2, 3]"]
             @?= Right ["[2, 2, 3] m (point)"]
           -- The type cannot tell a turned chart from another, so `rotationOf`
           -- is exactly the identity on one that is not turned.
@@ -4161,12 +4181,12 @@ affineTests =
           -- The parent's dimension and shape, and the generator's size, are the child's.
           refused
             [eci, "mkChart3 K (0 K) eci"]
-            "expected Chart [K], got Chart (Vec 3 [m])"
+            "expected Chart [K], got Chart (Vec eci [m]) eci"
           refused
             [eci, "mkChart3 m ([1, 2] m) eci"]
-            "expected Chart (Vec 2 [m]), got Chart (Vec 3 [m])"
+            "expected Chart (Vec 2 [m]), got Chart (Vec eci [m]) eci"
           refused
-            [eci, "mkChart4 m ([0, 0, 0] m) eci {[0, 1; -1, 0]}"]
+            (turnedBy "[0, 1; -1, 0]")
             "expected Mat 3 3, got Mat 2 2"
     , testCase "charts with a parent: the translated tree, to and .- through it" $ do
         -- design §3.8's hierarchy without the rotations
@@ -4190,9 +4210,6 @@ affineTests =
                  , -- a temperature scale is untouched
                    "20 degC to degF"
                  , "77 °F .- 68 °F"
-                 , -- a chart with no parent sits on the base, as before
-                   "chart pad = m at [6378000, 10, 0] m"
-                 , "[1, 2, 3] antenna to pad"
                  ]
           )
           @?= Right
@@ -4201,15 +4218,22 @@ affineTests =
             , "[2, 0, 1] site"
             , "[3, 2, 4] m"
             , "true"
-            , "Chart (Vec 3 [m])"
+            , -- a translated chart is along its parent's axes
+              "Chart (Vec eci [m]) eci"
             , "chart antenna = m at [2, 0, 1] m site"
             , "chart site = m at [6378, 0, 0] km eci"
-            , "chart antenna : Chart (Vec 3 [m])"
+            , "chart antenna : Chart (Vec eci [m]) eci"
             , "chart antenna = m at [2, 0, 1] m site"
             , "68 degF"
             , "9 deltaF"
-            , "[3, -8, 4] pad"
             ]
+        -- A chart with no parent sits on the base, as before, with axes of
+        -- its own (design §3.9, decision 7): no `to` from another root.
+        expectError
+          ( runLinesP
+              (tree ++ ["chart pad = m at [6378000, 10, 0] m", "[1, 2, 3] antenna to pad"])
+          )
+          "the axes of eci against the axes of pad"
         -- :edit reads back to the same hash.
         let hashAfter def = runLinesP (take 2 tree ++ [def, ":hash antenna"])
         expecting (runLinesP (tree ++ [":edit antenna"])) $ \outs ->
@@ -4217,7 +4241,8 @@ affineTests =
         -- An origin that is a name, or an expression, before the parent.
         runLinesP
           ( tree
-              ++ [ "let r0 = [1, 0, 0] km"
+              ++ [ -- a named value has a frame only when given one (design §3.9)
+                   "let r0 = withAxes eci ([1, 0, 0] km)"
                  , "chart c1 = m at r0 eci"
                  , "chart c2 = m at (r0 + r0) site"
                  , "[0, 0, 0] c1 to eci"
@@ -4235,7 +4260,7 @@ affineTests =
         -- The parent's dimension is the child's.
         expectError
           (runLinesP (tree ++ ["chart t = K at 3 K site", "t"]))
-          "expected Chart [K], got Chart (Vec 3 [m])"
+          "expected Chart [K], got Chart (Vec eci [m]) eci"
         -- A trailing unit is a unit, not a parent.
         runLinesP ["chart warm = K at 300 K", "0 warm to degC"] @?= Right ["26.85 degC"]
     , testCase
@@ -4251,7 +4276,7 @@ affineTests =
             ]
             @?= Right
               [ "chart lvlh = m at [0, 0, 0] m eci by " <> turn
-              , "Chart (Vec 3 [m])"
+              , "Chart (Vec lvlh [m]) eci"
               ]
           -- `by` is cut at the top level, so the generator is a whole expression.
           runLinesP
@@ -5462,7 +5487,9 @@ dataTests =
           ["data Maybe a = Nothing | Just a", "data W = W Maybe"]
           "`Maybe` takes 1 argument, given 0"
         refused ["data W = W (Num [furlong])"] "a dimension is a product of base units"
-        refused ["data W = W (Vec [m])"] "a length is a number, a parameter, or rank s"
+        refused
+          ["data W = W (Vec [m])"]
+          "a length is a number, a parameter, a chart's axes, or rank s"
         refused
           ["data Maybe a = Nothing | Just a", "case Just 1 of Nothing -> 0"]
           "does not cover Just"
@@ -8253,9 +8280,9 @@ withBuiltinTypes = Right . (++ builtinTypeListing)
 -- | How @:ls --types@ lists the library's @astro.State@ (design §3.8).
 astroState, astroStateCon :: Text
 astroState =
-  "data astro.State = astro.State {epoch :: Point [s], pos :: Point (Vec 3 [m]), vel :: Vec 3 [m s^-1]}"
+  "data astro.State n = astro.State {epoch :: Point [s], pos :: Point (Vec n [m]), vel :: Vec n [m s^-1]}"
 astroStateCon =
-  "astro.State : Point [s] -> Point (Vec 3 [m]) -> Vec 3 [m s^-1] -> astro.State"
+  "astro.State : forall n. Point [s] -> Point (Vec n [m]) -> Vec n [m s^-1] -> astro.State n"
 
 -- | The signatures a user wrote: the library's own (`linalg.vimap`) left out.
 userSignatures :: Codebase -> [Text]

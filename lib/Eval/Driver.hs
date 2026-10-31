@@ -1783,7 +1783,13 @@ exportLabels session under = do
   stored = session.codebase.uses
   cb = session.codebase{uses = []}
   terms = [(n, r) | (n, r) <- Map.toList cb.names, under n]
-  types = [(n, h) | (n, h) <- Map.toList cb.typeNames, under n]
+  -- A chart's axes are minted again by its declaration (design §3.9).
+  types =
+    [ (n, h)
+    | (n, h) <- Map.toList cb.typeNames
+    , under n
+    , not (maybe False isAxesDef (lookupTypeDef h cb))
+    ]
   namespaceOf n = init (T.splitOn "." n)
   -- Types after the types their fields use.
   orderedTypes =
@@ -2296,7 +2302,9 @@ applyEdit target text session = case reconcile of
 -- | The labels a declaration defines, by kind and full path.
 declLabels :: S.Decl -> [(LabelKind, Text)]
 declLabels = \case
-  S.DBind _ b -> [(TermLabel, b.name.text)]
+  -- A chart labels its axes too (design §3.9).
+  S.DBind _ b ->
+    (TermLabel, b.name.text) : [(TypeLabel, b.name.text) | b.kind == S.ChartDecl]
   S.DData _ d ->
     (TypeLabel, d.name.text)
       : [(TermLabel, c.text) | (c, _) <- d.constructors]

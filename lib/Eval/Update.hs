@@ -387,25 +387,3 @@ restampTerm lab con = go
     Pack ts -> Pack (map go ts)
     Proj t i -> Proj (go t) i
     Cycle hs bs -> Cycle hs (vecMap go bs)
-
--- | The declared types whose constructors a term builds or matches.
-conTypes :: Term n -> Set.Set Hash
-conTypes = \case
-  Con c as -> conType c <> foldMap conTypes as
-  Case s alts -> conTypes s <> foldMap (\(Alt c _ b) -> conType c <> conTypes b) alts
-  PrimApp _ as -> foldMap conTypes as
-  Lam _ b -> conTypes b
-  App a b -> conTypes a <> conTypes b
-  Let _ e b -> conTypes e <> conTypes b
-  Pow t _ -> conTypes t
-  Uncertain _ _ x e -> conTypes x <> conTypes e
-  Pack ts -> foldMap conTypes ts
-  Proj t _ -> conTypes t
-  Cycle _ bs -> foldMap conTypes (vecToList bs)
-  Var _ -> Set.empty
-  Ref{} -> Set.empty
-  Lit _ -> Set.empty
-  Noise{} -> Set.empty
- where
-  conType = \case
-    UserCon h _ -> Set.singleton h

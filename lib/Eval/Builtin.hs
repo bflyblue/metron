@@ -28,6 +28,10 @@ module Eval.Builtin (
   tupleDef,
   maxTupleArity,
   builtinDefs,
+  axesDef,
+  axesHash,
+  axesTag,
+  isAxesDef,
 
   -- * Their hashes and types
   boolHash,
@@ -65,7 +69,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
-import Eval.Core (ConRef (..), Hash)
+import Eval.Core (ConRef (..), Hash, Label (..))
 import Eval.Encode (hashTypeDef)
 import Eval.Type.Base
 
@@ -102,6 +106,27 @@ type be recognised from its hash alone: the arities are a finite table.
 -}
 maxTupleArity :: Int
 maxTupleArity = 32
+
+{- | The axis type a chart declaration mints (design §3.9, decision 1): no
+parameters, one constructor with no fields, stamped with the chart's full
+path under a label kind no source @data@ has. Its hash is the chart's
+axis set; its constructor is the chart primitive's first argument.
+-}
+axesDef :: Text -> TypeDef
+axesDef path = TypeDef [] [[]] (Axes path)
+
+axesHash :: Text -> Hash
+axesHash = hashTypeDef . axesDef
+
+-- | The constructor a chart primitive takes, the axes of the chart at a path.
+axesTag :: Text -> ConRef
+axesTag path = UserCon (axesHash path) 0
+
+-- | Whether a declaration is a chart's minted axis type.
+isAxesDef :: TypeDef -> Bool
+isAxesDef def = case def.label of
+  Axes _ -> True
+  _ -> False
 
 -- | The built-in declarations by hash: what every type lookup knows.
 builtinDefs :: Hash -> Maybe TypeDef

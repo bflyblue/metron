@@ -12,6 +12,9 @@ module Eval.TCore (
   TTerm (..),
   primScheme,
   primSchemeFor,
+  StaticArg (..),
+  chartRelation,
+  rootward,
   baseUnit,
   closedLens,
   appendShape,
@@ -128,66 +131,37 @@ primScheme name = case name of
   "exp" -> num1
   "log" -> num1
   "atan2" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) angleT)))
-  -- Points and charts (design §3.6, §3.8). A chart's root slot (design
-  -- §3.9) is a variable no primitive reads yet: a root chart's is free,
-  -- and a child shares its parent's.
-  "mkScale" -> Just (Forall [sv, dv, rv] (TFun (numD d) (TFun sd (chartOf s))))
-  -- A chart in a parent of its own shape and dimension (design §3.8); the
-  -- origin is an amount along the parent's axes.
+  -- Points and charts (design §3.6, §3.8). A root chart, a turned one and
+  -- a spinning one have axes of their own, read off their first argument
+  -- ('primSchemeFor'); a translated chart, in a parent of its own shape and
+  -- dimension, shares its parent's axes and root (design §3.9). The origin
+  -- is an amount along the parent's axes.
   "mkChart3" ->
     Just
       ( Forall
           [sv, dv, rv]
           (TFun (numD d) (TFun sd (TFun (chartOf s) (chartOf s))))
       )
-  -- Turned from the parent by a list of dimensionless generators, applied
-  -- in order. The generators are matrices over axes of their own, not yet
-  -- tied to the chart's.
-  "mkChart4" ->
-    Just
-      ( Forall
-          [nv, dv, xav, xbv, rv]
-          ( TFun
-              (numD d)
-              ( TFun
-                  (vecA n xa d)
-                  ( TFun
-                      (chartOf (pos n xa))
-                      (TFun (listT (matA (n, xb) (n, xb) dimOne)) (chartOf (pos n xa)))
-                  )
-              )
-          )
-      )
-  -- And spinning: an angular velocity relative to the parent, which only a
-  -- three-dimensional chart has. The radian is stripped as rotz strips it,
-  -- so the chart keeps it in s^-1. The literal 3 has an axis variable
-  -- beside it, so a named three-axis frame will do.
-  "mkChart5" ->
-    Just
-      ( Forall
-          [dv, xav, xbv, xcv, rv]
-          ( TFun
-              (numD d)
-              ( TFun
-                  (vecA three xa d)
-                  ( TFun
-                      (chartOf (pos three xa))
-                      ( TFun
-                          (listT (matA (three, xb) (three, xb) dimOne))
-                          (TFun (vecA three xc angularRate) (chartOf (pos three xa)))
-                      )
-                  )
-              )
-          )
-      )
+  -- A point is stored from the base origin along the base axes, so its
+  -- type is along the chart's root (design §3.9, stage 2b): the
+  -- coordinates are along the chart's own axes, @s@, and the point along
+  -- @t@, @s@ with the root's axes at every position, a relation inference
+  -- defers and lint checks ('chartRelation'). A scalar point has no axes.
   "pointOn" ->
     Just
-      (Forall [sv, dv, rv] (TFun (chartOf s) (TFun (TTensor s dimOne) (TPoint s d))))
+      ( Forall
+          [sv, dv, rv, tv]
+          (TFun (chartOf s) (TFun (TTensor s dimOne) (TPoint t d)))
+      )
   "pointAdd" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun sd (TPoint s d))))
   "pointSub" -> Just (Forall [sv, dv] (TFun (TPoint s d) (TFun (TPoint s d) sd)))
+  -- To a chart of the same root: a point keeps its axes, the root's.
   "toScale" ->
     Just
-      (Forall [sv, dv, rv] (TFun (TPoint s d) (TFun (chartOf s) (TPoint s d))))
+      ( Forall
+          [sv, dv, rv, tv]
+          (TFun (TPoint t d) (TFun (chartOf s) (TPoint t d)))
+      )
   -- lt, le, gt, ge have instance types; see lintConstrained.
   "and" -> mono (TFun boolT (TFun boolT boolT))
   "or" -> mono (TFun boolT (TFun boolT boolT))
@@ -225,8 +199,8 @@ primScheme name = case name of
       )
   -- det : Mat n n d -> Num [d^n] needs the length as an exponent; until that
   -- relation exists, det is on dimensionless matrices. Its rows and
-  -- columns are along one axis set.
-  "det" -> Just (Forall [nv, xav] (TFun (matA (n, xa) (n, xa) dimOne) numT))
+  -- columns may be along two axis sets of one size, as a rotation's are.
+  "det" -> Just (Forall [nv, xav, xbv] (TFun (matA (n, xa) (n, xb) dimOne) numT))
   -- Covariance (design §3.5): a square-root factor, the covariance of a
   -- vector's statistical nudges, and a vector with a given covariance.
   -- The factor keeps the rows and the columns of what it factors.
@@ -302,37 +276,44 @@ primScheme name = case name of
           (TFun (matA (n, xa) (n, xa) dimOne) (matA (n, xa) (n, xa) dimOne))
       )
   -- R applied along every axis of a tensor. The type cannot say that every
-  -- length of s is n; the evaluator checks it (design §4.3). Its axes are
-  -- free until stage 2 of design §3.9 types it as a map of one axis set.
+  -- length of s is n; the evaluator checks it (design §4.3). Nor can it
+  -- say "every axis" over axis sets, so it is for anonymous axes only
+  -- (design §3.9); linalg's rotateVec and rotateCov are the typed forms.
   "transformBy" ->
     Just
       ( Forall
-          [nv, sv, dv, xav, xbv]
-          (TFun (matA (n, xa) (n, xb) dimOne) (TFun sd sd))
+          [nv, sv, dv]
+          (TFun (matA (n, AAnon) (n, AAnon) dimOne) (TFun sd sd))
       )
-  -- A chart's absolute rotation: its axes, as columns along the base axes
-  -- (design §3.8). The rows' axes are free, not the root slot: a written
-  -- type cannot say the root yet, and `Chart (Vec n d) -> Mat n n` must
-  -- still hold of rotationOf (design §3.9, stage 2 ties them).
+  -- A chart's absolute rotation (design §3.8, §3.9): its axes, as columns
+  -- along its root's, so rows along the root and columns along the chart.
   "rotationOf" ->
     Just
       ( Forall
-          [nv, dv, xav, xbv, rv]
-          (TFun (chartOf (pos n xa)) (matA (n, xb) (n, xa) dimOne))
+          [nv, dv, xav, rv]
+          (TFun (chartOf (pos n xa)) (matA (n, root) (n, xa) dimOne))
       )
   -- Its absolute angular velocity and the velocity of its origin, along
-  -- the base axes (design §3.8): zero for a chart that does not move.
+  -- its root's axes (design §3.8): zero for a chart that does not move.
   "spinOf" ->
     Just
       ( Forall
-          [dv, xav, xbv, rv]
-          (TFun (chartOf (pos three xa)) (vecA three xb (dimInv (dimBase T))))
+          [dv, xav, rv]
+          (TFun (chartOf (pos three xa)) (vecA three root (dimInv (dimBase T))))
       )
   "originVelocityOf" ->
     Just
       ( Forall
-          [dv, xav, xbv, rv]
-          (TFun (chartOf (pos three xa)) (vecA three xb (dimDiv d (dimBase T))))
+          [dv, xav, rv]
+          (TFun (chartOf (pos three xa)) (vecA three root (dimDiv d (dimBase T))))
+      )
+  -- A vector with anonymous axes, read as along a chart's (design §3.9):
+  -- a relabelling, no arithmetic.
+  "withAxes" ->
+    Just
+      ( Forall
+          [nv, dv, d2v, xav, rv]
+          (TFun (chartOf (pos n xa)) (TFun (vecA n AAnon d2) (vecA n xa d2)))
       )
   _ -> case baseUnit name of
     Just b -> mono (numD (dimBase b))
@@ -347,7 +328,8 @@ primScheme name = case name of
   xav = (6, KAxis)
   xbv = (7, KAxis)
   rv = (8, KAxis)
-  xcv = (9, KAxis)
+  -- The root's axes along a shape: where a point lies (design §3.9).
+  tv = (5, KShape)
   s = SVar 0
   d = dimVar 1
   d2 = dimVar 2
@@ -356,11 +338,10 @@ primScheme name = case name of
   xa = AVar 6
   xb = AVar 7
   root = AVar 8
-  xc = AVar 9
+  t = SVar 5
   three = LLit 3
   sd = TTensor s d
   sd2 = TTensor s d2
-  angularRate = dimDiv (dimBase Ang) (dimBase T)
   -- One position, a vector along it, a matrix of two, a chart of a shape.
   pos l x = SCons l x SNil
   vecA l x = TTensor (pos l x)
@@ -388,9 +369,140 @@ position @i@ and is dropped.
 
 Each position is a length and an axis variable (design §3.9), moved or
 dropped with its length: @contract@'s paired positions share both.
+
+A chart that introduces axes, @mkScale@, @mkChart4@ and @mkChart5@, takes
+the constructor of the axis type its declaration minted first (design
+§3.9, decision 1), read as @contract@ reads its positions: the chart's own
+axes are that type's hash. A turned chart keeps its parent's root; a root
+chart's root is its own axes, which for a scalar chart, with no axes, is
+anonymous: that, and that every position of a root chart's shape is along
+its axes, is a relation on the shape ('chartRelation'). The generators
+and the spin are over axes of their own: a rotation constructor's are
+anonymous.
 -}
-primSchemeFor :: Text -> [Maybe Lit] -> Maybe (Either Text Scheme)
-primSchemeFor name lits = case name of
+primSchemeFor :: Text -> [Maybe StaticArg] -> Maybe (Either Text Scheme)
+primSchemeFor name statics = case name of
+  "mkScale" -> Just $ tagged $ \_ tag ->
+    Forall
+      [sv, dv, rv]
+      (TFun tag (TFun (numD d) (TFun (TTensor s d) (TScale s root d))))
+  "mkChart4" -> Just $ tagged $ \h tag ->
+    Forall
+      [nv, dv, xav, xbv, rv]
+      ( TFun
+          tag
+          ( TFun
+              (numD d)
+              ( TFun
+                  (vecA n xa d)
+                  ( TFun
+                      (TScale (pos n xa) root d)
+                      (TFun (listT (matA (n, xb) (n, xb))) (TScale (pos n (ANamed h)) root d))
+                  )
+              )
+          )
+      )
+  "mkChart5" -> Just $ tagged $ \h tag ->
+    Forall
+      [dv, xav, xbv, xcv, rv]
+      ( TFun
+          tag
+          ( TFun
+              (numD d)
+              ( TFun
+                  (vecA three xa d)
+                  ( TFun
+                      (TScale (pos three xa) root d)
+                      ( TFun
+                          (listT (matA (three, xb) (three, xb)))
+                          ( TFun
+                              (vecA three xc angularRate)
+                              (TScale (pos three (ANamed h)) root d)
+                          )
+                      )
+                  )
+              )
+          )
+      )
+  _ -> primSchemeForLits name (map (>>= litOf) statics)
+ where
+  litOf = \case
+    LitArg l -> Just l
+    ConArg _ -> Nothing
+  tagged f = case statics of
+    Just (ConArg (UserCon h 0)) : _ -> Right (f h (TData h []))
+    _ ->
+      Left
+        ( name
+            <> " takes the axes a chart declaration mints first: declare the chart with chart"
+        )
+  sv = (0, KShape)
+  dv = (1, KDim)
+  nv = (3, KLen)
+  xav = (6, KAxis)
+  xbv = (7, KAxis)
+  rv = (8, KAxis)
+  xcv = (9, KAxis)
+  s = SVar 0
+  d = dimVar 1
+  n = LVar 3 0
+  xa = AVar 6
+  xb = AVar 7
+  root = AVar 8
+  xc = AVar 9
+  three = LLit 3
+  angularRate = dimDiv (dimBase Ang) (dimBase T)
+  pos l x = SCons l x SNil
+  vecA l x = TTensor (pos l x)
+  matA (r, x) (c, y) = TTensor (SCons r x (pos c y)) dimOne
+
+{- | A constant argument of a primitive, which 'primSchemeFor' may read: a
+literal, or a constructor with no fields.
+-}
+data StaticArg = LitArg Lit | ConArg ConRef
+  deriving stock (Eq, Show)
+
+{- | What the schemes of the chart primitives cannot say over a shape
+variable (design §3.9), checked on the type a primitive is used at, as
+inference solved it. A root chart's positions are along the axes it
+minted and so is its root, unless it is scalar, when its root is
+anonymous; a point on a chart, written ('pointOn') or converted
+('toScale'), is along the chart's root at every position. A shape still
+unknown when its definition was generalised was taken to be the chart's
+own, so a point on it is along the same shape.
+-}
+chartRelation :: Text -> Type -> [Maybe StaticArg] -> Either Text ()
+chartRelation name ty statics = case (name, ty, statics) of
+  ( "mkScale"
+    , TFun _ (TFun _ (TFun (TTensor sh _) (TScale _ r _)))
+    , Just (ConArg (UserCon h _)) : _
+    ) ->
+    case closedLens sh of
+      Just [] -> require (r == AAnon) "mkScale: a scalar chart's root is anonymous"
+      Just ls ->
+        require
+          (all ((== ANamed h) . snd) ls && r == ANamed h)
+          "mkScale: a root chart is along the axes it minted"
+      Nothing -> Right ()
+  ("pointOn", TFun (TScale sh r _) (TFun _ (TPoint t _)), _) -> along sh r t
+  ("toScale", TFun (TPoint t _) (TFun (TScale sh r _) _), _) -> along sh r t
+  _ -> Right ()
+ where
+  along sh r t =
+    require
+      (t == rootward sh r)
+      (name <> ": a point is not along its chart's root at every position")
+
+{- | A chart's shape with its root's axes at every position: where its
+points lie (design §3.9, stage 2b). A shape still a variable is its own.
+-}
+rootward :: Shape -> Axis -> Shape
+rootward sh r = case closedLens sh of
+  Just ls -> appendShape [(l, r) | (l, _) <- ls] SNil
+  Nothing -> sh
+
+primSchemeForLits :: Text -> [Maybe Lit] -> Maybe (Either Text Scheme)
+primSchemeForLits name lits = case name of
   "contract" -> Just $ case lits of
     [Just li, Just lj, _]
       | Just i <- position li
@@ -510,7 +622,13 @@ lint look ctx = \case
         Right
         (nth (fromMaybe 0 idx) schemes)
   TPrimApp name ty args -> do
-    let literals = [case a of TLit l _ -> Just l; _ -> Nothing | a <- args]
+    let literals =
+          [ case a of
+              TLit l _ -> Just (LitArg l)
+              TCon c _ [] -> Just (ConArg c)
+              _ -> Nothing
+          | a <- args
+          ]
         instanceOf general =
           require
             (ty `isInstanceOf` general)
@@ -526,6 +644,7 @@ lint look ctx = \case
       -- contract, permute and slice: the scheme the literal positions determine.
       (_, Just general) -> general >>= instanceOf
       _ -> lintConstrained look name ty
+    chartRelation name ty literals
     let go t = \case
           [] -> Right t
           arg : rest -> case t of

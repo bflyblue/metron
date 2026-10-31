@@ -147,6 +147,11 @@ data Env = Env
   {- ^ when checking ascriptions, the prefix of their markers' tags
   ('desugarMarked'); otherwise an ascription desugars to its expression
   -}
+  , definition :: Text
+  {- ^ the full path of the definition being desugared, which a chart's
+  minted axis type is stamped with (design §3.9); a @#label@ does not
+  change it
+  -}
   }
 
 -- | Paths are built in reverse (innermost first) and reversed when stored.
@@ -173,7 +178,7 @@ desugarMember ::
   Text -> Resolver -> Ctx n -> S.Expr -> Either DesugarError (Term n, Provenance)
 desugarMember name resolve ctx e =
   runStateT
-    (runReaderT (desugar [] ctx e) (Env resolve (Owner name) Nothing))
+    (runReaderT (desugar [] ctx e) (Env resolve (Owner name) Nothing name))
     emptyProvenance
 
 {- | A member desugared for checking its ascriptions (design §4.8): each
@@ -194,7 +199,7 @@ desugarMarked ::
   Either DesugarError (Term n, Provenance)
 desugarMarked tag name resolve ctx e =
   runStateT
-    (runReaderT (desugar [] ctx e) (Env resolve (Owner name) (Just tag)))
+    (runReaderT (desugar [] ctx e) (Env resolve (Owner name) (Just tag) name))
     emptyProvenance
 
 -- | The name of an ascription marker starts so (design §4.8).
@@ -529,14 +534,18 @@ desugar path ctx e = do
     -- is its parent. Without one, and without a generator, the two-part
     -- form keeps the Core, and so the hash, every chart had before. A
     -- spinning chart is turned by a list of generators, perhaps empty.
+    -- A root chart and a turned one introduce axes of their own (design
+    -- §3.9, decision 1): their primitive takes the constructor of the axis
+    -- type the declaration mints first; a translated chart shares its
+    -- parent's.
     S.ChartForm step written gen spin -> do
       parted <- parentOf ctx written
       case (parted, gen, spin) of
-        (Nothing, Nothing, Nothing) -> prim "mkScale" [step, written]
+        (Nothing, Nothing, Nothing) -> minted "mkScale" [step, written]
         (Just (o, par), Nothing, Nothing) -> prim "mkChart3" [step, o, par]
-        (Just (o, par), Just g, Nothing) -> prim "mkChart4" [step, o, par, g]
+        (Just (o, par), Just g, Nothing) -> minted "mkChart4" [step, o, par, g]
         (Just (o, par), _, Just w) ->
-          prim
+          minted
             "mkChart5"
             [step, o, par, fromMaybe (S.Expr written.span (S.List [])) gen, w]
         (Nothing, Just _, _) ->
@@ -553,6 +562,9 @@ desugar path ctx e = do
             )
  where
   prim p args = PrimApp p <$> zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] args
+  minted p args = do
+    tag <- asks (\env -> Con (axesTag env.definition) [])
+    PrimApp p . (tag :) <$> zipWithM (\i a -> desugar (i : path) ctx a) [1 ..] args
   synthLam sp x body = S.Expr sp (S.Lam [S.Name sp x] body)
 
 -- | @[Lit, Lit, …]@ of one shape becomes one 'Lit' of the stacked shape.

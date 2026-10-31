@@ -469,7 +469,52 @@ name the group redefines is checked the same way unless the group gives a
 new one.
 -}
 processGroup :: Codebase -> [S.Decl] -> Either ResolveError Codebase
-processGroup cb0 decls = do
+processGroup cb0 decls
+  | null charts
+      || length (filter (not . S.isSignature) part)
+        == length (filter (not . S.isSignature) decls) =
+      enterGroup cb0 decls
+  | otherwise = case enterGroup cb0 part of
+      Right cb1 -> enterGroup cb1 decls
+      Left _ -> enterGroup cb0 decls
+ where
+  -- A written type names a chart's axes by a label the chart's entry
+  -- binds (design §3.9), and the group's signatures, data declarations
+  -- and ascriptions are read before its definitions, or before a chart
+  -- they do not use: so the group's charts, with what they depend on and
+  -- the data declarations, are entered first, without the signatures,
+  -- and the whole group then again, which binds them to what they are.
+  bindings = [(s, b) | S.DBind s b <- decls]
+  groupNames = Set.fromList [b.name.text | (_, b) <- bindings]
+  charts = [b.name.text | (_, b) <- bindings, b.kind == S.ChartDecl]
+  exists n = isLabel TermLabel cb0 n || Set.member n groupNames
+  depsOf n =
+    [ full
+    | (s, b) <- bindings
+    , b.name.text == n
+    , w <- Set.toList (freeNames (asLambda b))
+    , Found full <- [qualifyWith cb0.uses exists s w]
+    , Set.member full groupNames
+    ]
+  closure = go Set.empty charts
+   where
+    go seen = \case
+      [] -> seen
+      n : ns
+        | Set.member n seen -> go seen ns
+        | otherwise -> go (Set.insert n seen) (depsOf n ++ ns)
+  part =
+    [ d
+    | d <- decls
+    , case d of
+        S.DBind _ b -> Set.member b.name.text closure
+        S.DData{} -> True
+        S.DSig{} -> False
+    ]
+
+-- | 'processGroup' in one pass.
+enterGroup :: Codebase -> [S.Decl] -> Either ResolveError Codebase
+enterGroup cb0 decls = do
   checkDuplicates (filter (not . S.isSignature) decls)
   checkDuplicates (filter S.isSignature decls)
   -- A name is never both a label and a namespace (design §7.6).
@@ -560,7 +605,7 @@ enterComponent ::
   Codebase ->
   SCC (S.Scope, S.Binding) ->
   Either ResolveError Codebase
-enterComponent group signed cb = \case
+enterComponent group signed cb0 = \case
   AcyclicSCC (scope, b) -> do
     (term, prov) <-
       either
@@ -568,9 +613,13 @@ enterComponent group signed cb = \case
         Right
         ( desugarDefinition
             b.name.text
-            (groupResolver group Set.empty scope cb)
+            (groupResolver group Set.empty scope cb0)
             (asLambda b)
         )
+    -- The axis type a chart mints is stored before the chart is checked,
+    -- since its constructor's type is looked up (design §3.9, decision 1).
+    let minted = mintedBy [b.name.text] term
+        cb = mintAxes minted cb0
     (schemes, typed) <-
       either
         (Left . typeErrorIn b prov)
@@ -601,11 +650,13 @@ enterComponent group signed cb = \case
     let h = hashTerm term
         ref = Reference h Nothing
         stored = preferLint schemes linted
-        cb' =
-          bindName b.name.text ref (addTerm h term stored typed cb)
+    cb' <-
+      labelAxes
+        [(b, sc) | b.name.text `elem` minted, sc <- take 1 stored]
+        (bindName b.name.text ref (addTerm h term stored typed cb))
     signed' <- signMembers signed cb [(b, fromMaybe stored checked)]
     pure (signed' (markKind b.kind b.name.text cb'))
-  CyclicSCC bs -> enterCycle group signed cb bs
+  CyclicSCC bs -> enterCycle group signed cb0 bs
 
 {- | A member's ascriptions, desugared with markers, converted with the
 variables of the member's signature in scope (design §4.8), and the term
@@ -752,21 +803,24 @@ enterCycle group signed cb sbs = do
           provs = vecToList (vecMap snd desugared)
           cycleTerm = Cycle (vecMap (Hint . (.name.text) . snd) members) bodies
           h = hashTerm cycleTerm
+          -- The axis types the members' charts mint (design §3.9).
+          minted = mintedBy (map (.name.text) sorted) cycleTerm
+          cbm = mintAxes minted cb
       (schemes, typed) <-
         either
           (Left . cycleTypeError sorted provs)
           Right
-          (elaborateClosed (typeLookupFor cb) cycleTerm)
+          (elaborateClosed (typeLookupFor cbm) cycleTerm)
       linted <-
         either
           (Left . LintFailure (headName sorted))
           Right
-          (lintClosed (typeLookupFor cb) typed)
+          (lintClosed (typeLookupFor cbm) typed)
       -- With ascriptions, they are checked on the members desugared with
       -- markers, each member's tagged by its index.
       checked <-
         if all (null . (.ascriptions)) provs
-          then annotatedCheck cb Map.empty cycleTerm (cycleTypeError sorted provs)
+          then annotatedCheck cbm Map.empty cycleTerm (cycleTypeError sorted provs)
           else do
             (marked, _) <-
               runStateT
@@ -792,7 +846,7 @@ enterCycle group signed cb sbs = do
                           lift
                             ( scopedAscriptions
                                 s
-                                cb
+                                cbm
                                 signed
                                 i
                                 [i]
@@ -808,15 +862,19 @@ enterCycle group signed cb sbs = do
                 )
                 (0 :: Int, Map.empty)
             let markedTerm = Cycle (vecMap (Hint . (.name.text) . snd) members) scoped
-            annotatedCheck cb asc markedTerm (cycleTypeError sorted markedProvs)
+            annotatedCheck cbm asc markedTerm (cycleTypeError sorted markedProvs)
       let stored = preferLint schemes linted
-          cb' = addTerm h cycleTerm stored typed cb
+          cb' = addTerm h cycleTerm stored typed cbm
           bindMember acc (i, b) =
             let ref = Reference h (Just i)
                 acc' = bindName b.name.text ref acc
              in markKind b.kind b.name.text acc'
-      signed' <- signMembers signed cb [(b, fromMaybe stored checked) | b <- sorted]
-      pure (signed' (foldl bindMember cb' (zip [0 ..] sorted)))
+      signed' <- signMembers signed cbm [(b, fromMaybe stored checked) | b <- sorted]
+      labelled <-
+        labelAxes
+          [(b, sc) | (b, sc) <- zip sorted stored, b.name.text `elem` minted]
+          (foldl bindMember cb' (zip [0 ..] sorted))
+      pure (signed' labelled)
  where
   -- The members are local binders by their full paths, found through each
   -- member's own scope (design §7.6).
@@ -918,6 +976,46 @@ freeNames = go Set.empty
   opNames = \case
     S.Infix n -> Set.singleton n
     _ -> Set.empty
+
+{- | The members, by full path, whose charts mint an axis type (design
+§3.9, decision 1): a root, turned or spinning chart, whose Core takes the
+constructor of the axis type stamped with its path. A translated chart
+shares its parent's axes and mints none.
+-}
+mintedBy :: [Text] -> Term n -> [Text]
+mintedBy names term = [n | n <- names, Set.member (axesHash n) (conTypes term)]
+
+-- | Store the axis types of charts at these paths, as declared types are.
+mintAxes :: [Text] -> Codebase -> Codebase
+mintAxes ns cb = foldl (\acc n -> addTypeDef (axesHash n) (axesDef n) acc) cb ns
+
+{- | Name the axis type of each chart over a vector space, a type label
+under the chart's own full path (types and terms are separate namespaces,
+so the chart @lvlh@ and its axes @lvlh@ coexist), for written types to
+name (@Vec lvlh [m]@) and for printing. A scalar chart's axes have no
+positions to name, so its type stays unnamed. A chart cannot take the
+name of a declared type.
+-}
+labelAxes :: [(S.Binding, Scheme)] -> Codebase -> Either ResolveError Codebase
+labelAxes members cb0 = foldlM label cb0 members
+ where
+  label cb (b, Forall _ t)
+    | vectorChart t = case lookupTypeName n cb >>= (`lookupTypeDef` cb) of
+        Just def
+          | not (isAxesDef def) ->
+              Left
+                ( DataError
+                    b.name.span
+                    ("`" <> n <> "` names a type; a chart's axes are named as the chart")
+                )
+        _ -> Right (bindTypeName n (axesHash n) cb)
+    | otherwise = Right cb
+   where
+    n = b.name.text
+  vectorChart = \case
+    TFun _ r -> vectorChart r
+    TScale (SCons{}) _ _ -> True
+    _ -> False
 
 {- | Enter a Core term that already has its hash, as when loading a store
 (design §7.4): infer, lint and add. The term must only reference hashes the
@@ -1131,6 +1229,10 @@ tyType env t = case t.node of
         ("Tensor", [sh, d]) -> TTensor <$> tyShape env sh <*> tyDim env d
         ("Point", [a]) -> affine TPoint a
         ("Chart", [a]) -> affine chart a
+        -- A chart's root after its type (design §3.9).
+        ("Chart", [a, r]) -> do
+          root <- tyRoot env r
+          affine (`TScale` root) a
         -- The old spelling of @Chart@ (design §3.6).
         ("Scale", [a]) -> affine chart a
         (n, _)
@@ -1162,6 +1264,18 @@ applied env t n args
       arity (length env.paramNames)
       kinds <- mapM (gets . Map.findWithDefault KType) env.paramNames
       TData selfType <$> argsAt env (kinds ++ [KAxis | KLen <- kinds]) args
+  | Found full <- resolved
+  , Just h <- lookupTypeName full env.codebase
+  , Just def <- lookupTypeDef h env.codebase
+  , isAxesDef def =
+      bad
+        t
+        ( "`"
+            <> n
+            <> "` is a chart's axes, written where a length goes: Vec "
+            <> n
+            <> " [m]"
+        )
   | Found full <- resolved
   , Just h <- lookupTypeName full env.codebase
   , Just def <- lookupTypeDef h env.codebase = do
@@ -1243,7 +1357,59 @@ tyLen env a = case a.node of
   S.TyApp hd [sh] | hd.text == "rank" -> (,AAnon) . rankLen <$> tyShape env sh
   S.TyName "rank" -> bad a "rank takes a shape: rank s"
   S.TyApp hd _ | hd.text == "rank" -> bad a "rank takes one shape: rank s"
-  _ -> bad a "a length is a number, a parameter, or rank s"
+  S.TyName n -> chartAxes env a n
+  _ -> bad a "a length is a number, a parameter, a chart's axes, or rank s"
+
+{- | A name in a length position: a chart's axes (design §3.9, decision
+6), resolved through the type scope to the axis type the chart minted.
+It means as many positions as the chart has, along that type: @Vec lvlh
+[m]@ is a three-vector along lvlh's axes. The number is the chart's own,
+read off its type (@card lvlh = 3@, decision 2), so that a signature
+naming the axes holds of a definition of three positions.
+-}
+chartAxes :: DataEnv -> S.TyExpr -> Text -> Kinds (Len, Axis)
+chartAxes env a n =
+  case qualifyWith env.codebase.uses (isLabel TypeLabel env.codebase) env.scope n of
+    Found full
+      | Just h <- lookupTypeName full env.codebase
+      , Just def <- lookupTypeDef h env.codebase
+      , Axes path <- def.label ->
+          case lookupName path env.codebase >>= (`typeOf` env.codebase) of
+            Just (Forall _ t) | Just k <- card t -> pure (LLit k, ANamed h)
+            _ ->
+              bad
+                a
+                ( "the axes of `"
+                    <> n
+                    <> "` have no number of positions: its chart is not over a vector"
+                )
+      | otherwise -> bad a ("`" <> n <> "` is a type, not a length or a chart's axes")
+    Ambiguous fulls ->
+      bad
+        a
+        ( "`"
+            <> n
+            <> "` is both "
+            <> T.intercalate " and " (map (\f -> "`" <> f <> "`") fulls)
+            <> "; write one of them"
+        )
+    _ -> bad a ("unknown name `" <> n <> "` in a type")
+ where
+  card = \case
+    TFun _ r -> card r
+    TScale (SCons (LLit k) _ SNil) _ _ -> Just k
+    _ -> Nothing
+
+{- | A chart's root, written after its type (design §3.9): a chart's axes
+by name, or a variable, whose axes it is; @Chart (Vec lvlh [m]) eci@.
+-}
+tyRoot :: DataEnv -> S.TyExpr -> Kinds Axis
+tyRoot env r = case r.node of
+  S.TyName p | Map.member p env.params -> do
+    _ <- useParam env r p KLen
+    pure (maybe AAnon AVar (Map.lookup p env.axisOf))
+  S.TyName n -> snd <$> chartAxes env r n
+  _ -> bad r "a chart's root is a chart's axes, by name, or a variable"
 
 tyShape :: DataEnv -> S.TyExpr -> Kinds Shape
 tyShape env a = case a.node of

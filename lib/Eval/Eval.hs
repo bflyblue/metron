@@ -1019,7 +1019,9 @@ runPrim cfg rt prim args = case (prim, args) of
     (_, _, uh) <- scalarFull =<< u
     Right (VTensor dims d ((\h -> h{pinned = True}) <$> uh) buf)
   -- Points and charts (design §3.6, §3.8).
-  ("mkScale", [st, o]) -> mkChart st o Nothing [] Nothing
+  -- A chart's first argument is its axes' constructor (design §3.9), a
+  -- type-level tag with nothing to compute.
+  ("mkScale", [_, st, o]) -> mkChart st o Nothing [] Nothing
   -- A chart whose origin is given in a parent chart.
   ("mkChart3", [st, o, par]) -> do
     parentChart <- chartOf =<< par
@@ -1027,13 +1029,13 @@ runPrim cfg rt prim args = case (prim, args) of
   -- And whose axes are turned from the parent's by a list of generators,
   -- applied in order, each antisymmetric exactly: the transpose is the
   -- negation, entry by entry.
-  ("mkChart4", [st, o, par, g]) -> do
+  ("mkChart4", [_, st, o, par, g]) -> do
     parentChart <- chartOf =<< par
     gens <- mapM antisymmetric =<< listElems =<< g
     mkChart st o (Just parentChart) gens Nothing
   -- And spinning relative to the parent, the angular velocity along its own
   -- axes (design §3.8); the radian is stripped, so it is kept in s^-1.
-  ("mkChart5", [st, o, par, g, w]) -> do
+  ("mkChart5", [_, st, o, par, g, w]) -> do
     parentChart <- chartOf =<< par
     gens <- mapM antisymmetric =<< listElems =<< g
     (_, _, _, wbuf) <- tensor =<< w
@@ -1094,6 +1096,9 @@ runPrim cfg rt prim args = case (prim, args) of
   -- A chart's absolute rotation (design §3.8): its axes, as columns along
   -- the base axes, computed once with the chart. Exactly the identity for a
   -- chart that is not turned.
+  -- A vector with anonymous axes relabelled as along a chart's (design
+  -- §3.9): the numbers do not change.
+  ("withAxes", [_, v]) -> v
   ("rotationOf", [s]) -> do
     sc <- chartOf =<< s
     let n = V.length sc.origin

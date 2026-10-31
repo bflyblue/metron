@@ -63,6 +63,15 @@ data Constraint
     OrdInstance Type
   | -- | @rank s ~ l@, pending only while both sides are ranks of different shape variables (design §4.2)
     Rank Shape Len
+  | {- | a root chart of a shape, its root, the axes it minted (design §3.9):
+    every position along those axes and the root too, or a scalar chart
+    with an anonymous root; pending while the shape is unknown
+    -}
+    Charted Shape Axis Hash
+  | {- | a chart's shape, its root, and the shape of a point on it: the
+    chart's lengths along the root's axes (design §3.9, stage 2b)
+    -}
+    Rootward Shape Axis Shape
 
 data St = St
   { subst :: Subst
@@ -547,6 +556,34 @@ solveOne p = \case
     case (rankLen (applyShape s sh), applyLen s l) of
       (LRank v _, LRank w _) | v /= w -> pure False
       (a, b) -> unifyLen p a b >> pure True
+  Charted sh r h -> do
+    s <- gets (.subst)
+    case closedLens (applyShape s sh) of
+      Just [] -> unifyAxis p r AAnon >> pure True
+      Just ls -> do
+        mapM_ (\(_, a) -> unifyAxis p a (ANamed h)) ls
+        unifyAxis p r (ANamed h)
+        pure True
+      Nothing -> pure False
+  Rootward sh r pt -> do
+    s <- gets (.subst)
+    let sh' = applyShape s sh
+        pt' = applyShape s pt
+    case (closedLens sh', closedLens pt') of
+      (Just _, _) -> rooted (unifyShape p pt' (rootward sh' (applyAxis s r)))
+      (_, Just ls) -> do
+        positions <- mapM (\(l, _) -> (l,) <$> freshAxis) ls
+        unifyShape p sh' (appendShape positions SNil)
+        rooted (unifyShape p pt' (rootward (appendShape positions SNil) r))
+      _ -> pure False
+   where
+    -- The unifier's own message names the axes that differ.
+    rooted act = do
+      st <- get
+      case runStateT act st of
+        Right ((), st') -> put st' >> pure True
+        Left (TypeError _ detail) ->
+          failAt p ("a point is along its chart's root: " <> detail)
 
 {- | At a generalisation point, constraints that only mention variables about
 to be quantified cannot wait: default them (design §4.2). The unknown-rank
@@ -577,6 +614,10 @@ settle here ctx = do
     -- A rank equation has no default; it waits for the others, which may
     -- fix one of its shapes.
     Rank _ _ -> modify' (\st' -> st'{pending = (p, c) : st'.pending})
+    -- A shape still unknown: a root chart's axes are left as they are,
+    -- and a point on a chart of unknown shape is along that shape.
+    Charted{} -> pure ()
+    Rootward sh _ pt -> unifyShape p pt sh
   solvePending
   -- Two shapes of equal but unknown rank: no type says that, and picking a
   -- rank would be a guess (design §4.2).
@@ -603,6 +644,8 @@ applyC s = \case
   EqInstance t -> EqInstance (applyType s t)
   OrdInstance t -> OrdInstance (applyType s t)
   Rank sh l -> Rank (applyShape s sh) (applyLen s l)
+  Charted sh r h -> Charted (applyShape s sh) (applyAxis s r) h
+  Rootward sh r pt -> Rootward (applyShape s sh) (applyAxis s r) (applyShape s pt)
 
 constraintVars :: Constraint -> [VarId]
 constraintVars = \case
@@ -610,6 +653,8 @@ constraintVars = \case
   EqInstance t -> map fst (freeVars t)
   OrdInstance t -> map fst (freeVars t)
   Rank sh l -> map fst (freeVars (TTensor (SCons l AAnon sh) dimOne))
+  Charted sh r _ -> map fst (freeVars (TScale sh r dimOne))
+  Rootward sh r pt -> map fst (freeVars (TFun (TScale sh r dimOne) (TPoint pt dimOne)))
 
 -- Generalisation and instantiation ---------------------------------------------------
 
@@ -767,17 +812,27 @@ infer look p ctx = \case
       Nothing -> failAt p "reference to a cycle member that does not exist"
   PrimApp name args -> do
     let literals = [case unmarked a of Lit l -> Just l; _ -> Nothing | a <- args]
+        statics =
+          [ case unmarked a of
+              Lit l -> Just (LitArg l)
+              Con c [] -> Just (ConArg c)
+              _ -> Nothing
+          | a <- args
+          ]
+        positional = name `elem` ["contract", "permute", "slice"]
     -- contract, permute and slice (design §4.2): the scheme is computed
-    -- from the literal positions, then used like any other.
-    t <- case primSchemeFor name literals of
+    -- from the literal positions, then used like any other; a chart that
+    -- introduces axes reads them off its first argument (design §3.9).
+    t <- case primSchemeFor name statics of
       Just (Right sc) -> fst <$> instantiate sc
       Just (Left msg) -> failAt p msg
       Nothing -> primType p name (length args)
+    chartConstraints p name t statics
     typed <- zipWithM (\i a -> infer look (i : p) ctx a) [0 ..] args
     -- A tensor of known rank too small for the positions is reported as
     -- such, not as the shape mismatch the unifier would find.
-    case (primSchemeFor name literals, reverse (zip [0 :: Int ..] typed), lastParam t) of
-      (Just _, (i, (ta, _)) : _, Just (TTensor want _)) -> do
+    case (positional, reverse (zip [0 :: Int ..] typed), lastParam t) of
+      (True, (i, (ta, _)) : _, Just (TTensor want _)) -> do
         ta' <- resolve ta
         case ta' of
           TTensor sh _
@@ -1011,6 +1066,37 @@ infer look p ctx = \case
      in case dims of
           [] -> T.concat (map natural rs)
           _ -> "[" <> T.intercalate ", " (map natural rs) <> "]"
+
+{- | What the chart primitives' schemes cannot say over a shape variable
+(design §3.9), deferred as constraints at the type a primitive is used
+at ('chartRelation' is lint's side): a root chart's axes and root, and
+that a point lies along its chart's root. A chart that mints axes takes
+the constructor of a minted axis type.
+-}
+chartConstraints :: Path -> Text -> Type -> [Maybe StaticArg] -> Infer ()
+chartConstraints p name t statics = case (name, t, statics) of
+  ( "mkScale"
+    , TFun _ (TFun _ (TFun (TTensor sh _) (TScale _ r _)))
+    , Just (ConArg (UserCon h _)) : _
+    ) -> do
+    minted h
+    defer p (Charted sh r h)
+  (_, _, Just (ConArg (UserCon h _)) : _)
+    | name `elem` ["mkChart4", "mkChart5"] -> minted h
+  ("pointOn", TFun (TScale sh r _) (TFun _ (TPoint pt _)), _) -> defer p (Rootward sh r pt)
+  ("toScale", TFun (TPoint pt _) (TFun (TScale sh r _) _), _) -> defer p (Rootward sh r pt)
+  _ -> pure ()
+ where
+  minted h = do
+    defs <- gets (.typeDefs)
+    case defs h of
+      Just def | isAxesDef def -> pure ()
+      _ ->
+        failAt
+          p
+          ( name
+              <> " takes the axes a chart declaration mints first: declare the chart with chart"
+          )
 
 {- | The type a primitive is used at: a fresh instance of its scheme, or for
 the relational primitives (design §4.2) fresh shapes with a pending

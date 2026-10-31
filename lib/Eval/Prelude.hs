@@ -88,8 +88,12 @@ vector, angle and all: every entry is then exactly the negation of its
 partner, even when the vector is an enclosure, and @B + Bᵀ@ is exactly
 zero. @euler313@ is the composed matrix, for @\@@ and @transformBy@; a
 chart is turned by the sequence itself, @by rotz Ω then rotx i then rotz
-ω@ (design §3.8). @inChart c x@ reads a tensor @x@ as given along the axes
-of chart @c@ and gives it along the base axes, @R x Rᵀ@ for a matrix.
+ω@ (design §3.8). @inChart c v@ reads a vector @v@ given along the axes
+of chart @c@ along its root's, @R v@, and @along c v@ is the inverse,
+@Rᵀ v@ (design §3.9): the frame of each is in its type. @rotateVec r v@
+and @rotateCov r p@ are a rotation applied to a vector, @r v@, and to a
+covariance, @r p rᵀ@, typed by the axes of @r@'s rows and columns;
+@transformBy@, along every axis at once, is for anonymous axes only.
 -}
 algebra :: [(Text, Text)]
 algebra =
@@ -124,7 +128,11 @@ algebra =
     ( "euler313"
     , "\\raan inc argp -> expm (rotz raan) @ expm (rotx inc) @ expm (rotz argp)"
     )
-  , ("inChart", "\\c x -> transformBy (rotationOf c) x")
+  , ("inChart", "\\c v -> rotationOf c @ v")
+  , ("along", "\\c v -> transpose (rotationOf c) @ v")
+  , ("rotateVec", "\\r v -> r @ v")
+  , -- r p rᵀ, written so that both operands are known to be matrices
+    ("rotateCov", "\\r p -> r @ transpose (r @ transpose p)")
   ]
 
 {- | A body's state (design §3.8): its epoch, its position as an absolute
@@ -149,19 +157,21 @@ orthogonal, so the transpose of an enclosure of it encloses its inverse.
 stateStatements :: [Statement]
 stateStatements =
   [ Data
-      "data State = State {epoch :: Point [s], pos :: Point (Vec 3 [m]), vel :: Vec 3 [m s^-1]}"
+      "data State r = State {epoch :: Point [s], pos :: Point (Vec r [m]), vel :: Vec r [m s^-1]}"
       ["State", "epoch", "pos", "vel"]
-  , Sig "velocityIn" "Chart (Vec 3 [m]) -> State -> Vec 3 [m s^-1]"
+  , Sig
+      "velocityIn"
+      "forall (a : 3) (r : 3). Chart (Vec a [m]) r -> State r -> Vec a [m s^-1]"
   , Let
       "velocityIn"
       ( T.unwords
-          [ "\\c st -> transformBy (transpose (rotationOf c))"
+          [ "\\c st -> linalg.along c"
           , "(st.vel - originVelocityOf c - linalg.cross (spinOf c) (st.pos .- pointOn c [0, 0, 0]))"
           ]
       )
   , Sig
       "stateFrom"
-      "Chart (Vec 3 [m]) -> Point [s] -> Vec 3 [m] -> Vec 3 [m s^-1] -> State"
+      "forall (a : 3) (r : 3). Chart (Vec a [m]) r -> Point [s] -> Vec a [m] -> Vec a [m s^-1] -> State r"
   , Let
       "stateFrom"
       ( T.unwords
@@ -268,7 +278,10 @@ covarianceBlocks =
     )
   ,
     ( "inChartCov2"
-    , "\\c p -> Cov2 {rr = inChart c p.rr, rv = inChart c p.rv, vv = inChart c p.vv}"
+    , T.unwords
+        [ "\\c p -> let r = rotationOf c in"
+        , "Cov2 {rr = rotateCov r p.rr, rv = rotateCov r p.rv, vv = rotateCov r p.vv}"
+        ]
     )
   ]
 

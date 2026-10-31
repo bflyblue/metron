@@ -583,13 +583,15 @@ renderTermUnits spelling namer isUnitRef = go 0
     (_, [s, Lit (LTensor ([], [r]))])
       | p == "pointOn" ->
           paren (prec > 10) (renderRational 20 r <> " " <> go 11 ctx s)
-    (_, [a, b]) | p == "mkScale" -> paren (prec > 0) (go 1 ctx a <> " at " <> go 1 ctx b)
+    -- A chart's axes are its declaration's (design §3.9): the tag is not
+    -- written.
+    (_, [Con _ [], a, b]) | p == "mkScale" -> paren (prec > 0) (go 1 ctx a <> " at " <> go 1 ctx b)
     (_, [a, b, c])
       | p == "mkChart3" ->
           paren (prec > 0) (go 1 ctx a <> " at " <> origin ctx b <> " " <> go 11 ctx c)
     -- A spinning chart reads back with its spin last, and with its
     -- generators only when it has any (design §3.8).
-    (_, [a, b, c, g, w])
+    (_, [Con _ [], a, b, c, g, w])
       | p == "mkChart5"
       , Just gs <- listSpine g ->
           paren
@@ -606,7 +608,7 @@ renderTermUnits spelling namer isUnitRef = go 0
     -- The generators read back as the sequence they were written as, `by
     -- rotz a then rotx b`; a list that is not a literal has no such form
     -- and prints as the primitive applied.
-    (_, [a, b, c, g])
+    (_, [Con _ [], a, b, c, g])
       | p == "mkChart4"
       , Just gs@(_ : _) <- listSpine g ->
           paren

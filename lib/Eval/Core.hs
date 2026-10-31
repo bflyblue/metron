@@ -42,6 +42,7 @@ module Eval.Core (
   weakenBy,
   alphaEq,
   refs,
+  conTypes,
   refsWithIndex,
   rewriteRefs,
   rewriteRefsWritten,
@@ -295,6 +296,28 @@ refs = \case
   Proj t _ -> refs t
   Cycle _ bs -> foldMap refs (vecToList bs)
 
+-- | The declared types whose constructors a term builds or matches.
+conTypes :: Term n -> Set Hash
+conTypes = \case
+  Con c as -> conType c <> foldMap conTypes as
+  Case s alts -> conTypes s <> foldMap (\(Alt c _ b) -> conType c <> conTypes b) alts
+  PrimApp _ as -> foldMap conTypes as
+  Lam _ b -> conTypes b
+  App a b -> conTypes a <> conTypes b
+  Let _ e b -> conTypes e <> conTypes b
+  Pow t _ -> conTypes t
+  Uncertain _ _ x e -> conTypes x <> conTypes e
+  Pack ts -> foldMap conTypes ts
+  Proj t _ -> conTypes t
+  Cycle _ bs -> foldMap conTypes (vecToList bs)
+  Var _ -> Set.empty
+  Ref{} -> Set.empty
+  Lit _ -> Set.empty
+  Noise{} -> Set.empty
+ where
+  conType = \case
+    UserCon h _ -> Set.singleton h
+
 -- | The references a term makes, with their cycle indices.
 refsWithIndex :: Term n -> Set (Hash, Maybe Int)
 refsWithIndex = \case
@@ -408,12 +431,14 @@ primArity = \case
   "mol" -> Just 0
   "cd" -> Just 0
   "rad" -> Just 0
-  "mkScale" -> Just 2
+  -- A root chart, a turned one and a spinning one take the constructor of
+  -- their minted axis type first (design §3.9); a translated one does not.
+  "mkScale" -> Just 3
   "mkChart3" -> Just 3
-  "mkChart4" -> Just 4
+  "mkChart4" -> Just 5
   -- A spinning chart (design §3.8): turned by a list of generators, perhaps
   -- empty, with its angular velocity along its own axes.
-  "mkChart5" -> Just 5
+  "mkChart5" -> Just 6
   "pointOn" -> Just 2
   "pointAdd" -> Just 2
   "pointSub" -> Just 2
@@ -430,6 +455,7 @@ primArity = \case
   "expm" -> Just 1
   "transformBy" -> Just 2
   "rotationOf" -> Just 1
+  "withAxes" -> Just 2
   -- A chart's kinematics (design §3.8): its absolute angular velocity and
   -- the velocity of its origin, both along the base axes.
   "spinOf" -> Just 1

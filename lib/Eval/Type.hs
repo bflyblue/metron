@@ -559,6 +559,10 @@ named by kind as in 'renderType'.
 -}
 renderTypeDef ::
   Spelling -> Text -> [Text] -> [[Maybe Text]] -> TypeDef -> Text
+renderTypeDef _ name _ _ def
+  -- A chart's minted axis type (design §3.9) is no declaration: its chart
+  -- is, and lists as the axes of that chart.
+  | isAxesDef def = "axes " <> name
 renderTypeDef spelling name conNames fieldNames def =
   (if def.label == structuralLabel then "structural " else "")
     <> "data "
