@@ -2234,6 +2234,20 @@ frame's axes. The decisions:
    plain length is the *anonymous* set of that size: `Vec 3` is
    `Vec (Anon 3)`. Two named sets never unify with each other, nor with an
    anonymous one.
+   **The identity lives in the content, not the name** (decided by the
+   owner). Two charts with the same body share a hash, and a stored value's
+   type comes from its Core alone, so a frame carried on the name would be
+   lost the moment a value is stored. As with the owner stamp of a `±`
+   measurement (§3.2.4), the name enters the content: the desugarer mints,
+   for each root or rotated chart and each `axes` declaration, a hidden
+   nominal axis type stamped with the full path, and passes its nullary
+   constructor to the chart primitive; the primitive's scheme reads the axis
+   set's hash from that argument as `contract` reads its literal positions.
+   Persistence, printing by name and the re-hash on `:rename`/`:move` are the
+   declared-type machinery's. The stamp's label kind is one no source
+   declaration can produce, so a user's `data Lvlh = Lvlh` never collides. A
+   moving chart mints inside its lambda body, so `ecef t` has one axis set
+   for every `t`; a scalar chart (`degC`) receives a tag its scheme ignores.
 2. **`card` and constraints.** A kind `Axes`; a shape is a list of axis sets;
    `card : Axes -> Len` normalises like `rank` (`card lvlh = 3`,
    `card (Anon k) = k`, a residual on a variable). `card a ~ 3` and
@@ -2325,21 +2339,26 @@ v.x         : Vec a d -> Num d                       -- x one of a's axis labels
    the anonymous case. No behaviour changes: every existing test passes
    unchanged and the property generator still produces well-typed programs.
    The risky refactor, validated alone.
-2. **Named axis sets for amounts.** `chart` and `axes` declare axis-set names
-   (root charts their own, translated children their parent's, rotated
-   children their own); matrices carry a row and a column axis set and `@`
-   checks the contracted pair; `rotationOf c : Mat (parent c) c`; `along`,
-   `withAxes`, `inChart` typed; `transformBy` becomes `Mat a a -> …`;
-   printing of named vectors.
+2. **Required `forall`, then named axis sets for amounts** (reordered by the
+   owner: a chart's name first appears inside a type here, `Vec lvlh [m]`,
+   and the unknown-lowercase-is-a-variable rule would guess at it).
+   2a: decision 6's required `forall` in signatures and ascriptions, printed
+   by `:type`, `:ls` and `:view`, with sized binders. 2b: decision 1's
+   minted axis types; root charts their own, translated children their
+   parent's, rotated children their own; matrices carry a row and a column
+   axis set and `@` checks the contracted pair; `rotationOf : Chart (Vec
+   (n,a) d) r -> Mat (n,r) (n,a)`; `det : Mat (n,a) (n,b) -> …` (`expm`
+   keeps one axis set); `along`, `withAxes`, `inChart` typed; `transformBy`
+   becomes `Mat a a -> …`; literals polymorphic in their axes with the
+   named-value default of decision 5; printing of named vectors.
 3. **Points typed by axes and stored in chart coordinates.** The point value
    changes representation (chart coordinates and the chart, not base form);
    `to` becomes the typed conversion between axis sets and needs a moving
    chart's arguments; `.-` on one chart gives that chart's `Vec`; `p.0` reads
-   a chart coordinate; `velocityIn`/`stateFrom` retyped; `coordinates`.
-4. **Explicit `forall` and the library.** `forall (a : 3)` binders and scoped
-   variables in signatures (decision 6);
-   `cross`, `norm`, `dual`, the rotation constructors, `Cov2`, `timap`
-   generalised over axis sets; §12's sessions rewritten to the typed form.
+   a chart coordinate; `velocityIn`/`stateFrom` retyped.
+4. **The library.** `cross`, `norm`, `dual`, the rotation constructors,
+   `Cov2`, `timap` generalised over axis sets with sized binders; §12's
+   sessions rewritten to the typed form.
 
 **Stage 1, as built.** Nothing a user can see changed; what follows is the
 representation the later stages build on.
