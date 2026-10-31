@@ -246,7 +246,7 @@ chartStatement = do
   _ <-
     kw KOn
       P.<|> fail
-        "a chart names its parent after its parameters: chart name params… on a space or a chart, as in chart degC on Temperature at 273.15 K"
+        "name its space: `chart … on Temperature`, or the chart it is on, after its parameters"
   input <- P.getInput
   let (stmt, rest) = splitAt (statementEnd input.toks) input.toks
   clauses <- mapM (clause input) (clauseSegments stmt)

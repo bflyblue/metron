@@ -4,6 +4,7 @@ import Control.Monad (forM_)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+
 import Data.List (sort)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
@@ -127,6 +128,7 @@ main =
         , dimensionSyntaxTests
         , readingTests
         , partUTests
+        , partFTests
         ]
     )
 
@@ -4957,7 +4959,7 @@ affineTests =
             "a chart is declared with no `=`"
           expectError
             (runLinesP ["chart bp at 0 K"])
-            "a chart names its parent after its parameters"
+            "name its space: `chart … on Temperature`"
     , testCase
         "mkRoot and mkChart: a frame, a parent, a list of generators, antisymmetry"
         $ do
@@ -9379,3 +9381,470 @@ genWrittenDim = do
           <$> elements (map Base [minBound .. maxBound :: BaseDim] ++ map DVar [0, 1, 2])
           <*> elements [-3, -2, -1, 1, 2, 3]
       )
+
+{- | Design §3.10, part F, from source: every decision and every example it
+writes, with the library's spaces and charts.
+-}
+partFTests :: TestTree
+partFTests =
+  testGroup
+    "spaces and frames (design §3.10, part F)"
+    [ testCase "F1: kinds; a binder names its frame's space" $ do
+        runLinesP
+          [ multiline
+              [ "diffK :: forall (c : Temperature). Point c -> Point c -> Num K"
+              , "let diffK p q = p .- q"
+              ]
+          , "diffK (20 degC) (10 degC)"
+          , "diffK (491.67 degR) (0 kelvin)"
+          , ":ls diffK"
+          , multiline
+              [ "conv :: forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1"
+              , "let conv p c = p to c"
+              ]
+          , "conv (20 degC) degF"
+          , ":ls conv"
+          , ":type \\p q -> p .- q"
+          ]
+          @?= Right
+            [ "10 K"
+            , "273.15 K"
+            , "diffK : forall (c : Temperature). Point c -> Point c -> Num K"
+            , "68 degF"
+            , "conv : forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1"
+            , "forall c. Point c -> Point c -> Diff c"
+            ]
+        -- A frame of one space is not a frame of another: a kind error.
+        expectError
+          ( runLinesP
+              ( inertial
+                  ++ [ multiline
+                         [ "conv :: forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1"
+                         , "let conv p c = p to c"
+                         ]
+                     , "conv (20 degC) eci"
+                     ]
+              )
+          )
+          "frames of two spaces, Temperature and Inertial"
+        expectError
+          (runLinesP ["f :: forall (c : Kelvin). Point c -> Point c", "let f p = p"])
+          "`Kelvin` is not a space"
+    , testCase "F2: spaces are declared and nominal; a chart names its space" $ do
+        runLinesP
+          ( inertial
+              ++ [ ":view Temperature"
+                 , ":view Time"
+                 , ":view Pressure"
+                 , ":view Inertial"
+                 , ":type [1, 2, 3] eci .- [0, 0, 0] eci"
+                 , "space Other = Num K"
+                 , "chart oC on Other at 273.15 K"
+                 , "20 oC .- 0 oC"
+                 ]
+          )
+          @?= Right
+            [ "space Temperature = Num K"
+            , "space Time = Num s"
+            , "space Pressure = Num (kg/(m*s^2))"
+            , "space Inertial = Vec 3 m"
+            , "Vec Inertial m"
+            , "20 K"
+            ]
+        -- Two spaces declared alike are two spaces: their points never convert.
+        expectError
+          (runLinesP ["space Other = Num K", "chart oC on Other", "20 degC to oC"])
+          "frames of two spaces, Temperature and Other"
+        expectError
+          (runLinesP (inertial ++ ["20 degC to eci"]))
+          "frames of two spaces, Temperature and Inertial"
+        -- No point is written on a space's base, and a chart names its space.
+        expectError (runLinesP ["3 Temperature"]) "unknown name `Temperature`"
+        expectError
+          (runLinesP ["chart degC2 at 273.15 K"])
+          "name its space: `chart … on Temperature`"
+        expectError
+          (runLinesP ["space Bad = Mat 2 2 m"])
+          "a space is of numbers or of vectors"
+    , testCase "F3: what a chart declaration says decides whether it mints a frame" $ do
+        runLinesP
+          ( inertial
+              ++ [ -- a root, an origin, turned axes: each a frame
+                   ":type 0 kelvin"
+                 , "chart warm on degC at 10 K"
+                 , ":type 0 warm"
+                 , "0 warm .- (10 degC to warm)"
+                 , "chart turned on eci by rotz (30 deg)"
+                 , ":type [1, 2, 3] turned .- [0, 0, 0] turned"
+                 , -- a step alone is a rescaling: its parent's frame
+                   "chart mdegC on degC step mK"
+                 , ":type 20 mdegC"
+                 , "20000 mdegC .- 20 degC"
+                 , "20000 mdegC"
+                 , -- Rankine is kelvin rescaled: no `to` between them
+                   ":type 491.67 degR"
+                 , "491.67 degR .- 0 kelvin"
+                 , "(0 kelvin .+ 1 K) to degR"
+                 ]
+          )
+          @?= Right
+            [ "Point kelvin"
+            , "Point warm"
+            , "0 K"
+            , "Vec turned m"
+            , "Point degC"
+            , "0 K"
+            , "20000 mdegC"
+            , "Point kelvin"
+            , "273.15 K"
+            , "1.8 degR"
+            ]
+        -- Two charts declared alike are two frames, like two newtypes.
+        expectError
+          (runLinesP ["chart a1 on Temperature", "chart a2 on Temperature", "0 a1 .- 0 a2"])
+          "points on a1 and a2: convert one with `to`"
+        -- A chart with parameters is one frame for all its arguments.
+        runLinesP
+          ( earth
+              ++ [ ":type ecef"
+                 , ":type ecef (100 J2000)"
+                 , ":type [1, 2, 3] (ecef (100 J2000)) .- [0, 0, 0] (ecef (200 J2000))"
+                 ]
+          )
+          @?= Right ["Point J2000 -> Chart ecef", "Chart ecef", "Vec ecef m"]
+    , testCase "F3: two bodies are two declarations; what they share is a function" $ do
+        let siblings =
+              inertial
+                ++ [ "let posA t = withAxes eci ([7000, 0, 0] km)"
+                   , "let posB t = withAxes eci ([0, 7000, 0] km)"
+                   , "let lvlhTurn r = rotz (atan2 r.1 r.0)"
+                   , "chart lvlhA t on eci at posA t by lvlhTurn (posA t)"
+                   , "chart lvlhB t on eci at posB t by lvlhTurn (posB t)"
+                   , "let t0 = 0 unix"
+                   , "let a = [1, 0, 0] (lvlhA t0)"
+                   , "let b = [0, 1, 0] (lvlhB t0)"
+                   ]
+        runLinesP (siblings ++ [":type a", ":type b", "b .- b"])
+          @?= Right ["Point lvlhA", "Point lvlhB", "[0, 0, 0] m"]
+        expectError
+          (runLinesP (siblings ++ ["b .- a"]))
+          "points on lvlhB and lvlhA: convert one with `to`"
+        expectError
+          (runLinesP (siblings ++ ["(a .- a) + (b .- b)"]))
+          "the axes of lvlhA against the axes of lvlhB"
+        -- Converted to one frame, they subtract.
+        runLinesP
+          ( siblings
+              ++ [ encloses
+                     "1e-15"
+                     "((b from (lvlhB t0) to eci) .- (a from (lvlhA t0) to eci)) / 1 m"
+                     "[-7000002, 7000000, 0]"
+                 ]
+          )
+          @?= Right ["true"]
+    , testCase "F4: Point, Chart, Diff and Axes; Diff reduces once the space is known" $ do
+        runLinesP
+          ( frame
+              ++ [ ":type 20 degC .- 10 degC"
+                 , ":type 20 degF .- 10 degF"
+                 , ":type [1, 2, 3] lvlh .- [0, 0, 0] lvlh"
+                 , "chart bench on Inertial at [1, 0, 0] m"
+                 , ":type [1, 2, 3] bench .- [0, 0, 0] bench"
+                 , multiline ["d :: Diff lvlh", "let d = [1, 0, 0] m"]
+                 , ":type d"
+                 , multiline ["k :: Coords lvlh", "let k = [1, 0, 0]"]
+                 , ":type k"
+                 , ":type \\p q -> p .- q"
+                 , ":type \\c -> pointOn c"
+                 , multiline
+                     [ "good :: forall (c : Inertial). Point c -> Point c -> Num m"
+                     , "let good p q = norm (p .- q)"
+                     ]
+                 , "good ([3, 4, 0] eci) ([0, 0, 0] eci)"
+                 ]
+          )
+          @?= Right
+            [ "Num K"
+            , "Num K"
+            , "Vec lvlh m"
+            , "Vec Inertial m"
+            , "Vec lvlh m"
+            , "Vec lvlh"
+            , "forall c. Point c -> Point c -> Diff c"
+            , "forall c. Chart c -> Coords c -> Point c"
+            , "5 m"
+            ]
+        -- Arithmetic on Diff of a frame whose space nothing says waits, and
+        -- is refused when the definition is generalised.
+        expectError
+          (runLinesP ["let bad p q = vmap abs (p .- q)"])
+          "the amount between points on a frame of a space not known here: give a signature naming the space"
+    , testCase "F5: the primitives over frames; another frame is reported as one" $ do
+        runLinesP
+          ( frame
+              ++ [ ":type pointOn"
+                 , ":type toScale"
+                 , ":type rotationOf"
+                 , ":type withAxes"
+                 , "([1.5, 2.25, 3] lvlh).0"
+                 , ":type ([1.5, 2.25, 3] lvlh).2"
+                 ]
+          )
+          @?= Right
+            [ "forall c. Chart c -> Coords c -> Point c"
+            , "forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1"
+            , "forall s (c : s). Chart c -> Mat s c"
+            , "forall c n d. Chart c -> Vec n d -> Vec c d"
+            , "1.5 m"
+            , "Num m"
+            ]
+        expectError
+          (evalP "20 degC .- 68 degF")
+          "points on degC and degF: convert one with `to`"
+        expectError (evalP "20 degC .+ (5 degC)") "an amount and a point"
+    , testCase "F6: a point holds its coordinates on its frame, the step applied" $ do
+        runLinesP
+          ( frame
+              ++ [ "20 degC .- 0 degC"
+                 , -- printed on the chart it was written on, the step divided out
+                   "chart ground on eci at [100, 200, 0] m step km"
+                 , "[7, 0, 0] ground"
+                 , "[7, 0, 0] ground .- [0, 0, 0] ground"
+                 , -- inside a turned frame, exact: no rotation applies
+                   "[1, 2, 3] lvlh .- [0, 5, 0] lvlh"
+                 , "([1, 2, 3] lvlh .+ [1, 0, 0] m).0"
+                 , -- a point fixed on a moving body is a constant
+                   "chart spinner t on eci by rotz (1 rad/s * (t .- 0 unix)) spinning [0, 0, 1] rad/s"
+                 , "[1, 2, 3] (spinner (0 unix)) == [1, 2, 3] (spinner (100 unix))"
+                 ]
+          )
+          @?= Right
+            [ "20 K"
+            , "[7, 0, 0] ground"
+            , "[7, 0, 0] km"
+            , "[1, -3, 3] m"
+            , "2 m"
+            , "true"
+            ]
+    , testCase "F7: a chart with parameters is converted from a named configuration" $ do
+        let sat =
+              earth
+                ++ [ ":add"
+                   , "data Sat = Sat {epoch :: Point J2000, pos :: Vec ecef m}"
+                   , "let lvlhTurn s = rotz (atan2 s.pos.1 s.pos.0)"
+                   , -- linked: the parent applied to the child's own parameters
+                     "chart lvlh s on (ecef s.epoch) at s.pos by lvlhTurn s"
+                   , "let s = Sat {epoch = 0 J2000, pos = [7000, 0, 0] km}"
+                   , "let t0 = 0 J2000"
+                   , "let p = [1, 2, 3] (lvlh s)"
+                   ]
+        lastN 4
+          <$> runLinesP
+            ( sat
+                ++ [ ":type p"
+                   , encloses
+                       "1e-12"
+                       "((p from (lvlh s) to (ecef t0)) .- [7000000, 0, 0] (ecef t0)) / 1 m"
+                       "[1, 2, 3]"
+                   , -- the target applied
+                     "let q = [6378000, 0, 0] eci"
+                   , encloses
+                       "1e-9"
+                       "((q to (ecef t0)) .- [0, 0, 0] (ecef t0)) / 1 m"
+                       "expm (-(rotz (gmst t0))) @ [6378000, 0, 0]"
+                   , -- a point on a chart without parameters needs no from
+                     "let r = [1, 2, 3] eci"
+                   , "r to eci"
+                   ]
+            )
+          @?= Right ["Point lvlh", "true", "true", "[1, 2, 3] eci"]
+        -- The chart a point was written on is never used for a conversion.
+        expectError
+          (runLinesP (sat ++ ["p to eci"]))
+          "lvlh takes arguments: write p from (lvlh …) to eci"
+        expectError
+          (runLinesP (sat ++ ["p from (ecef t0) to eci"]))
+          "charts on lvlh and ecef"
+        -- Writing a point needs an applied chart.
+        expectError
+          (runLinesP (sat ++ ["[1, 2, 3] ecef"]))
+          "`ecef` takes arguments: a point is written on an applied chart, as in [1, 2, 3] (ecef t0)"
+        -- Inherited: the parent's parameters become the child's.
+        lastN 2
+          <$> runLinesP
+            ( sat
+                ++ [ "chart arm q t on (ecef t) at [1, 0, 0] m by roty q"
+                   , ":type arm"
+                   , encloses
+                       "1e-15"
+                       "(([0, 0, 0] (arm (30 deg) t0) from (arm (30 deg) t0) to (ecef t0)) .- [0, 0, 0] (ecef t0)) / 1 m"
+                       "[1, 0, 0]"
+                   ]
+            )
+          @?= Right ["Num rad -> Point J2000 -> Chart arm", "true"]
+    , testCase "F7: the three subtractions" $ do
+        let cities =
+              earth
+                ++ [ "let t0 = 0 J2000"
+                   , "let t1 = 0 J2000 .+ 1 s"
+                   , "chart lvlhA t on eci at withAxes eci ([7000, 0, 0] km) by rotz (90 deg)"
+                   , "let a = [6378000, 0, 0] (ecef t0)"
+                   , "let b = [0, 6378000, 0] (ecef t0)"
+                   , "let e0 = ecef t0"
+                   , "let e1 = ecef t1"
+                   , "let la = lvlhA t0"
+                   ]
+        runLinesP
+          ( cities
+              ++ [ -- 1. on one frame: relative to the frame, whatever the
+                   -- configurations its points were written with
+                   "b .- a"
+                 , "[0, 6378000, 0] (ecef t1) .- a"
+                 , -- 2. across the tree: a point on eci seen from one on ecef
+                   encloses "1e-9" "(([0, 0, 0] eci to e0) .- a) / 1 m" "[-6378000, 0, 0]"
+                 , -- 3. both in a third frame at one configuration: the
+                   -- difference re-expressed
+                   encloses
+                     "1e-6"
+                     "(((b from e0 to la) .- (a from e0 to la)) - ((b .- a) from e0 to la)) / 1 m"
+                     "[0, 0, 0]"
+                 , -- at two configurations: a new quantity, the frame's motion
+                   -- between them included, about ω R δt
+                   "let moved = (a from e1 to eci) .- (a from e0 to eci)"
+                 , "let dist = mid (norm (mid moved) / 1 m)"
+                 , "dist > 400 && dist < 500"
+                 ]
+          )
+          @?= Right
+            [ "[-6378000, 6378000, 0] m"
+            , "[-6378000, 6378000, 0] m"
+            , "true"
+            , "true"
+            , "true"
+            ]
+    , testCase
+        "F8: any chart after a literal writes a point; one with parameters unapplied is refused" $ do
+        runLinesP
+          ( earth
+              ++ [ "let c = degF"
+                 , "3 c"
+                 , "[1, 2, 3] (ecef (0 J2000))"
+                 , multiline
+                     ["pt :: forall (c : Temperature). Chart c -> Point c", "let pt c = 3 c"]
+                 , "pt degF"
+                 , "(\\c -> 3 c) degC"
+                 ]
+          )
+          @?= Right ["3 degF", "[1, 2, 3] (ecef (0 J2000))", "3 degF", "3 degC"]
+        expectError
+          (runLinesP (earth ++ ["3 ecef"]))
+          "`ecef` takes arguments: a point is written on an applied chart"
+        expectError
+          (runLinesP ["let pt c = 3 c"])
+          "ambiguous: what follows this literal could be a unit or a chart"
+        -- Written as F8 has it, over every space: a number is the coordinate
+        -- of a point on a space of numbers only, so the definition is not as
+        -- general as its signature (design §3.10, part F, as built).
+        expectError
+          (runLinesP [multiline ["pt :: forall c. Chart c -> Point c", "let pt c = 3 c"]])
+          "not as general as its signature"
+    , testCase "F9: printing and encoding" $ do
+        runLinesP
+          ( frame
+              ++ [ ":type 20 degC"
+                 , ":type degC"
+                 , ":type [1, 2, 3] lvlh"
+                 , "20 degC"
+                 , "[1, 2, 3] lvlh"
+                 ]
+          )
+          @?= Right ["Point degC", "Chart degC", "Point lvlh", "20 degC", "[1, 2, 3] lvlh"]
+    , testCase "F10: a chart's clauses, to as the one conversion, on" $ do
+        runLinesP
+          [ ":view kelvin"
+          , ":view degC"
+          , ":view degF"
+          , ":view degR"
+          , ":view JD"
+          , ":view MJD"
+          , ":view J2000"
+          , ":view unix"
+          , ":view gauge"
+          ]
+          @?= Right
+            [ "chart kelvin on Temperature"
+            , "chart degC on Temperature at 273.15 K"
+            , "chart degF on Temperature at 459.67 deltaF step deltaF"
+            , "chart degR on kelvin step deltaF"
+            , "chart JD on Time step day"
+            , "chart MJD on Time at 2400000.5 day step day"
+            , "chart J2000 on Time at 2451545 day step day"
+            , "chart unix on Time at 2440587.5 day"
+            , "chart gauge on Pressure at 101325 Pa step Pa"
+            ]
+        -- step, by, then and spinning are names outside a chart; on is a keyword.
+        runLinesP ["let step = 2", "let spinning = 3", "step + spinning"]
+          @?= Right ["5"]
+        expectError (runLinesP ["let on = 3"]) "unexpected"
+        expectError (runLinesP ["let from = 3"]) "unexpected"
+        -- along and inChart are retired into to; withAxes stays.
+        expectError
+          (runLinesP (frame ++ ["inChart lvlh ([1, 0, 0] m)"]))
+          "unknown name `inChart`"
+        expectError
+          (runLinesP (frame ++ ["along lvlh ([1, 0, 0] m)"]))
+          "unknown name `along`"
+        -- on subtracts in a frame, and only a subtraction.
+        runLinesP
+          ( frame
+              ++ [ encloses
+                     "1e-15"
+                     "(([1, 2, 3] eci .- [4, 5, 6] eci on lvlh) - (([1, 2, 3] eci to lvlh) .- ([4, 5, 6] eci to lvlh))) / 1 m"
+                     "[0, 0, 0]"
+                 , ":type [1, 2, 3] eci .- [4, 5, 6] eci on lvlh"
+                 ]
+          )
+          @?= Right ["true", "Vec lvlh m"]
+        expectError
+          (runLinesP (frame ++ ["[1, 2, 3] eci on lvlh"]))
+          "`on` subtracts two points in a frame: write b .- a on c"
+    , testCase "F10: conversions and on read back to their hashes" $ do
+        let stored =
+              frame
+                ++ [ "let viaOn a b = b .- a on lvlh"
+                   , multiline
+                       ["fromPt :: Point lvlh -> Point eci", "let fromPt p = p from lvlh to eci"]
+                   , multiline
+                       [ "fromAmt :: Vec lvlh m -> Vec Inertial m"
+                       , "let fromAmt v = v from lvlh to eci"
+                       ]
+                   , multiline ["toAmt :: Vec Inertial m -> Vec lvlh m", "let toAmt v = v to lvlh"]
+                   ]
+        forM_ ["viaOn", "fromPt", "fromAmt", "toAmt"] $ \n ->
+          expecting (runLinesP (stored ++ [":edit " <> n])) $ \outs ->
+            runLinesP (frame ++ [multiline outs, ":hash " <> n])
+              @?= runLinesP (stored ++ [":hash " <> n])
+    , testCase
+        "F7: with no type to say so, a frame with parameters is refused when converting" $ do
+        -- A function over any frame cannot know statically: the conversion
+        -- refuses at run time, never reading the chart a point was written on.
+        let setup =
+              earth
+                ++ [ multiline
+                       ["toE :: forall (c : Inertial). Point c -> Point eci", "let toE p = p to eci"]
+                   ]
+        runLinesP (setup ++ [":type toE", "toE ([1, 2, 3] eci)"])
+          @?= Right ["forall (c : Inertial). Point c -> Point eci", "[1, 2, 3] eci"]
+        expectError
+          (runLinesP (setup ++ ["toE ([1, 2, 3] (ecef (0 J2000)))"]))
+          "ecef takes arguments: write p from (ecef …) to c"
+    ]
+ where
+  inertial = [multiline ["space Inertial = Vec 3 m", "chart eci on Inertial"]]
+  frame = inertial ++ ["chart lvlh on eci at [7000, 0, 0] km by rotz (90 deg)"]
+  earth =
+    inertial
+      ++ [ "let ω_e = 7.2921159e-5 rad/s"
+         , "let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)"
+         , "chart ecef t on eci by rotz (gmst t) spinning [0, 0, 1] * ω_e"
+         ]
