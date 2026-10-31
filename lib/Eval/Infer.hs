@@ -401,14 +401,16 @@ unifyRole p x y = do
         p
         "an amount and a unit: a unit is written by its name, and one of it is 1 km"
 
-{- | Two frames (design §3.10, F4, F5): one identity, then one axis set and
-one space. Two named frames that differ are two types, reported as what
-the caller unifies: "points on degC and degF: convert one with `to`".
+{- | Two frames (design §3.10, F4, F5): one space, then one identity and one
+axis set. The space comes first, so frames of two spaces are reported as
+such, which no @to@ joins; two named frames of one space are two types,
+reported as what the caller unifies: "points on degC and degF: convert one
+with `to`".
 -}
 unifyFrame :: Path -> Text -> Frame -> Frame -> Infer ()
 unifyFrame p what f1 f2 = do
-  unifyFrameSlot p what f1.slot f2.slot
   unifySpace p f1.space f2.space
+  unifyFrameSlot p what f1.slot f2.slot
   unifyAxis p f1.axes f2.axes
 
 unifyFrameSlot :: Path -> Text -> FrameSlot -> FrameSlot -> Infer ()
@@ -949,7 +951,7 @@ settle here ctx = do
     OverIs{} ->
       failAt
         p
-        "the amount between points on a frame of a space not known here: give a signature naming the space, as in forall (c : Inertial)"
+        "the amount between points on a frame of a space not known here: give a signature naming the space, as in forall (c : GCRS)"
     -- A role still open keeps its quantities scalar (design §3.10, U9), so
     -- that the role generalises: \a b -> a * b is over amounts and units.
     UnitScalar _ sh -> unifyShape p sh SNil

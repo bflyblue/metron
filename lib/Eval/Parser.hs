@@ -238,7 +238,7 @@ chartStatement = do
   _ <-
     kw KOn
       P.<|> fail
-        "name its space: `chart … on Temperature`, or the chart it is on, after its parameters"
+        "name its space: `chart … on ITS90`, or the chart it is on, after its parameters"
   input <- P.getInput
   let (stmt, rest) = splitAt (statementEnd input.toks) input.toks
   clauses <- mapM (clause input) (clauseSegments stmt)
@@ -421,7 +421,7 @@ sigType = do
           _ <- tok TLParen
           n <- name
           _ <- tok (TOp ":")
-          -- A length, @(a : 3)@, or a space, @(c : Temperature)@ (design
+          -- A length, @(a : 3)@, or a space, @(c : ITS90)@ (design
           -- §3.10, F1).
           b <-
             P.choice

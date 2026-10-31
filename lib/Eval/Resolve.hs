@@ -1708,7 +1708,7 @@ argOf env k a = case k of
   KDim -> (,NoCompanion) . ADim <$> tyDim env a
   KFrame -> (\f -> (AFrame f.slot, FrameOf f)) <$> tyFrame env a
   KAxis -> bad a "an axis set cannot be written"
-  KSpace -> bad a "a space is written as a frame's: (c : Temperature)"
+  KSpace -> bad a "a space is written as a frame's: (c : ITS90)"
   KRole -> (,NoCompanion) . ARole <$> tyRole env a
 
 -- | A position of a shape: a length and its axes.
@@ -1760,7 +1760,7 @@ spaceLength sp = case sp.shape of
 
 {- | A name in a length position (design §3.10, F4): a frame's axes, as
 many as its space has, or a space's base axes. @Vec lvlh m@ is a
-three-vector along lvlh's axes, @Vec Inertial m@ along Inertial's base.
+three-vector along lvlh's axes, @Vec GCRS m@ along GCRS's base.
 -}
 namedAxes :: DataEnv -> S.TyExpr -> Text -> Kinds (Len, Axis)
 namedAxes env a n = case namedType env n of
@@ -1960,7 +1960,7 @@ throughout the type, dimensions included. Kinds
 are learned from where the variables are used; a length variable stands
 for a whole axis set, its length and a companion axis variable, and a
 sized binder, @(a : 3)@, for that many axes of its own. A variable where a
-frame goes is a frame, of the space its binder names, @(c : Temperature)@
+frame goes is a frame, of the space its binder names, @(c : ITS90)@
 or @(c : s)@, or of a space of its own (design §3.10, F1).
 -}
 explicitScheme ::
@@ -2075,7 +2075,7 @@ explicitScheme scope cb outer t0 = do
                 s.span
                 ( "`"
                     <> s.text
-                    <> "` is not a space: a frame's binder names one, as in (c : Temperature)"
+                    <> "` is not a space: a frame's binder names one, as in (c : ITS90)"
                 )
             )
   frameIds f = map fst (freeVars (TPoint f))

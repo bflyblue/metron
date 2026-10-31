@@ -240,7 +240,7 @@ data TyNode
 
 {- | A variable bound by @forall@, with the length it stands for when it is
 sized, @(a : 3)@ (design §3.9, decision 6), or the space it is a frame
-of, @(c : Temperature)@ or @(c : s)@ (design §3.10, F1).
+of, @(c : ITS90)@ or @(c : s)@ (design §3.10, F1).
 -}
 data TyBinder = TyBinder {name :: Name, size :: Maybe Integer, space :: Maybe Name}
   deriving stock (Eq, Show)

@@ -337,11 +337,13 @@ stdlibLayout =
       , Unit "day" "86400 s"
       , Unit "week" "7 day"
       , Unit "year" "365.25 day"
-      , SpaceDecl "Time" "Num s"
-      , Chart "JD" "on Time step day"
-      , Chart "MJD" "on Time at 2400000.5 day step day"
-      , Chart "J2000" "on Time at 2451545 day step day"
-      , Chart "unix" "on Time at 2440587.5 day"
+      , SpaceDecl "TT" "Num s"
+      , Chart "JD" "on TT step day"
+      , Chart "MJD" "on TT at 2400000.5 day step day"
+      , Chart "J2000" "on TT at 2451545 day step day"
+      , -- UTC is not an affine map of TT (leap seconds): no chart joins them.
+        SpaceDecl "UTC" "Num s"
+      , Chart "unix" "on UTC"
       ]
     )
   ,
@@ -359,13 +361,13 @@ stdlibLayout =
     ,
       [ Unit "deltaC" "K"
       , Unit "deltaF" "5/9 * 1 K"
-      , SpaceDecl "Temperature" "Num K"
-      , Chart "degC" "on Temperature at 273.15 K"
-      , Chart "degF" "on Temperature at 459.67 deltaF step deltaF"
+      , SpaceDecl "ITS90" "Num K"
+      , Chart "degC" "on ITS90 at 273.15 K"
+      , Chart "degF" "on ITS90 at 459.67 deltaF step deltaF"
       , -- Rankine is a rescaling of kelvin: one frame (design §3.10, F3).
         Chart "degR" "on kelvin step deltaF"
       , -- The absolute scale: K's spelled-out name is this scale, not a unit.
-        Chart "kelvin" "on Temperature"
+        Chart "kelvin" "on ITS90"
       ]
     )
   ,
@@ -510,9 +512,6 @@ siStatements =
   [Unit n b | (b, n) <- baseNames]
     ++ [Let n ("10^" <> T.pack (show k)) | (n, k) <- prefixValues]
     ++ [Unit u e | (u, _, e) <- coherent]
-    ++ [ SpaceDecl "Pressure" "Num (kg/(m*s^2))"
-       , Chart "gauge" "on Pressure at 101325 Pa step Pa"
-       ]
     ++ [ Unit (p <> u) (n <> " * 1 " <> fromMaybe u (lookup u baseNames))
        | (p, n) <- prefixNames
        , u <- siPrefixable
