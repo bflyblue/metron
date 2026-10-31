@@ -4530,7 +4530,7 @@ Scratch and codebase (7.5)
 Inspection
 :ls [glob|namespace] [--all|--units|--charts|--types] [: type]
                    names with their types, sorted; alone, the current namespace's own labels,
-                   then one line per namespace directly under it, `namespace si (800 names)`;
+                   then one line per namespace directly under it, `namespace si (801 names)`;
                    a word that names a namespace lists everything under it, relative to it, data
                    lines included; --all lists everything by full path; a glob (* anywhere, else
                    a substring; on the full path or its last segment), a kind (--scales is the
