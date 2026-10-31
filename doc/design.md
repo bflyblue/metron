@@ -727,31 +727,34 @@ number, and `slack ≥ 0` is an anonymous leftover radius. Each `eᵢ` has a nam
 
 The guarantee is: the true value lies in `mid ± (Σ_bound |cᵢ| + slack)` up to a
 random error of standard deviation `√(Σ_stat cᵢ²)`. Both kinds propagate through
-linear arithmetic by exactly the same rules. A non-linear operation's remainder
-keeps them apart (decided by the owner): the part that comes from bound nudges
-alone is a bound, as before, and any part that involves a statistical nudge is
-statistical, never a bound. A statistical nudge has no hard limit, so a
-remainder computed as if it lay in `[-1, 1]` would turn a σ into a certainty:
-`n*n` for `n = 0 ±σ 1` must not be `0.5 ± 0.5`, and `(n*n) < 2` must not be
-`true`.
+linear arithmetic by exactly the same rules. A non-linear operation keeps them
+apart (decided by the owner).
 
-- **Products** are moment-matched for independent Gaussian nudges. With `x =
-  x₀ + Σ aᵢeᵢ` and `y = y₀ + Σ bⱼeⱼ`, the quadratic part over statistical
-  nudges has mean `Σ aᵢbᵢ`, which moves the midpoint, and variance
-  `(Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²`, carried by a fresh statistical nudge: `n*n` is
-  `1 ±σ 1.414…`, a chi-square's mean 1 and variance 2. A cross term of a
-  bound and a statistical nudge is statistical, with the bound nudge at its
-  worst, `|e| ≤ 1`. Parts whose correlation is unknown add their standard
-  deviations rather than their variances, which over-states and never
-  under-states.
-- **Other non-linear functions** (`recip`, `sqrt`, `exp`, `sin`, …) take the
-  statistical part to second order (the delta method of the GUM): the mean
-  moves by `f''(m)·σ²/2` and a fresh statistical nudge carries
-  `|f''(m)|·σ²/√2`; the bound part's remainder stays rigorous.
-- **What a statistical result means.** It is an approximation to the first
-  two moments, as GUM propagation is, not a bound; it prints with `±σ`, and a
-  comparison that depends on it is decided at the stated sigma (§3.2.9).
-  Only bound nudges and slack give guarantees.
+- **The statistical model is the GUM's,** stated: each statistical nudge is an
+  independent random variable of mean 0 and standard deviation 1, a shared
+  nudge being one variable, and a value's statistical part is a linear model
+  in them. Statistical nudges propagate to first order only, the GUM's law
+  of propagation of uncertainty, `σ_f² = Σ (∂f/∂xᵢ)² σᵢ²`: the same model as
+  the linear covariance propagation of `propagateCov2`.
+- **A σ never becomes a bound.** The remainder of a non-linear operation that
+  comes from bound nudges and slack alone is a rigorous bound, as before. A
+  remainder computed as if a statistical nudge lay in `[-1, 1]` would turn a
+  σ into a certainty (`n*n` for `n = 0 ±σ 1` was `0.5 ± 0.5`, and `(n*n) < 2`
+  was `true`), so the part involving a statistical nudge is not folded into
+  a bound.
+- **Non-linearity is detected, not hidden.** Each non-linear operation
+  estimates its second-order statistical term (for a product, `√((Σaᵢ²)(Σbᵢ²)
+  + (Σaᵢbᵢ)²)` over the statistical coefficients; for a function, `|f''(m)|·
+  σ²`) and compares it with the first-order σ. Under a threshold (1% by
+  default) the result is a first-order σ and means what it says. Over it the
+  value is marked **non-linear**: it prints with a warning, `:budget` says
+  which operation made it so, and a comparison at a stated sigma refuses
+  rather than decides (§3.2.9), since a mean and a σ no longer describe a
+  skewed result. The mark propagates to everything computed from the value.
+- **Monte Carlo is the answer for the non-linear case** and is deferred:
+  `:sample expr` would draw the statistical nudges from their distributions,
+  evaluate the expression many times and report quantiles, the GUM's
+  Supplement 1 method (§11).
 
 Otherwise the kinds differ only when a value is collapsed for printing,
 comparison, budget or covariance. This is affine arithmetic in the
@@ -5294,6 +5297,8 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
+- `:sample expr` (§3.2): Monte Carlo over the statistical nudges, for a value
+  marked non-linear, reporting quantiles rather than a mean and a σ.
 - Curvilinear charts (§3.10). A chart is affine, so latitude and longitude,
   spherical coordinates and topocentric azimuth, elevation and range are
   functions today (`toGeodetic : Point ecef -> Geodetic`), not charts. A
