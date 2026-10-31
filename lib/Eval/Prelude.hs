@@ -513,7 +513,7 @@ stdlibLayout =
     ( "linalg"
     , [Let n e | (n, e) <- algebra, n /= "vimap"]
         -- vimap over timap, signed so it stays vector-only (design §3.3)
-        ++ [ Sig "vimap" "(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1"
+        ++ [ Sig "vimap" "forall d d1 n. (Num -> Num d -> Num d1) -> Vec n d -> Vec n d1"
            , Let "vimap" "\\f v -> timap (\\i x -> f i.0 x) v"
            ]
         ++ [Data covarianceData ["Cov2", "rr", "rv", "vv"]]

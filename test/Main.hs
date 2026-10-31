@@ -982,7 +982,7 @@ codebaseTests =
                 astroState
               , astroStateCon
               , "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
-              , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
+              , "Cov2 : forall n d d1. Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
               , "data Shape = Circle (Num [m]) | Rect (Num [m]) (Num [m])"
               , "Circle : Num [m] -> Shape"
               , "Rect : Num [m] -> Num [m] -> Shape"
@@ -991,13 +991,13 @@ codebaseTests =
           ls ": Shape -> a"
             @?= Right
               [ "area : Shape -> Num [m^2]"
-              , "Cons : a -> {a} -> {a}"
-              , "Pair : a -> b -> (a, b)"
+              , "Cons : forall a. a -> {a} -> {a}"
+              , "Pair : forall a b. a -> b -> (a, b)"
               ]
-          ls ": {a} -> Num" @?= Right ["length : {a} -> Num"]
+          ls ": {a} -> Num" @?= Right ["length : forall a. {a} -> Num"]
           -- unification both ways: the query's d is one variable, cross has two
           ls ": Vec 3 d -> Vec 3 d -> Vec 3 [d^2]"
-            @?= Right ["cross : Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"]
+            @?= Right ["cross : forall d d1. Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"]
           ls "Rect : Num [m] -> Num [m] -> b"
             @?= Right ["Rect : Num [m] -> Num [m] -> Shape"]
           ls "nothing-like-this" @?= Right ["nothing matches"]
@@ -1216,9 +1216,10 @@ typeTests =
     [ testCase "literals and arithmetic" $ do
         typeOfText "1 + 2" @?= Right "Num"
         typeOfText "1 < 2" @?= Right "Bool"
-    , testCase "identity is polymorphic" $ typeOfText "\\x -> x" @?= Right "a -> a"
+    , testCase "identity is polymorphic"
+        $ typeOfText "\\x -> x" @?= Right "forall a. a -> a"
     , testCase "higher-order"
-        $ typeOfText "\\f x -> f (f x)" @?= Right "(a -> a) -> a -> a"
+        $ typeOfText "\\f x -> f (f x)" @?= Right "forall a. (a -> a) -> a -> a"
     , testCase "let-polymorphism"
         $ typeOfText "let id x = x in if id true then id 1 else 2" @?= Right "Num"
     , testCase "vector and matrix literals" $ do
@@ -1233,11 +1234,14 @@ typeTests =
           Right v -> assertFailure (show v)
         typeOfText "[[1, 2], [3, 4]].1" @?= Right "Vec 2"
     , testCase "projection gives a lower bound on the length (design §4.1)" $ do
-        typeOfText "\\v -> v.0" @?= Right "Tensor (n + 1 : s) d -> Tensor s d"
-        typeOfText "\\v -> v.2 + v.0" @?= Right "Tensor (n + 3 : s) d -> Tensor s d"
-        typeOfText "\\v -> v.0 + 1" @?= Right "Vec (n + 1) -> Num"
+        typeOfText "\\v -> v.0"
+          @?= Right "forall n s d. Tensor (n + 1 : s) d -> Tensor s d"
+        typeOfText "\\v -> v.2 + v.0"
+          @?= Right "forall n s d. Tensor (n + 3 : s) d -> Tensor s d"
+        typeOfText "\\v -> v.0 + 1" @?= Right "forall n. Vec (n + 1) -> Num"
     , testCase "elementwise operators are shape-polymorphic (core.md)" $ do
-        typeOfText "\\a b -> a + b" @?= Right "Tensor s d -> Tensor s d -> Tensor s d"
+        typeOfText "\\a b -> a + b"
+          @?= Right "forall s d. Tensor s d -> Tensor s d -> Tensor s d"
         typeOfText "[1, 2] + [3, 4]" @?= Right "Vec 2"
         typeOfText "neg [[1, 2], [3, 4]]" @?= Right "Mat 2 2"
     , testCase "products have one type each (design §4.2)" $ do
@@ -1250,9 +1254,10 @@ typeTests =
         typeOfText "[1, 2] .* [3, 4]" @?= Right "Vec 2"
         typeOfText "[2, 4] / 2" @?= Right "Vec 2"
     , testCase "an unknown-rank product operand defaults at generalisation" $ do
-        typeOfText "\\k v -> k * v" @?= Right "Num d -> Tensor s d1 -> Tensor s [d d1]"
+        typeOfText "\\k v -> k * v"
+          @?= Right "forall d s d1. Num d -> Tensor s d1 -> Tensor s [d d1]"
         typeOfText "\\a b -> a @ b"
-          @?= Right "Vec n d -> Tensor (n : s) d1 -> Tensor s [d d1]"
+          @?= Right "forall n d s d1. Vec n d -> Tensor (n : s) d1 -> Tensor s [d d1]"
     , testCase "contraction requires matching inner lengths"
         $ case evalText "[[1, 2], [3, 4]] @ [1, 2, 3]" of
           Left err -> T.isInfixOf "lengths differ: 2 and 3" err @? T.unpack err
@@ -1262,26 +1267,30 @@ typeTests =
           Left err -> T.isInfixOf "lengths differ: 2 and 3" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "length-polymorphic primitives" $ do
-        typeOfText "dot" @?= Right "Vec n d -> Tensor (n : s) d1 -> Tensor s [d d1]"
-        typeOfText "transpose" @?= Right "Mat n m d -> Mat m n d"
-        typeOfTextP "cross" @?= Right "Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
+        typeOfText "dot"
+          @?= Right "forall n d s d1. Vec n d -> Tensor (n : s) d1 -> Tensor s [d d1]"
+        typeOfText "transpose" @?= Right "forall n m d. Mat n m d -> Mat m n d"
+        typeOfTextP "cross" @?= Right "forall d d1. Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
     , testCase "indices, vzipWith and vimap (design §3.3)" $ do
-        typeOfText "indices" @?= Right "Vec n d -> Vec n"
+        typeOfText "indices" @?= Right "forall n d. Vec n d -> Vec n"
         typeOfText "vzipWith"
-          @?= Right "(Num d -> Num d1 -> Num d2) -> Tensor s d -> Tensor s d1 -> Tensor s d2"
-        typeOfTextP "vimap" @?= Right "(Num -> Num d -> Num d1) -> Vec n d -> Vec n d1"
+          @?= Right
+            "forall d d1 d2 s. (Num d -> Num d1 -> Num d2) -> Tensor s d -> Tensor s d1 -> Tensor s d2"
+        typeOfTextP "vimap"
+          @?= Right "forall d d1 n. (Num -> Num d -> Num d1) -> Vec n d -> Vec n d1"
         typeOfText "indices ([1, 2] m)" @?= Right "Vec 2"
     , testCase "timap's index is a Vec (rank s) (design §4.1)" $ do
         typeOfText "timap"
-          @?= Right "(Vec (rank s) -> Num d -> Num d1) -> Tensor s d -> Tensor s d1"
+          @?= Right
+            "forall s d d1. (Vec (rank s) -> Num d -> Num d1) -> Tensor s d -> Tensor s d1"
         -- Projecting from the index asks for that many leading lengths.
         typeOfText "\\t -> timap (\\i x -> i.0 * x) t"
-          @?= Right "Tensor (n : s) d -> Tensor (n : s) d"
+          @?= Right "forall n s d. Tensor (n : s) d -> Tensor (n : s) d"
         typeOfText "\\t -> timap (\\i x -> if i.0 == i.1 then x else 0) t"
-          @?= Right "Tensor (n : m : s) -> Tensor (n : m : s)"
+          @?= Right "forall n m s. Tensor (n : m : s) -> Tensor (n : m : s)"
         -- A length-polymorphic function on the index leaves the rank open.
         typeOfText "\\t -> timap (\\i x -> dot i i * x) t"
-          @?= Right "Tensor s d -> Tensor s d"
+          @?= Right "forall s d. Tensor s d -> Tensor s d"
         -- The function returns a number.
         case typeOfText "timap (\\i x -> i) [[1, 2], [3, 4]]" of
           Left err -> T.isInfixOf "expected Num d, got Vec (rank s)" err @? T.unpack err
@@ -1299,7 +1308,7 @@ typeTests =
           , "diag [[1, 2, 3], [4, 5, 6], [7, 8, 9]]"
           ]
           @?= Right
-            [ "Tensor (n : m : s) -> Tensor (n : m : s)"
+            [ "forall n m s. Tensor (n : m : s) -> Tensor (n : m : s)"
             , "[1, 0, 0; 0, 5, 0; 0, 0, 9]"
             ]
         case runLines
@@ -1335,7 +1344,7 @@ typeTests =
           ]
           @?= Right
             [ "added tm"
-            , "(Vec (rank s) -> Num d -> Num d1) -> Tensor s d -> Tensor s d1"
+            , "forall s d d1. (Vec (rank s) -> Num d -> Num d1) -> Tensor s d -> Tensor s d1"
             , "[0, 2; 0, 4]"
             ]
         -- A rank in a type encodes under its own length tag and decodes back.
@@ -1599,14 +1608,14 @@ contractionTests =
           @?= Right ["true"]
     , testCase "types are computed from the literal positions" $ do
         typeOfText "\\t -> contract 0 1 t"
-          @?= Right "Tensor (n : n : s) d -> Tensor s d"
+          @?= Right "forall n s d. Tensor (n : n : s) d -> Tensor s d"
         typeOfText "\\t -> contract 0 2 t"
-          @?= Right "Tensor (n : m : n : s) d -> Tensor (m : s) d"
+          @?= Right "forall n m s d. Tensor (n : m : n : s) d -> Tensor (m : s) d"
         typeOfText "\\t -> permute [2, 0, 1] t"
-          @?= Right "Tensor (n : m : k : s) d -> Tensor (k : n : m : s) d"
+          @?= Right "forall n m k s d. Tensor (n : m : k : s) d -> Tensor (k : n : m : s) d"
         typeOfText "\\t -> permute [1, 0] t"
-          @?= Right "Tensor (n : m : s) d -> Tensor (m : n : s) d"
-        typeOfTextP "trace" @?= Right "Tensor (n : n : s) d -> Tensor s d"
+          @?= Right "forall n m s d. Tensor (n : m : s) d -> Tensor (m : n : s) d"
+        typeOfTextP "trace" @?= Right "forall n s d. Tensor (n : n : s) d -> Tensor s d"
     , testCase "the prelude's trace" $ do
         evalP "trace [[1, 2, 3], [4, 5, 6], [7, 8, 10]]" @?= Right ["16"]
         -- Above rank two it is the partial trace over the first two positions.
@@ -1709,11 +1718,11 @@ sliceTests =
         typeOfText "([1, 2; 3, 4] m)._.0" @?= Right "Vec 2 [m]"
     , testCase "types are computed from the axis and position" $ do
         typeOfText "\\m -> m._.0"
-          @?= Right "Tensor (n : m + 1 : s) d -> Tensor (n : s) d"
+          @?= Right "forall n m s d. Tensor (n : m + 1 : s) d -> Tensor (n : s) d"
         typeOfText "\\t -> t._._.2"
-          @?= Right "Tensor (n : m : k + 3 : s) d -> Tensor (n : m : s) d"
+          @?= Right "forall n m k s d. Tensor (n : m : k + 3 : s) d -> Tensor (n : m : s) d"
         typeOfText "\\m -> m._.0 + m._.2"
-          @?= Right "Tensor (n : m + 3 : s) d -> Tensor (n : s) d"
+          @?= Right "forall n m s d. Tensor (n : m + 3 : s) d -> Tensor (n : s) d"
     , testCase "range and rank are type errors" $ do
         let fails src needle = case runLines [src] of
               Left err -> T.isInfixOf needle err @? T.unpack err
@@ -1893,7 +1902,8 @@ turnedChartTests =
             ]
     , testCase "a covariance and a Cov2 block through inChart are R P Rᵀ" $ do
         let pm = "[[4, 1, 0], [1, 9, 0], [0, 0, 1]]"
-        typeOfTextP "inChart" @?= Right "Chart (Vec n d) -> Tensor s d1 -> Tensor s d1"
+        typeOfTextP "inChart"
+          @?= Right "forall n d s d1. Chart (Vec n d) -> Tensor s d1 -> Tensor s d1"
         runLinesP
           ( frame
               ++ [ encloses
@@ -2414,7 +2424,7 @@ rotationTests =
             [ "[51.968956198705003658…, 74.736564567003212549…; 112.10484685050481882…, 164.07380304920982248…]"
             ]
     , testCase "expm is dimensionless" $ do
-        typeOfTextP "expm" @?= Right "Mat n n -> Mat n n"
+        typeOfTextP "expm" @?= Right "forall n. Mat n n -> Mat n n"
         expectError (evalP "expm [[1 m]]") "dimensions differ"
         expectError (evalP "expm (rotz (1 m))") "expected Num [rad], got Num [m]"
         expectError (evalP "rotz 1") "expected Num [rad], got Num"
@@ -2480,7 +2490,8 @@ rotationTests =
         evalP "transformBy [[0, 1], [1, 0]] ([[1, 2], [3, 4]] km)"
           @?= Right ["[4, 3; 2, 1] km"]
         evalP "transformBy [[0, 1], [1, 0]] (5 km)" @?= Right ["5 km"]
-        typeOfTextP "transformBy" @?= Right "Mat n n -> Tensor s d -> Tensor s d"
+        typeOfTextP "transformBy"
+          @?= Right "forall n s d. Mat n n -> Tensor s d -> Tensor s d"
         typeOfTextP "transformBy (expm (rotz (10 deg))) ([1, 2, 3] m)"
           @?= Right "Vec 3 [m]"
     , testCase "transformBy refuses an axis of another length, at run time" $ do
@@ -2495,9 +2506,10 @@ rotationTests =
         typeOfTextP "rotx" @?= Right "Num [rad] -> Mat 3 3"
         typeOfTextP "roty" @?= Right "Num [rad] -> Mat 3 3"
         typeOfTextP "rotz" @?= Right "Num [rad] -> Mat 3 3"
-        typeOfTextP "dual" @?= Right "Tensor (3 : s) d -> Tensor (3 : 3 : s) d"
-        typeOfTextP "axisAngle" @?= Right "Vec 3 d -> Num [rad] -> Mat 3 3"
-        typeOfTextP "rotation" @?= Right "Vec 3 d -> Vec 3 d1 -> Mat 3 3"
+        typeOfTextP "dual"
+          @?= Right "forall s d. Tensor (3 : s) d -> Tensor (3 : 3 : s) d"
+        typeOfTextP "axisAngle" @?= Right "forall d. Vec 3 d -> Num [rad] -> Mat 3 3"
+        typeOfTextP "rotation" @?= Right "forall d d1. Vec 3 d -> Vec 3 d1 -> Mat 3 3"
         typeOfTextP "euler313"
           @?= Right "Num [rad] -> Num [rad] -> Num [rad] -> Mat 3 3"
     , testCase "rotz is θ (e2 ∧ e1): ∧ turns its second vector toward its first" $ do
@@ -3080,13 +3092,15 @@ unitTests =
           Left err -> T.isInfixOf "same shape" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "dimension polymorphism" $ do
-        typeOfText "\\r -> r^2" @?= Right "Num d -> Num [d^2]"
-        typeOfText "\\x -> sqrt x" @?= Right "Num [d^2] -> Num d"
-        typeOfText "\\x -> sqrt (x * x)" @?= Right "Num d -> Num d"
-        typeOfText "\\a b -> atan2 a b" @?= Right "Num d -> Num d -> Num [rad]"
-        typeOfText "\\x y -> x < y" @?= Right "Num d -> Num d -> Bool"
+        typeOfText "\\r -> r^2" @?= Right "forall d. Num d -> Num [d^2]"
+        typeOfText "\\x -> sqrt x" @?= Right "forall d. Num [d^2] -> Num d"
+        typeOfText "\\x -> sqrt (x * x)" @?= Right "forall d. Num d -> Num d"
+        typeOfText "\\a b -> atan2 a b"
+          @?= Right "forall d. Num d -> Num d -> Num [rad]"
+        typeOfText "\\x y -> x < y" @?= Right "forall d. Num d -> Num d -> Bool"
     , testCase "Kennedy's Euclid step: non-divisible exponents"
-        $ typeOfText "\\f -> sqrt (f * f * f)" @?= Right "Num [d^2] -> Num [d^3]"
+        $ typeOfText "\\f -> sqrt (f * f * f)"
+          @?= Right "forall d. Num [d^2] -> Num [d^3]"
     , -- `d^2 = m` has no solution; the Euclid step used to substitute
       -- `d := d'` forever. Found while checking how the type-directed
       -- generator's negative powers print.
@@ -3116,7 +3130,8 @@ unitTests =
           , ":type fall"
           , "fall (3 s)"
           ]
-          @?= Right ["added g", "added fall", "Num d -> Num [m d^2 s^-2]", "44.145 m"]
+          @?= Right
+            ["added g", "added fall", "forall d. Num d -> Num [m d^2 s^-2]", "44.145 m"]
     ]
 
 -- Regressions found by lint ------------------------------------------------------------
@@ -3126,12 +3141,13 @@ lintRegressionTests =
   testGroup
     "lint regressions"
     [ testCase "instantiation renames quantified variables simultaneously" $ do
-        typeOfTextP "\\a b -> a >< b" @?= Right "Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
+        typeOfTextP "\\a b -> a >< b"
+          @?= Right "forall d d1. Vec 3 d -> Vec 3 d1 -> Vec 3 [d d1]"
         evalP "[1, 0, 0] m >< ([0, 1, 0] m / s)" @?= Right ["[0, 0, 1] m^2 s^-1"]
         evalText "[1, 2] m ⊙ [3, 4] s" @?= Right ["[3, 8] m s"]
     , testCase "a stored polymorphic definition instantiates at several dimensions"
         $ runLines ["let sq x = x * x", ":add", "sq (3 m)", "sq (2 s)", ":type sq"]
-          @?= Right ["added sq", "9 m^2", "4 s^2", "Num d -> Num [d^2]"]
+          @?= Right ["added sq", "9 m^2", "4 s^2", "forall d. Num d -> Num [d^2]"]
     , -- Found while designing the type-directed generator, whose pinning
       -- rules lean on how pending constraints meet a let. `k * v` leaves a product
       -- constraint pending because `k` belongs to the enclosing lambda; the
@@ -3142,7 +3158,7 @@ lintRegressionTests =
         "a let does not generalise variables a pending product constraint ties to the scope"
         $ do
           typeOfText "\\k -> let g = \\v -> k * v in g [1, 2]"
-            @?= Right "Num d -> Vec 2 d"
+            @?= Right "forall d. Num d -> Vec 2 d"
           case evalText "((\\k -> let g = \\v -> k * v in g [1, 2]) 3) + [1, 2, 3]" of
             Left err -> T.isInfixOf "lengths differ" err @? T.unpack err
             Right v -> assertFailure (show v)
@@ -3174,7 +3190,7 @@ lintRegressionTests =
         "a dimension variable flipped at generalisation is flipped in the term too"
         $ do
           typeOfText "\\x -> let k = \\w -> if true then x else 1 / w in x"
-            @?= Right "Num d -> Num d"
+            @?= Right "forall d. Num d -> Num d"
           evalText
             "let g = \\x -> let k = \\w -> if true then x else 1 / w in x in g (2 m)"
             @?= Right ["2 m"]
@@ -3335,7 +3351,8 @@ preludeTests =
           Left err -> T.isInfixOf "unknown field `i`" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "wedge works in any dimension" $ do
-        typeOfTextP "\\a b -> a /\\ b" @?= Right "Vec n d -> Vec n d1 -> Mat n n [d d1]"
+        typeOfTextP "\\a b -> a /\\ b"
+          @?= Right "forall n d d1. Vec n d -> Vec n d1 -> Mat n n [d d1]"
         evalP "[1, 0] ∧ [0, 1]" @?= Right ["[0, 1; -1, 0]"]
     , testCase "an orbital calculation with units end to end"
         $ runLinesP
@@ -3385,7 +3402,7 @@ displayTests =
               [ "9.81 m s^-2"
               , "5 km h^-1"
               , "Body {mass = 5 kg, vel = [0, 0, 1] m s^-1}"
-              , "(a -> a, Num [m s^-2])"
+              , "forall a. (a -> a, Num [m s^-2])"
               , "f = \\x -> x^2 + 1"
               , "g = \\x -> \\y -> if x <= y then x^-1 else y"
               , "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m s^-1]}"
@@ -3394,7 +3411,7 @@ displayTests =
               [ "9.81 m s⁻²"
               , "5 km h⁻¹"
               , "Body {mass = 5 kg, vel = [0, 0, 1] m s⁻¹}"
-              , "(a → a, Num [m s⁻²])"
+              , "forall a. (a → a, Num [m s⁻²])"
               , "f = λx → x² + 1"
               , "g = λx → λy → if x ≤ y then x⁻¹ else y"
               , "data Body = Body {mass :: Num [kg], vel :: Vec 3 [m s⁻¹]}"
@@ -3590,9 +3607,9 @@ affineTests =
         case evalP "sd ((1 ±σ 0.1) + (1 ±σ 0.1 #other))" of
           Right [v] -> T.isPrefixOf "0.1414213562" v @? T.unpack v
           other -> assertFailure (show other)
-        typeOfTextP "mid" @?= Right "Tensor s d -> Tensor s d"
-        typeOfTextP "bound" @?= Right "Tensor s d -> Tensor s d"
-        typeOfTextP "sd" @?= Right "Tensor s d -> Tensor s d"
+        typeOfTextP "mid" @?= Right "forall s d. Tensor s d -> Tensor s d"
+        typeOfTextP "bound" @?= Right "forall s d. Tensor s d -> Tensor s d"
+        typeOfTextP "sd" @?= Right "forall s d. Tensor s d -> Tensor s d"
         typeOfTextP "bound (1 m ± 1 cm)" @?= Right "Num [m]"
         -- a policy of one's own: consistent within the bound and three σ
         runLinesP
@@ -3669,8 +3686,8 @@ affineTests =
         evalText "det [[0, 0], [0, 0]]" @?= Right ["0"]
         -- det is polymorphic in the size, with no static size check, and is
         -- on dimensionless matrices only (design §4.3, §4.6).
-        typeOfTextP "det" @?= Right "Mat n n -> Num"
-        typeOfTextP "\\a -> det a + 1" @?= Right "Mat n n -> Num"
+        typeOfTextP "det" @?= Right "forall n. Mat n n -> Num"
+        typeOfTextP "\\a -> det a + 1" @?= Right "forall n. Mat n n -> Num"
         runLinesP ["let d a = det a", "d [[2, 0, 0], [0, 3, 0], [0, 0, 4]] + d [[2]]"]
           @?= Right ["26"]
         evalP "det ([[1 m, 0 m], [0 m, 2 m]] / (1 m))" @?= Right ["2"]
@@ -3792,8 +3809,8 @@ affineTests =
           @?= Right ["[2, 0; 1, 1.4142135623730950488…]"]
         evalP "cholesky [[1, 2], [2, 1]]"
           @?= Left "error: sqrt of a value that may be negative"
-        typeOfTextP "covariance" @?= Right "Vec n d -> Mat n n [d^2]"
-        typeOfTextP "cholesky" @?= Right "Mat n n [d^2] -> Mat n n d"
+        typeOfTextP "covariance" @?= Right "forall n d. Vec n d -> Mat n n [d^2]"
+        typeOfTextP "cholesky" @?= Right "forall n d. Mat n n [d^2] -> Mat n n d"
     , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
         runLinesP
           [ "let w = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"
@@ -3859,23 +3876,26 @@ affineTests =
           -- A shared bound nudge is no covariance.
           evalP "crossCovariance ([1, 2] m ± 1 m #a) ([3, 4] m ± 1 m #a)"
             @?= Right ["[0, 0; 0, 0] m^2"]
-          typeOfTextP "crossCovariance" @?= Right "Vec n d -> Vec m d1 -> Mat n m [d d1]"
+          typeOfTextP "crossCovariance"
+            @?= Right "forall n d m d1. Vec n d -> Vec m d1 -> Mat n m [d d1]"
     , testCase "jointCovariance and the block filter: the types" $ do
-        typeOfTextP "jointCovariance" @?= Right "(Vec n d, Vec n d1) -> Cov2 n d d1"
+        typeOfTextP "jointCovariance"
+          @?= Right "forall n d d1. (Vec n d, Vec n d1) -> Cov2 n d d1"
         typeOfTextP "Cov2"
-          @?= Right "Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
+          @?= Right
+            "forall n d d1. Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
         typeOfTextP "propagateCov2"
           @?= Right
-            "(Mat n m [d1 d2 d3 d^-2], Mat n m [d1 d3^2 d^-2], Mat n m d2, Mat n m d3) -> Cov2 m [d d2^-1] [d d3^-1] -> Cov2 n [d1 d3 d^-1] d"
+            "forall n m d d1 d2 d3. (Mat n m [d1 d2 d3 d^-2], Mat n m [d1 d3^2 d^-2], Mat n m d2, Mat n m d3) -> Cov2 m [d d2^-1] [d d3^-1] -> Cov2 n [d1 d3 d^-1] d"
         typeOfTextP "innovationCov2"
           @?= Right
-            "Mat n m d -> Mat n m d1 -> Cov2 m [d1 d2 d^-1] d2 -> Mat n n [d1^2 d2^2] -> Mat n n [d1^2 d2^2]"
+            "forall n m d d1 d2. Mat n m d -> Mat n m d1 -> Cov2 m [d1 d2 d^-1] d2 -> Mat n n [d1^2 d2^2] -> Mat n n [d1^2 d2^2]"
         typeOfTextP "gain2"
           @?= Right
-            "Mat n m d -> Mat n m d1 -> Cov2 m [d1 d2 d^-1] d2 -> Tensor (n : s) d3 -> (Tensor (m : s) [d1^2 d2^2 d3 d^-1], Tensor (m : s) [d1 d2^2 d3])"
+            "forall n m d d1 d2 s d3. Mat n m d -> Mat n m d1 -> Cov2 m [d1 d2 d^-1] d2 -> Tensor (n : s) d3 -> (Tensor (m : s) [d1^2 d2^2 d3 d^-1], Tensor (m : s) [d1 d2^2 d3])"
         typeOfTextP "updateCov2"
           @?= Right
-            "(Mat n m d, Mat n m [d1^2 d2^-1]) -> Mat m n [d^-1] -> Mat m n [d2 d1^-2] -> Cov2 n [d d2 d1^-1] d1 -> Cov2 n [d d2 d1^-1] d1"
+            "forall n m d d1 d2. (Mat n m d, Mat n m [d1^2 d2^-1]) -> Mat m n [d^-1] -> Mat m n [d2 d1^-2] -> Cov2 n [d d2 d1^-1] d1 -> Cov2 n [d d2 d1^-1] d1"
     , testCase "propagateCov2 agrees exactly with the affine forms' own correlation" $ do
         runLinesP
           ( correlatedPair
@@ -3990,7 +4010,7 @@ affineTests =
             , "[6999900, -200, 0] site"
             ]
         typeOfTextP "\\p v -> p .+ v"
-          @?= Right "Point (Tensor s d) -> Tensor s d -> Point (Tensor s d)"
+          @?= Right "forall s d. Point (Tensor s d) -> Tensor s d -> Point (Tensor s d)"
         case runLinesP ["scale site = m at [100, 200, 0] m", "[1, 2, 3] site + [1, 1, 1] m"] of
           Left err -> T.isInfixOf "a point has no sum" err @? T.unpack err
           Right v -> assertFailure (show v)
@@ -4005,10 +4025,10 @@ affineTests =
         typeOfTextP "20 degC" @?= Right "Point [K]"
         typeOfTextP "degC" @?= Right "Chart [K]"
         typeOfTextP "\\p q -> p .- q"
-          @?= Right "Point (Tensor s d) -> Point (Tensor s d) -> Tensor s d"
+          @?= Right "forall s d. Point (Tensor s d) -> Point (Tensor s d) -> Tensor s d"
         typeOfTextP "\\p v -> p .+ v"
-          @?= Right "Point (Tensor s d) -> Tensor s d -> Point (Tensor s d)"
-        typeOfTextP "\\a b -> a < b" @?= Right "Num d -> Num d -> Bool"
+          @?= Right "forall s d. Point (Tensor s d) -> Tensor s d -> Point (Tensor s d)"
+        typeOfTextP "\\a b -> a < b" @?= Right "forall d. Num d -> Num d -> Bool"
         case evalP "20 degC + 5 degC" of
           Left err -> T.isInfixOf "a point has no sum" err @? T.unpack err
           Right v -> assertFailure (show v)
@@ -4070,10 +4090,12 @@ affineTests =
           let eci = "chart eci = m at [0, 0, 0] m"
               turn = "{[0, -1, 0; 1, 0, 0; 0, 0, 0]}"
           typeOfTextP "mkChart3"
-            @?= Right "Num d -> Tensor s d -> Chart (Tensor s d) -> Chart (Tensor s d)"
+            @?= Right
+              "forall d s. Num d -> Tensor s d -> Chart (Tensor s d) -> Chart (Tensor s d)"
           typeOfTextP "mkChart4"
-            @?= Right "Num d -> Vec n d -> Chart (Vec n d) -> {Mat n n} -> Chart (Vec n d)"
-          typeOfTextP "rotationOf" @?= Right "Chart (Vec n d) -> Mat n n"
+            @?= Right
+              "forall d n. Num d -> Vec n d -> Chart (Vec n d) -> {Mat n n} -> Chart (Vec n d)"
+          typeOfTextP "rotationOf" @?= Right "forall n d. Chart (Vec n d) -> Mat n n"
           -- The origin is an amount in the parent; points are amounts from the
           -- base origin, so a difference across the tree is a plain difference.
           runLinesP
@@ -4582,7 +4604,7 @@ storeTests =
               , astroState
               , astroStateCon
               , "data Cov2 n d d1 = Cov2 {rr :: Mat n n [d^2], rv :: Mat n n [d d1], vv :: Mat n n [d1^2]}"
-              , "Cov2 : Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
+              , "Cov2 : forall n d d1. Mat n n [d^2] -> Mat n n [d d1] -> Mat n n [d1^2] -> Cov2 n d d1"
               ]
     , testCase
         "a root binding shadows the library's on reload; :use and :unuse persist"
@@ -4923,7 +4945,7 @@ storeTests =
         (loaded, notes) <- reload dir
         notes @?= []
         linesIn loaded [":view Idx", ":type Idx [0, 1, 2]"]
-          @?= Right ["data Idx s = Idx (Vec (rank s))", "Idx [n, m, k]"]
+          @?= Right ["data Idx s = Idx (Vec (rank s))", "forall n m k. Idx [n, m, k]"]
     , testCase ":unname persists" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add", ":alias y x", ":unname y"]
         (loaded, _) <- reload dir
@@ -5187,7 +5209,7 @@ dataTests =
         evalP "snd (3, 4 s)" @?= Right ["4 s"]
         evalP "(1, 2) == (1, 2)" @?= Right ["true"]
         evalP "(1, 2) == (1, 3)" @?= Right ["false"]
-        typeOfTextP "fst" @?= Right "(a, b) -> a"
+        typeOfTextP "fst" @?= Right "forall a b. (a, b) -> a"
     , testCase "lists: literals, cons, the prelude functions, laziness" $ do
         evalP "{1, 2, 3}" @?= Right ["{1, 2, 3}"]
         evalP "1 : {2, 3}" @?= Right ["{1, 2, 3}"]
@@ -5199,8 +5221,8 @@ dataTests =
         evalP "reverse (range 1 5)" @?= Right ["{5, 4, 3, 2, 1}"]
         evalP "filter (\\x -> x > 2) (range 1 5)" @?= Right ["{3, 4, 5}"]
         evalP "{1, 2} == {1, 2, 3}" @?= Right ["false"]
-        typeOfTextP "map" @?= Right "(a -> b) -> {a} -> {b}"
-        typeOfTextP "zip" @?= Right "{a} -> {b} -> {(a, b)}"
+        typeOfTextP "map" @?= Right "forall a b. (a -> b) -> {a} -> {b}"
+        typeOfTextP "zip" @?= Right "forall a b. {a} -> {b} -> {(a, b)}"
         -- a cons cell's tail is a thunk: an error in it surfaces only when walked
         evalP "fst (case 1 : {1 / 0} of {} -> (0, 0); x : _ -> (x, 0))" @?= Right ["1"]
     , testCase
@@ -5282,7 +5304,13 @@ dataTests =
           , ":type fromMaybe"
           , ":type Nothing"
           ]
-          @?= Right ["{Just 1, Just 2}", "5", "0", "a -> Maybe a -> a", "Maybe a"]
+          @?= Right
+            [ "{Just 1, Just 2}"
+            , "5"
+            , "0"
+            , "forall a. a -> Maybe a -> a"
+            , "forall a. Maybe a"
+            ]
     , testCase "declared types: parameters take their kinds from use; recursion" $ do
         runLinesP
           [ "data Q d = Q (Num d) (Num d)"
@@ -5305,11 +5333,11 @@ dataTests =
           ]
           @?= Right
             [ "1 m"
-            , "Num d -> Num d -> Q d"
-            , "Q d -> Num d"
-            , "Vec n [m] -> Vec n [m s^-1] -> V n"
+            , "forall d. Num d -> Num d -> Q d"
+            , "forall d. Q d -> Num d"
+            , "forall n. Vec n [m] -> Vec n [m s^-1] -> V n"
             , "6 kg"
-            , "Tensor s d -> Tree (Tensor s d) -> Tensor s d"
+            , "forall s d. Tensor s d -> Tree (Tensor s d) -> Tensor s d"
             , "data Tree a = Leaf | Node (Tree a) a (Tree a)"
             , "5 kg"
             , "data E = E (Num [kg m^2 s^-2]) (Num [kg m s^-2]) (Num [m s^-2]) (Point [K]) Bool (Num, {Num [m]})"
@@ -5432,7 +5460,7 @@ dataTests =
             , "data Body = Body {mass :: Num [kg], pos :: Vec 3 [m], vel :: Vec 3 [m s^-1]}"
             , "2 m"
             , "1"
-            , "a -> b -> Pair a b"
+            , "forall a b. a -> b -> Pair a b"
             ]
         let refused src needle = case runLinesP src of
               Left err -> T.isInfixOf needle err @? T.unpack err
@@ -5536,12 +5564,12 @@ dataTests =
           , ":type tagged"
           ]
           @?= Right
-            [ "Vec (rank s) -> Idx s"
+            [ "forall s. Vec (rank s) -> Idx s"
             , "data Idx s = Idx (Vec (rank s))"
-            , "Tensor s d -> Vec (rank s) -> Tagged s d"
+            , "forall s d. Tensor s d -> Vec (rank s) -> Tagged s d"
             , "Tagged [1, 2; 3, 4] [0, 1]"
             , "Tagged [2, 2] 1"
-            , "Tensor s d -> Vec (rank s) -> Tagged s d"
+            , "forall s d. Tensor s d -> Vec (rank s) -> Tagged s d"
             ]
         let refused src needle = case runLinesP src of
               Left err -> T.isInfixOf needle err @? T.unpack err
@@ -5855,7 +5883,7 @@ respellTests =
           @?= Right ["  ≡ let f x = x²", "9"]
         -- nothing to respell, a command, or unicode off: no echo
         runLinesP [":set unicode on", "1 + 2"] @?= Right ["3"]
-        runLinesP [":set unicode on", ":type \\x -> x"] @?= Right ["a → a"]
+        runLinesP [":set unicode on", ":type \\x -> x"] @?= Right ["forall a. a → a"]
         runLinesP ["2 +-s 0.1"] @?= Right ["2.0 ±σ 0.1"]
     ]
 
@@ -6578,7 +6606,7 @@ namespaceTests =
                   , "Body : Num [kg] -> Body"
                   ]
         expecting (runLinesP (orbitalSetup ++ [":namespace orbital", ":ls"])) $ \outs ->
-          lastN 2 outs @?= ["mu : Num", "period : Num d -> Num d"]
+          lastN 2 outs @?= ["mu : Num", "period : forall d. Num d -> Num d"]
         -- Alone at the root: the root's own labels, then the namespaces under it.
         expecting (runLinesP (orbitalSetup ++ [":ls"])) $ \outs ->
           lastN 10 outs
@@ -6594,7 +6622,7 @@ namespaceTests =
           )
           $ \outs ->
             lastN 3 outs
-              @?= ["mu : Num", "period : Num d -> Num d", "namespace kepler (1 name)"]
+              @?= ["mu : Num", "period : forall d. Num d -> Num d", "namespace kepler (1 name)"]
     , testCase
         ":rename a definition, and a namespace with its units, types and fields"
         $ do
@@ -7403,7 +7431,7 @@ stdlibTests =
             , "(1, 2)"
             , "{1, 2}"
             , "(1, {})"
-            , "a -> {a} -> {a}"
+            , "forall a. a -> {a} -> {a}"
             , "1"
             ]
     , testCase "the built-in types print by hash, whatever names them" $ do
@@ -7426,7 +7454,7 @@ stdlibTests =
             , "removed the label `std.List`"
             , "{Num}"
             , "(1, 2, 3, 4)"
-            , "(Num, Bool, {a}, (Num, Num))"
+            , "forall a. (Num, Bool, {a}, (Num, Num))"
             ]
         -- The same declarations entered by a user are the same types.
         let mine =
@@ -7732,7 +7760,7 @@ annotationTests =
               @?= Right ["Num [m] -> Num [m]", "double : Num [m] -> Num [m]"]
         -- Unsigned, the definition's own type, as before.
         runLinesP ["let double x = x + x", ":type double"]
-          @?= Right ["Tensor s d -> Tensor s d"]
+          @?= Right ["forall s d. Tensor s d -> Tensor s d"]
         runLinesP
           [shapeSetup, multiline ["area :: Shape -> Num [m^2]", areaDef], ":type area"]
           @?= Right ["Shape -> Num [m^2]"]
@@ -7748,7 +7776,7 @@ annotationTests =
           @?= Right
             [ "double : Num [m] -> Num [m]"
             , "nothing matches"
-            , "twice : Tensor s d -> Tensor s d"
+            , "twice : forall s d. Tensor s d -> Tensor s d"
             ]
     , testCase "the scratch lists a signature; :add stores it; :forget drops it" $ do
         let signed = multiline ["double :: Num [m] -> Num [m]", "let double x = x + x"]
@@ -7775,7 +7803,7 @@ annotationTests =
         $ do
           let setup = [multiline ["f :: Num [m] -> Num [m]", "let f x = x"], "let g x = x"]
           afterSetup setup [":type f", ":type g", "g (3 s)", "f (3 m)"]
-            @?= Right ["Num [m] -> Num [m]", "a -> a", "3 s", "3 m"]
+            @?= Right ["Num [m] -> Num [m]", "forall a. a -> a", "3 s", "3 m"]
           -- One hash, two names: the signature is the label's.
           case afterSetup setup [":hash f", ":hash g"] of
             Right [a, b] -> a @?= b
@@ -7784,13 +7812,13 @@ annotationTests =
           -- A dependent keeps its Core's type; its own signature is checked
           -- against what its uses of f allow.
           afterSetup setup ["let h y = f y", ":type h", "h (3 s)"]
-            @?= Right ["a -> a", "3 s"]
+            @?= Right ["forall a. a -> a", "3 s"]
           afterSetup
             setup
             [multiline ["h :: Num [m] -> Num [m]", "let h y = f y"], ":type h"]
             @?= Right ["Num [m] -> Num [m]"]
           expectError
-            (afterSetup setup [multiline ["h :: a -> a", "let h y = f y"]])
+            (afterSetup setup [multiline ["h :: forall a. a -> a", "let h y = f y"]])
             "`h`'s definition has type `Num [m] -> Num [m]`, not as general as its signature `a -> a`"
           expectError
             (afterSetup setup ["let k = f (3 s)"])
@@ -7798,16 +7826,17 @@ annotationTests =
     , testCase
         "a signature more general than its definition is refused, at the signature"
         $ do
-          case runLinesP [multiline ["f :: a -> a", "let f x = 1"]] of
+          case runLinesP [multiline ["f :: forall a. a -> a", "let f x = 1"]] of
             Left err -> do
               ( "`f`'s definition has type `a -> Num`, not as general as its signature `a -> a`"
                   `T.isInfixOf` err
                 )
                 @? T.unpack err
-              ("  f :: a -> a\n  ^^^^^^^^^^^" `T.isInfixOf` err) @? T.unpack err
+              (("  f :: forall a. a -> a\n  " <> T.replicate 21 "^" <> "\n") `T.isInfixOf` err)
+                @? T.unpack err
             Right outs -> assertFailure (show outs)
           expectError
-            (runLinesP [shapeSetup, multiline ["area :: Shape -> Num d", areaDef]])
+            (runLinesP [shapeSetup, multiline ["area :: forall d. Shape -> Num d", areaDef]])
             "`area`'s definition has type `Shape -> Num [m^2]`, not as general as its signature `Shape -> Num d`"
     , testCase "an unknown type, a signature without a definition, two signatures" $ do
         expectError
@@ -7823,7 +7852,7 @@ annotationTests =
     , testCase
         "a redefinition is checked against the stored signature, unless the input gives one"
         $ do
-          let setup = [multiline ["f :: a -> a", "let f x = x"], ":add"]
+          let setup = [multiline ["f :: forall a. a -> a", "let f x = x"], ":add"]
           expectError
             (afterSetup setup ["let f x = x + 1 m"])
             "`f`'s definition has type `Num [m] -> Num [m]`, not as general as its signature `a -> a`"
@@ -7832,14 +7861,15 @@ annotationTests =
             [multiline ["f :: Num [m] -> Num [m]", "let f x = x + 1 m"], ":type f"]
             @?= Right ["Num [m] -> Num [m]"]
           -- A redefinition the signature still holds of keeps it.
-          afterSetup setup ["let f y = (\\z -> z) y", ":type f"] @?= Right ["a -> a"]
+          afterSetup setup ["let f y = (\\z -> z) y", ":type f"]
+            @?= Right ["forall a. a -> a"]
     , testCase
         "an upgrade a dependent's signature would not hold of leaves it on its version"
         $ do
           let setup =
                 [ multiline
                     [ "let base x = x"
-                    , "f :: a -> a"
+                    , "f :: forall a. a -> a"
                     , "let f x = base x"
                     , "let g x = (\\y -> y) (base x)"
                     ]
@@ -7850,7 +7880,7 @@ annotationTests =
               any ("left f on #" `T.isPrefixOf`) outs @? show outs
               any ("not as general as its signature a -> a" `T.isInfixOf`) outs @? show outs
               any ("upgraded g " `T.isPrefixOf`) outs @? show outs
-              lastN 2 outs @?= ["a -> a", "Num [m] -> Num [m]"]
+              lastN 2 outs @?= ["forall a. a -> a", "Num [m] -> Num [m]"]
             Left err -> assertFailure (T.unpack err)
     , testCase ":rename of a namespace re-hashes its type, and the signature follows" $ do
         let setup =
@@ -7918,28 +7948,38 @@ annotationTests =
           userSignatures s.codebase @?= ["twice"]
           aliased <- sessionOf (setup ++ [":rename geo.double twice", ":alias d2 twice"])
           linesIn aliased [":type d2", ":type twice"]
-            @?= Right ["Tensor s d -> Tensor s d", "Num [m] -> Num [m]"]
+            @?= Right ["forall s d. Tensor s d -> Tensor s d", "Num [m] -> Num [m]"]
           unnamed <- sessionOf (setup ++ [":unname geo.double"])
           null (userSignatures unnamed.codebase) @? "unname drops the signature"
     , testCase
-        "variables that are units or base symbols are renamed when written back"
+        "variables are written back with plain names, unless the type prints that unit"
         $ do
           s <-
             sessionOf
               [ multiline
-                  [ "same :: Tensor sh d -> Tensor sh d"
+                  [ "same :: forall sh d. Tensor sh d -> Tensor sh d"
                   , "let same x = x + x"
-                  , "keep :: Mat n k -> Mat n k"
+                  , "keep :: forall n k. Mat n k -> Mat n k"
                   , "let keep a = a"
+                  , "secs :: forall sh d. Tensor sh d -> Tensor sh [d s]"
+                  , "let secs x = 1 s * x"
                   ]
               , ":add"
               ]
-          linesIn s [":type same", ":type keep"]
-            @?= Right ["Tensor s d -> Tensor s d", "Mat n m -> Mat n m"]
+          linesIn s [":type same", ":type keep", ":type secs"]
+            @?= Right
+              [ "forall s d. Tensor s d -> Tensor s d"
+              , "forall n m. Mat n m -> Mat n m"
+              , "forall s1 d. Tensor s1 d -> Tensor s1 [s d]"
+              ]
           source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
-          ("keep :: Mat n k -> Mat n k\nlet keep = " `T.isInfixOf` source)
+          ("keep :: forall n m. Mat n m -> Mat n m\nlet keep = " `T.isInfixOf` source)
             @? T.unpack source
-          ("same :: Tensor s1 d -> Tensor s1 d\nlet same = " `T.isInfixOf` source)
+          ("same :: forall s d. Tensor s d -> Tensor s d\nlet same = " `T.isInfixOf` source)
+            @? T.unpack source
+          ( "secs :: forall s1 d. Tensor s1 d -> Tensor s1 [s d]\nlet secs = "
+              `T.isInfixOf` source
+            )
             @? T.unpack source
           reloaded <-
             either
@@ -8008,7 +8048,7 @@ annotationTests =
         unsignedFile <- replaceOnce "double :: Num [m] -> Num [m]\n" "" file1
         (s2, outs2) <- edited EditCodebase unsignedFile s1
         outs2 @?= ["unsigned double"]
-        linesIn s2 [":type double"] @?= Right ["Tensor s d -> Tensor s d"]
+        linesIn s2 [":type double"] @?= Right ["forall s d. Tensor s d -> Tensor s d"]
         -- :edit of one name pastes the signature with it.
         linesIn s1 [":edit double"]
           @?= Right ["double :: Num [m] -> Num [m]", "let double = \\x -> x + x"]
@@ -8062,21 +8102,22 @@ annotationTests =
           , "(3 m :: Num [m])"
           , "([1, 2, 3] m :: Vec 3 [m])"
           , ":type (1 :: Num)"
-          , ":type \\x -> (x :: Num d)"
+          , ":type \\x -> (x :: forall d. Num d)"
           , ":type \\x -> x"
-          , ":type \\v -> (v :: Vec n)"
+          , ":type \\v -> (v :: forall n. Vec n)"
           ]
           @?= Right
             [ "1"
             , "3 m"
             , "[1, 2, 3] m"
             , "Num"
-            , "Num d -> Num d"
-            , "a -> a"
-            , "Vec n -> Vec n"
+            , "forall d. Num d -> Num d"
+            , "forall a. a -> a"
+            , "forall n. Vec n -> Vec n"
             ]
-    , testCase "ascription never widens: (1 :: a) is 1, of type Num"
-        $ runLinesP ["(1 :: a)", ":type (1 :: a)"] @?= Right ["1", "Num"]
+    , testCase "ascription never widens: (1 :: forall a. a) is 1, of type Num"
+        $ runLinesP ["(1 :: forall a. a)", ":type (1 :: forall a. a)"]
+          @?= Right ["1", "Num"]
     , testCase "an ascription narrows the node it is written on, wherever it is" $ do
         runLinesP
           [ "data Box a = Box {item :: a}"
@@ -8093,7 +8134,7 @@ annotationTests =
             [ "Num [m] -> Num [m] -> {Num [m]}"
             , "Num [m] -> Num [m]"
             , "Num [s] -> Num [s]"
-            , "(Num [m] -> a) -> Num [m] -> a"
+            , "forall a. (Num [m] -> a) -> Num [m] -> a"
             , "Num [m] -> Box (Num [m])"
             , "Num [m] -> Num [m] -> Num [m]"
             , "Vec 3 -> Num"
@@ -8145,7 +8186,7 @@ annotationTests =
             , ":type g"
             , ":view g"
             ]
-            @?= Right ["f = \\x -> x + 1 * m", "3 m", "a -> a", "g = \\x -> x"]
+            @?= Right ["f = \\x -> x + 1 * m", "3 m", "forall a. a -> a", "g = \\x -> x"]
           expectError
             ( runLinesP
                 [ multiline
@@ -8185,10 +8226,10 @@ builtinTypeListing =
   , "False : Bool"
   , "True : Bool"
   , "structural data List a = Nil | Cons a (List a)"
-  , "Nil : {a}"
-  , "Cons : a -> {a} -> {a}"
+  , "Nil : forall a. {a}"
+  , "Cons : forall a. a -> {a} -> {a}"
   , "structural data Pair a b = Pair a b"
-  , "Pair : a -> b -> (a, b)"
+  , "Pair : forall a b. a -> b -> (a, b)"
   ]
 
 -- | A listing of types, then the library's declarations of the built-in ones.

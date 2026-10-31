@@ -68,8 +68,8 @@ import Eval.Type (
   Type (..),
   TypeDef (..),
   dataConstructors,
+  renderForallIn,
   renderScheme,
-  renderSchemeIn,
   renderTypeDef,
   varArg,
  )
@@ -365,7 +365,7 @@ checkExpr scope cb src e = do
     either
       (Left . renderResolveErrorWith Map.empty src)
       Right
-      (ascriptionsIn scope cb [] checkProv)
+      (ascriptionsIn scope cb Map.empty [] checkProv)
   (schemes, typed) <-
     either
       (Left . typeErr checkProv)
@@ -531,7 +531,7 @@ command session src = \case
   ("type" : rest) -> keep $ do
     e <- parseExpr (T.unwords rest)
     (_, _, ty, _) <- checkExpr scope ecb (T.unwords rest) e
-    pure [maybe "" (renderSchemeIn spelling) ty]
+    pure [maybe "" (renderForallIn spelling) ty]
   -- Without an editor, :edit prints the source it would open (design
   -- §7.3); the REPL opens it, and reads a file for --file.
   ("edit" : args) ->
@@ -969,7 +969,7 @@ definitionSource spelling scope cb full = case lookupName full cb of
      in ( \line ->
             map
               (nameTypes scope cb)
-              (signatureSource spelling scope cb full ++ [line])
+              (signatureSource spelling cb full ++ [line])
         )
           <$> definitionLine spelling scope cb keyword (S.lastSegment full) r
   Nothing -> map (nameTypes scope cb) <$> viewData spelling scope cb full
@@ -978,9 +978,9 @@ definitionSource spelling scope cb full = case lookupName full cb of
 in source (design §4.8), as a block of the scope writes it; none for a
 name without a signature. Declared types print by hash, for 'nameTypes'.
 -}
-signatureSource :: Spelling -> S.Scope -> Codebase -> Text -> [Text]
-signatureSource spelling scope cb full =
-  [ S.lastSegment full <> " :: " <> signatureText spelling scope cb sig
+signatureSource :: Spelling -> Codebase -> Text -> [Text]
+signatureSource spelling cb full =
+  [ S.lastSegment full <> " :: " <> signatureText spelling sig
   | Just sig <- [signatureOf full cb]
   ]
 
@@ -1131,7 +1131,7 @@ signatureLine :: Spelling -> S.Scope -> Codebase -> Text -> Text
 signatureLine spelling scope cb n =
   shortestName scope cb n
     <> " :: "
-    <> maybe "?" (signatureText spelling scope cb) (signatureOf n cb)
+    <> maybe "?" (signatureText spelling) (signatureOf n cb)
 
 -- | What propagation did, with names spelled by the given namer (design §7.6).
 upgradeReport :: (Text -> Text) -> Propagation -> [Text]
@@ -1558,7 +1558,7 @@ listNames session args = do
           | otherwise -> shortestNameOf TypeLabel session.scope cb n
       typeOk sc = maybe True (`I.matchesQuery` sc) query
       definitions =
-        [ prefix n <> shown n <> " : " <> renderSchemeIn (spellingOf session.config) sc
+        [ prefix n <> shown n <> " : " <> renderForallIn (spellingOf session.config) sc
         | (n, r) <- sortOn (T.toLower . fst) (Map.toList cb.names)
         , kindOk n
         , nameOk n
@@ -1577,7 +1577,7 @@ listNames session args = do
             | nameOk n
             , isNothing query
             ]
-              ++ [ shown c <> " : " <> renderSchemeIn (spellingOf session.config) sc
+              ++ [ shown c <> " : " <> renderForallIn (spellingOf session.config) sc
                  | (i, fields) <- zip [0 ..] def.constructors
                  , Just c <- [conNameOf h i cb]
                  , nameOk c
@@ -1827,7 +1827,7 @@ exportLabels session under = do
             ( namespaceOf n
             , map
                 (nameTypes scope cb)
-                (signatureSource Ascii scope cb n ++ [line])
+                (signatureSource Ascii cb n ++ [line])
             )
         )
           <$> definitionLine Ascii scope cb keyword (S.lastSegment n) r

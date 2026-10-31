@@ -50,6 +50,8 @@ module Eval.Type (
   renderTypeIds,
   renderSchemeIds,
   renderSignature,
+  renderForallWith,
+  renderForallIn,
   canonicalScheme,
   renderArg,
 ) where
@@ -95,32 +97,75 @@ renderTypeIds t = renderWith Ascii (idNames (freeVars t)) 0 t
 renderSchemeIds :: Scheme -> Text
 renderSchemeIds (Forall _ t) = renderTypeIds t
 
-{- | A signature as it is written back (design §4.8): in a spelling, with
-declared types named by the given function, and with variables named by
-kind as 'renderScheme' names them but skipping every name the test
-rejects (one that would not read back as a variable, such as @m@ or @s@,
-the metre and the second) and every name already given, so that the text
-parses back to the same scheme.
+{- | A scheme as @:type@, @:ls@ and @:view@ print it and a signature is
+written back (design §4.8, §3.9 decision 6): headed by @forall@ and its
+variables in the order they first appear, when it has any, so that the
+text reads back as the same scheme. Declared types are named by the given
+function. Variables are named by kind as 'renderType' names them, but a
+bound variable shadows a unit of its name within its type, so a name the
+type prints otherwise is skipped: the base symbols of its dimensions
+(@forall s1 d. Tensor s1 d -> Tensor s1 [d s]@). An axis variable prints
+as nothing (§3.9, stage 1) and is not bound.
+-}
+renderForallWith :: (Hash -> Text) -> Spelling -> Scheme -> Text
+renderForallWith typeName spelling (Forall _ t) =
+  let vs = [(v, k) | (v, k) <- freeVars t, k /= KAxis]
+      names = forallNames (baseSymbolsOf t) vs
+      body = renderWithNamed typeName spelling names 0 t
+   in if null vs
+        then body
+        else
+          "forall "
+            <> T.unwords [Map.findWithDefault "?" v names | (v, _) <- vs]
+            <> ". "
+            <> body
+
+-- | 'renderForallWith', declared types by their short hashes.
+renderForallIn :: Spelling -> Scheme -> Text
+renderForallIn = renderForallWith showHash
+
+{- | A signature as it is written back (design §4.8): 'renderForallWith'.
+The test of the names a variable could not take is no longer consulted,
+since a bound variable shadows a unit of its name; it stays for the
+store's call until that is updated.
 -}
 renderSignature ::
   Spelling -> (Text -> Bool) -> (Hash -> Text) -> Scheme -> Text
-renderSignature spelling usable typeName (Forall _ t) =
-  renderWithNamed typeName spelling (namesAvoiding (freeVars t)) 0 t
+renderSignature spelling _ typeName = renderForallWith typeName spelling
+
+{- | Names for the variables of a @forall@, by kind as 'prettyNames' gives
+them, each skipping the names taken and every name already given.
+-}
+forallNames :: Set.Set Text -> [(VarId, Kind)] -> Map VarId Text
+forallNames taken vs = snd (foldl pick (taken, Map.empty) vs)
  where
-  namesAvoiding vs = snd (foldl pick (Set.empty, Map.empty) vs)
   pick (used, acc) (v, k) =
-    case [c | c <- candidates k, usable c, Set.notMember c used] of
+    case [c | c <- candidates k, Set.notMember c used] of
       c : _ -> (Set.insert c used, Map.insert v c acc)
       [] -> (used, acc)
   candidates = \case
-    KType -> map T.singleton ['a' .. 'z'] ++ numbered "t"
+    KType -> map T.singleton ['a' .. 'm'] ++ numbered "t"
     KLen -> ["n", "m", "k", "l", "p", "q"] ++ numbered "n"
     KShape -> "s" : numbered "s"
     KDim -> "d" : numbered "d"
-    -- An axis variable prints as nothing (design §3.9, stage 1), so it
-    -- takes no name.
     KAxis -> []
   numbered p = [p <> T.pack (show i) | i <- [1 :: Int ..]]
+
+-- | The base symbols a type's dimensions print with.
+baseSymbolsOf :: Type -> Set.Set Text
+baseSymbolsOf = \case
+  TTensor _ d -> dim d
+  TPoint _ d -> dim d
+  TScale _ _ d -> dim d
+  TData _ as -> foldMap arg as
+  TFun a b -> baseSymbolsOf a <> baseSymbolsOf b
+  TVar _ -> Set.empty
+ where
+  dim d = Set.fromList [baseSymbol b | (Base b, _) <- dimAtoms d]
+  arg = \case
+    AType t -> baseSymbolsOf t
+    ADim d -> dim d
+    _ -> Set.empty
 
 {- | A scheme with its variables renumbered from 0 in order of appearance,
 so that two schemes that differ only in their variables' ids are equal.

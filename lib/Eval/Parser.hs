@@ -147,7 +147,7 @@ starts with.
 signatureStatement :: Parser Statement
 signatureStatement = do
   n <- P.try (name <* tok (TOp "::"))
-  SSig n <$> typeExpr
+  SSig n <$> sigType
 
 {- | @namespace a.b@ and an indented block of statements (design §7.6). The
 block opens at the first token after the path, as after @where@; it must be
@@ -373,6 +373,37 @@ dataStatement = do
     FieldDecl (Just n) <$> typeExpr
 
 -- Types ---------------------------------------------------------------------------
+
+{- | The type of a signature or an ascription (design §4.8): a type, headed
+by @forall@ (or @∀@), its binders and a @.@ when it has variables. A binder
+is a name, or a name with the length it stands for, @(a : 3)@.
+-}
+sigType :: Parser TyExpr
+sigType = do
+  quantified <- P.optional $ do
+    s <- kw KForall
+    bs <- P.some binder
+    _ <- tok (TOp ".")
+    pure (s, bs)
+  t <- typeExpr
+  pure $ case quantified of
+    Nothing -> t
+    Just (s, bs) -> TyExpr (spanUnion s t.span) (TyForall bs t)
+ where
+  binder =
+    P.choice
+      [ (`TyBinder` Nothing) <$> name
+      , do
+          _ <- tok TLParen
+          n <- name
+          _ <- tok (TOp ":")
+          (_, k) <-
+            match
+              "length"
+              (\case TNum r | denominator r == 1 && r >= 0 -> Just (numerator r); _ -> Nothing)
+          _ <- tok TRParen
+          pure (TyBinder n (Just k))
+      ]
 
 -- | A type: an application, optionally followed by @->@ and another type.
 typeExpr :: Parser TyExpr
@@ -665,7 +696,7 @@ parens = do
           , -- An ascription (design §4.8): @(e :: type)@.
             do
               _ <- tok (TOp "::")
-              t <- typeExpr
+              t <- sigType
               e2 <- tok TRParen
               pure (Expr (spanUnion s e2) (Ascribe e t))
           , -- A tuple: two or more components (§2.3).
@@ -827,4 +858,4 @@ vecOrMat = do
 parseType :: Text -> Either Text TyExpr
 parseType src = do
   toks <- tokenize src
-  runP (P.many (tok TSep) *> typeExpr <* P.many (tok TSep)) src toks
+  runP (P.many (tok TSep) *> sigType <* P.many (tok TSep)) src toks

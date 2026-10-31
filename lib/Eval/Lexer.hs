@@ -48,6 +48,8 @@ data Keyword
   | KData
   | KNamespace
   | KUse
+  | -- | @forall@ (or @∀@) at the head of a signature or an ascription (design §4.8)
+    KForall
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 data Token
@@ -249,6 +251,7 @@ identifierOrKeyword = do
     "data" -> TKw KData
     "namespace" -> TKw KNamespace
     "use" -> TKw KUse
+    "forall" -> TKw KForall
     "π" -> TIdent "pi"
     _ -> TIdent name
  where
@@ -307,6 +310,7 @@ symbol =
     , char ':' $> TOp ":"
     , oneOf ("\\λ" :: String) $> TLambda
     , char '√' $> TSqrt
+    , char '∀' $> TKw KForall
     , char '¬' $> TIdent "not"
     , char '⋆' $> TIdent "star"
     , string "°C" $> TIdent "degC"
