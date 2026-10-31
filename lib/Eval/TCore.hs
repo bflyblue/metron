@@ -477,13 +477,13 @@ chartRelation name ty statics = case (name, ty, statics) of
     , TFun _ (TFun _ (TFun (TTensor sh _) (TScale _ r _)))
     , Just (ConArg (UserCon h _)) : _
     ) ->
-    case closedLens sh of
-      Just [] -> require (r == AAnon) "mkScale: a scalar chart's root is anonymous"
-      Just ls ->
-        require
-          (all ((== ANamed h) . snd) ls && r == ANamed h)
-          "mkScale: a root chart is along the axes it minted"
-      Nothing -> Right ()
+      case closedLens sh of
+        Just [] -> require (r == AAnon) "mkScale: a scalar chart's root is anonymous"
+        Just ls ->
+          require
+            (all ((== ANamed h) . snd) ls && r == ANamed h)
+            "mkScale: a root chart is along the axes it minted"
+        Nothing -> Right ()
   ("pointOn", TFun (TScale sh r _) (TFun _ (TPoint t _)), _) -> along sh r t
   ("toScale", TFun (TPoint t _) (TFun (TScale sh r _) _), _) -> along sh r t
   _ -> Right ()

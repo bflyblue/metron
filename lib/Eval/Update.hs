@@ -32,13 +32,22 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Eval.Builtin (axesHash)
 import Eval.Codebase
 import Eval.Core
 import Eval.Hash (hashTerm, hashTypeDef)
 import Eval.Infer
 import Eval.Resolve (storeTerm, typeLookupFor)
 import Eval.TCore (signatureHolds)
-import Eval.Type (Arg (..), Scheme (..), Type (..), TypeDef (..), renderScheme)
+import Eval.Type (
+  Arg (..),
+  Axis (..),
+  Scheme (..),
+  Shape (..),
+  Type (..),
+  TypeDef (..),
+  renderScheme,
+ )
 
 type RefMap = Map Reference Reference
 
@@ -218,12 +227,26 @@ propagateScoped applies cons initial cb0 = go cb0 initial (Propagation cb0 [] []
 -- | A type with declared types replaced, old hash to new.
 retypeType :: Map Hash Hash -> Type -> Type
 retypeType m = \case
-  TData h as -> TData (Map.findWithDefault h h m) (map arg as)
+  TData h as -> TData (new h) (map arg as)
   TFun a b -> TFun (retypeType m a) (retypeType m b)
+  -- A chart's axes are a declared type's (design §3.9): a named slot
+  -- follows it too.
+  TTensor sh d -> TTensor (shape sh) d
+  TPoint sh d -> TPoint (shape sh) d
+  TScale sh r d -> TScale (shape sh) (axis r) d
   t -> t
  where
+  new h = Map.findWithDefault h h m
   arg = \case
     AType t -> AType (retypeType m t)
+    AShape sh -> AShape (shape sh)
+    AAxis a -> AAxis (axis a)
+    a -> a
+  shape = \case
+    SCons l a rest -> SCons l (axis a) (shape rest)
+    sh -> sh
+  axis = \case
+    ANamed h -> ANamed (new h)
     a -> a
 
 -- | 'retypeType' on a scheme, such as a signature (design §4.8).
@@ -296,7 +319,10 @@ restamp moves cb0 = do
 
   -- Types: re-stamped, and their users rewritten, until nothing changes.
   -- Declared types do not refer to each other in cycles, so this ends.
-  named = Set.toList (Set.fromList (Map.elems cb0.typeNames))
+  -- A scalar chart's axes are unnamed, and follow the chart (design §3.9).
+  named =
+    Set.toList
+      (Set.fromList (Map.elems cb0.typeNames ++ [axesHash o | (o, _) <- moves]))
   changedTypes m =
     Map.fromList
       [ (h, (hashTypeDef def', def'))

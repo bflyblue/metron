@@ -355,8 +355,13 @@ unifyAxis p x y = do
     (a, b) | a == b -> pure ()
     (AVar v, b) -> bindVar p v (AAxis b)
     (a, AVar v) -> bindVar p v (AAxis a)
-    (a, b) -> failAt p (describe a <> " against " <> describe b)
+    (a, b) -> failAt p (describe a <> " against " <> describe b <> hint a b)
  where
+  -- An anonymous value meets a frame (design §3.9, decision 5).
+  hint a b
+    | AAnon `elem` [a, b] =
+        "; give it a frame with `withAxes c v`, or `along c v` if it is along the root"
+    | otherwise = ""
   describe = \case
     AAnon -> "anonymous axes"
     ANamed h -> "the axes of " <> showHash h
@@ -1079,8 +1084,8 @@ chartConstraints p name t statics = case (name, t, statics) of
     , TFun _ (TFun _ (TFun (TTensor sh _) (TScale _ r _)))
     , Just (ConArg (UserCon h _)) : _
     ) -> do
-    minted h
-    defer p (Charted sh r h)
+      minted h
+      defer p (Charted sh r h)
   (_, _, Just (ConArg (UserCon h _)) : _)
     | name `elem` ["mkChart4", "mkChart5"] -> minted h
   ("pointOn", TFun (TScale sh r _) (TFun _ (TPoint pt _)), _) -> defer p (Rootward sh r pt)

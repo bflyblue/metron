@@ -2833,7 +2833,7 @@ axisSlotTests =
                 <> showHash lvlh
                 <> ", got Vec 3: the axes of "
                 <> showHash lvlh
-                <> " against anonymous axes"
+                <> " against anonymous axes; give it a frame with `withAxes c v`, or `along c v` if it is along the root"
             )
     , testCase "a literal takes the axes of what it meets (decision 5)"
         $ typed (prim2 "add" (ref lvlhV) (Lit (LTensor ([3], [1, 2, 3]))))
@@ -4722,7 +4722,10 @@ storeTests =
         (loaded, notes) <- reload dir
         notes @?= []
         loaded.codebase.names @?= s.codebase.names
-        loaded.codebase.history @?= s.codebase.history
+        -- A chart re-hashes when it moves, its axes stamped with its path
+        -- (design §3.9); the log keeps its new version, not the step between.
+        let settled = Map.adjust (take 1) "mechanics.tip"
+        settled loaded.codebase.history @?= settled s.codebase.history
         loaded.codebase.units @?= s.codebase.units
         loaded.codebase.scales @?= s.codebase.scales
         loaded.codebase.typeNames @?= s.codebase.typeNames
