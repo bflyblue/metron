@@ -969,6 +969,7 @@ lint look ctx = \case
     AAxis _ -> KAxis
     AFrame _ -> KFrame
     ASpace _ -> KSpace
+    ARole _ -> KRole
 
 {- | Lint's check of a primitive used at its reading of units (design §3.10,
 U2, U7), when the type it is used at is that reading: @*@ and @/@ of two
@@ -1280,6 +1281,7 @@ renderTTerm namer = go 0
     KAxis -> "x" <> T.pack (show v)
     KFrame -> "f" <> T.pack (show v)
     KSpace -> "sp" <> T.pack (show v)
+    KRole -> "r" <> T.pack (show v)
   showD r = T.pack (show (fromRational r :: Double))
   nested dims rs = case dims of
     [] -> maybe "[]" showD (nth 0 rs)

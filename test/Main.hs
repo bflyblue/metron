@@ -3800,6 +3800,7 @@ generatorProperty =
           _ -> "rank 3"
       )
         <> (if isDimOne d then "" else " with a dimension")
+    TQty{} -> "Quantity"
     TVar _ -> "variable"
 
 rankOf :: Shape -> Int

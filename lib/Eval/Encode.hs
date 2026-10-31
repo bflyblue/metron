@@ -92,6 +92,8 @@ kindByte = \case
   -- A frame and a space (design §3.10, F1): appended.
   KFrame -> word8 5
   KSpace -> word8 6
+  -- A role (design §3.10, U9): appended.
+  KRole -> word8 7
 
 encType :: Type -> Builder
 -- 0x20 (Bool), 0x24 (tuple) and 0x25 (list) are retired: those types are
@@ -100,6 +102,9 @@ encType = \case
   TTensor sh d -> word8 0x21 <> encShape sh <> encDim d
   -- A unit (design §3.10, U1): appended.
   TUnit d -> word8 0x2A <> encDim d
+  -- A quantity of a role variable (design §3.10, U9): appended, so that an
+  -- amount and a unit keep their bytes.
+  TQty r sh d -> word8 0x2E <> encRole r <> encShape sh <> encDim d
   -- Points, charts and amounts on frames (design §3.10, F4, F9): appended;
   -- 0x22, 0x23 and 0x29, a point and a chart over a tensor type, are
   -- retired.
@@ -123,6 +128,14 @@ encArg = \case
   AAxis a -> word8 4 <> encAxis a
   AFrame f -> word8 5 <> encFrameSlot f
   ASpace sp -> word8 6 <> encSpaceSlot sp
+  ARole r -> word8 7 <> encRole r
+
+-- | A role (design §3.10, U9): an amount, a unit, or a variable.
+encRole :: Role -> Builder
+encRole = \case
+  RAmount -> word8 0
+  RUnit -> word8 1
+  RVar v -> word8 2 <> varint (fromIntegral v)
 
 {- | A frame (design §3.10, F9): its slot, its axes and its space, a
 space its slot, shape, dimension and base axes.

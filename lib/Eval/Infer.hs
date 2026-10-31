@@ -236,6 +236,7 @@ fresh = \case
     pure (AAxis (AVar st.nextAxis))
   KFrame -> AFrame . FrVar <$> freshId
   KSpace -> ASpace . SpVar <$> freshId
+  KRole -> ARole . RVar <$> freshId
  where
   freshId = do
     st <- get
@@ -481,6 +482,7 @@ bindVar p v arg = do
         AAxis _ -> False
         AFrame _ -> False
         ASpace _ -> False
+        ARole _ -> False
       trivial = case arg of
         AType (TVar w) -> w == v
         AShape (SVar w) -> w == v
@@ -489,6 +491,7 @@ bindVar p v arg = do
         AAxis (AVar w) -> w == v
         AFrame (FrVar w) -> w == v
         ASpace (SpVar w) -> w == v
+        ARole (RVar w) -> w == v
         _ -> False
   unless trivial
     $ if occurs
@@ -1179,10 +1182,9 @@ negativeOnly quantified ts =
   ]
  where
   exponents v = \case
-    TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TQty _ _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TPoint f -> frameExps f
     TOver f md -> frameExps f ++ maybe [] dimExps md
-    TUnit d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TScale f -> frameExps f
     TData _ args -> concatMap argExponents args
     TFun a b -> exponents v a ++ exponents v b
@@ -1827,6 +1829,7 @@ constructorType look p c k = case c of
     KAxis -> fresh KAxis
     KFrame -> fresh KFrame
     KSpace -> fresh KSpace
+    KRole -> fresh KRole
 
 {- | One alternative: the constructor's fields enter scope at their types and
 the body must have the case's result type.
