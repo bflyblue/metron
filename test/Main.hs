@@ -2814,7 +2814,26 @@ withElaborated src e k = case desugarClosed noResolver e of
     Right r -> k t r
 
 forProgram :: Source -> (S.Expr -> Property) -> Property
-forProgram src = forAllShow src.programs showProgram
+forProgram src = timedForAllShow src.programs showProgram
+
+{- | How long one generated case may take, in microseconds: far above what
+any case normally costs (the whole suite runs in seconds), so that a
+pathologically slow case fails, with its input printed, instead of
+hanging the suite.
+-}
+caseLimit :: Int
+caseLimit = 10_000_000
+
+{- | 'forAllShow' with 'caseLimit' on every case. The limit sits inside the
+quantifier, so a case that runs out of time still prints its input.
+-}
+timedForAllShow ::
+  (Testable p) => Gen a -> (a -> String) -> (a -> p) -> Property
+timedForAllShow gen shown k = forAllShow gen shown (within caseLimit . k)
+
+-- | 'timedForAllShow' printing the input with 'show'.
+timedForAll :: (Show a, Testable p) => Gen a -> (a -> p) -> Property
+timedForAll gen = timedForAllShow gen show
 
 -- | The invariants of core.md §9 over programs from one source.
 pipelineProperties :: Source -> [TestTree]
@@ -3565,7 +3584,7 @@ inference saw, not what the generator meant.
 -}
 generatorProperty :: Property
 generatorProperty =
-  forAllShow
+  timedForAllShow
     genProgram
     (\(ty, e) -> T.unpack (renderType ty) <> "\n" <> showProgram e)
     $ \(ty, e) ->
@@ -5140,7 +5159,7 @@ affineTests =
               -- only when a == b; either way the check must hold).
               at = pointOf [(Hash "x", e1), (Hash "y", e2)]
               z = mulM 24 x y
-           in abs (at x * at y - midpoint z) <= radius z
+           in within caseLimit (abs (at x * at y - midpoint z) <= radius z)
     , testProperty "sqrt, recip, exp and log enclose their true values"
         $ \(Positive n) (Positive d) e1 (Small k) ->
           let r = fromIntegral (n :: Int) / fromIntegral (d :: Int) :: Rational
@@ -5156,7 +5175,7 @@ affineTests =
               inside z t = lo z <= t && t <= hi z
               squares z = lo z * lo z <= v && v <= hi z * hi z
               approx t = toRational (t :: Double)
-           in counterexample (show (r, v))
+           in within caseLimit . counterexample (show (r, v))
                 $ either (const False) squares (sqrtM 24 x)
                   && either (const False) (`inside` recip v) (recipM 24 x)
                   && near (expM 24 x) (approx (exp (fromRational v)))
@@ -5213,7 +5232,7 @@ storeTests =
     "store"
     [ testProperty
         "the storage encoding round-trips every generated program, hints included"
-        $ forAll (snd <$> genProgram)
+        $ timedForAll (snd <$> genProgram)
         $ \e -> case desugarClosed noResolver e of
           Left _ -> discard
           Right (t, _) -> case decodeStored (encodeStored t) of
@@ -9090,7 +9109,7 @@ dimensionSyntaxTests =
     "dimension syntax"
     [ testProperty "a printed dimension reads back as itself, in both spellings"
         $ checkCoverage
-        $ forAll genWrittenDim
+        $ timedForAll genWrittenDim
         $ \d ->
           let atoms = dimAtoms d
               downs = [k | (_, k) <- atoms, k < 0]
