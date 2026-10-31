@@ -855,3 +855,31 @@
   record; amounts print as before. The library is respelled (`60 s`, `1 deg
   / 60`, `5/9 * 1 K`, `kilo * 1 metre`, `s^-1`, the constants as
   quantities), so every term naming a unit re-hashes. Store format 8.
+- Spaces and frames (design §3.10, part F). A space is declared, `space
+  Temperature = Num K`, `space Inertial = Vec 3 m`, nominally: two spaces
+  declared alike are two, and a vector space has base axes named after it.
+  A chart is declared by its clauses, `chart name params… on parent [at
+  origin] [step unit] [by B then …] [spinning ω]`, with no `=`; `on` is a
+  keyword, as are `space` and `from`, and `step`, `by` and `spinning` are
+  words inside a chart only. A chart on a space, or with an origin, turned
+  axes or a spin, mints a frame (and turned axes or a spin its axes); a
+  step alone is a rescaling and shares its parent's frame, so Rankine and
+  kelvin points subtract with no `to`. Points are typed by their frames,
+  `Point degC`, and charts `Chart degC`; `Diff c` and `Coords c` reduce to
+  tensors once the frame's space is known; a binder names a frame's space,
+  `forall (c : Temperature)` or `forall s (c : s)`. A point holds its
+  coordinates on its frame with the step applied, so arithmetic inside a
+  frame is exact and `p.0` reads a coordinate on any chart. `to` is the one
+  conversion: a unit, a point to another frame of its space, or an amount
+  along a chart's axes; `p from (lvlh s) to eci` names the configuration of
+  a frame with parameters, and a conversion with no `from` from one is
+  refused; `b .- a on c` subtracts in a frame. `along` and `inChart` are
+  retired into `to`; `withAxes` stays, and `originOf` is new. Points on two
+  frames are refused, "points on degC and degF: convert one with `to`", and
+  frames of two spaces never meet. The library declares `Time`,
+  `Temperature` and `Pressure` and respells its charts; `astro.State t r`
+  holds an epoch on a time frame and a position and velocity along a
+  space's base axes. Every library chart re-hashes, and so do
+  `astro.State`, `astro.velocityIn` and `astro.stateFrom`; `linalg.inChart`
+  and `linalg.along` are removed; every other library name keeps its hash.
+  A user's chart re-hashes when typed again. Store format 9.

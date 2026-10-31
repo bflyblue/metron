@@ -307,7 +307,7 @@ The policy, now that stores exist (design §7.4):
   stored `±` definition keeps its hash, and the same text entered again, or
   under a namespace, gets the new one.
 - **Encoding and Core changes are versioned.** The store carries a format
-  number (`format`, currently 6). Any change to the canonical encoding or to
+  number (`format`, currently 9; design §7.4 lists them all). Any change to the canonical encoding or to
   a Core constructor (the label field on `Noise` and `Uncertain` was the last,
   made before any store existed) bumps it, and the loader refuses a store of
   any other format. The format number is not the storage encoding's
@@ -406,6 +406,8 @@ Applying the test to the roadmap, in order:
   `Point δ` and `Scale δ`, five saturated primitives, and a `scale`
   declaration that is label-level metadata like `unit`. No Core change: a
   point is a number at runtime and `.+`/`.-` are primitive applications.
+  (Since part F, below, a point carries its chart at run time and the
+  type constructors take a frame.)
 - **Units as a type (design §3.10, part U).** One constructor in the type
   language, `Unit δ`, and two saturated primitives, `scale` (the quantity
   rule after a unit) and `unit` (a unit's declaration), both named by
@@ -415,6 +417,23 @@ Applying the test to the roadmap, in order:
   and the reading is written into the term before it is hashed, so Core
   never holds a marker and the rule is still a rewrite into Core, one that
   needs the types. It was a hash-changing migration (format 7 to 8).
+- **Spaces and frames (design §3.10, part F).** The type language's `Point`
+  and `Chart` take a frame instead of a type, and `Diff` and `Coords` (the
+  amount between two points on a frame and the coordinates one is written
+  with) are one residual form until the frame's space is known; frames and
+  spaces are two new kinds. A `space` declaration and a chart that mints a
+  frame are type declarations with label kinds of their own, so the Core
+  of a chart names its frame and space by hash through their constructors.
+  The chart primitives became two, `mkRoot` and `mkChart`, each taking its
+  clauses as lists of none or one, beside `pointOn`, `pointAdd`,
+  `pointSub`, `toScale`, `fromTo`, `toAxes`, `axesFromTo`, `originOf` and
+  the retyped `rotationOf`, `spinOf`, `originVelocityOf` and `withAxes`.
+  `p from c to c1` and `b .- a on c` desugar to primitive applications and
+  a `let`, and `to` gained two readings the types choose (a point on a
+  chart, a vector along a chart's axes) written into the term as before.
+  No Core change: Core stays at 15 constructors. It was a hash-changing
+  migration (format 8 to 9) for the library's charts and the two `astro`
+  functions that build or read a state.
 - **Affine arithmetic, units, printing, covariance.** Runtime and prelude work.
   `Noise` and `Uncertain` already existed for it, and the arithmetic itself
   landed without touching Core: `Eval.Affine` sits entirely under the
