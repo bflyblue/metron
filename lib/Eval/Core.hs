@@ -159,16 +159,22 @@ definition hash and the path. A @#label@ written by the user is a global
 identity instead: every @±@ with that label and midpoint is one unknown,
 wherever it appears. Only a tag is printed; the owner stamp is implied by
 the binding.
+
+The third kind stamps the axis type a chart declaration mints (design
+§3.9, decision 1) with the chart's full path: no source @data@ and no
+uncertainty carries it, so a user's @data Eci = Eci@ never equals it.
 -}
 data Label
   = Owner Text
   | Tag Text
+  | Axes Text
   deriving stock (Eq, Ord, Show)
 
 renderLabel :: Label -> Text
 renderLabel = \case
   Owner _ -> ""
   Tag t -> " #" <> t
+  Axes _ -> ""
 
 {- | A constant tensor: its shape and its values flat in row-major order; a
 number is the rank-zero case. Booleans are data ('Con').

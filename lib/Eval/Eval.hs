@@ -451,8 +451,9 @@ it carries a tag.
 -}
 originOf :: Site -> Label -> Int -> Origin
 originOf site l i = case l of
-  Owner _ -> Declared site.definition (reverse site.path) i
   Tag t -> Tagged t i
+  -- No uncertainty carries an axes stamp; it would be its site's.
+  _ -> Declared site.definition (reverse site.path) i
 
 vecMapIndexed :: forall a b k. (Int -> a -> b) -> Vec k a -> Vec k b
 vecMapIndexed f = walk 0

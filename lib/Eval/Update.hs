@@ -290,6 +290,8 @@ restamp moves cb0 = do
   owners = Map.fromList moves
   relabelled = \case
     Owner o | Just n <- Map.lookup o owners -> Owner n
+    -- A chart's minted axis type follows its chart (design §3.9).
+    Axes o | Just n <- Map.lookup o owners -> Axes n
     l -> l
 
   -- Types: re-stamped, and their users rewritten, until nothing changes.

@@ -123,6 +123,7 @@ enc ph hint depth = \case
   label = \case
     Owner t -> word8 0 <> text t
     Tag t -> word8 1 <> text t
+    Axes t -> word8 2 <> text t
   -- A constructor is an empty name, the type's hash and the index. The
   -- empty name is what is left of the built-in constructors, which were
   -- their names until storage version 4 (design §6.1).
@@ -239,6 +240,7 @@ decLabel =
   byte >>= \case
     0 -> Owner <$> decText
     1 -> Tag <$> decText
+    2 -> Axes <$> decText
     k -> failDec ("unknown label kind " <> T.pack (show k))
 
 decHint :: Dec Hint

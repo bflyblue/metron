@@ -72,6 +72,8 @@ encodeTypeDef def =
   labelEnc = \case
     Owner t -> word8 0 <> text t
     Tag t -> word8 1 <> text t
+    -- A chart's minted axis type (design §3.9): appended.
+    Axes t -> word8 2 <> text t
 
 hashTypeDef :: TypeDef -> Hash
 hashTypeDef = Hash . SHA256.hash . encodeTypeDef
