@@ -3696,7 +3696,7 @@ partUTests =
           @?= Right ["120 s", "3.1415926535897932384… rad", "Unit (kg*m/s^2)", "3 N2", "1 dC"]
         runLinesP [":use imperial", "unit psi2 = lbf / inch^2", "1 psi2 to Pa"]
           @?= Right ["stored use imperial", "6894.7572931683613367… Pa"]
-        -- The library's declarations, respelled.
+        -- The library's declarations, as written.
         runLinesP
           [ ":view time.min"
           , ":view angle.arcmin"
@@ -5572,10 +5572,8 @@ storeTests =
           @?= Right
             [ "6 km h^-1"
             , "6 km h^-1"
-            , -- These changed when km became kilo * metre and h an alias of hr,
-              -- and when km was respelled kilo * 1 metre (design §3.10, U3), and
-              -- again when units became a type: speed is the quantity 5 (km/h),
-              -- scale of a unit quotient, and km and h are units by declaration.
+            , -- speed is the quantity 5 (km/h), scale of a unit quotient, and
+              -- km and h are units by declaration (design §3.10, U3).
               "#rb27b  (current)"
             , "#3ml3a"
             , "201.168 m"
@@ -7210,7 +7208,7 @@ orbitalSetup =
   ]
 
 {- | A codebase for the export round trip: two namespaces, a nested one, a
-root definition, a unit, a scale, a record with a field a function uses, a
+root definition, a unit, a chart, a record with a field a function uses, a
 cycle, a block definition shadowing a root name, and a prelude reference.
 -}
 exportScript :: [Text]

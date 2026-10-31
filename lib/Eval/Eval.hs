@@ -188,7 +188,7 @@ data Chart = Chart
   , dim :: Dim
   , parent :: Maybe Chart
   {- ^ the chart the origin and the generators are given in; 'Nothing' is
-  the implicit base of the dimension. The chart value itself, not a hash: a
+  the base of its space (design §3.10, F2). The chart value itself, not a hash: a
   chart need not be named, and its definition's Core already refers to the
   parent's by hash
   -}
