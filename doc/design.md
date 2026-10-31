@@ -2443,7 +2443,8 @@ rules in full.
   an unknown lowercase name is refused ("unknown name `x` in a type; bind
   it with forall if it is a variable"). The resolver's guess and the
   printer's dodging of unit names in scope are gone: a binder shadows a
-  unit, base unit or type of its name within its type, so the printer
+  unit, base unit or type of its name within its type (and a signature's,
+  within its body's ascriptions), never in an expression, so the printer
   uses plain names and skips one only when the same type prints that
   base symbol (`forall s1 d. Tensor s1 d -> Tensor s1 [s d]`).
 - **Kinds from use, companions as in stage 1.** A length binder is a
@@ -2456,7 +2457,8 @@ rules in full.
   their own, and the signature checked again on the result (§4.8).
 - **Printing.** `:type`, `:ls` and every written-back signature (`:edit`,
   `:export`, `:scratch`, the `sig` line) print the `forall`; errors,
-  `:lint` and `:core` do not. `:ls : type` queries stay implicit, and an
+  `:lint` and `:core` do not. `:view` shows a term or a declaration, never a
+  scheme, so it has none to print. `:ls : type` queries stay implicit, and an
   old `sig` line without `forall` still replays.
 - **Not yet: sized printing.** A binder prints plain, so a sized
   signature is written back as its literal (`forall d. Vec 3 d -> Vec 3
@@ -2985,12 +2987,15 @@ without variables needs no `forall`: `area :: Shape -> Num [m^2]`.
   axes are anonymous until stage 2b). Used as anything but a length, it is
   refused.
 - **A binder shadows** a unit, a base unit or a declared type of its name
-  throughout its type, brackets included, and nowhere else. In `same ::
-  forall s d. Tensor s d -> Tensor s d`, `s` is the shape variable; in
-  `secs :: Num [s] -> Num [s]` it is the second; in `forall s. Num [s] ->
-  Num [s]` it is a dimension variable, and the body of either definition
-  still reads `1 s` as the second. A binder is a lowercase name other than
-  `rank`, bound once.
+  throughout its type, brackets included, and, for a signature given with
+  its definition, in the types of that body's ascriptions (below); never
+  in an expression. In `same :: forall s d. Tensor s d -> Tensor s d`, `s`
+  is the shape variable; in `secs :: Num [s] -> Num [s]` it is the second;
+  in `forall s. Num [s] -> Num [s]` it is a dimension variable, and the
+  body of either definition still reads `1 s` as the second. A binder is a
+  lowercase name other than `rank`, bound once, so only a lowercase
+  declared type can be shadowed, and a binder used as a head, `a Num`, is
+  refused as taking no arguments.
 - `forall` goes only at the head of a signature's or an ascription's type;
   `data` parameters are already explicit, and a field cannot hold one.
 

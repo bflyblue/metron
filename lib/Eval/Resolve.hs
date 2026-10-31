@@ -1359,8 +1359,9 @@ signatureScheme scope cb t = do
 decision 6): by its own @forall@, or, for an ascription, by the signature
 of the definition it is in (the given variables, which stay free in the
 scheme). Every other name is a name and resolves like one; an unknown
-lowercase one is an error. A binder shadows a unit, a base unit or a
-declared type of its name throughout the type, brackets included. Kinds
+lowercase one is an error. A binder, or a signature's variable in an
+ascription, shadows a unit, a base unit or a declared type of its name
+throughout the type, brackets included. Kinds
 are learned from where the variables are used; a length variable stands
 for a whole axis set, its length and a companion axis variable, and a
 sized binder, @(a : 3)@, for that many axes of its own.

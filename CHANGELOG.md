@@ -736,8 +736,9 @@
   other name in such a type is a name: an unknown lowercase one is refused,
   "unknown name `x` in a type; bind it with forall if it is a variable",
   where it used to be read as a variable, and a binder shadows a unit,
-  base unit or type of its name within its type, so `forall s d. Tensor s
-  d -> …` and `Num [s] -> …` (the second) both mean what they say. A
+  base unit or type of its name within its type (and a signature's within
+  its body's ascriptions), never in an expression, so `forall s d. Tensor
+  s d -> …` and `Num [s] -> …` (the second) both mean what they say. A
   signature given with its definition scopes its variables over the body:
   an ascription there may name them, and one that would narrow them or
   make two one is refused at the signature. `:type`, `:ls`, `:edit`,

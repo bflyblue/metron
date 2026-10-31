@@ -8244,6 +8244,7 @@ forallTests =
                 `T.isInfixOf` err
               )
               @? T.unpack err
+            ("error at 1:6\n" `T.isInfixOf` err) @? T.unpack err
             ("  f :: a -> a\n       ^\n" `T.isInfixOf` err) @? T.unpack err
           Right outs -> assertFailure (show outs)
         expectError
@@ -8416,6 +8417,11 @@ forallTests =
           , ":type pong"
           ]
           @?= Right ["forall a b. a -> b -> (a, b)"]
+        -- The body checked against the signature: x is the signature's a,
+        -- and a function of y besides.
+        expectError
+          (runLinesP [multiline ["f :: forall a. a -> a", "let f x y = (x :: a)"]])
+          "in `f`: the signature: "
         -- Only a signature given with the definition scopes over it.
         expectError
           ( afterSetup
@@ -8423,7 +8429,7 @@ forallTests =
               ["let f x = (x :: a)"]
           )
           "unknown name `a` in a type"
-    , testCase ":type, :ls, :view, :edit and :export print forall" $ do
+    , testCase ":type, :ls, :edit and :export print forall; :view shows the term" $ do
         s <-
           sessionOf
             [ multiline
