@@ -5748,6 +5748,16 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
+- Curvilinear charts (§3.10). A chart is affine, so latitude and longitude,
+  spherical coordinates and topocentric azimuth, elevation and range are
+  functions today (`toGeodetic : Point ecef -> Geodetic`), not charts. A
+  curvilinear chart would be defined by a pair of functions to and from an
+  affine parent, `chart geodetic on ecef via toGeodetic fromGeodetic`: its
+  points typed by frame (`Point geodetic`), `to` converting through the
+  functions, and `.-` and `.+` refused, since a difference of coordinates on
+  a curved chart is not an amount ("subtract on an affine frame: `b .- a on
+  ecef`"). Worth building if conversions through such functions around `to`
+  become common, as they may in iapetus.
 - A frame per item of data (§3.10, F3). Frames are minted by declarations,
   so their number is fixed when the code is written, which the owner accepts
   for now. Bodies that come from data, a list of a hundred satellites,
