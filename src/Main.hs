@@ -10,10 +10,10 @@ import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
-import Eval.Codebase (emptyCodebase)
-import Eval.Driver
-import Eval.Repl qualified as R
-import Eval.Store
+import Metron.Codebase (emptyCodebase)
+import Metron.Driver
+import Metron.Repl qualified as R
+import Metron.Store
 import System.Console.Haskeline
 import System.Directory (getTemporaryDirectory, removeFile)
 import System.Environment (getArgs, lookupEnv)
@@ -22,13 +22,13 @@ import System.FilePath ((</>))
 import System.IO
 import System.Process (createProcess, delegate_ctlc, proc, waitForProcess)
 
-{- | @eval@ alone starts a REPL when stdin is a terminal, otherwise reads a
-program from stdin. @eval 'expr'@ evaluates one input. @eval -f file@
-runs a file. @eval -i@ runs the REPL loop on stdin line by line even when
+{- | @metron@ alone starts a REPL when stdin is a terminal, otherwise reads a
+program from stdin. @metron 'expr'@ evaluates one input. @metron -f file@
+runs a file. @metron -i@ runs the REPL loop on stdin line by line even when
 it is not a terminal, so sessions can be scripted and tested.
 
 Every mode works against a codebase on disk (design §7.4): @--codebase DIR@
-names it, otherwise a @.eval@ directory above the working directory, else
+names it, otherwise a @.metron@ directory above the working directory, else
 the user store. @--no-codebase@ runs in memory only. @--merge OTHER@ merges
 the store at OTHER into that codebase and exits.
 -}
@@ -53,8 +53,8 @@ main = do
   usage = do
     hPutStrLn
       stderr
-      "usage: eval [--codebase DIR | --no-codebase] ['expr' | -f file | -i]\n\
-      \       eval [--codebase DIR] --merge OTHER"
+      "usage: metron [--codebase DIR | --no-codebase] ['expr' | -f file | -i]\n\
+      \       metron [--codebase DIR] --merge OTHER"
     exitFailure
 
 data Options = Options
@@ -352,11 +352,11 @@ editorCommand = do
   editor <- lookupEnv "EDITOR"
   pure (find (not . all isSpace) (catMaybes [visual, editor]))
 
--- | Write the file @:edit@ opens to a new temporary file, @eval-edit-….ev@.
+-- | Write the file @:edit@ opens to a new temporary file, @metron-edit-….metron@.
 writeTemp :: Text -> IO FilePath
 writeTemp text = do
   dir <- getTemporaryDirectory
-  (path, h) <- openTempFile dir "eval-edit-.ev"
+  (path, h) <- openTempFile dir "metron-edit-.metron"
   hSetEncoding h utf8
   TIO.hPutStr h text
   hClose h

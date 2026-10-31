@@ -35,11 +35,11 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
-import Eval.Builtin
-import Eval.Core (NudgeKind (..))
-import Eval.Dimension
-import Eval.Syntax qualified as S
-import Eval.Type
+import Metron.Builtin
+import Metron.Core (NudgeKind (..))
+import Metron.Dimension
+import Metron.Syntax qualified as S
+import Metron.Type
 import Test.QuickCheck
 
 -- Types ---------------------------------------------------------------------------

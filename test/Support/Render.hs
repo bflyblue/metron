@@ -5,14 +5,14 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Ratio (numerator, denominator)
-import Eval.Eval
-import Eval.Builtin
-import Eval.Type (conText)
-import Eval.Affine
+import Metron.Eval
+import Metron.Builtin
+import Metron.Type (conText)
+import Metron.Affine
 
 {- | A plain rendering for tests. Forces every element. Exact magnitudes
 print as @n/d@ in base units, affine ones as an approximate @mid±r@, and
-dimensions are omitted; decimal output with units is "Eval.Pretty"'s job.
+dimensions are omitted; decimal output with units is "Metron.Pretty"'s job.
 -}
 render :: Value -> Either EvalError Text
 render = \case

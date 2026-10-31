@@ -1,0 +1,626 @@
+{- | The standard library (design §7.7) as source text in the language
+itself, split by domain into sibling namespaces: the structural functions
+in @std@, tensor algebra and the joint covariance in blocks in @linalg@,
+the SI in @si@, and @time@, @angle@, @temperature@, @astro@, @physics@ and
+@imperial@ ('stdlibLayout'). A new codebase is seeded with it as one
+binding group, so every unit is an ordinary hashed, viewable definition
+that lives in the codebase like any other, with the stored default @use@s
+of 'stdlibDefaultUses'. Labels that name a definition twice (@newton@ and
+@N@) are 'stdlibAliases', bound after the group is entered, as @:alias@
+binds them. The prefix table is generated here rather than typed by hand.
+-}
+module Metron.Prelude (
+  stdlibSource,
+  stdlibAliases,
+  stdlibNames,
+  stdlibNamespaces,
+  stdlibDefaultUses,
+  isLibraryPath,
+  stdlibCodebase,
+) where
+
+import Control.Monad ( foldM )
+import Data.Bifunctor ( first )
+import Data.Maybe ( fromMaybe )
+import Data.Text ( Text )
+import Metron.Codebase
+    ( Codebase(..),
+      addStoredUse,
+      bindName,
+      emptyCodebase,
+      isChartName,
+      isUnitName,
+      lookupName,
+      markChart,
+      markUnit )
+import Metron.Lexer ( prepare )
+import Metron.Parser ( parseProgram )
+import Metron.Resolve ( processGroup )
+import Metron.Resolve.Error ( renderResolveError )
+import Metron.Syntax qualified as S ( flatten, rootScope, Use(Use) )
+import Data.Text qualified as T
+    ( isPrefixOf, unlines, unwords, pack )
+
+-- The library's tables -------------------------------------------------------------
+
+-- | The 24 SI prefixes as powers of ten, with @u@ as the ASCII micro.
+prefixes :: [(Text, Int)]
+prefixes =
+  [ ("Q", 30)
+  , ("R", 27)
+  , ("Y", 24)
+  , ("Z", 21)
+  , ("E", 18)
+  , ("P", 15)
+  , ("T", 12)
+  , ("G", 9)
+  , ("M", 6)
+  , ("k", 3)
+  , ("h", 2)
+  , ("da", 1)
+  , ("d", -1)
+  , ("c", -2)
+  , ("m", -3)
+  , ("µ", -6)
+  , ("u", -6)
+  , ("n", -9)
+  , ("p", -12)
+  , ("f", -15)
+  , ("a", -18)
+  , ("z", -21)
+  , ("y", -24)
+  , ("r", -27)
+  , ("q", -30)
+  ]
+
+{- | Tensor algebra: the 3D Levi-Civita tensor, the cross product as the
+Hodge dual of the wedge product, the trace as a contraction, and @vimap@,
+a map that also sees each component's position as a value (design §3.3).
+@vimap@ is for vectors, with the position as one number; the primitive
+@timap@ is the general form, at any rank, with the multi-index as a vector.
+
+Then rotations (design §3.3, §3.8): the unit vectors, and the bivectors
+that @expm@ turns into rotation matrices. @a ∧ b@ is @a bᵀ − b aᵀ@, which
+turns @b@ toward @a@, so @rotz θ@ is @θ (e2 ∧ e1)@ and the right-hand rule
+holds. @dual v = ε \@ v@ is the inverse of @⋆@ and @b ∧ a = dual (b × a)@,
+so a bivector built from a computed vector is formed as the dual of one
+vector, angle and all: every entry is then exactly the negation of its
+partner, even when the vector is an enclosure, and @B + Bᵀ@ is exactly
+zero. @euler313@ is the composed matrix, for @\@@ and @transformBy@; a
+chart is turned by the sequence itself, @by rotz Ω then rotx i then rotz
+ω@ (design §3.8). A vector along a chart's axes is read along another's
+with @v from c to c1@, and one along its space's base axes along a
+chart's with @v to c@ (design §3.10, F10). @rotateVec r v@
+and @rotateCov r p@ are a rotation applied to a vector, @r v@, and to a
+covariance, @r p rᵀ@, typed by the axes of @r@'s rows and columns;
+@transformBy@, along every axis at once, is for anonymous axes only.
+-}
+algebra :: [(Text, Text)]
+algebra =
+  [
+    ( "ε"
+    , "[[[0, 0, 0], [0, 0, 1], [0, -1, 0]], [[0, 0, -1], [0, 0, 0], [1, 0, 0]], [[0, 1, 0], [-1, 0, 0], [0, 0, 0]]]"
+    )
+  , ("levi", "ε")
+  , ("cross", "\\a b -> star (a /\\ b)")
+  , ("trace", "\\a -> contract 0 1 a")
+  , ("vimap", "\\f v -> vzipWith f (indices v) v")
+  , ("e1", "[1, 0, 0]")
+  , ("e2", "[0, 1, 0]")
+  , ("e3", "[0, 0, 1]")
+  , ("rotx", "\\θ -> (θ to rad) / 1 rad * (e3 /\\ e2)")
+  , ("roty", "\\θ -> (θ to rad) / 1 rad * (e1 /\\ e3)")
+  , ("rotz", "\\θ -> (θ to rad) / 1 rad * (e2 /\\ e1)")
+  , ("dual", "\\v -> ε @ v")
+  , ("axisAngle", "\\n θ -> dual ((θ to rad) / 1 rad * (-n) / norm n)")
+  ,
+    ( "rotation"
+    , T.unwords
+        [ "\\a b -> let c = cross a b in"
+        , "if c == 0 * c then"
+        , "(if a · b > 0 * (a · b) then [[0, 0, 0], [0, 0, 0], [0, 0, 0]]"
+        , "else let k = if cross a e3 == 0 * cross a e3 then e1 else e3 in"
+        , "dual (cross k a * pi / norm (cross k a)))"
+        , "else dual (-c * (atan2 (norm c) (a · b) / 1 rad) / norm c)"
+        ]
+    )
+  ,
+    ( "euler313"
+    , "\\raan inc argp -> expm (rotz raan) @ expm (rotx inc) @ expm (rotz argp)"
+    )
+  , -- r v, written so that r is known to be a matrix
+    ("rotateVec", "\\r v -> transpose (transpose r) @ v")
+  , -- r p rᵀ, written so that both operands are known to be matrices
+    ("rotateCov", "\\r p -> r @ transpose (r @ transpose p)")
+  ]
+
+{- | A body's state (design §3.8, §3.10): its epoch, a point on a time
+frame, and its position and velocity as amounts along a space's base
+axes, the position from the base origin: the velocity relative to the
+space's base, the inertial frame. @velocityIn c s@ is that velocity
+relative to chart @c@, along @c@'s axes, with the transport terms of a
+moving chart:
+
+@
+v_c = R_abs⁻¹ (v − v_o − ω_abs × (p − o_abs))
+@
+
+with @R_abs@ the chart's rotation, @o_abs@ its origin, @v_o@ the velocity
+of its origin and @ω_abs@ its angular velocity, all from the base
+(@rotationOf@, @originOf@, @originVelocityOf@, @spinOf@), @R_abs⁻¹@ being
+@to c@. @stateFrom c t pc vc@ is the inverse: a position @pc@ and a
+velocity @vc@ along @c@'s axes, relative to @c@, to a state, @p = o_abs +
+R_abs pc@ and @v = R_abs vc + v_o + ω_abs × (p − o_abs)@. A chart with
+parameters is passed at the state's instant, @velocityIn (ecef s.epoch)
+s@. Their inferred types retain the space constraint
+@(s : Space (Vec 3 m))@ when printed.
+-}
+stateStatements :: [Statement]
+stateStatements =
+  [ Data
+      "data State t r = State {epoch :: Point t, pos :: Vec r m, vel :: Vec r (m/s)}"
+      ["State", "epoch", "pos", "vel"]
+  , Let
+      "velocityIn"
+      ( T.unwords
+          [ "\\c st ->"
+          , "(st.vel - originVelocityOf c - linalg.cross (spinOf c) (st.pos - originOf c)) to c"
+          ]
+      )
+  , Let
+      "stateFrom"
+      ( T.unwords
+          [ "\\c t pc vc -> let r = rotationOf c @ pc in"
+          , "State {epoch = t, pos = originOf c + r,"
+          , "vel = rotationOf c @ vc + originVelocityOf c + linalg.cross (spinOf c) r}"
+          ]
+      )
+  ]
+
+{- | Tuples and lists (design §2.3): the structural functions, recursive
+through cycles like any other definition.
+-}
+structural :: [(Text, Text)]
+structural =
+  [ ("fst", "\\p -> case p of (a, _) -> a")
+  , ("snd", "\\p -> case p of (_, b) -> b")
+  , ("map", "\\f xs -> case xs of {} -> {}; x : rest -> f x : map f rest")
+  ,
+    ( "filter"
+    , "\\p xs -> case xs of {} -> {}; x : rest -> if p x then x : filter p rest else filter p rest"
+    )
+  , ("foldr", "\\f z xs -> case xs of {} -> z; x : rest -> f x (foldr f z rest)")
+  , ("foldl", "\\f z xs -> case xs of {} -> z; x : rest -> foldl f (f z x) rest")
+  , ("length", "\\xs -> foldl (\\n _ -> n + 1) 0 xs")
+  , ("reverse", "\\xs -> foldl (\\acc x -> x : acc) {} xs")
+  ,
+    ( "zip"
+    , "\\xs ys -> case xs of {} -> {}; x : xr -> case ys of {} -> {}; y : yr -> (x, y) : zip xr yr"
+    )
+  , ("range", "\\a b -> if a > b then {} else a : range (a + 1) b")
+  ]
+
+{- | A joint covariance in blocks (design §3.7): the covariance of a state
+@(r, v)@ of two homogeneous vectors, @r : Vec n d1@ and @v : Vec n d2@, as
+the record of its three distinct blocks, @rr = Cov(r, r)@, @rv = Cov(r, v)@
+and @vv = Cov(v, v)@ (the fourth is @transpose rv@). Every block is
+homogeneous, so no matrix of mixed dimensions is needed, and the Kalman
+filter's steps are written on the blocks: propagation @Φ P Φᵀ@ with
+@Φ = [Φ_rr, Φ_rv; Φ_vr, Φ_vv]@, the innovation covariance @H P Hᵀ + R@ and
+the gain @P Hᵀ S⁻¹@ with @H = [H_r | H_v]@, and the update @(I − K H) P@.
+-}
+covarianceData :: Text
+covarianceData =
+  "data Cov2 n d1 d2 = Cov2 {rr :: Mat n n (d1^2), rv :: Mat n n (d1*d2), vv :: Mat n n (d2^2)}"
+
+{- | The block filter over 'covarianceData'. @propagateCov2@ forms the block
+rows of @Φ P@ first and multiplies them by the block columns of @Φᵀ@;
+expanded, @rr' = Φ_rr rr Φ_rrᵀ + Φ_rv rvᵀ Φ_rrᵀ + Φ_rr rv Φ_rvᵀ + Φ_rv vv
+Φ_rvᵀ@. @gain2@ returns the pair @(K_r, K_v)@ of the gain's block rows.
+@updateCov2@ is @P − K (H P)@ with @H P = (P Hᵀ)ᵀ@, since @P@ is
+symmetric: written with @transpose h_r@ the measurement matrices have a
+known rank, where @h_r \@ p.rr@ alone would default @h_r@ to a vector
+(design §4.2). @inChartCov2 c p@ reads a block covariance as given along
+the axes of chart @c@ and gives it along its root's axes: each block is
+@R P Rᵀ@ ('rotateCov'), since the state's rotation is @R@ on positions and on
+velocities alike (design §3.8).
+-}
+covarianceBlocks :: [(Text, Text)]
+covarianceBlocks =
+  [
+    ( "jointCovariance"
+    , "\\state -> case state of (r, v) -> Cov2 {rr = crossCovariance r r, rv = crossCovariance r v, vv = crossCovariance v v}"
+    )
+  ,
+    ( "propagateCov2"
+    , T.unwords
+        [ "\\phi p -> case phi of (phi_rr, phi_rv, phi_vr, phi_vv) ->"
+        , "let rr_ = phi_rr @ p.rr + phi_rv @ transpose p.rv in"
+        , "let rv_ = phi_rr @ p.rv + phi_rv @ p.vv in"
+        , "let vr_ = phi_vr @ p.rr + phi_vv @ transpose p.rv in"
+        , "let vv_ = phi_vr @ p.rv + phi_vv @ p.vv in"
+        , "Cov2 {rr = rr_ @ transpose phi_rr + rv_ @ transpose phi_rv,"
+        , "rv = rr_ @ transpose phi_vr + rv_ @ transpose phi_vv,"
+        , "vv = vr_ @ transpose phi_vr + vv_ @ transpose phi_vv}"
+        ]
+    )
+  ,
+    ( "innovationCov2"
+    , T.unwords
+        [ "\\h_r h_v p r_meas ->"
+        , "h_r @ p.rr @ transpose h_r + h_r @ p.rv @ transpose h_v"
+        , "+ h_v @ transpose p.rv @ transpose h_r + h_v @ p.vv @ transpose h_v + r_meas"
+        ]
+    )
+  ,
+    ( "gain2"
+    , T.unwords
+        [ "\\h_r h_v p s_inv ->"
+        , "((p.rr @ transpose h_r + p.rv @ transpose h_v) @ s_inv,"
+        , "(transpose p.rv @ transpose h_r + p.vv @ transpose h_v) @ s_inv)"
+        ]
+    )
+  ,
+    ( "updateCov2"
+    , T.unwords
+        [ "\\k h_r h_v p -> case k of (k_r, k_v) ->"
+        , "let ph_r = p.rr @ transpose h_r + p.rv @ transpose h_v in"
+        , "let ph_v = transpose p.rv @ transpose h_r + p.vv @ transpose h_v in"
+        , "Cov2 {rr = p.rr - k_r @ transpose ph_r,"
+        , "rv = p.rv - k_r @ transpose ph_v,"
+        , "vv = p.vv - k_v @ transpose ph_v}"
+        ]
+    )
+  ,
+    ( "inChartCov2"
+    , T.unwords
+        [ "\\c p -> let r = rotationOf c in"
+        , "Cov2 {rr = rotateCov r p.rr, rv = rotateCov r p.rv, vv = rotateCov r p.vv}"
+        ]
+    )
+  ]
+
+-- The library by domain ------------------------------------------------------------
+
+-- | One statement of the library's source.
+data Statement
+  = Let Text Text
+  | -- | a signature (design §4.8): the name and its type
+    Sig Text Text
+  | Unit Text Text
+  | Chart Text Text
+  | -- | a space (design §3.10, F2): its name and its amounts' type
+    SpaceDecl Text Text
+  | -- | a @use@ inside the block, for names of a sibling namespace
+    UseNs Text
+  | {- | a @data@ declaration, and its labels: the type, its constructors
+    where they are not the type's name, then its fields
+    -}
+    Data Text [Text]
+
+{- | @Bool@, tuples and lists (design §2.3, §7.7): the declarations the
+compiler holds ("Metron.Builtin"), written exactly so, so that entering
+them gives the same hashes. Naming them changes only how they print:
+@true@, @(1, 2)@ and @{1, 2}@ print so whatever names them.
+-}
+builtinData :: [Statement]
+builtinData =
+  [ Data "structural data Bool = False | True" ["Bool", "False", "True"]
+  , Data "structural data Pair a b = Pair a b" ["Pair"]
+  , Data "structural data List a = Nil | Cons a (List a)" ["List", "Nil", "Cons"]
+  ]
+
+{- | The library as namespace blocks, in the order the source has them
+(design §7.7). Inside a block a name resolves in that block first, then
+through the block's own @use@s; a sibling's name is otherwise written by
+its path (@angle.sr@, @time.hr@), since the seed is entered before any
+stored @use@ exists.
+-}
+stdlibLayout :: [(Text, [Statement])]
+stdlibLayout =
+  [ ("std", builtinData ++ [Let n e | (n, e) <- structural])
+  ,
+    ( "linalg"
+    , [Let n e | (n, e) <- algebra, n /= "vimap"]
+        -- vimap over timap, signed so it stays vector-only (design §3.3)
+        ++ [ Sig "vimap" "forall d d1 n. (Num -> Num d -> Num d1) -> Vec n d -> Vec n d1"
+           , Let "vimap" "\\f v -> timap (\\i x -> f i.0 x) v"
+           ]
+        ++ [Data covarianceData ["Cov2", "rr", "rv", "vv"]]
+        ++ [Let n e | (n, e) <- covarianceBlocks]
+    )
+  , ("si", siStatements)
+  ,
+    ( "time"
+    ,
+      [ Unit "min" "60 s"
+      , Unit "hr" "60 min"
+      , Unit "day" "86400 s"
+      , Unit "week" "7 day"
+      , Unit "year" "365.25 day"
+      , SpaceDecl "TT" "Num s"
+      , Chart "JD" "on TT step day"
+      , Chart "MJD" "on TT at 2400000.5 day step day"
+      , Chart "J2000" "on TT at 2451545 day step day"
+      , -- UTC is not an affine map of TT (leap seconds): no chart joins them.
+        SpaceDecl "UTC" "Num s"
+      , Chart "unix" "on UTC"
+      ]
+    )
+  ,
+    ( "angle"
+    ,
+      [ Unit "deg" "pi / 180 * 1 rad"
+      , Unit "arcmin" "1 deg / 60"
+      , Unit "arcsec" "1 arcmin / 60"
+      , Unit "turn" "2 * pi * 1 rad"
+      , Unit "sr" "rad^2"
+      ]
+    )
+  ,
+    ( "temperature"
+    ,
+      [ Unit "deltaC" "K"
+      , Unit "deltaF" "5/9 * 1 K"
+      , SpaceDecl "ITS90" "Num K"
+      , Chart "degC" "on ITS90 at 273.15 K"
+      , Chart "degF" "on ITS90 at 459.67 deltaF step deltaF"
+      , -- Rankine is a rescaling of kelvin: one frame (design §3.10, F3).
+        Chart "degR" "on kelvin step deltaF"
+      , -- The absolute scale: K's spelled-out name is this scale, not a unit.
+        Chart "kelvin" "on ITS90"
+      ]
+    )
+  ,
+    ( "astro"
+    , [ Unit "AU" "149597870700 m"
+      , -- IAU 2015: the parsec is exactly 648000/π au; the light-year is
+        -- the distance light travels in a Julian year.
+        Unit "pc" "648000 / pi * 1 AU"
+      , Unit "ly" "physics.c * 1 time.year"
+      , Let "GM_earth" "3.986004e14 m^3/s^2"
+      , Let "GM_sun" "1.3271244e20 m^3/s^2"
+      , Let "R_earth" "6378100 m"
+      , Let "G" "(6.67430e-11 ±σ 1.5e-15) * 1 m^3 kg^-1 s^-2"
+      , Let "M_earth" "GM_earth / G"
+      , Let "M_sun" "GM_sun / G"
+      ]
+        ++ stateStatements
+    )
+  ,
+    ( "physics"
+    ,
+      [ UseNs "si"
+      , Let "c" "299792458 m/s"
+      , Let "planck" "6.62607015e-34 J s"
+      , Let "hbar" "planck / (2 * pi)"
+      , Let "k_B" "1.380649e-23 J/K"
+      , Let "N_A" "6.02214076e23 mol^-1"
+      , Let "e_charge" "1.602176634e-19 C"
+      , Unit "eV" "e_charge * 1 V"
+      , Let "g0" "9.80665 m/s^2"
+      ]
+    )
+  ,
+    ( "imperial"
+    , -- Exact by the 1959 international yard and pound; `in` is a keyword.
+
+      [ Unit "inch" "0.0254 m"
+      , Unit "ft" "12 inch"
+      , Unit "yd" "3 ft"
+      , Unit "mile" "1760 yd"
+      , Unit "lb" "0.45359237 kg"
+      , Unit "oz" "1 lb / 16"
+      , Unit "lbf" "1 lb * physics.g0"
+      , Unit "psi" "lbf / inch^2"
+      , Unit "mph" "mile / time.hr"
+      ]
+    )
+  ]
+
+-- | The 24 SI prefixes by name, with the symbols of 'prefixes'.
+prefixNames :: [(Text, Text)]
+prefixNames =
+  [ ("Q", "quetta")
+  , ("R", "ronna")
+  , ("Y", "yotta")
+  , ("Z", "zetta")
+  , ("E", "exa")
+  , ("P", "peta")
+  , ("T", "tera")
+  , ("G", "giga")
+  , ("M", "mega")
+  , ("k", "kilo")
+  , ("h", "hecto")
+  , ("da", "deca")
+  , ("d", "deci")
+  , ("c", "centi")
+  , ("m", "milli")
+  , ("µ", "micro")
+  , ("u", "micro")
+  , ("n", "nano")
+  , ("p", "pico")
+  , ("f", "femto")
+  , ("a", "atto")
+  , ("z", "zepto")
+  , ("y", "yocto")
+  , ("r", "ronto")
+  , ("q", "quecto")
+  ]
+
+{- | The base units' spelled-out names. @K@ has none: @kelvin@ is the
+absolute temperature scale (design §3.6), and a name is one label.
+-}
+baseNames :: [(Text, Text)]
+baseNames =
+  [ ("m", "metre")
+  , ("s", "second")
+  , ("kg", "kilogram")
+  , ("A", "ampere")
+  , ("mol", "mole")
+  , ("cd", "candela")
+  , ("rad", "radian")
+  ]
+
+{- | The coherent derived units with special names, and the accepted units
+the SI keeps beside them: the symbol, the name, the definition.
+-}
+coherent :: [(Text, Text, Text)]
+coherent =
+  [ ("N", "newton", "kg * m / s^2")
+  , ("J", "joule", "N * m")
+  , ("W", "watt", "J / s")
+  , ("Pa", "pascal", "N / m^2")
+  , ("Hz", "hertz", "s^-1")
+  , ("C", "coulomb", "A * s")
+  , ("V", "volt", "W / A")
+  , ("Ω", "ohm", "V / A")
+  , ("F", "farad", "C / V")
+  , ("S", "siemens", "A / V")
+  , ("T", "tesla", "V * s / m^2")
+  , ("H", "henry", "V * s / A")
+  , ("Wb", "weber", "V * s")
+  , ("lm", "lumen", "cd * angle.sr")
+  , ("lx", "lux", "lm / m^2")
+  , -- Two units may share a definition (Bq and Hz are both 1/s): a unit is
+    -- a name, and a value prints under the name it was written with.
+    ("Bq", "becquerel", "s^-1")
+  , ("Gy", "gray", "J / kg")
+  , ("Sv", "sievert", "J / kg")
+  , ("kat", "katal", "mol / s")
+  , ("g", "gram", "1 kg / 1000")
+  , ("L", "litre", "(1 m / 10)^3")
+  , ("t", "tonne", "1000 kg")
+  ]
+
+{- | Units that take prefixes, by symbol: the base units except kg (whose
+prefixes attach to g), the coherent derived units, g and L. A prefixed
+base unit is written with the base unit's name (@kilo * metre@).
+-}
+siPrefixable :: [Text]
+siPrefixable =
+  ["m", "s", "A", "K", "mol", "cd", "rad"]
+    ++ [u | (u, _, _) <- coherent, u /= "t"]
+
+{- | The SI: base unit names, prefixes, derived units, prefixed units. A
+prefix is a plain number written as a power of ten (@kilo = 10^3@), not
+as a literal: a term is its content, so @let kilo = 1000@ would be the
+same hash as a user's @let n = 1000@, and an @:update@ of that would
+upgrade every @k@ unit with it (design §7.5).
+-}
+siStatements :: [Statement]
+siStatements =
+  [Unit n b | (b, n) <- baseNames]
+    ++ [Let n ("10^" <> T.pack (show k)) | (n, k) <- prefixValues]
+    ++ [Unit u e | (u, _, e) <- coherent]
+    ++ [ Unit (p <> u) (n <> " * 1 " <> fromMaybe u (lookup u baseNames))
+       | (p, n) <- prefixNames
+       , u <- siPrefixable
+       , p <> u /= "kg"
+       ]
+ where
+  prefixValues =
+    [(n, k) | ((p, n), (p', k)) <- zip prefixNames prefixes, p == p', p /= "u"]
+
+{- | Second labels on a definition (design §7.7): each alias's full path,
+then the full path it names. The SI's names for its symbols (@si.newton@
+is @si.N@), the prefixed ohms (@si.kohm@ is @si.kΩ@), the hour's symbol
+(@time.h@ is @time.hr@), the steradian, and
+the short spellings of the physical constants (@physics.h@ is
+@physics.planck@, so after @use physics@ a bare @h@ is ambiguous and @hr@
+is the hour). An alias of a unit is a unit.
+-}
+stdlibAliases :: [(Text, Text)]
+stdlibAliases =
+  [("si." <> n, "si." <> u) | (u, n, _) <- coherent]
+    ++ [("si." <> p <> "ohm", "si." <> p <> "Ω") | (p, _) <- prefixNames]
+    ++ [ ("time.h", "time.hr")
+       , ("angle.steradian", "angle.sr")
+       , ("physics.h", "physics.planck")
+       , ("physics.kB", "physics.k_B")
+       , ("physics.NA", "physics.N_A")
+       , ("physics.e", "physics.e_charge")
+       ]
+
+-- | The library's namespaces, in the order the source has them.
+stdlibNamespaces :: [Text]
+stdlibNamespaces = map fst stdlibLayout
+
+{- | The stored @use@s a new codebase is seeded with (design §7.7), in
+order. @astro@, @physics@ and @imperial@ are left to @:use@.
+-}
+stdlibDefaultUses :: [Text]
+stdlibDefaultUses = ["std", "linalg", "si", "time", "angle", "temperature"]
+
+-- | Whether a full path is under one of the library's namespaces.
+isLibraryPath :: Text -> Bool
+isLibraryPath n = any (\ns -> (ns <> ".") `T.isPrefixOf` n) stdlibNamespaces
+
+-- | The standard library as source: one @namespace@ block per domain.
+stdlibSource :: Text
+stdlibSource =
+  T.unlines
+    [ line
+    | (ns, stmts) <- stdlibLayout
+    , line <- ("namespace " <> ns) : map (("  " <>) . render) stmts
+    ]
+ where
+  render = \case
+    Let n e -> "let " <> n <> " = " <> e
+    Sig n t -> n <> " :: " <> t
+    Unit n e -> "unit " <> n <> " = " <> e
+    Chart n e -> "chart " <> n <> " " <> e
+    SpaceDecl n t -> "space " <> n <> " = " <> t
+    UseNs p -> "use " <> p
+    Data src _ -> src
+
+{- | Every label the library defines, by its full path (@si.km@), spelled
+as the lexer reads it, aliases included: what @:ls@ counts for each
+namespace. A type and its constructor of one name are one path, and a
+record's fields are labels, which @:ls@ counts but does not list.
+-}
+stdlibNames :: [Text]
+stdlibNames =
+  [ prepare (ns <> "." <> l)
+  | (ns, stmts) <- stdlibLayout
+  , stmt <- stmts
+  , l <- case stmt of
+      Let n _ -> [n]
+      Sig _ _ -> []
+      Unit n _ -> [n]
+      Chart n _ -> [n]
+      SpaceDecl n _ -> [n]
+      UseNs _ -> []
+      Data _ ls -> ls
+  ]
+    ++ map (prepare . fst) stdlibAliases
+
+{- | A codebase seeded with the library (design §7.7): 'stdlibSource'
+entered into the empty codebase as one binding group, as @:add@ enters
+it, then 'stdlibAliases' bound as @:alias@ binds them, with the stored
+default @use@s 'stdlibDefaultUses'. Fails only if the library itself does
+not check, which is a build error the tests catch.
+-}
+stdlibCodebase :: Either Text Codebase
+stdlibCodebase = do
+  cb <- entered stdlibSource
+  aliased <- foldM alias cb stdlibAliases
+  pure
+    (foldl (flip addStoredUse) aliased [S.Use u Nothing | u <- stdlibDefaultUses])
+ where
+  alias cb (new, old) =
+    let new' = prepare new
+        old' = prepare old
+        flagged =
+          (if isUnitName old' cb then markUnit new' else id)
+            . (if isChartName old' cb then markChart new' else id)
+     in case lookupName old' cb of
+          Just r -> Right (flagged (bindName new' r cb))
+          Nothing -> Left ("the library's alias " <> new <> " names nothing: " <> old)
+
+-- | Source entered into the empty codebase as one binding group.
+entered :: Text -> Either Text Codebase
+entered src = do
+  stmts <- parseProgram src
+  let (decls, _, _) = S.flatten S.rootScope stmts
+  first renderResolveError (processGroup emptyCodebase decls)

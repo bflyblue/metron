@@ -1,6 +1,6 @@
 # Core
 
-The small language in the middle of `eval`. Everything the user writes is
+The small language in the middle of `metron`. Everything the user writes is
 translated into it; everything the implementation does is done to it. This
 document says what Core is for, why it is shaped the way it is, what must
 stay true of it, and how it is allowed to change. The language design as a
@@ -105,12 +105,12 @@ why the discipline is affordable now and expensive to retrofit later.
 
 There are two representations, and the design is clearer for having both.
 
-**Core** (`Eval.Core`) is untyped. It is what desugaring produces and what gets
+**Core** (`Metron.Core`) is untyped. It is what desugaring produces and what gets
 hashed. It must be able to hold ill-typed terms, because it is the *input* to
 the type checker: `1 + true` is a perfectly good Core term that inference then
 rejects with a source position.
 
-**Typed Core** (`Eval.TCore`) is Core after inference and elaboration: System F
+**Typed Core** (`Metron.TCore`) is Core after inference and elaboration: System F
 with annotated binders, explicit type and length abstraction and application,
 and primitives carrying the type they are used at. It is what `lint` checks,
 what the evaluator runs, and what a compiler would read.
@@ -222,7 +222,7 @@ at every rank:
   itself is hashed from kinds, field types and label alone (design §6.1).
 - **Built-in data types.** No constructor and no type is built in. `true`,
   `(a, b)` and `x : xs` are constructors of three `structural data`
-  declarations the compiler holds as values (`Eval.Builtin`: `Bool`, the
+  declarations the compiler holds as values (`Metron.Builtin`: `Bool`, the
   tuple types, `List`), whose hashes the declarations alone fix. The
   desugarer, inference, lint, the evaluator and the printers know them by
   hash, so the one table that `Con` and `Case` are checked against is the
@@ -314,10 +314,10 @@ The policy, now that stores exist (design §7.4):
   number (`format`, currently 11; design §7.4). Any change to the canonical
   encoding or to a Core constructor bumps it, and the loader refuses a store
   of any other format with one line, "<path>: this codebase is format N;
-  this eval opens format 11". The format number is not the storage
+  this metron opens format 11". The format number is not the storage
   encoding's version (`storageVersion`, now 5): a format also changes when
   what a store holds changes, its log lines or its seeded library.
-- **No migrations.** eval is a proof of concept: a store of another format is
+- **No migrations.** metron is a proof of concept: a store of another format is
   refused, not rewritten, and nothing in the build decodes another storage
   version.
 - **Primitives are append-only, and their types only tighten knowingly.** A
@@ -376,7 +376,7 @@ Applying the test to the roadmap, in order:
 - **`Bool`, tuples and lists as declarations.** With user data
   types in place, the built-in ones were a second mechanism for the same
   thing. They became `structural data` declarations the compiler holds and
-  refers to by hash (`Eval.Builtin`), named by the library under `std`: the
+  refers to by hash (`Metron.Builtin`), named by the library under `std`: the
   constructor reference lost its built-in alternative and the type language
   lost `Bool`, tuples and lists as forms of their own, so nothing in Core,
   inference, lint or the evaluator knows a data type by name. No term
@@ -418,7 +418,7 @@ Applying the test to the roadmap, in order:
   hash does not cover its type.
 - **Affine arithmetic, units, printing, covariance.** Runtime and prelude work.
   `Noise` and `Uncertain` already existed for it, and the arithmetic itself
-  landed without touching Core: `Eval.Affine` sits entirely under the
+  landed without touching Core: `Metron.Affine` sits entirely under the
   evaluator's elements. One field was added afterwards: the label (owner
   stamp or `#tag`, design §3.2.4) on both nodes, because measurement identity
   is part of a term's meaning and so must be in the hash. It is the one place
@@ -503,32 +503,32 @@ operations separate. These are the starting points for changes:
 
 | Responsibility | Module |
 |---|---|
-| Untyped terms and scope-safe vectors | `Eval.Core` |
-| Typed terms and independent lint | `Eval.TCore` |
-| Primitive arities, base units, runtime type requirements | `Eval.Primitive` |
-| Primitive schemes and static-argument specialization | `Eval.Primitive.Types` |
-| Type and shape representation | `Eval.Type.Base` |
-| Scheme matching and signature checks | `Eval.Type.Match` |
-| Surface type syntax and declaration kind checking | `Eval.Type.Syntax` |
-| Names and namespaces | `Eval.NameResolution` |
-| Binding-group compilation and storage entry | `Eval.Resolve` |
-| Run elaboration, then independent lint | `Eval.Check` |
-| Expression compilation, diagnostics, and evaluation | `Eval.Compile` |
-| Rational approximations and matrix algorithms | `Eval.Numerical.Approx`, `Eval.Numerical.Linear` |
-| Affine uncertainty propagation | `Eval.Affine` |
-| Display-unit algebra and cancellation modes | `Eval.UnitHint` |
-| Source views and dependency-ordered export | `Eval.Source` |
-| Edit planning and reconciliation | `Eval.Edit` |
-| Shared session state, naming, and preferences | `Eval.Session.*` |
-| Command descriptions for help and completion | `Eval.Command` |
-| Input and command orchestration | `Eval.Driver` |
+| Untyped terms and scope-safe vectors | `Metron.Core` |
+| Typed terms and independent lint | `Metron.TCore` |
+| Primitive arities, base units, runtime type requirements | `Metron.Primitive` |
+| Primitive schemes and static-argument specialization | `Metron.Primitive.Types` |
+| Type and shape representation | `Metron.Type.Base` |
+| Scheme matching and signature checks | `Metron.Type.Match` |
+| Surface type syntax and declaration kind checking | `Metron.Type.Syntax` |
+| Names and namespaces | `Metron.NameResolution` |
+| Binding-group compilation and storage entry | `Metron.Resolve` |
+| Run elaboration, then independent lint | `Metron.Check` |
+| Expression compilation, diagnostics, and evaluation | `Metron.Compile` |
+| Rational approximations and matrix algorithms | `Metron.Numerical.Approx`, `Metron.Numerical.Linear` |
+| Affine uncertainty propagation | `Metron.Affine` |
+| Display-unit algebra and cancellation modes | `Metron.UnitHint` |
+| Source views and dependency-ordered export | `Metron.Source` |
+| Edit planning and reconciliation | `Metron.Edit` |
+| Shared session state, naming, and preferences | `Metron.Session.*` |
+| Command descriptions for help and completion | `Metron.Command` |
+| Input and command orchestration | `Metron.Driver` |
 
-`Eval.Check` preserves inferred schemes and linted schemes separately. It
+`Metron.Check` preserves inferred schemes and linted schemes separately. It
 does not merge inference with lint or make either checker call the other.
 Stored Core uses the linted schemes; annotation-sensitive checking remains
-a distinct step. `Eval.Compile.CheckedExpr` names the results of expression
+a distinct step. `Metron.Compile.CheckedExpr` names the results of expression
 checking rather than returning a positional tuple.
 
 The numerical modules do not import the evaluator or session types. The
 plain renderer used by semantic tests lives in `test/Support/Render.hs`;
-user-facing printing remains in `Eval.Pretty`.
+user-facing printing remains in `Metron.Pretty`.

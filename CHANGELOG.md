@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Rename the project, package, executable, and module namespace to Metron.
+  Source exports use `.metron`; default stores use `.metron/` or
+  `$XDG_DATA_HOME/metron/`, with a `metron codebase` format marker.
+
 
 - Separate numerical approximations and matrix algorithms, primitive metadata
   and signatures, type matching and type syntax, and display-unit algebra
@@ -74,7 +78,7 @@
 - Core term language (well-scoped, saturated primitives) and a direct
   evaluator over it (design §5.1, §8).
 - Lexer with the unicode spellings and layout rule, parser over a token
-  stream, desugarer with provenance, decimal printing, and the `eval` CLI
+  stream, desugarer with provenance, decimal printing, and the `metron` CLI
   (one-shot, file, stdin, minimal REPL).
 - Canonical encoding and SHA-256 content hashing, the in-memory codebase
   (terms, names, history), binding groups with SCC analysis and Unison-style
@@ -84,7 +88,7 @@
   `:update` propagates new versions to dependents in dependency order,
   `:upgrade` does so on demand, plus `:todo`, `:scratch`, `:forget`, `:edit`,
   `:alias`, `:unname`. Propagation is unconditional until inference exists.
-- REPL `:load file` and `eval -i` (REPL loop over piped stdin, for scripting).
+- REPL `:load file` and `metron -i` (REPL loop over piped stdin, for scripting).
 - Hindley-Milner inference over Core with let-polymorphism and length-indexed
   `Vec`/`Mat` (projection gives `Vec (n + k)` lower bounds); types stored in
   the codebase; static type errors with source excerpts; `:type`; `:update`
@@ -127,7 +131,7 @@
   next.
 - Prelude: derived SI units, the 24 prefixes on every prefixable unit,
   accepted units (min h day year L t g AU), exact SI-2019 and IAU nominal
-  constants, the Levi-Civita tensor, generated from `Eval.Prelude` and entered
+  constants, the Levi-Civita tensor, generated from `Metron.Prelude` and entered
   into every session as one binding group (about 700 definitions, ~30 ms).
 - Wedge product `∧`/`/\` (`wedge`) and 3D Hodge star `⋆` (`star`) as
   primitives; `cross` is now a prelude definition `star (wedge a b)` and `×`
@@ -202,8 +206,8 @@
 - Persistence (design §7.4). A codebase is a directory: `format`, one file per
   term in the storage encoding (canonical bytes plus binder names), and an
   append-only `names.log` of bind, unname and unit events that is replayed
-  on load; types are recomputed. `eval` uses `--codebase DIR`, else a `.eval`
-  directory above the working directory, else `$XDG_DATA_HOME/eval`;
+  on load; types are recomputed. `metron` uses `--codebase DIR`, else a `.metron`
+  directory above the working directory, else `$XDG_DATA_HOME/metron`;
   `--no-codebase` runs in memory. The prelude is entered first, in memory,
   and the log on top, so user rebindings of prelude names persist and prelude
   changes show up as stale dependents. Every successful input is written
@@ -297,12 +301,12 @@
   written type whose lowercase unknown names are variables, matched by
   unification both ways, so `:ls : {a} -> Num` finds `length` and
   `:ls : Vec 3 d -> Vec 3 d -> Vec 3 [d^2]` finds `cross`.
-- `eval [--codebase DIR] --merge OTHER` merges another store into this one
+- `metron [--codebase DIR] --merge OTHER` merges another store into this one
   (design §7.4): terms and types DIR lacks are copied after a hash check,
   OTHER's new log lines are added and the log is stably sorted by time, so
   the last writer per name wins. OTHER is only read (an older format is
   migrated in place and reported), merging again adds nothing, and the
-  `history` file is left alone. `Eval.Store.mergeStores` and `mergeStore`
+  `history` file is left alone. `Metron.Store.mergeStores` and `mergeStore`
   expose it as a library function returning a `MergeReport`.
 - `==` and `/=` on declared types (design §2.3, §4.2), derived structurally
   as for tuples and lists: a type has equality when every field of every
@@ -434,12 +438,12 @@
   `\name` then TAB
   enters a character, as in Julia: `\mu` gives `μ`, `\pm` gives `±`,
   `\pms` gives `±σ`, `\^2` gives `²`. The table is in the new module
-  `Eval.Unicode`, and a test checks each entry against the lexer. Output
+  `Metron.Unicode`, and a test checks each entry against the lexer. Output
   is coloured when stdout is a terminal, `TERM` is not `dumb` and
   `NO_COLOR` is not set. Errors are red with bold red carets. Notes, the
   types in `:ls` lines and the trailing units of values are dim. The prompt
   is bold. The REPL-level command `:colour on|off` overrides the default.
-  The logic is pure, in the new module `Eval.Repl`. The text that `feed`
+  The logic is pure, in the new module `Metron.Repl`. The text that `feed`
   prints is unchanged.
 - Multi-line input in the REPL (design §7.3). An input goes on at the
   continuation prompt `… ` while a bracket is open, while its last token
@@ -448,9 +452,9 @@
   that ends in `of` or `where`, whose block runs to a blank line. A blank
   line ends the input as it stands; Ctrl-C or Ctrl-D at the continuation
   prompt abandons it. The decision reads the lexer's tokens, so comments
-  never count, and a `:` command never goes on. `eval -i` does the same and
+  never count, and a `:` command never goes on. `metron -i` does the same and
   echoes each line after its prompt. Each physical line is its own history
-  entry. The pure part is `Eval.Repl.needsMore`; one-line inputs and what
+  entry. The pure part is `Metron.Repl.needsMore`; one-line inputs and what
   `feed` prints are unchanged.
 - REPL colour is now a syntax-highlighting theme on the 16 ANSI colours
   (design §7.3). It has no dim text, because some terminal themes do not
@@ -461,8 +465,8 @@
   names are plain. Each line is lexed and coloured token by token: the `≡`
   echo, `:view`/`:edit` output, `data` declarations, values, `:type`
   output, the type in `:ls` lines, an error's source excerpt (the carets
-  stay aligned) and the input echo of `eval -i`. A line that does not lex
-  is coloured by its kind, as before. New in `Eval.Repl`: `Names`,
+  stay aligned) and the input echo of `metron -i`. A line that does not lex
+  is coloured by its kind, as before. New in `Metron.Repl`: `Names`,
   `namesOf`, `highlight`, `highlightType`, `render` and `echoInput`.
   `paint` now takes the `Names`. Without colour every byte is as before.
 - Namespaces (design §7.6). A name is a dotted path, `orbital.period`; a
@@ -492,7 +496,7 @@
   cycle's members together. A definition on a version no name points at
   refuses the export. Without a file the source is printed; the pending
   scratch is not exported, and a comment or note says so. New in
-  `Eval.Driver`: `exportSource` and `exportRequest`.
+  `Metron.Driver`: `exportSource` and `exportRequest`.
 - The standard library lives in the codebase under `std` (design §7.7).
   The prelude is no longer entered in memory under every session: a new
   store is created and seeded with the library as one group under `std`
@@ -513,10 +517,10 @@
   refuses a bare word that is no namespace instead of writing a file of
   that name (a file needs a `/` or a `.`). `:stdlib upgrade`, a sketch:
   adds new library names, updates names still on their seeded binding
-  (with propagation), keeps the user's. New: `Eval.Prelude.stdlibSource`,
+  (with propagation), keeps the user's. New: `Metron.Prelude.stdlibSource`,
   `stdlibNames` (full paths, replacing `preludeNames`), `stdlibCodebase`,
-  `stdlibMoved`; `Eval.Driver.seededSession` (replacing `preludeSession`)
-  and `stdlibUpgrade`; `Eval.Store.Seed`, `stdlibSeed`, `seedStore`;
+  `stdlibMoved`; `Metron.Driver.seededSession` (replacing `preludeSession`)
+  and `stdlibUpgrade`; `Metron.Store.Seed`, `stdlibSeed`, `seedStore`;
   `openStore` and `mergeStores` take the seed; `qualifyWith` takes the
   stored uses.
 - Store format 4. `formatVersion` is no longer `storageVersion` (still 3):
@@ -536,11 +540,11 @@
   term and `:upgrade std.G` moves it. `:rename` and `:move` of a stamped
   definition or type re-stamp and re-hash it and propagate to everything
   that uses it, reporting `re-hashed` and `upgraded` lines (new in
-  `Eval.Update`: `restamp`).
+  `Metron.Update`: `restamp`).
 - `:edit` is an editor round trip (design §7.3, §10 item 10). `:edit` (the
   codebase but `std`), `:edit namespace` (`:edit std` the library) and
   `:edit name` (one definition or type, with its cycle) write the scope to
-  a temporary `eval-edit-….ev` in the `:export` format under a header that
+  a temporary `metron-edit-….metron` in the `:export` format under a header that
   says what saving does, open `$VISUAL` or else `$EDITOR`, and reconcile the
   saved file with the codebase, all or nothing: what is new is `added`, a
   label on another reference `updated` (or `upgraded` when only what it uses
@@ -554,8 +558,8 @@
   Scripted (`-i`), one-shot, or with no editor set, `:edit` prints what it
   would have opened, the pasteable statement for one name as before, with a
   note saying why. TAB completes a file name after `:edit --file`. New:
-  `Eval.Driver.EditScope`, `EditRequest`, `editRequest`, `applyEdit`,
-  `editScopeArgs`, `editorNote`; `Eval.Update.propagateWith` (a constructor
+  `Metron.Driver.EditScope`, `EditRequest`, `editRequest`, `applyEdit`,
+  `editScopeArgs`, `editorNote`; `Metron.Update.propagateWith` (a constructor
   map besides the reference map), `ConMap`, `conTypes`, and `restampTerm`
   exported. The executable depends on `process`.
 - A `let` that takes over a unit or scale name now stays a plain quantity
@@ -568,13 +572,13 @@
   Vec n d1 -> Vec m d2 -> Mat n m [d1 d2]`, the covariance over the
   statistical nudges two vectors share, exact, with the display unit `*`
   would give; `covariance` stays a primitive (no stored hash moves) and
-  shares its kernel, `Eval.Affine.crossCovarianceRows` and
-  `Eval.Eval.covarianceMatrix`, which `:covariance` uses too (new export
+  shares its kernel, `Metron.Affine.crossCovarianceRows` and
+  `Metron.Eval.covarianceMatrix`, which `:covariance` uses too (new export
   `hintProduct`). The library gains its first `data` declaration, `std.Cov2
   n d1 d2 = Cov2 {rr, rv, vv}`, the joint covariance of a state `(r, v)` in
   homogeneous blocks, and the Kalman filter's steps over it:
   `jointCovariance`, `propagateCov2`, `innovationCov2`, `gain2`,
-  `updateCov2`. They live in `Eval.Prelude.stdlibAdditions`, appended to
+  `updateCov2`. They live in `Metron.Prelude.stdlibAdditions`, appended to
   `stdlibSource` but not to `preludeSource`, so the library's existing
   hashes and the format 3 to 4 migration are unchanged; `stdlibNames` now
   counts labels (one for a type and its constructor, one per field), which
@@ -600,7 +604,7 @@
   `NA`, `e`) and `imperial` (new: `inch`, `ft`, `yd`, `mile`, `lb`, `oz`,
   `lbf`, `psi`, `mph`, exact). A seeded codebase stores six uses, `std
   linalg si time angle temperature`; the constants and `AU` need `:use
-  astro` or `:use physics` (`Eval.Prelude.stdlibMovedOut` lists them), and
+  astro` or `:use physics` (`Metron.Prelude.stdlibMovedOut` lists them), and
   every other name that was bare stays bare, as the same kind. `kelvin`
   stays the absolute scale, so `K` has no spelled-out unit name. Both `3 h`
   and `3 hr` work by default; after `:use physics`, `h` is ambiguous with
@@ -616,7 +620,7 @@
   std` by the six uses, and recording each old reference in the history of
   its new home, so a user term on the old `km` shows as stale in `:todo`
   and `:upgrade si.km` moves it. Format 3 stores chain through 4. The
-  format-4 library is kept as `Eval.Prelude.stdlib4Source`; `stdlibHomes`,
+  format-4 library is kept as `Metron.Prelude.stdlib4Source`; `stdlibHomes`,
   `stdlibAliases`, `stdlibNamespaces`, `stdlibDefaultUses` and
   `isLibraryPath` are new, `stdlibNamespace` and `stdlibAdditions` are
   gone. Design §3.3 no longer lists `identity`, which does not exist.
@@ -625,7 +629,7 @@
   only through a reference written under the rebound name, so a user's
   `unit meter = m`, one term with the library's `si.metre`, can be changed
   without rescaling every `km`. References with no written name follow as
-  before. `Eval.Update.propagateNamed`/`propagateScoped`, `Core.refsWritten`.
+  before. `Metron.Update.propagateNamed`/`propagateScoped`, `Core.refsWritten`.
 - Signatures (design §4.8): `name :: type` on its own line, before or after
   the definition, in the same input or alone for a stored definition, inside
   `namespace` blocks like any statement. The type is converted as a `:ls`
@@ -667,7 +671,7 @@
   `Pair a b = Pair a b` and `List a = Nil | Cons a (List a)`, and a tuple
   of `k` components (at most 32) the structural type of one constructor
   with `k` fields, which the compiler holds as values and refers to by
-  hash (`Eval.Builtin`). `ConRef` lost `Builtin`, the type language lost
+  hash (`Metron.Builtin`). `ConRef` lost `Builtin`, the type language lost
   `TBool`, `TTuple` and `TList` for `TData` on those hashes, and the
   evaluator's booleans are ordinary constructors; the desugarer, inference,
   lint, equality, the evaluator and the printers go by hash, and still
@@ -678,7 +682,7 @@
   declaration; renaming them changes only how names print, and a user's
   own `structural data Bool = False | True` is the same type. The type
   language's data and the type encoder moved below the renderer
-  (`Eval.Type.Base`, `Eval.Encode`) so that the hashes are computed from the
+  (`Metron.Type.Base`, `Metron.Encode`) so that the hashes are computed from the
   declarations. **Hash-affecting**: every definition that uses booleans,
   tuples or lists changes hash (`std.map` was `#v2enr.0`, now `#hba29.0`).
   Store format 6 and storage version 4: a constructor is stored by hash
@@ -692,7 +696,7 @@
   (`Scale` is still read); `:ls --charts` (`--scales` accepted); `:view` of
   a chart prints its keyword, and `:edit`, `:export` and the library print
   `chart`. The store's log line for the flag stays `scale name`. The chart
-  value (`Eval.Eval.Chart`, was `ScaleHint`) gains `parent` (the parent
+  value (`Metron.Eval.Chart`, was `ScaleHint`) gains `parent` (the parent
   chart's value), `generator` and `spin`; the new primitives `mkChart3 step
   origin parent` and `mkChart4 step origin parent generator` build a chart
   given in a parent and one turned from it, the generator a dimensionless
@@ -801,7 +805,7 @@
 - The store migrations are retired (design §7.4, core.md §6). A store
   opens only at format 6; a store of format 1 to 5 is refused, untouched,
   with "this codebase is format N; it predates format 6 and cannot be
-  opened: recreate it (with the previous eval, `:export` it and `:load`
+  opened: recreate it (with the previous metron, `:export` it and `:load`
   the file into a new codebase)", and so is `--merge`
   from or into one. A newer format keeps its message. Until the language
   is released, a format change refuses older stores rather than migrating
@@ -811,9 +815,9 @@
   passed. Removed: `migrate1to2` to `migrate5to6`, `retireBuiltins`,
   `seedStoreWith`, the merge's "migrated in place" notes, `Seed`'s
   `moved`, `homes`, `library4` and `moved4` (`Seed` is now a newtype over
-  the library), `Eval.Prelude.preludeSource`, `stdlib4Source`,
+  the library), `Metron.Prelude.preludeSource`, `stdlib4Source`,
   `stdlib4Codebase`, `stdlib4Moved`, `stdlibHomes`, `stdlibMoved` and the
-  frozen tables only they used, and `Eval.Hash.decodeStoredV` and
+  frozen tables only they used, and `Metron.Hash.decodeStoredV` and
   `decodeTypeDefV` with the retired tags they read (0x04, 0x08, 0x20,
   0x24, 0x25, constructors by name); a log's `unit` and `scale` lines
   name a label only (format 1 wrote a hash, which flagged every name
@@ -968,7 +972,7 @@
   `Quantity r d -> Unit d`. A fully cancelled unit prints its units as
   written, `km/km`, and reads back as a unit. No hash moved. Store format
   10.
-- No legacy support: eval is a proof of concept, so an old form is simply
+- No legacy support: metron is a proof of concept, so an old form is simply
   gone. `scale` is no longer a keyword (`chart` is the one spelling), nor
   `Scale` a type or `:ls --scales` a flag; the primitive `scale`, the
   quantity rule after a unit, may now be named (`scale 3 km` is `3 km`),
@@ -977,7 +981,7 @@
   respelling hints. A `sig` log line without `forall` no longer replays,
   and the table of names that were bare before the library was split is
   gone. A store of another format is refused with one line, "<path>: this
-  codebase is format N; this eval opens format 11". The store log writes
+  codebase is format N; this metron opens format 11". The store log writes
   `chart <name>` for the flag, and a constructor reference is its type's
   hash and index, without the empty name left from the built-in
   constructors (storage version 5).

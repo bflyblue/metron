@@ -1,0 +1,119 @@
+cabal-version:   3.12
+name:            metron
+version:         0.1.0.0
+synopsis:        A pure, unit-aware, content-addressed calculator language
+-- description:
+license:
+author:          Shaun Sharples
+maintainer:      shaun.sharples@gmail.com
+-- copyright:
+category:        Language
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+common common
+  ghc-options:        -Wall
+  default-language:   GHC2024
+  default-extensions:
+    DuplicateRecordFields
+    NoFieldSelectors
+    OverloadedRecordDot
+    OverloadedStrings
+
+library
+  import:          common
+  hs-source-dirs:  lib
+  exposed-modules:
+    , Metron.Affine
+    , Metron.Command
+    , Metron.Edit
+    , Metron.Session.Preferences
+    , Metron.Compile
+    , Metron.Source
+    , Metron.Session.Names
+    , Metron.Session.Types
+    , Metron.Check
+    , Metron.Type.Syntax
+    , Metron.NameResolution
+    , Metron.Resolve.Error
+    , Metron.UnitHint
+    , Metron.Numerical.Linear
+    , Metron.Numerical.Approx
+    , Metron.Type.Match
+    , Metron.Primitive.Types
+    , Metron.Primitive
+    , Metron.Builtin
+    , Metron.Codebase
+    , Metron.Core
+    , Metron.Desugar
+    , Metron.Dimension
+    , Metron.Encode
+    , Metron.Driver
+    , Metron.Eval
+    , Metron.Hash
+    , Metron.Infer
+    , Metron.Lexer
+    , Metron.Parser
+    , Metron.Prelude
+    , Metron.Pretty
+    , Metron.Repl
+    , Metron.Resolve
+    , Metron.Store
+    , Metron.Syntax
+    , Metron.TCore
+    , Metron.Type
+    , Metron.Type.Base
+    , Metron.Unicode
+    , Metron.Update
+  build-depends:
+    , base ^>=4.21.0.0
+    , bytestring
+    , containers
+    , cryptohash-sha256
+    , directory
+    , filepath
+    , megaparsec
+    , mtl
+    , parser-combinators
+    , text
+    , time
+    , transformers
+    , unicode-transforms
+    , vector
+
+executable metron
+  import:         common
+  main-is:        Main.hs
+  hs-source-dirs: src
+  ghc-options:    -O -threaded -feager-blackholing
+  build-depends:
+    , base ^>=4.21.0.0
+    , directory
+    , metron
+    , filepath
+    , haskeline
+    , process
+    , text
+
+test-suite metron-test
+  import:         common
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Main.hs
+  other-modules:
+    , Gen
+    , Support.Render
+  build-depends:
+    , base ^>=4.21.0.0
+    , bytestring
+    , containers
+    , metron
+    , directory
+    , filepath
+    , QuickCheck
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
+    , text
+    , time
+    , vector

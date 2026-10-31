@@ -1,5 +1,5 @@
 {
-  description = "eval";
+  description = "metron";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -38,8 +38,8 @@
           haskellPackages,
         }:
         {
-          eval = haskellPackages.callCabal2nix "eval" ./. { };
-          default = self.packages.${system}.eval;
+          metron = haskellPackages.callCabal2nix "metron" ./. { };
+          default = self.packages.${system}.metron;
         }
       );
       devShells = forallSystems (
@@ -49,15 +49,15 @@
           haskellPackages,
         }:
         {
-          eval = haskellPackages.shellFor {
-            packages = p: [ self.packages.${system}.eval ];
+          metron = haskellPackages.shellFor {
+            packages = p: [ self.packages.${system}.metron ];
             buildInputs = with haskellPackages; [
               cabal-install
               haskell-language-server
             ];
             withHoogle = true;
           };
-          default = self.devShells.${system}.eval;
+          default = self.devShells.${system}.metron;
         }
       );
     };

@@ -15,10 +15,10 @@ import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Eval.Affine hiding (Builtin, DivideByZero)
-import Eval.Affine qualified as A
-import Eval.Builtin
-import Eval.Codebase (
+import Metron.Affine hiding (Builtin, DivideByZero)
+import Metron.Affine qualified as A
+import Metron.Builtin
+import Metron.Codebase (
   Codebase (..),
   emptyCodebase,
   lookupConName,
@@ -26,9 +26,9 @@ import Eval.Codebase (
   lookupTypeName,
   showReference,
  )
-import Eval.Core
-import Eval.Desugar
-import Eval.Dimension (
+import Metron.Core
+import Metron.Desugar
+import Metron.Dimension (
   BaseDim,
   Dim,
   DimAtom (..),
@@ -40,35 +40,35 @@ import Eval.Dimension (
   renderDimArgIn,
   renderDimIn,
  )
-import Eval.Dimension qualified as Dimension
-import Eval.Driver
-import Eval.Eval
-import Eval.Hash
-import Eval.Infer (
+import Metron.Dimension qualified as Dimension
+import Metron.Driver
+import Metron.Eval
+import Metron.Hash
+import Metron.Infer (
   TypeError (..),
   elaborateClosed,
  )
-import Eval.Lexer hiding (TNum, TProj)
-import Eval.Lexer qualified as L
-import Eval.Parser
-import Eval.Prelude (
+import Metron.Lexer hiding (TNum, TProj)
+import Metron.Lexer qualified as L
+import Metron.Parser
+import Metron.Prelude (
   isLibraryPath,
   stdlibCodebase,
   stdlibDefaultUses,
   stdlibNames,
   stdlibNamespaces,
  )
-import Eval.Pretty
-import Eval.Repl qualified as R
-import Eval.NameResolution ( LabelKind (..), Qualified (..), qualifyName )
-import Eval.Type.Syntax ( queryScheme )
-import Eval.Store
-import Eval.Syntax qualified as S
-import Eval.TCore
-import Eval.Primitive.Types
-import Eval.Type.Match
-import Eval.Type
-import Eval.Unicode qualified as U
+import Metron.Pretty
+import Metron.Repl qualified as R
+import Metron.NameResolution ( LabelKind (..), Qualified (..), qualifyName )
+import Metron.Type.Syntax ( queryScheme )
+import Metron.Store
+import Metron.Syntax qualified as S
+import Metron.TCore
+import Metron.Primitive.Types
+import Metron.Type.Match
+import Metron.Type
+import Metron.Unicode qualified as U
 import Gen (exprDepth, genProgram, instanceOf)
 import System.Directory (
   createDirectoryIfMissing,
@@ -92,7 +92,7 @@ main =
   defaultMain
     . localOption (mkTimeout 300_000_000)
     $ testGroup
-      "eval"
+      "metron"
       [ coreTests
       , evalTests
       , tcoreTests
@@ -263,7 +263,7 @@ coreTests =
 evalTests :: TestTree
 evalTests =
   testGroup
-    "eval"
+    "metron"
     [ testCase "arithmetic is exact"
         $ runClosed ((num 1 /. num 3) *. num 3) @?= Right "1"
     , testCase "rationals render as fractions"
@@ -5699,20 +5699,20 @@ storeTests =
         $ withTempStore
         $ \dir -> do
           _ <- persistLines dir ["let x = 1", ":add"]
-          writeFile (dir </> "format") "eval codebase 10\n"
+          writeFile (dir </> "format") "metron codebase 10\n"
           before <- snapshot dir
           entries <- sort <$> listDirectory dir
           opened <- openStore theSeed dir
           case opened of
             Left err ->
-              err @?= T.pack dir <> ": this codebase is format 10; this eval opens format 12"
+              err @?= T.pack dir <> ": this codebase is format 10; this metron opens format 12"
             Right _ -> assertFailure "opened a store of another format"
           snapshot dir >>= (@?= before)
           listDirectory dir >>= (@?= entries) . sort
     , testCase "a store of the current format opens as it was seeded" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 1", ":add"]
         readFile (dir </> "format")
-          >>= (@?= "eval codebase " <> show formatVersion <> "\n")
+          >>= (@?= "metron codebase " <> show formatVersion <> "\n")
         formatVersion @?= 12
         before <- snapshot dir
         (loaded, notes) <- reload dir
@@ -5846,16 +5846,16 @@ storeTests =
                 doesDirectoryExist a >>= (@?= False)
           createDirectoryIfMissing True plain
           writeFile (plain </> "notes.txt") "hello"
-          refused plain "is not an eval codebase"
+          refused plain "is not a metron codebase"
           listDirectory plain >>= (@?= ["notes.txt"])
           refused (root </> "missing") "no such directory"
           doesDirectoryExist (root </> "missing") >>= (@?= False)
           _ <- persistLines (root </> "future") ["let x = 1", ":add"]
-          writeFile (root </> "future" </> "format") "eval codebase 99\n"
+          writeFile (root </> "future" </> "format") "metron codebase 99\n"
           refused
             (root </> "future")
-            "this codebase is format 99; this eval opens format 12"
-          readFile (root </> "future" </> "format") >>= (@?= "eval codebase 99\n")
+            "this codebase is format 99; this metron opens format 12"
+          readFile (root </> "future" </> "format") >>= (@?= "metron codebase 99\n")
     ]
  where
   mergeInto :: FilePath -> FilePath -> IO MergeReport
@@ -5890,7 +5890,7 @@ withTempStore :: (FilePath -> IO a) -> IO a
 withTempStore k = do
   tmp <- getTemporaryDirectory
   stamp <- getPOSIXTime
-  let dir = tmp </> ("eval-test-" <> show (round (stamp * 1000000) :: Integer))
+  let dir = tmp </> ("metron-test-" <> show (round (stamp * 1000000) :: Integer))
   createDirectoryIfMissing True dir
   r <- k dir
   removePathForcibly dir
@@ -6687,7 +6687,7 @@ asciiSpellings =
   , ("′", "arcmin")
   ]
 
--- | Text in an SGR colour, as "Eval.Repl" paints it.
+-- | Text in an SGR colour, as "Metron.Repl" paints it.
 coloured :: Text -> Text -> Text
 coloured code t = "\ESC[" <> code <> "m" <> t <> "\ESC[0m"
 
@@ -7659,19 +7659,19 @@ namespaceTests =
         expectError (runLinesP [":export a b c"]) "usage: :export"
         -- A single word that is no namespace is a file when it looks like a
         -- path, which only the REPL writes; a bare word is a misspelt namespace.
-        expectError (runLinesP [":export out.ev"]) "only the REPL writes files"
+        expectError (runLinesP [":export out.metron"]) "only the REPL writes files"
         expectError (runLinesP [":export dir/out"]) "only the REPL writes files"
         expectError
           (runLinesP [":export orbitl"])
-          "`orbitl` is not a namespace; to write a file give a path like orbitl.ev"
+          "`orbitl` is not a namespace; to write a file give a path like orbitl.metron"
         fmap fst (exportRequest s ["orbitl"])
-          @?= Left "`orbitl` is not a namespace; to write a file give a path like orbitl.ev"
+          @?= Left "`orbitl` is not a namespace; to write a file give a path like orbitl.metron"
         expectError
-          (runLinesP [":export nowhere out.ev"])
+          (runLinesP [":export nowhere out.metron"])
           "`nowhere` is not a namespace"
-        fmap fst (exportRequest s ["out.ev"]) @?= Right (Just "out.ev")
-        fmap fst (exportRequest s ["orbital", "out.ev"]) @?= Right (Just "out.ev")
-        fmap snd (exportRequest s ["orbital", "out.ev"])
+        fmap fst (exportRequest s ["out.metron"]) @?= Right (Just "out.metron")
+        fmap fst (exportRequest s ["orbital", "out.metron"]) @?= Right (Just "out.metron")
+        fmap snd (exportRequest s ["orbital", "out.metron"])
           @?= exportSource s (Just "orbital")
     , testCase ":export refuses a definition on a version no name points at"
         $ expectError
@@ -8023,7 +8023,7 @@ editTests =
     , testCase "(k) :edit --file resumes from a file" $ do
         s <- editSession
         dir <- getTemporaryDirectory
-        let path = dir </> "eval-edit-test.ev"
+        let path = dir </> "metron-edit-test.metron"
         file <- editFileOf s [] >>= replaceOnce "  let x = 3\n" "  let x = 6\n"
         BS.writeFile path (encodeUtf8 file)
         -- The pure feed refuses to read files; the REPL reads it and reconciles.
