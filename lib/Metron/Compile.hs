@@ -21,7 +21,6 @@ import Metron.Check
 import Metron.Codebase
     ( chartNameFor,
       lookupTypeDef,
-      lookupTyped,
       unitNameFor,
       Codebase(derived),
       Reference(Reference) )
@@ -42,6 +41,7 @@ import Metron.NameResolution ( resolverFor )
 import Metron.Resolve ( annotationsWith, ascriptionsIn, typeLookupFor, withHint )
 import Metron.Session.Types ( LastExpr(LastExpr) )
 import Metron.Source ( printerFor )
+import Metron.Strictness ( signatureAt, signatures, strictify )
 import Metron.TCore ( TTerm )
 import Metron.Type
     ( freeVars,
@@ -56,7 +56,7 @@ import Metron.Infer qualified as I
       readingsOf,
       rewriteReadings,
       TypeError(message, path) )
-import Data.Map.Lazy qualified as LazyMap ( mapWithKey )
+import Data.Map.Lazy qualified as LazyMap ( map, mapWithKey )
 import Data.Map.Strict qualified as Map
     ( empty, lookup, findWithDefault )
 import Metron.Syntax qualified as S
@@ -141,7 +141,8 @@ evalChecked cfg scope cb src e = do
     _ -> Right ()
   let h = hashTerm term
   v <-
-    either (Left . renderEvalError) Right (evalAt cfg (runtimeOf cfg cb) h typed)
+    let (rt, prepare) = runtimeWith cfg cb
+     in either (Left . renderEvalError) Right (evalAt cfg rt h (prepare typed))
   pure (h, v, LastExpr term linted typed cb)
 
 {- | The length, shape and dimension variables an expression leaves open in
@@ -172,17 +173,28 @@ turned chart's rotation (design §3.8) is computed once and not once per
 mention of the chart.
 -}
 runtimeOf :: Config -> Codebase -> Runtime
-runtimeOf cfg cb = rt
+runtimeOf cfg cb = fst (runtimeWith cfg cb)
+
+{- | 'runtimeOf', and how a term to evaluate against it is prepared: every
+definition's Typed Core, and the expression's, with the arguments its
+calls certainly evaluate marked ("Metron.Strictness"), each definition
+analysed once per evaluation, when first used.
+-}
+runtimeWith :: Config -> Codebase -> (Runtime, TTerm Z -> TTerm Z)
+runtimeWith cfg cb = (rt, strictify external)
  where
   rt =
     Runtime
-      { typedOf = (`lookupTyped` cb)
+      { typedOf = (`Map.lookup` analysed)
       , unitName = \h i written -> unitNameFor (Reference h i) written cb
       , chartName = \h i written -> chartNameFor (Reference h i) written cb
       , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
       }
-  values = LazyMap.mapWithKey (\h (_, t) -> evalDefinition cfg rt h t) cb.derived
+  analysed = LazyMap.map (strictify external . snd) cb.derived
+  known = LazyMap.map (signatures external . snd) cb.derived
+  external h mi = Map.lookup h known >>= (`signatureAt` mi)
+  values = LazyMap.mapWithKey (evalDefinition cfg rt) analysed
 
 {- | Desugar, typecheck, elaborate and lint an expression against a codebase.
 Returns the Core, the Typed Core, the inferred type and the types lint

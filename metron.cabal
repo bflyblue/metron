@@ -67,6 +67,7 @@ library
     , Metron.Repl
     , Metron.Resolve
     , Metron.Store
+    , Metron.Strictness
     , Metron.Syntax
     , Metron.TCore
     , Metron.Type

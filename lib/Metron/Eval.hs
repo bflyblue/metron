@@ -131,7 +131,8 @@ import Metron.Dimension
 import Metron.Numerical.Linear
     ( choleskyRows, determinant, invert, matrixExp )
 import Metron.Primitive ( baseUnit, primArity, typedPrims )
-import Metron.TCore ( TAlt(TAlt), TTerm(..), pattern TLam )
+import Metron.Strictness ( strictMarker )
+import Metron.TCore ( TAlt(TAlt), TTerm(..) )
 import Metron.Type
     ( Arg(..),
       Kind(..),
@@ -452,6 +453,9 @@ eval cfg rt = go
     TPrimApp "seq" _ [a, b] -> do
       v <- go tenv (child 0) env a
       forceValue v `seq` go tenv (child 1) env b
+    -- Marked where its call is evaluated; anywhere else the term itself,
+    -- at the same site, so a nudge's identity does not see the mark.
+    TPrimApp marker _ [a] | marker == strictMarker -> go tenv site env a
     TPrimApp prim ty args ->
       runPrim
         cfg
@@ -613,12 +617,16 @@ eval cfg rt = go
   the whole environment alive until forced, so a loop that passes a
   variable on (@loop n = loop n@) would chain every environment it went
   through. A literal is built at once: it costs nothing and cannot fail.
-  The unboxed result lets the lookup run now while the thunk found stays
-  unforced. -}
+  An argument its call is strict in ("Metron.Strictness") is evaluated
+  now, a number's one component with it, so that an accumulator carries
+  a value and not a chain of pending sums. The unboxed result lets the
+  lookup run now while the thunk found stays unforced. -}
   delay :: TyEnv -> Site -> Env m -> TTerm m -> (# Thunk #)
   delay tenv site env = \case
     TVr i -> lookupThunk i env
     t@TLit{} -> let !v = go tenv site env t in (# v #)
+    TPrimApp marker _ [a]
+      | marker == strictMarker -> let !v = evaluated (go tenv site env a) in (# v #)
     t -> (# go tenv site env t #)
 
   -- 'delay' over arguments in order, the i-th at child i.
@@ -827,6 +835,19 @@ tensor or a point, so that an accumulator holds no chain of pending
 arithmetic; of data, its constructor only. A component that fails keeps
 its error to itself, as it would unforced.
 -}
+{- | A thunk evaluated before its call: to a value and, for a number, its
+one component (a tensor's stay lazy, each failing only where used).
+-}
+evaluated :: Thunk -> Thunk
+evaluated = \case
+  r@(Right v) -> number v `seq` r
+  r -> r
+ where
+  number = \case
+    t@(VTensor [] _ _ _) -> forceValue t
+    VUnit u -> number u
+    _ -> ()
+
 forceValue :: Value -> ()
 forceValue = \case
   VTensor _ _ _ buf -> components buf
