@@ -3299,7 +3299,6 @@ and an axis variable as its length.
 - The first pass of a group that holds charts falls back to one pass when a
   chart needs the group's own data constructors. A signature or data field
   there that names the chart's axes is then refused.
-- §12's first session is to be rewritten to the typed form.
 
 **Implemented in:** `Metron.Infer` (`unifyAxis`, `freshAxis`, `defaultValueAxes`, `generalise`), `Metron.Type.Syntax` (`tyLen`, `namedAxes`, `signatureScheme`, `enterData`), `Metron.Builtin` (`axesDef`, `axesHash`, `axesTag`, `mintedPath`), `Metron.Resolve` (`mintedBy`, `mintTypes`, `labelFrames`, `scopedSignature`), `Metron.Primitive.Types` (`primScheme`), `Metron.Type` (`renderScheme`, `defaultAxes`).
 **Tested by:** "axis slots"; "named axes"; "forall"; "type annotations"; "rotations".

@@ -132,11 +132,11 @@ Every module under `lib/Metron`, with its job and the design section that govern
 | `Metron.Affine` | The affine backend: exact rationals and affine forms, the non-linear mark | §3.2 |
 | `Metron.Numerical.Approx` | Elementary functions in fixed point with rigorous error bounds | §3.2.8 |
 | `Metron.Numerical.Linear` | Determinant, inverse, matrix exponential, Cholesky over magnitudes | §3.3, §3.4 |
-| `Metron.Double` | The double backend: IEEE values, running bound, copies, Monte Carlo draws | §8.2 |
-| `Metron.Batch` | The double backend's copies in parallel batches (`:set cores`) | §8.2 |
-| `Metron.Remark` | Records of the copies at each branch point | §8.2 |
-| `Metron.Branch` | The branch table as text | §8.2 |
-| `Metron.Needs` | The check before running: built-ins a backend lacks | §8.2 |
+| `Metron.Double` | The double backend: IEEE values, running bound, copies, Monte Carlo draws | §8.2.2 to §8.2.4 |
+| `Metron.Batch` | The double backend's copies in parallel batches (`:set cores`) | §8.2.7 |
+| `Metron.Remark` | Records of the copies at each branch point | §8.2.5 |
+| `Metron.Branch` | The branch table as text | §8.2.5 |
+| `Metron.Needs` | The check before running: built-ins a backend lacks | §8.2.9 |
 | `Metron.UnitHint` | Display-unit algebra and cancellation | §3.2.12 |
 | `Metron.Pretty` | Printing values, budgets and Core as source | §3.2.10, §7.2 |
 
@@ -173,14 +173,14 @@ Status: **built** (in the code and tested), **designed** (decided in design.md, 
 | REPL aids: completion, unicode entry, colour, continuation lines, the echo | built | §7.3 |
 | Resource limits | built | §8.1 |
 | Backends `affine` and `double`; samples, Monte Carlo, branch tables, mixtures, parallel batches | built | §8.2 |
-| The check before running (`needs`) | built | §8.2 |
+| The check before running (`needs`) | built | §8.2.9 |
 | Mixed-dimension matrices in the type system (Hart's route) | designed, waits for its escalation signal | §3.7.1 |
 | Named positions, `axes x y z` | designed | §3.9 |
 | The second `astro` build: time, frames, geodesy, then Lambert | designed | §7.7, §10 |
 | A `brick` front end, `metron --tui` | designed | §10 |
 | Dictionary passing for unresolved constraints | designed | §4.2, §5.3 |
 | Matrix work over the generic scalar type, the affine fused dot product | open | §10 |
-| `:trace`, `samplesOf`, Monte Carlo quantiles | open | §8.2, §10 |
+| `:trace`, `samplesOf`, Monte Carlo quantiles | open | §8.2.2, §10 |
 | Precision refinement for undecidable comparisons, lazy precision | open | §3.2.9, §11 |
 | Curvilinear charts, a frame per item of data | open | §11 |
 
@@ -196,13 +196,13 @@ Terms in alphabetical order. The design section in parentheses has the rules.
 - **Backend.** The scalar arithmetic the evaluator runs with, and the built-ins that belong to it: `affine` (the default) or `double`. A stored definition names no backend (§8.2).
 - **Binding group.** The statements of one input (a line, a file, a multi-line entry). They can refer to each other in any order. Nothing from a group is stored unless all of it checks (§2.2, §6.3).
 - **Bound nudge.** A nudge whose unknown lies in `[-1, 1]`, guaranteed. Made by rounding, series truncation, linearisation remainders and `±` (§3.2).
-- **Branch table.** Under `samples N`, the table printed at an `if` or `case` whose copies choose different alternatives: one row per alternative with its count of copies, the nominal branch marked (§8.2).
-- **CESTAC.** Stochastic arithmetic: N copies of a computation, each rounding every operation up or down at random. Their spread estimates the digits that survive rounding. The method behind CADNA, used by the double backend with `samples N` (§8.2).
+- **Branch table.** Under `samples N`, the table printed at an `if` or `case` whose copies choose different alternatives: one row per alternative with its count of copies, the nominal branch marked (§8.2.5).
+- **CESTAC.** Stochastic arithmetic: N copies of a computation, each rounding every operation up or down at random. Their spread estimates the digits that survive rounding. The method behind CADNA, used by the double backend with `samples N` (§8.2.3).
 - **Chart.** A value that puts coordinates on a space: a step unit, an origin and an orientation (a list of generators). `20 degC` is the point 20 steps up `degC` from its origin. A chart with parameters is a moving chart (§3.6, §3.8).
-- **Compaction.** Folding the smallest bound coefficients of a form with more than 64 nudges into slack (§3.2.7).
-- **Copies.** Under the double backend with `samples N`, the N versions of each number computed in lockstep, each with its own rounding and its own draws (§8.2).
+- **Compaction.** When a form carries more than 64 nudges, its bound nudges beyond the 32 largest fold into slack. Statistical nudges never fold (§3.2.7).
+- **Copies.** Under the double backend with `samples N`, the N versions of each number computed in lockstep, each with its own rounding and its own draws (§8.2.3).
 - **Core, Typed Core.** Core is the small untyped language that desugaring produces and that is hashed. Typed Core is Core after inference, explicitly typed, linted and run (§5, doc/core.md).
-- **Cores (`:set cores K`).** How many parallel batches the copies run in. Results are identical for every K (§8.2).
+- **Cores (`:set cores K`).** How many parallel batches the copies run in. Results are identical for every K (§8.2.7).
 - **`Diff`.** `Diff c` is the type of the amount between two points on frame `c`: the space's dimension along the frame's axes. `Diff degC` is `Num K`, `Diff lvlh` is `Vec lvlh m` (§3.10, F4).
 - **Dimension.** The static part of a quantity's type, a product of powers of the base dimensions (length, mass, time, current, temperature, amount of substance, luminous intensity, and plane angle) and variables (§3.2.11, §4.1).
 - **Display unit.** The unit a value prints in, carried beside the value and never part of its type or hash (§3.2.12).
@@ -212,10 +212,10 @@ Terms in alphabetical order. The design section in parentheses has the rules.
 - **Label.** A name in the codebase that points at a reference: a definition, a type, a constructor or a field. Also `#label` after `±`, which names a shared unknown (§3.2.4, §7.1).
 - **Limits.** Per-session bounds on an evaluation: `memory`, `steps`, `depth`, `digits`, `components`, `outcomes` and `time`. A limit reached is an ordinary error that names its setting, and a limit never changes a value or a hash (§8.1).
 - **Lint.** The independent type checker over Typed Core, in the role of GHC's Core Lint (§5.3).
-- **Mixture.** Under Monte Carlo, a value whose copies reached different constructors: a set of options, each a group of copies with its own value. It prints as a table of outcomes (§8.2).
-- **Monte Carlo draws.** Under the double backend with `samples N`, each copy draws every declared standard uncertainty from a normal distribution, keyed by the nudge's identity, the copy and the seed. The copies then form a sample of the result (§8.2).
-- **`needs`.** The set of backend-only built-ins a definition uses, directly or through its dependencies. It is memoised by hash, and an input whose needs the current backend lacks is refused before it runs (§8.2).
-- **Nominal branch, nominal value.** Under the double backend, the alternative and the value that the plain IEEE computation takes, as a ported Haskell formula would (§8.2).
+- **Mixture.** Under Monte Carlo, a value whose copies reached different constructors: a set of options, each a group of copies with its own value. It prints as a table of outcomes (§8.2.6).
+- **Monte Carlo draws.** Under the double backend with `samples N`, each copy draws every declared standard uncertainty from a normal distribution, keyed by the nudge's identity, the copy and the seed. The copies then form a sample of the result (§8.2.4).
+- **`needs`.** The set of backend-only built-ins a definition uses, directly or through its dependencies. It is memoised by hash, and an input whose needs the current backend lacks is refused before it runs (§8.2.9).
+- **Nominal branch, nominal value.** Under the double backend, the alternative and the value that the plain IEEE computation takes, as a ported Haskell formula would (§8.2.5).
 - **Non-linear mark.** A warning on a value whose second-order statistical term is more than `:set nonlinear` percent (default 1) of its first-order σ. A mean and a σ do not describe such a value, so comparisons, `mid`, `sd` and the covariances refuse it (§3.2).
 - **Nudge.** A named unknown in an affine form, with a kind (bound or statistical) and a content-addressed identity, so the same unknown cancels wherever it meets itself (§3.2, §3.2.4).
 - **Owner stamp.** The full path of the definition that a `±`, `noise` or `gauss` is written in, kept in the term so that two identical measurements in two definitions are independent. Renaming such a definition re-hashes it (§3.2.4, §7.2).
