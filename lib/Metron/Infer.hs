@@ -31,7 +31,7 @@ module Metron.Infer (
   matchesQuery,
 ) where
 
-import Control.Monad (foldM, forM_, unless, zipWithM, zipWithM_)
+import Control.Monad (foldM, forM_, replicateM, unless, zipWithM, zipWithM_)
 import Control.Monad.State.Strict (
   StateT,
   get,
@@ -41,8 +41,8 @@ import Control.Monad.State.Strict (
   runStateT,
  )
 import Control.Monad.Trans.Class (lift)
-import Data.Bifunctor (second)
-import Data.List (isSuffixOf, minimumBy, nubBy)
+import Data.Bifunctor (first, second)
+import Data.List (isSuffixOf, minimumBy, nubBy, sortOn)
 import Data.Map.Strict qualified as Map (
   Map,
   empty,
@@ -51,7 +51,7 @@ import Data.Map.Strict qualified as Map (
   lookup,
  )
 import Data.Maybe (fromMaybe)
-import Data.Ord (comparing)
+import Data.Ord (Down (..), comparing)
 import Data.Ratio (numerator)
 import Data.Text (Text)
 import Data.Text qualified as T (
@@ -1003,9 +1003,9 @@ isTypeVar = \case
   _ -> False
 
 {- | At a generalisation point, constraints that only mention variables about
-to be quantified cannot wait: default them (design §4.2). The unknown-rank
-operand of a product is taken to be a scalar; an unknown equality type is
-taken to be `Num`. Constraints that mention variables of the enclosing
+to be quantified cannot wait: default them (design §4.2). The unknown part
+of a product's operand takes the least rank it can ('defaultProducts'); an
+unknown equality type is taken to be `Num`. Constraints that mention variables of the enclosing
 context stay pending, and so do constraints created outside the term being
 generalised (the path given is that term's): the product around
 @[1, 2] * (let y = 1 in [3])@ is not the inner let's to default.
@@ -1019,9 +1019,12 @@ settle here ctx = do
       touchesEnv c = any (`elem` envVars) (constraintVars (applyC s c))
   st <- get
   let (stay, dflt) = partitionWith (\(p, c) -> outside p || touchesEnv c) st.pending
-  put st{pending = stay}
-  forM_ (reverse dflt) $ \(p, c) -> case applyC s c of
-    Append s1 _ _ -> unifyShape p s1 SNil >> defer p c
+      (products, others) = partitionWith (isAppend . snd) dflt
+  put st{pending = products ++ stay}
+  defaultProducts products
+  forM_ (reverse others) $ \(p, c) -> case applyC s c of
+    -- Defaulted above.
+    Append{} -> pure ()
     EqInstance t -> unify p numT t >> defer p c
     -- Ordering defaults to a number of any dimension, so that \a b -> a < b
     -- stays dimension-polymorphic.
@@ -1062,6 +1065,45 @@ settle here ctx = do
  where
   partitionWith f xs = (filter f xs, filter (not . f) xs)
   outside p = not (here `isSuffixOf` p)
+  isAppend = \case
+    Append{} -> True
+    _ -> False
+
+{- | Default the products still pending at a generalisation point (design
+§4.2). A product's constraint @s3 ~ s1 ++ s2@ waits while @s1@ ends in a
+variable; that variable takes the least rank the constraint allows. That is
+none, unless @s3@ already has more leading lengths than @s1@ and a closed
+@s2@ have together. So a bare unknown-rank operand of @outer@ is a scalar
+and one of @dot@ a vector, while @[[x]]@ keeps the two lengths it has:
+@x@ becomes a scalar and @[[x]]@ a matrix. Dot's two constraints share
+their @s1@, so the variable that must take the most lengths is defaulted
+first, one at a time, and the rest are re-read once it is solved.
+-}
+defaultProducts :: [(Path, Constraint)] -> Infer ()
+defaultProducts cs = do
+  s <- gets (.subst)
+  let open =
+        [ (p, v, need)
+        | (p, c) <- cs
+        , Append s1 s2 s3 <- [applyC s c]
+        , (lead1, Just v) <- [spine s1]
+        , let need = case closedLens s2 of
+                Just l2 -> max 0 (fst (spine s3) - lead1 - length l2)
+                Nothing -> 0
+        ]
+  case sortOn (\(_, _, need) -> Down need) open of
+    [] -> pure ()
+    (p, v, need) : _ -> do
+      ls <- replicateM need ((,) <$> freshLen 0 <*> freshAxis)
+      unifyShape p (SVar v) (appendShape ls SNil)
+      solvePending
+      defaultProducts cs
+ where
+  -- A shape's leading lengths, and the variable it ends in if it is open.
+  spine = \case
+    SNil -> (0 :: Int, Nothing)
+    SVar v -> (0, Just v)
+    SCons _ _ rest -> first (+ 1) (spine rest)
 
 {- | The readings still open at a generalisation point that only mention
 variables about to be quantified (design §3.10). A quantity or a @to@ is

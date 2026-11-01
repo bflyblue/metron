@@ -3599,10 +3599,18 @@ can:
 - otherwise the constraint waits. Every step is first-order and unitary.
 
 At a generalisation point a constraint whose variables are all about to be
-quantified cannot wait any longer and is **defaulted**: the unknown-rank left
-operand is taken to be a scalar for `outer` (so `\k v -> 2 * k * v`,
-gets `Num -> Tensor s -> Tensor s`) and a
-vector for `dot`. This is the one place the type system guesses, it
+quantified cannot wait any longer and is **defaulted**: the unknown part of
+the left operand takes the least rank the constraint allows. A left operand
+whose rank is not known at all is therefore a scalar for `outer` (so `\k v
+-> 2 * k * v` gets `Num -> Tensor s -> Tensor s`) and a vector for `dot`.
+An operand that already has leading lengths keeps them and gains only
+those the result still needs: `\x -> [[x]] · [2]` makes `x` a scalar and
+`[[x]]` a matrix, giving `Num -> Vec 1`; `\x -> [x] * [1]` gives `Num ->
+Mat 1 1`; and in `\x -> (x · [[1, 2]]).0.1` the result's two lengths make
+`x` a matrix. Defaulting the whole operand to a scalar or a vector would
+refuse these, though each checks once `x`'s rank is known. The two
+constraints of one `dot` share the left's leading part, so that part
+takes the most lengths either of them needs. This is the one place the type system guesses, it
 guesses the common case, and it is the rule that dictionary passing will
 later remove: when data constructors exist, an unresolved constraint
 becomes a parameter of the definition instead of a default, and `\k v ->
