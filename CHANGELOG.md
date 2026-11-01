@@ -9,8 +9,9 @@
   al. 2021 and the DE440 header), each constant cited, measured ones with
   their published `±σ`. `astro.kepler` has the conic's relations, the
   classical `Elements` and their conversions to and from a position and a
-  velocity (circular and equatorial cases included, every angle from
-  `atan2`), the anomalies of each conic, Kepler solvers whose result
+  velocity (circular and equatorial cases included, decided exactly, so a
+  state too uncertain to decide is refused; every angle from `atan2`),
+  the anomalies of each conic, Kepler solvers whose result
   declares its truncation error with `±`, Barker's equation, two-body
   propagation and the J2 secular rates with the sun-synchronous
   inclination. `astro.maneuver` has `Transfer`, Hohmann, bi-elliptic,

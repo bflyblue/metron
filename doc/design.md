@@ -5401,7 +5401,12 @@ two language additions; time, frames and geodesy are the second):
 - **`fromState`'s cases** are decided by comparison with zero: circular
   when the eccentricity vector is zero, equatorial when the node vector is.
   A value too uncertain to decide is an error ("cannot decide
-  comparison"). The record keeps its shape in each case (`argp = 0` and
+  comparison"). So the circular cases are decided from exact states (and
+  the equatorial ones from states whose node vector is exactly zero, as
+  `toState` gives for `i = 0`, since `sin 0` is exact); a circular
+  orbit's state from `toState` is an enclosure, its eccentricity vector
+  zero only to within it, and `fromState` refuses it. Whether a
+  tolerance should decide instead is the owner's call. The record keeps its shape in each case (`argp = 0` and
   `nu` the argument of latitude; `raan = 0` and `argp` the longitude of
   periapsis; both, and `nu` the true longitude). Angles are in [0, 2π),
   as Vallado gives them, through `fullAngle`, `π + atan2 (−y) (−x)` with
