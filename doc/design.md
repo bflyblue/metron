@@ -5211,6 +5211,70 @@ recreated from its export (§7.4). Units as a type (§3.10, part U) re-hashed
 every unit and every quantity again: `km` is now `kilo * 1 metre`, the hour
 `60 min`.
 
+#### The `astro` library (design; decided by the owner, 2026-11-01)
+
+`astro` today is a stub: a few constants (`GM_earth` is the IAU 2015
+nominal `3.986004e14`, not the WGS84 and EGM96 value most texts use), the
+`State` record and two frame functions. It becomes a library of nested
+namespaces, so that a user chooses a set of constants with a `use` and the
+functions do not depend on the choice.
+
+- **Constant sets are namespaces defining the same names.** A set holds
+  `Body` values (below), and each value says its source in a comment and in
+  its `:view`:
+  - `astro.wgs84`, the WGS84 and EGM96 Earth that GPS and Vallado use:
+    `earth`.
+  - `astro.iers2010`, the IERS Conventions (2010): `earth`, `moon` and
+    `sun`.
+  - `astro.iau2015`, the IAU 2015 nominal values (Resolution B3):
+    `earth`, `sun` and `jupiter`. These are exact by definition.
+  - `astro.de440`, JPL DE440: `sun`, `moon` and the planets.
+
+  `:use astro.wgs84` then makes `earth` the WGS84 Earth. Defining constants
+  are exact, and measured ones carry their published uncertainty with `±σ`.
+  No set is used by default.
+- **A body is a record:** `data Body = Body {mu :: Num (m^3/s^2), radius
+  :: Num m, flattening :: Num, j2 :: Num, rate :: Num (rad/s)}`, with exact
+  zero where a source gives nothing. Every function that needs a body takes
+  one, `period earth (7000 km)`, so a computation names its constants once
+  and changing set is a `use`.
+- **`astro.kepler`, two-body motion.**
+  - Relations: vis-viva, period, mean motion, specific energy, angular
+    momentum, and circular and escape speeds.
+  - `data Elements = Elements {a, e, i, raan, argp, nu}`, elliptic or
+    hyperbolic (`a < 0`, as Vallado writes it), with conversions to and
+    from a position and velocity, including the circular and equatorial
+    cases. Angles come from `atan2`, never from `acos` with a quadrant
+    test. When a case cannot be decided because the value is too
+    uncertain, it is an error.
+  - Anomaly conversions: true, eccentric, mean, and hyperbolic.
+  - A Kepler solver for each conic.
+  - Analytic propagation, by advancing the mean anomaly, and J2 secular
+    rates: the node, the perigee, and the sun-synchronous inclination.
+- **An iterative solver's result is rigorous.** After a fixed number of
+  Newton steps from a good starter, the solver adds its truncation error
+  as a declared bound: for Kepler's equation `f(E) = E − e sin E − M`, with
+  `f' ≥ 1 − e > 0`, so `|E − E*| ≤ |f(E)| / (1 − e)`. A result is therefore
+  as rigorous as any other, and printing shows how converged it is.
+- **`astro.maneuver`:** Hohmann, bi-elliptic, plane change, combined plane
+  change and phasing, returning records such as `Transfer {dv1, dv2, tof}`.
+- **The root `astro` keeps** the units `AU`, `pc` and `ly`, `G`, the
+  `State` record, `velocityIn` and `stateFrom`. The Earth and Sun constants
+  move into the sets.
+- **Tests.** Every function is checked against a published worked example,
+  cited (Vallado's *Fundamentals of Astrodynamics and Applications*,
+  examples 2-1 to 2-6 and those of chapter 6, or Curtis), and the
+  conversions round-trip.
+- **Second build:** time (TAI and GPS charts, leap seconds, GMST and the
+  Earth rotation angle), frames (`GCRS`, a moving `ecef`, ENU and SEZ,
+  perifocal, LVLH and RSW) and geodesy (WGS84 geodetic coordinates,
+  azimuth, elevation and range). Later: Lambert.
+
+Two pieces of the language came out of trying this, in the same build:
+`x to a to b` chains from the left, and `pointAt : Chart c -> Diff c ->
+Point c` places a computed amount on a chart from its origin, in place of
+`[0, 0, 0] c .+ withAxes c v`.
+
 ## 8. Evaluation
 
 An environment-passing interpreter over **Typed Core** (§5.3). It never sees
