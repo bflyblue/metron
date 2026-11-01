@@ -108,7 +108,8 @@ demanded ext env = \case
   t@TApp{} -> call t
   t@TTyApp{} -> call t
   TPrimApp p _ args
-    | p == strictMarker || p `elem` strictPrimitives -> foldMap (demanded ext env) args
+    | p == strictMarker || p `elem` strictPrimitives ->
+        foldMap (demanded ext env) args
     | p `elem` ["and", "or"] -> foldMap (demanded ext env) (take 1 args)
     | otherwise -> IntSet.empty
   TLet _ _ e b ->
@@ -133,7 +134,9 @@ demanded ext env = \case
           TLam{} -> IntSet.empty
           _ -> demanded ext env h
      in fromHead
-          <> foldMap (demanded ext env . snd) (filter fst (zip (strictArgs ext env h args) args))
+          <> foldMap
+            (demanded ext env . snd)
+            (filter fst (zip (strictArgs ext env h args) args))
   meet = \case
     [] -> IntSet.empty
     s : ss -> foldr IntSet.intersection s ss
@@ -149,7 +152,9 @@ mark ext env = \case
     TCase
       (mark ext env s)
       ty
-      [TAlt c bs (mark ext (replicate (vecLength bs) Nothing ++ env) b) | TAlt c bs b <- alts]
+      [ TAlt c bs (mark ext (replicate (vecLength bs) Nothing ++ env) b)
+      | TAlt c bs b <- alts
+      ]
   TPrimApp p ty args -> TPrimApp p ty (map (mark ext env) args)
   TCon c ty args -> TCon c ty (map (mark ext env) args)
   TPow t n -> TPow (mark ext env t) n

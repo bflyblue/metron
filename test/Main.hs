@@ -8,7 +8,6 @@ import Data.ByteString qualified as BS
 import Support.Render (render)
 
 import Astro (astroTests)
-import Limits (limitTests, measure)
 import Data.List (sort)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
@@ -20,6 +19,7 @@ import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Gen (exprDepth, genProgram, instanceOf)
+import Limits (limitTests, measure)
 import Metron.Affine hiding (Builtin, DivideByZero)
 import Metron.Affine qualified as A
 import Metron.Builtin
@@ -1008,7 +1008,12 @@ endToEndTests =
         case runLines [":set components 100", "[noise 50, noise 50, noise 50]"] of
           Left err -> T.isInfixOf "150 components, more than 100" err @? T.unpack err
           Right out -> assertFailure (show out)
-        runLines [":set components 100", "(noise 100).99", ":set components 150", "(noise 101).100"]
+        runLines
+          [ ":set components 100"
+          , "(noise 100).99"
+          , ":set components 150"
+          , "(noise 101).100"
+          ]
           @?= Right ["0 ± 1", "0 ± 1"]
     , testCase "an empty tensor takes its element type from context" $ do
         -- an ascription

@@ -80,59 +80,68 @@ module Metron.Affine (
   sqrtApprox,
 ) where
 
-import Data.Bifunctor ( first )
-import Data.ByteString ( ByteString )
-import Data.ByteString.Builder
-    ( Builder, byteString, toLazyByteString, word8 )
-import Data.List ( sortOn )
-import Data.Map.Strict ( Map )
-import Data.Maybe ( catMaybes )
-import Data.Ord ( Down(..) )
-import Data.Ratio ( denominator, numerator, (%) )
-import Data.Text ( Text )
-import Metron.Core ( Hash(..), NudgeKind(..) )
-import Metron.Encode ( sint, text, varint )
-import Metron.Numerical.Approx
-    ( atanApprox,
-      coshApprox,
-      decimalExponent,
-      expApprox,
-      logApprox,
-      piApprox,
-      precisionExponent,
-      roundAt,
-      roundUpAt,
-      scaleA,
-      sinCosApprox,
-      sinhApprox,
-      sqrtApprox,
-      tolerance,
-      Approx,
-      Precision,
-      isqrt )
-import Data.ByteString qualified as BS ( length )
-import Data.Map.Merge.Strict qualified as Merge ( merge, preserveMissing, zipWithMaybeMatched )
-import Data.Map.Strict qualified as Map
-    ( null,
-      delete,
-      insertWith,
-      unionWith,
-      elems,
-      empty,
-      filter,
-      size,
-      toList,
-      intersectionWith,
-      map,
-      mapMaybe,
-      singleton )
-import Crypto.Hash.SHA256 qualified as SHA256 ( hashlazy )
-import Data.Text qualified as T ( pack )
+import Crypto.Hash.SHA256 qualified as SHA256 (hashlazy)
+import Data.Bifunctor (first)
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS (length)
+import Data.ByteString.Builder (
+  Builder,
+  byteString,
+  toLazyByteString,
+  word8,
+ )
+import Data.List (sortOn)
+import Data.Map.Merge.Strict qualified as Merge (
+  merge,
+  preserveMissing,
+  zipWithMaybeMatched,
+ )
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (
+  delete,
+  elems,
+  empty,
+  filter,
+  insertWith,
+  intersectionWith,
+  map,
+  mapMaybe,
+  null,
+  singleton,
+  size,
+  toList,
+  unionWith,
+ )
+import Data.Maybe (catMaybes)
+import Data.Ord (Down (..))
+import Data.Ratio (denominator, numerator, (%))
+import Data.Text (Text)
+import Data.Text qualified as T (pack)
+import Metron.Core (Hash (..), NudgeKind (..))
+import Metron.Encode (sint, text, varint)
+import Metron.Numerical.Approx (
+  Approx,
+  Precision,
+  atanApprox,
+  coshApprox,
+  decimalExponent,
+  expApprox,
+  isqrt,
+  logApprox,
+  piApprox,
+  precisionExponent,
+  roundAt,
+  roundUpAt,
+  scaleA,
+  sinCosApprox,
+  sinhApprox,
+  sqrtApprox,
+  tolerance,
+ )
 
 -- Types -----------------------------------------------------------------------------
 
 -- | Working precision in digits.
-
 newtype NudgeId = NudgeId ByteString
   deriving stock (Eq, Ord, Show)
 
@@ -322,7 +331,13 @@ addM x y =
       cancel _ a b = let (c, n) = addCoeff a b in if c == 0 then Nothing else Just (c, n)
    in affineNonZero
         (m1 + m2)
-        (Merge.merge Merge.preserveMissing Merge.preserveMissing (Merge.zipWithMaybeMatched cancel) t1 t2)
+        ( Merge.merge
+            Merge.preserveMissing
+            Merge.preserveMissing
+            (Merge.zipWithMaybeMatched cancel)
+            t1
+            t2
+        )
         (s1 + s2)
         (skews [skewOf x, skewOf y])
 
@@ -475,9 +490,10 @@ opResult name p operands boundSize statSize sk base =
     | firstSigma == 0 = Just (Skew Nothing name)
     | otherwise =
         Just
-          (Skew
-            (Just (roundUpSig 3 ((statSize' / firstSigma) ^ (2 :: Int))))
-            (name <> ": uncertain statistical coefficient"))
+          ( Skew
+              (Just (roundUpSig 3 ((statSize' / firstSigma) ^ (2 :: Int))))
+              (name <> ": uncertain statistical coefficient")
+          )
 
 {- | Whether a neglected second-order statistical term, given by its size
 squared, is within the precision floor at the value's midpoint: the last
@@ -711,8 +727,9 @@ finish _ = \case
 nudgeLimit :: Int
 nudgeLimit = 64
 
--- | The decimal exponent of the leading digit: @decimalExponent 0.0123 = -2@.
--- Lifting approximations to magnitudes -------------------------------------------------
+{- | The decimal exponent of the leading digit: @decimalExponent 0.0123 = -2@.
+Lifting approximations to magnitudes -------------------------------------------------
+-}
 
 {- | Apply a function to a magnitude given approximations of @f@ and @f'@
 (design §3.2): linearise at the midpoint, which carries every nudge to
@@ -822,7 +839,8 @@ liftBounded name p f f' b x = markedBy (measured (midpoint lifted)) lifted
     | sigma == 0 || b == 0 = Nothing
     | belowFloor p mid ((b * sigma * sigma) ^ (2 :: Int)) = Nothing
     | slope == 0 = Just (Skew Nothing name)
-    | otherwise = Just (Skew (Just (roundUpSig 3 ((b * sigma / slope) ^ (2 :: Int)))) name)
+    | otherwise =
+        Just (Skew (Just (roundUpSig 3 ((b * sigma / slope) ^ (2 :: Int)))) name)
 
 -- | Square root. Exact for perfect squares of exact inputs.
 sqrtM :: Precision -> Magnitude -> Either ArithError Magnitude

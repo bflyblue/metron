@@ -11,7 +11,26 @@ inference) that validates an elaborated term. Elaboration bugs surface
 there, not in the evaluator.
 -}
 module Metron.TCore (
-  TTerm (TLam, TVr, TRef, TPrimApp, TLit, TLamWith, TApp, TLet, TCon, TCase, TPow, TNoise, TUncertain, TPack, TProj, TTyLam, TTyApp, TCycle),
+  TTerm (
+    TLam,
+    TVr,
+    TRef,
+    TPrimApp,
+    TLit,
+    TLamWith,
+    TApp,
+    TLet,
+    TCon,
+    TCase,
+    TPow,
+    TNoise,
+    TUncertain,
+    TPack,
+    TProj,
+    TTyLam,
+    TTyApp,
+    TCycle
+  ),
   freeIndices,
   lintClosed,
   renderTTerm,
@@ -19,67 +38,91 @@ module Metron.TCore (
   TAlt (..),
 ) where
 
-import Control.Monad ( forM_ )
-import Data.Maybe ( fromMaybe )
-import Data.IntSet ( IntSet )
-import Data.Text ( Text )
-import Metron.Builtin ( pattern BoolT, pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, pattern TupleC )
-import Metron.Core
-    ( finToInt,
-      renderLabel,
-      vecLength,
-      vecAppend,
-      vecMap,
-      vecToList,
-      ConRef,
-      Fin(..),
-      Hash,
-      Hint(..),
-      Label,
-      Lit(..),
-      Nat(..),
-      NudgeKind(..),
-      Plus,
-      Vec(..) )
-import Metron.Dimension ( dimMul, dimOne, dimPow )
-import Metron.Primitive.Types
-    ( primScheme, primSchemeFor, StaticArg(ConArg, LitArg, ListArg) )
-import Metron.Type
-    ( appendShape,
-      closedLens,
-      freeVars,
-      numD,
-      selfType,
-      substOnce,
-      varArg,
-      vecT,
-      Arg(..),
-      Axis,
-      Frame(space),
-      Kind(..),
-      Len(LRank, LLit, LVar),
-      Role(RAmount),
-      Scheme(..),
-      Shape(SNil, SCons),
-      Space(dim, shape),
-      Type(TData, TQty, TFun, TTensor, TPoint, TOver),
-      TypeDef,
-      TypeLookup(schemesOf, typeDefOf),
-      VarId,
-      conText,
-      dataConstructors,
-      equalityArgs,
-      renderArg,
-      renderScheme,
-      renderSchemeIds,
-      renderType,
-      renderTypeIds )
-import Metron.Type.Match ( isInstanceOf )
-import Data.IntSet qualified as IntSet ( empty, fromDistinctAscList, singleton, toAscList )
-import Data.Map.Strict qualified as Map
-    ( findWithDefault, fromList, insert )
-import Data.Text qualified as T
-    ( concat, intercalate, unwords, pack )
+import Control.Monad (forM_)
+import Data.IntSet (IntSet)
+import Data.IntSet qualified as IntSet (
+  empty,
+  fromDistinctAscList,
+  singleton,
+  toAscList,
+ )
+import Data.Map.Strict qualified as Map (
+  findWithDefault,
+  fromList,
+  insert,
+ )
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
+import Data.Text qualified as T (
+  concat,
+  intercalate,
+  pack,
+  unwords,
+ )
+import Metron.Builtin (
+  pattern BoolT,
+  pattern ConsC,
+  pattern FalseC,
+  pattern NilC,
+  pattern TrueC,
+  pattern TupleC,
+ )
+import Metron.Core (
+  ConRef,
+  Fin (..),
+  Hash,
+  Hint (..),
+  Label,
+  Lit (..),
+  Nat (..),
+  NudgeKind (..),
+  Plus,
+  Vec (..),
+  finToInt,
+  renderLabel,
+  vecAppend,
+  vecLength,
+  vecMap,
+  vecToList,
+ )
+import Metron.Dimension (dimMul, dimOne, dimPow)
+import Metron.Primitive.Types (
+  StaticArg (ConArg, ListArg, LitArg),
+  primScheme,
+  primSchemeFor,
+ )
+import Metron.Type (
+  Arg (..),
+  Axis,
+  Frame (space),
+  Kind (..),
+  Len (LLit, LRank, LVar),
+  Role (RAmount),
+  Scheme (..),
+  Shape (SCons, SNil),
+  Space (dim, shape),
+  Type (TData, TFun, TOver, TPoint, TQty, TTensor),
+  TypeDef,
+  TypeLookup (schemesOf, typeDefOf),
+  VarId,
+  appendShape,
+  closedLens,
+  conText,
+  dataConstructors,
+  equalityArgs,
+  freeVars,
+  numD,
+  renderArg,
+  renderScheme,
+  renderSchemeIds,
+  renderType,
+  renderTypeIds,
+  selfType,
+  substOnce,
+  varArg,
+  vecT,
+ )
+import Metron.Type.Match (isInstanceOf)
 
 {- | Typed Core terms in a scope of @n@ term variables. Type-level variables
 are identified by number and bound by 'TTyLam' with their kind.
@@ -140,7 +183,25 @@ pattern TLam h ty body <- TLamWith h ty body _
   where
     TLam h ty body = TLamWith h ty body (freeIndices body)
 
-{-# COMPLETE TVr, TRef, TPrimApp, TLit, TLam, TApp, TLet, TCon, TCase, TPow, TNoise, TUncertain, TPack, TProj, TTyLam, TTyApp, TCycle #-}
+{-# COMPLETE
+  TVr
+  , TRef
+  , TPrimApp
+  , TLit
+  , TLam
+  , TApp
+  , TLet
+  , TCon
+  , TCase
+  , TPow
+  , TNoise
+  , TUncertain
+  , TPack
+  , TProj
+  , TTyLam
+  , TTyApp
+  , TCycle
+  #-}
 
 -- | The variables free in a term, by their de Bruijn index in its scope.
 freeIndices :: TTerm n -> IntSet
@@ -148,7 +209,8 @@ freeIndices = go 0
  where
   go :: Int -> TTerm m -> IntSet
   go d = \case
-    TVr i -> let j = finToInt i in if j >= d then IntSet.singleton (j - d) else IntSet.empty
+    TVr i ->
+      let j = finToInt i in if j >= d then IntSet.singleton (j - d) else IntSet.empty
     TRef{} -> IntSet.empty
     TPrimApp _ _ args -> foldMap (go d) args
     TLit{} -> IntSet.empty

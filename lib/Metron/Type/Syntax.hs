@@ -12,105 +12,139 @@ module Metron.Type.Syntax (
   tyNames,
 ) where
 
-import Control.Monad ( when, zipWithM )
-import Control.Monad.State.Strict
-    ( StateT, gets, lift, modify, runStateT )
-import Data.Bifunctor ( bimap )
-import Data.Char ( isLower )
-import Data.Foldable ( foldlM )
-import Data.Maybe ( fromMaybe, isJust )
-import Data.Set ( Set )
-import Data.Text ( Text )
-import Metron.Builtin
-    ( axesDef,
-      axesHash,
-      boolHash,
-      boolT,
-      frameDefMoving,
-      isSpaceDef,
-      listT,
-      mintedPath,
-      spaceDef,
-      spaceOf,
-      tupleT )
-import Metron.Codebase
-    ( addTypeDef,
-      bindConName,
-      bindFieldName,
-      bindTypeName,
-      isChartName,
-      isUnitName,
-      lookupName,
-      lookupTypeDef,
-      lookupTypeName,
-      typeNameOf,
-      typeOf,
-      Codebase(uses) )
-import Metron.Core ( lengthLimit, showHash, Hash, Label(Owner) )
-import Metron.Dimension
-    ( baseSymbol, dimBase, dimMul, dimOne, dimPow, dimVar, Dim )
-import Metron.Hash ( hashTypeDef )
-import Metron.NameResolution
-    ( isLabel,
-      qualifyName,
-      qualifyWith,
-      shortestNameOf,
-      LabelKind(TypeLabel, TermLabel),
-      Qualified(..) )
-import Metron.Resolve.Error ( ResolveError(DataError) )
-import Metron.Type
-    ( freeVars,
-      numT,
-      overType,
-      rankLen,
-      selfType,
-      structuralLabel,
-      substOnce,
-      varArg,
-      Arg(..),
-      Axis(AAnon, AVar),
-      Frame(..),
-      FrameSlot(FrNamed, FrVar),
-      Kind(..),
-      Len(LLit, LVar),
-      Role(..),
-      Scheme(..),
-      Shape(..),
-      Space(..),
-      SpaceSlot(SpVar),
-      Type(TPoint, TVar, TFun, TChart, TData, TUnit, TTensor),
-      TypeDef(params, TypeDef),
-      VarId,
-      writtenParams )
-import Data.Map.Strict qualified as Map
-    ( Map,
-      elems,
-      empty,
-      keys,
-      lookup,
-      member,
-      notMember,
-      toList,
-      withoutKeys,
-      findWithDefault,
-      fromList,
-      insert,
-      map,
-      mapMaybe )
-import Metron.Syntax qualified as S
-    ( juxtaposedHint,
-      lastSegment,
-      DataDecl(constructors, params, structural, name),
-      FieldDecl(ty, FieldDecl),
-      Name(..),
-      Scope,
-      TyBinder(name, over, space, size),
-      TyExpr(span, node),
-      TyNode(TyForall, TyName, TyInt, TyApp, TyTuple, TyList, TyFun,
-             TyShape, TyShapeCons, TyDim) )
-import Data.Set qualified as Set
-    ( member, empty, filter, fromList, insert, toList )
-import Data.Text qualified as T ( intercalate, uncons, pack )
+import Control.Monad (when, zipWithM)
+import Control.Monad.State.Strict (
+  StateT,
+  gets,
+  lift,
+  modify,
+  runStateT,
+ )
+import Data.Bifunctor (bimap)
+import Data.Char (isLower)
+import Data.Foldable (foldlM)
+import Data.Map.Strict qualified as Map (
+  Map,
+  elems,
+  empty,
+  findWithDefault,
+  fromList,
+  insert,
+  keys,
+  lookup,
+  map,
+  mapMaybe,
+  member,
+  notMember,
+  toList,
+  withoutKeys,
+ )
+import Data.Maybe (fromMaybe, isJust)
+import Data.Set (Set)
+import Data.Set qualified as Set (
+  empty,
+  filter,
+  fromList,
+  insert,
+  member,
+  toList,
+ )
+import Data.Text (Text)
+import Data.Text qualified as T (intercalate, pack, uncons)
+import Metron.Builtin (
+  axesDef,
+  axesHash,
+  boolHash,
+  boolT,
+  frameDefMoving,
+  isSpaceDef,
+  listT,
+  mintedPath,
+  spaceDef,
+  spaceOf,
+  tupleT,
+ )
+import Metron.Codebase (
+  Codebase (uses),
+  addTypeDef,
+  bindConName,
+  bindFieldName,
+  bindTypeName,
+  isChartName,
+  isUnitName,
+  lookupName,
+  lookupTypeDef,
+  lookupTypeName,
+  typeNameOf,
+  typeOf,
+ )
+import Metron.Core (Hash, Label (Owner), lengthLimit, showHash)
+import Metron.Dimension (
+  Dim,
+  baseSymbol,
+  dimBase,
+  dimMul,
+  dimOne,
+  dimPow,
+  dimVar,
+ )
+import Metron.Hash (hashTypeDef)
+import Metron.NameResolution (
+  LabelKind (TermLabel, TypeLabel),
+  Qualified (..),
+  isLabel,
+  qualifyName,
+  qualifyWith,
+  shortestNameOf,
+ )
+import Metron.Resolve.Error (ResolveError (DataError))
+import Metron.Syntax qualified as S (
+  DataDecl (constructors, name, params, structural),
+  FieldDecl (FieldDecl, ty),
+  Name (..),
+  Scope,
+  TyBinder (name, over, size, space),
+  TyExpr (node, span),
+  TyNode (
+    TyApp,
+    TyDim,
+    TyForall,
+    TyFun,
+    TyInt,
+    TyList,
+    TyName,
+    TyShape,
+    TyShapeCons,
+    TyTuple
+  ),
+  juxtaposedHint,
+  lastSegment,
+ )
+import Metron.Type (
+  Arg (..),
+  Axis (AAnon, AVar),
+  Frame (..),
+  FrameSlot (FrNamed, FrVar),
+  Kind (..),
+  Len (LLit, LVar),
+  Role (..),
+  Scheme (..),
+  Shape (..),
+  Space (..),
+  SpaceSlot (SpVar),
+  Type (TChart, TData, TFun, TPoint, TTensor, TUnit, TVar),
+  TypeDef (TypeDef, params),
+  VarId,
+  freeVars,
+  numT,
+  overType,
+  rankLen,
+  selfType,
+  structuralLabel,
+  substOnce,
+  varArg,
+  writtenParams,
+ )
 
 {- | A written lowercase name that names nothing a type can name (design
 §7.3, §4.8): not @rank@, a built-in or declared type, a base unit or a

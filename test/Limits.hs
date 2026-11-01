@@ -14,7 +14,13 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Stats (GCDetails (..), RTSStats (..), getRTSStats)
 import Metron.Driver (Session, feed, seededSession)
-import Metron.Limits (Limits (..), defaultLimits, limitHeap, parseCount, runLimited)
+import Metron.Limits (
+  Limits (..),
+  defaultLimits,
+  limitHeap,
+  parseCount,
+  runLimited,
+ )
 import System.Mem (performMajorGC)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -94,9 +100,12 @@ settingTests =
     , testCase ":set changes a limit, and refuses what is not one" $ do
         let setting name = fmap (filter (T.isPrefixOf (name <> " ")))
         setting "steps" (run [":set steps 2e6", ":set"]) @?= Right ["steps 2000000"]
-        setting "time" (run [":set time 5", ":set time off", ":set"]) @?= Right ["time off"]
+        setting "time" (run [":set time 5", ":set time off", ":set"])
+          @?= Right ["time off"]
         refused "steps is a positive whole number" [":set steps 0"]
-        refused "time is a positive whole number, such as 1000000 or 1e6, or off" [":set time never"]
+        refused
+          "time is a positive whole number, such as 1000000 or 1e6, or off"
+          [":set time never"]
     , testCase "a limit changes no value and no hash" $ do
         let program = ["let k = 2^40 / 3", "k", ":hash k"]
         run ([":set steps 1e9", ":set digits 50", ":set depth 1000"] ++ program)
@@ -109,16 +118,16 @@ stepsTests :: TestTree
 stepsTests =
   testGroup
     "steps"
-    [ testCase "an endless loop stops at the limit" $
-        refused
+    [ testCase "an endless loop stops at the limit"
+        $ refused
           "the evaluation took more than 1000000 steps (`:set steps`)"
           [":set steps 1e6", "let f n = f (n + 1)", "f 0"]
     , testCase "raising the limit lets a long loop finish" $ do
         let loop = ["let hh n = if n == 0 then 0 else hh (n - 1)", "hh 200000"]
         refused "(`:set steps`)" (":set steps 1e6" : loop)
         run (":set steps 1e7" : loop) @?= Right ["0"]
-    , testCase "each expression has its own steps" $
-        run
+    , testCase "each expression has its own steps"
+        $ run
           [ ":set steps 3e6"
           , "let hh n = if n == 0 then 0 else hh (n - 1)"
           , "hh 200000"
@@ -136,14 +145,17 @@ depthTests =
     "depth"
     [ testCase "deep recursion stops at the limit; raising it lets it finish" $ do
         let deep = ["let g n = if n == 0 then 0 else 1 + g (n - 1)", "g 5000"]
-        refused "the evaluation nested more than 1000 calls deep (`:set depth`)" (":set depth 1000" : deep)
-        run (":set depth 1e4" : deep) @?= Right ["5000"]
-    , testCase "the default stops a runaway recursion" $
         refused
+          "the evaluation nested more than 1000 calls deep (`:set depth`)"
+          (":set depth 1000" : deep)
+        run (":set depth 1e4" : deep) @?= Right ["5000"]
+    , testCase "the default stops a runaway recursion"
+        $ refused
           "(`:set depth`)"
           ["let g n = if n == 0 then 0 else 1 + g (n - 1)", "g 1000000"]
-    , testCase "a tail call is no deeper" $
-        run [":set depth 100", "let hh n = if n == 0 then 0 else hh (n - 1)", "hh 100000"]
+    , testCase "a tail call is no deeper"
+        $ run
+          [":set depth 100", "let hh n = if n == 0 then 0 else hh (n - 1)", "hh 100000"]
           @?= Right ["0"]
     ]
 
@@ -154,18 +166,28 @@ digitsTests =
   testGroup
     "digits"
     [ testCase "a power's size is known before it is computed" $ do
-        refused "the power would have more than 100000 digits (`:set digits`)" ["2^18446744073709551616"]
+        refused
+          "the power would have more than 100000 digits (`:set digits`)"
+          ["2^18446744073709551616"]
         refused "the power would have more than 100000 digits" ["(3/2)^1000000"]
-        refused "the power would have more than 100000 zeros after the point" ["(2/3)^1000000"]
+        refused
+          "the power would have more than 100000 zeros after the point"
+          ["(2/3)^1000000"]
     , testCase "a literal's size is known before it is written out" $ do
-        refused "the literal would have more than 100000 digits (`:set digits`)" ["1e1000000000"]
-        refused "the literal would have more than 100000 zeros after the point" ["1e-1000000000"]
+        refused
+          "the literal would have more than 100000 digits (`:set digits`)"
+          ["1e1000000000"]
+        refused
+          "the literal would have more than 100000 zeros after the point"
+          ["1e-1000000000"]
     , testCase "an exponential's size is known before its series is summed" $ do
         refused "the exponential would have more than 100000 digits" ["exp 1000000"]
-        refused "the exponential would have more than 100000 zeros after the point" ["exp (-1000000)"]
-        refused "the exponential would have more than 100000 digits" ["cosh 1000000"]
-    , testCase "a result that grows past the limit is refused" $
         refused
+          "the exponential would have more than 100000 zeros after the point"
+          ["exp (-1000000)"]
+        refused "the exponential would have more than 100000 digits" ["cosh 1000000"]
+    , testCase "a result that grows past the limit is refused"
+        $ refused
           "the result would have more than 100000 digits (`:set digits`)"
           ["let sq x k = if k == 0 then x else sq (x * x) (k - 1)", "sq 10 20"]
     , testCase "raising the limit lets the number be written" $ do
@@ -237,7 +259,11 @@ with what it must give within 64 MB more than was live before it.
 -}
 leakPrograms :: [(TestName, [Text], Either Text [Text] -> Assertion)]
 leakPrograms =
-  [ ("a lazy list consumed by length", ["length (range 0 1e6)"], (@?= Right ["1000001"]))
+  [
+    ( "a lazy list consumed by length"
+    , ["length (range 0 1e6)"]
+    , (@?= Right ["1000001"])
+    )
   ,
     ( "a strict left fold over a large range"
     , ["foldl' (\\n x -> n + x) 0 (range 0 1e6)"]
@@ -267,13 +293,16 @@ leakTests m =
   testGroup "constant memory"
     $ zipWith (\(name, _, check) r -> testCase name (check r)) leakPrograms m.leaks
       ++ [ testCase "foldl stays lazy in its accumulator; foldl' evaluates it" $ do
-        run ["foldl (\\_ x -> x) (1/0) (range 0 3)"] @?= Right ["3"]
-        run ["foldl (\\acc _ -> acc) 1 {1/0, 2}"] @?= Right ["1"]
-        run ["foldl' (\\_ x -> x) (1/0) (range 0 3)"] @?= Right ["3"]
-        refused "division by zero" ["foldl' (\\acc x -> if acc > 0 then x else x) (1/0) (range 0 3)"]
-    , testCase "seq evaluates to a value and every component; a failing component fails only where used" $ do
-        run ["seq (1 + 1) 5"] @?= Right ["5"]
-        run ["seq (1/0) 5"] @?= Right ["5"]
-        refused "division by zero" ["seq (if 1/0 > 0 then 1 else 2) 5"]
-        run ["seq [1/0, 2] 5"] @?= Right ["5"]
-    ]
+             run ["foldl (\\_ x -> x) (1/0) (range 0 3)"] @?= Right ["3"]
+             run ["foldl (\\acc _ -> acc) 1 {1/0, 2}"] @?= Right ["1"]
+             run ["foldl' (\\_ x -> x) (1/0) (range 0 3)"] @?= Right ["3"]
+             refused
+               "division by zero"
+               ["foldl' (\\acc x -> if acc > 0 then x else x) (1/0) (range 0 3)"]
+         , testCase
+             "seq evaluates to a value and every component; a failing component fails only where used" $ do
+             run ["seq (1 + 1) 5"] @?= Right ["5"]
+             run ["seq (1/0) 5"] @?= Right ["5"]
+             refused "division by zero" ["seq (if 1/0 > 0 then 1 else 2) 5"]
+             run ["seq [1/0, 2] 5"] @?= Right ["5"]
+         ]

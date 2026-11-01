@@ -28,187 +28,238 @@ module Metron.Driver (
   refreshPreferences,
 ) where
 
-import Control.Applicative ( (<|>) )
-import Control.Monad ( foldM )
-import Data.Containers.ListUtils ( nubOrd )
-import Data.Either ( fromRight )
-import Data.List ( partition, sortOn )
-import Data.Maybe ( fromMaybe, isJust, isNothing, mapMaybe )
-import Data.Text ( Text )
-import Metron.Affine ( Collapsed(..), Magnitude(..), addM, collapse )
-import Metron.Builtin ( pattern TupleC, frameDefMoving, pairC )
-import Metron.Codebase
-    ( addPreference,
-      addStoredUse,
-      addTerm,
-      bindConName,
-      bindFieldName,
-      bindName,
-      bindTypeName,
-      clearFlags,
-      conNameOf,
-      dependents,
-      fieldNamesOf,
-      findByPrefix,
-      historicalNamesOf,
-      historyOf,
-      isChartName,
-      isUnitName,
-      lookupConName,
-      lookupFieldName,
-      lookupName,
-      lookupTerm,
-      lookupTypeDef,
-      lookupTypeName,
-      lookupTyped,
-      markChart,
-      markUnit,
-      removePreference,
-      removeStoredUse,
-      showReference,
-      signatureOf,
-      typeOf,
-      unbindName,
-      Codebase(preferences, terms, derived, typeDefs, names, typeNames,
-               conNames, fieldNames, uses),
-      Reference(hash, Reference) )
-import Metron.Command ( commandHelp )
-import Metron.Compile
-    ( checkExpr,
-      evalExpr,
-      evalValue,
-      renderEvalError,
-      renderResolveErrorWith,
-      CheckedExpr(CheckedExpr) )
-import Metron.Core
-    ( inlineRef,
-      refs,
-      showHash,
-      vecLength,
-      ConRef(UserCon),
-      Term(Cycle) )
-import Metron.Desugar ( DesugarError(UnknownName) )
-import Metron.Dimension ( dimMul, dimPow, renderDimIn )
-import Metron.Edit
-    ( EditRequest(..),
-      EditScope(..),
-      editRequest,
-      editScopeArgs,
-      editorNote,
-      applyEdit )
-import Metron.UnitHint ( hintPow, hintProduct, UnitHint(pinned) )
-import Metron.Eval ( covarianceMatrix, precisionOf, Config(nonlinear, Config, precision, sigma, unicode, limits), EvalError(Internal), Value(VData, VTensor) )
-import Metron.Limits ( Limits(digits), setLimit, settingLines )
-import Metron.Hash ( hashTerm )
-import Metron.Parser ( parseExprWithin, parseProgramWithin, parseType )
-import Metron.Prelude ( isLibraryPath, stdlibCodebase )
-import Metron.Pretty
-    ( displayParts,
-      renderBudget,
-      renderExact,
-      renderRough,
-      renderValue,
-      renderValueWith,
-      respell,
-      Printer(refName) )
-import Metron.Resolve.Error ( renderResolveError, ResolveError(Desugar) )
-import Metron.NameResolution ( disjointness, isNamespace, namespaceLabels, qualifyName, qualifyWith, shortestName, shortestNameOf, LabelKind(TypeLabel, FieldLabel), Qualified(Found) )
-import Metron.Type.Syntax ( queryScheme )
-import Metron.Resolve ( processGroup, typeLookupFor )
-import Metron.Session.Names
-    ( argPath,
-      argPaths,
-      labelKinds,
-      labelNoun,
-      labelsText,
-      namespaceLine,
-      relabel,
-      removeLabel )
-import Metron.Session.Preferences
-    ( preferenceHint, refreshPreferences )
-import Metron.Session.Types
-    ( emptySession, LastExpr(..), Session(..) )
-import Metron.Source
-    ( definitionLine,
-      exportRequest,
-      exportSource,
-      nameTypes,
-      printerFor,
-      refNamer,
-      signatureLine,
-      spellingOf,
-      upgradeReport,
-      viewData,
-      viewTyped )
-import Metron.TCore ( lintClosed )
-import Metron.Type
-    ( varArg,
-      Scheme(Forall),
-      Type(TFun, TData),
-      TypeDef(constructors, params),
-      dataConstructors,
-      defaultAxes,
-      renderForallIn,
-      renderScheme,
-      renderTypeDef )
-import Metron.Update
-    ( propagateNamed,
-      restamp,
-      staleReferences,
-      Propagation(skipped, Propagation, codebase, upgraded),
-      Restamped(terms, types, codebase) )
-import Metron.Infer qualified as I
-    ( elaborateClosed, matchesQuery, TypeError(message) )
-import Data.Map.Strict qualified as Map
-    ( delete,
-      Map,
-      empty,
-      keys,
-      member,
-      toList,
-      union,
-      fromList,
-      fromListWith,
-      insert )
-import Metron.Syntax qualified as S
-    ( declKey,
-      flatten,
-      isSignature,
-      lastSegment,
-      qualify,
-      renderSpanError,
-      renderUse,
-      Binding(name),
-      DataDecl(name),
-      Decl(..),
-      Name(span, text),
-      Pos(Pos),
-      Scope(uses, namespace),
-      Span(Span),
-      Use(alias, Use, path) )
-import Data.Set qualified as Set
-    ( member, union, fromList, null, singleton, toList )
-import Data.Text qualified as T
-    ( any,
-      breakOn,
-      drop,
-      intercalate,
-      isInfixOf,
-      isPrefixOf,
-      isSuffixOf,
-      length,
-      null,
-      splitOn,
-      strip,
-      stripPrefix,
-      stripStart,
-      takeWhile,
-      toLower,
-      unwords,
-      words,
-      pack,
-      unpack )
-import Data.Vector qualified as V ( fromList, take, toList )
+import Control.Applicative ((<|>))
+import Control.Monad (foldM)
+import Data.Containers.ListUtils (nubOrd)
+import Data.Either (fromRight)
+import Data.List (partition, sortOn)
+import Data.Map.Strict qualified as Map (
+  Map,
+  delete,
+  empty,
+  fromList,
+  fromListWith,
+  insert,
+  keys,
+  member,
+  toList,
+  union,
+ )
+import Data.Maybe (fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Set qualified as Set (
+  fromList,
+  member,
+  null,
+  singleton,
+  toList,
+  union,
+ )
+import Data.Text (Text)
+import Data.Text qualified as T (
+  any,
+  breakOn,
+  drop,
+  intercalate,
+  isInfixOf,
+  isPrefixOf,
+  isSuffixOf,
+  length,
+  null,
+  pack,
+  splitOn,
+  strip,
+  stripPrefix,
+  stripStart,
+  takeWhile,
+  toLower,
+  unpack,
+  unwords,
+  words,
+ )
+import Data.Vector qualified as V (fromList, take, toList)
+import Metron.Affine (Collapsed (..), Magnitude (..), addM, collapse)
+import Metron.Builtin (frameDefMoving, pairC, pattern TupleC)
+import Metron.Codebase (
+  Codebase (
+    conNames,
+    derived,
+    fieldNames,
+    names,
+    preferences,
+    terms,
+    typeDefs,
+    typeNames,
+    uses
+  ),
+  Reference (Reference, hash),
+  addPreference,
+  addStoredUse,
+  addTerm,
+  bindConName,
+  bindFieldName,
+  bindName,
+  bindTypeName,
+  clearFlags,
+  conNameOf,
+  dependents,
+  fieldNamesOf,
+  findByPrefix,
+  historicalNamesOf,
+  historyOf,
+  isChartName,
+  isUnitName,
+  lookupConName,
+  lookupFieldName,
+  lookupName,
+  lookupTerm,
+  lookupTypeDef,
+  lookupTypeName,
+  lookupTyped,
+  markChart,
+  markUnit,
+  removePreference,
+  removeStoredUse,
+  showReference,
+  signatureOf,
+  typeOf,
+  unbindName,
+ )
+import Metron.Command (commandHelp)
+import Metron.Compile (
+  CheckedExpr (CheckedExpr),
+  checkExpr,
+  evalExpr,
+  evalValue,
+  renderEvalError,
+  renderResolveErrorWith,
+ )
+import Metron.Core (
+  ConRef (UserCon),
+  Term (Cycle),
+  inlineRef,
+  refs,
+  showHash,
+  vecLength,
+ )
+import Metron.Desugar (DesugarError (UnknownName))
+import Metron.Dimension (dimMul, dimPow, renderDimIn)
+import Metron.Edit (
+  EditRequest (..),
+  EditScope (..),
+  applyEdit,
+  editRequest,
+  editScopeArgs,
+  editorNote,
+ )
+import Metron.Eval (
+  Config (Config, limits, nonlinear, precision, sigma, unicode),
+  EvalError (Internal),
+  Value (VData, VTensor),
+  covarianceMatrix,
+  precisionOf,
+ )
+import Metron.Hash (hashTerm)
+import Metron.Infer qualified as I (
+  TypeError (message),
+  elaborateClosed,
+  matchesQuery,
+ )
+import Metron.Limits (Limits (digits), setLimit, settingLines)
+import Metron.NameResolution (
+  LabelKind (FieldLabel, TypeLabel),
+  Qualified (Found),
+  disjointness,
+  isNamespace,
+  namespaceLabels,
+  qualifyName,
+  qualifyWith,
+  shortestName,
+  shortestNameOf,
+ )
+import Metron.Parser (parseExprWithin, parseProgramWithin, parseType)
+import Metron.Prelude (isLibraryPath, stdlibCodebase)
+import Metron.Pretty (
+  Printer (refName),
+  displayParts,
+  renderBudget,
+  renderExact,
+  renderRough,
+  renderValue,
+  renderValueWith,
+  respell,
+ )
+import Metron.Resolve (processGroup, typeLookupFor)
+import Metron.Resolve.Error (ResolveError (Desugar), renderResolveError)
+import Metron.Session.Names (
+  argPath,
+  argPaths,
+  labelKinds,
+  labelNoun,
+  labelsText,
+  namespaceLine,
+  relabel,
+  removeLabel,
+ )
+import Metron.Session.Preferences (
+  preferenceHint,
+  refreshPreferences,
+ )
+import Metron.Session.Types (
+  LastExpr (..),
+  Session (..),
+  emptySession,
+ )
+import Metron.Source (
+  definitionLine,
+  exportRequest,
+  exportSource,
+  nameTypes,
+  printerFor,
+  refNamer,
+  signatureLine,
+  spellingOf,
+  upgradeReport,
+  viewData,
+  viewTyped,
+ )
+import Metron.Syntax qualified as S (
+  Binding (name),
+  DataDecl (name),
+  Decl (..),
+  Name (span, text),
+  Pos (Pos),
+  Scope (namespace, uses),
+  Span (Span),
+  Use (Use, alias, path),
+  declKey,
+  flatten,
+  isSignature,
+  lastSegment,
+  qualify,
+  renderSpanError,
+  renderUse,
+ )
+import Metron.TCore (lintClosed)
+import Metron.Type (
+  Scheme (Forall),
+  Type (TData, TFun),
+  TypeDef (constructors, params),
+  dataConstructors,
+  defaultAxes,
+  renderForallIn,
+  renderScheme,
+  renderTypeDef,
+  varArg,
+ )
+import Metron.Type.Syntax (queryScheme)
+import Metron.UnitHint (UnitHint (pinned), hintPow, hintProduct)
+import Metron.Update (
+  Propagation (Propagation, codebase, skipped, upgraded),
+  Restamped (codebase, terms, types),
+  propagateNamed,
+  restamp,
+  staleReferences,
+ )
 
 {- | A session on a seeded codebase (design §7.7): the standard library
 entered by domain as one group and added, with its six stored default
@@ -351,12 +402,12 @@ command :: Session -> Text -> [Text] -> Either Text (Session, [Text])
 command session src = \case
   ["set"] ->
     keep
-      ( Right $
-          [ "precision " <> tshow cfg.precision
-          , "sigma " <> tshow cfg.sigma
-          , "unicode " <> (if cfg.unicode then "on" else "off")
-          , "nonlinear " <> T.pack (show (round (100 * cfg.nonlinear) :: Integer))
-          ]
+      ( Right
+          $ [ "precision " <> tshow cfg.precision
+            , "sigma " <> tshow cfg.sigma
+            , "unicode " <> (if cfg.unicode then "on" else "off")
+            , "nonlinear " <> T.pack (show (round (100 * cfg.nonlinear) :: Integer))
+            ]
             ++ settingLines cfg.limits
       )
   ["set", "precision", n] ->

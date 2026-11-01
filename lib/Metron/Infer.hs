@@ -31,107 +31,138 @@ module Metron.Infer (
   matchesQuery,
 ) where
 
-import Control.Monad ( foldM, forM_, unless, zipWithM, zipWithM_ )
-import Control.Monad.State.Strict
-    ( StateT, get, gets, modify', put, runStateT )
-import Control.Monad.Trans.Class ( lift )
-import Data.Bifunctor ( second )
-import Data.List ( isSuffixOf, minimumBy, nubBy )
-import Data.Maybe ( fromMaybe )
-import Data.Ord ( comparing )
-import Data.Ratio ( numerator )
-import Data.Text ( Text )
-import Metron.Builtin
-    ( pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, pattern TupleT, boolT, frameDefMoving )
-import Metron.Core
-    ( lengthLimit,
-      showHash,
-      vecAppend,
-      vecLength,
-      vecMap,
-      vecToList,
-      vecTraverse,
-      vecZip3,
-      vecZipWith,
-      Alt(..),
-      ConRef(..),
-      Fin(..),
-      Hash,
-      Hint(..),
-      Lit(LTensor),
-      Nat(Z),
-      NudgeKind(Stat),
-      Term(..),
-      Vec(..) )
-import Metron.Desugar
-    ( Path,
-      ascriptionMarker,
-      isFromMarker,
-      isQuantityMarker,
-      isToMarker,
-      unmarked )
-import Metron.Dimension
-    ( dimAtoms,
-      dimDiv,
-      dimFromAtoms,
-      dimInv,
-      dimMul,
-      dimOne,
-      dimPow,
-      dimVar,
-      dimVars,
-      isDimOne,
-      renderDim,
-      Dim,
-      DimAtom(DVar, Base) )
-import Metron.Primitive.Types
-    ( primScheme, primSchemeFor, StaticArg(..) )
-import Metron.TCore ( TAlt(..), TTerm(..) )
-import Metron.Type
-    ( appendShape,
-      applyArg,
-      applyAxis,
-      applyDim,
-      applyFrame,
-      applyLen,
-      applyRole,
-      applyScheme,
-      applyShape,
-      applyType,
-      closedLens,
-      emptySubst,
-      freeVars,
-      numD,
-      numT,
-      overType,
-      rankLen,
-      substOnce,
-      vecT,
-      Arg(..),
-      Axis(..),
-      Frame(space, axes, slot),
-      FrameSlot(..),
-      Kind(..),
-      Len(..),
-      Role(..),
-      Scheme(..),
-      Shape(..),
-      Space(base, dim, shape, slot),
-      SpaceSlot(..),
-      Subst,
-      Type(..),
-      TypeDef(params),
-      TypeLookup(typeDefOf, schemesOf),
-      VarId,
-      conText,
-      dataConstructors,
-      equalityArgs,
-      renderType,
-      withBuiltins )
-import Data.Map.Strict qualified as Map
-    ( Map, empty, lookup, fromList, insert )
-import Data.Text qualified as T
-    ( concat, intercalate, isPrefixOf, isSuffixOf, unwords, pack )
+import Control.Monad (foldM, forM_, unless, zipWithM, zipWithM_)
+import Control.Monad.State.Strict (
+  StateT,
+  get,
+  gets,
+  modify',
+  put,
+  runStateT,
+ )
+import Control.Monad.Trans.Class (lift)
+import Data.Bifunctor (second)
+import Data.List (isSuffixOf, minimumBy, nubBy)
+import Data.Map.Strict qualified as Map (
+  Map,
+  empty,
+  fromList,
+  insert,
+  lookup,
+ )
+import Data.Maybe (fromMaybe)
+import Data.Ord (comparing)
+import Data.Ratio (numerator)
+import Data.Text (Text)
+import Data.Text qualified as T (
+  concat,
+  intercalate,
+  isPrefixOf,
+  isSuffixOf,
+  pack,
+  unwords,
+ )
+import Metron.Builtin (
+  boolT,
+  frameDefMoving,
+  pattern ConsC,
+  pattern FalseC,
+  pattern NilC,
+  pattern TrueC,
+  pattern TupleT,
+ )
+import Metron.Core (
+  Alt (..),
+  ConRef (..),
+  Fin (..),
+  Hash,
+  Hint (..),
+  Lit (LTensor),
+  Nat (Z),
+  NudgeKind (Stat),
+  Term (..),
+  Vec (..),
+  lengthLimit,
+  showHash,
+  vecAppend,
+  vecLength,
+  vecMap,
+  vecToList,
+  vecTraverse,
+  vecZip3,
+  vecZipWith,
+ )
+import Metron.Desugar (
+  Path,
+  ascriptionMarker,
+  isFromMarker,
+  isQuantityMarker,
+  isToMarker,
+  unmarked,
+ )
+import Metron.Dimension (
+  Dim,
+  DimAtom (Base, DVar),
+  dimAtoms,
+  dimDiv,
+  dimFromAtoms,
+  dimInv,
+  dimMul,
+  dimOne,
+  dimPow,
+  dimVar,
+  dimVars,
+  isDimOne,
+  renderDim,
+ )
+import Metron.Primitive.Types (
+  StaticArg (..),
+  primScheme,
+  primSchemeFor,
+ )
+import Metron.TCore (TAlt (..), TTerm (..))
+import Metron.Type (
+  Arg (..),
+  Axis (..),
+  Frame (axes, slot, space),
+  FrameSlot (..),
+  Kind (..),
+  Len (..),
+  Role (..),
+  Scheme (..),
+  Shape (..),
+  Space (base, dim, shape, slot),
+  SpaceSlot (..),
+  Subst,
+  Type (..),
+  TypeDef (params),
+  TypeLookup (schemesOf, typeDefOf),
+  VarId,
+  appendShape,
+  applyArg,
+  applyAxis,
+  applyDim,
+  applyFrame,
+  applyLen,
+  applyRole,
+  applyScheme,
+  applyShape,
+  applyType,
+  closedLens,
+  conText,
+  dataConstructors,
+  emptySubst,
+  equalityArgs,
+  freeVars,
+  numD,
+  numT,
+  overType,
+  rankLen,
+  renderType,
+  substOnce,
+  vecT,
+  withBuiltins,
+ )
 
 {- | A type error at a path into the term being checked. Inside a 'Cycle' the
 path starts with the member index.

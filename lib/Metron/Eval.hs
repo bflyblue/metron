@@ -50,145 +50,171 @@ module Metron.Eval (
   scalar,
 ) where
 
-import Control.Monad ( foldM, when, zipWithM )
-import Data.Bifunctor ( first )
-import Data.Map.Strict ( Map )
-import Data.Maybe ( catMaybes, fromMaybe, isJust )
-import Data.Ratio ( denominator, numerator )
-import Data.Text ( Text )
-import Data.Vector ( Vector )
-import Metron.Affine
-    ( Precision,
-      absM,
-      acosM,
-      addM,
-      asinM,
-      atan2M,
-      atanM,
-      boundRadius,
-      ceilM,
-      collapse,
-      compareM,
-      cosM,
-      coshM,
-      crossCovarianceRows,
-      divM,
-      equalM,
-      expM,
-      floorM,
-      logM,
-      midpoint,
-      mulM,
-      negM,
-      nonLinearAt,
-      piM,
-      powM,
-      roundM,
-      sinM,
-      sinhM,
-      sqrtM,
-      subM,
-      tanM,
-      tanhM,
-      uncertain,
-      unitNoise,
-      ArithError(..),
-      Collapsed(variance, bound),
-      Decide(..),
-      Magnitude(Exact),
-      Origin(Declared, Tagged),
-      Skew(operation) )
-import Metron.Builtin
-    ( pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, boolC, frameDefMoving, spaceOf )
-import Metron.Core
-    ( lengthLimit,
-      vecAppend,
-      vecIndex,
-      vecMapIndexed,
-      vecToList,
-      ConRef(..),
-      Fin(..),
-      Hash(..),
-      Hint(Hint),
-      Label(Tag),
-      Lit(LTensor),
-      Nat(Z, S),
-      Plus,
-      Vec(..) )
-import Metron.Dimension
-    ( dimAtoms,
-      dimBase,
-      dimDiv,
-      dimFromAtoms,
-      dimInv,
-      dimMul,
-      dimOne,
-      dimPow,
-      dimRoot,
-      BaseDim(T, Ang),
-      Dim,
-      DimAtom(Base) )
-import Metron.Numerical.Linear
-    ( choleskyRows, determinant, invert, matrixExp )
-import Metron.Primitive ( baseUnit, primArity, typedPrims )
-import Metron.Limits ( Budget, Limit(..), Limits(..), beyond, defaultLimits, log10Abs, nested, spend )
-import Metron.Strictness ( strictMarker )
-import Metron.TCore ( TAlt(TAlt), TTerm(..) )
-import Metron.Type
-    ( Arg(..),
-      Kind(..),
-      Len(..),
-      Shape(..),
-      Space(..),
-      Type(..),
-      TypeDef,
-      VarId,
-      conText,
-      freeVars,
-      selfType,
-      spaceLens,
-      substOnce,
-      varArg,
-      pattern TTensor )
-import Metron.UnitHint
-    ( combine,
-      hintInv,
-      hintMul,
-      hintPow,
-      hintProduct,
-      mergeAtoms,
-      mkHint,
-      mkHintAs,
-      smallerUnit,
-      unitHintDiv,
-      unitHintMul,
-      unitHintPow,
-      HintMode(PreserveExpression),
-      Preferences,
-      UnitAtom(..),
-      UnitFactor(..),
-      UnitHint(..) )
-import Data.IntSet qualified as IntSet ( IntSet, member )
-import Data.Map.Strict qualified as Map ( null, empty, insert )
-import Data.Text qualified as T ( intercalate, pack )
-import Data.Vector qualified as V
-    ( (!),
-      all,
-      concat,
-      concatMap,
-      empty,
-      foldl',
-      fromList,
-      generate,
-      head,
-      imap,
-      length,
-      map,
-      replicate,
-      singleton,
-      slice,
-      toList,
-      zipWith )
+import Control.Monad (foldM, when, zipWithM)
+import Data.Bifunctor (first)
+import Data.IntSet qualified as IntSet (IntSet, member)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (empty, insert, null)
+import Data.Maybe (catMaybes, fromMaybe, isJust)
+import Data.Ratio (denominator, numerator)
+import Data.Text (Text)
+import Data.Text qualified as T (intercalate, pack)
+import Data.Vector (Vector)
+import Data.Vector qualified as V (
+  all,
+  concat,
+  concatMap,
+  empty,
+  foldl',
+  fromList,
+  generate,
+  head,
+  imap,
+  length,
+  map,
+  replicate,
+  singleton,
+  slice,
+  toList,
+  zipWith,
+  (!),
+ )
+import Metron.Affine (
+  ArithError (..),
+  Collapsed (bound, variance),
+  Decide (..),
+  Magnitude (Exact),
+  Origin (Declared, Tagged),
+  Precision,
+  Skew (operation),
+  absM,
+  acosM,
+  addM,
+  asinM,
+  atan2M,
+  atanM,
+  boundRadius,
+  ceilM,
+  collapse,
+  compareM,
+  cosM,
+  coshM,
+  crossCovarianceRows,
+  divM,
+  equalM,
+  expM,
+  floorM,
+  logM,
+  midpoint,
+  mulM,
+  negM,
+  nonLinearAt,
+  piM,
+  powM,
+  roundM,
+  sinM,
+  sinhM,
+  sqrtM,
+  subM,
+  tanM,
+  tanhM,
+  uncertain,
+  unitNoise,
+ )
+import Metron.Builtin (
+  boolC,
+  frameDefMoving,
+  spaceOf,
+  pattern ConsC,
+  pattern FalseC,
+  pattern NilC,
+  pattern TrueC,
+ )
+import Metron.Core (
+  ConRef (..),
+  Fin (..),
+  Hash (..),
+  Hint (Hint),
+  Label (Tag),
+  Lit (LTensor),
+  Nat (S, Z),
+  Plus,
+  Vec (..),
+  lengthLimit,
+  vecAppend,
+  vecIndex,
+  vecMapIndexed,
+  vecToList,
+ )
+import Metron.Dimension (
+  BaseDim (Ang, T),
+  Dim,
+  DimAtom (Base),
+  dimAtoms,
+  dimBase,
+  dimDiv,
+  dimFromAtoms,
+  dimInv,
+  dimMul,
+  dimOne,
+  dimPow,
+  dimRoot,
+ )
+import Metron.Limits (
+  Budget,
+  Limit (..),
+  Limits (..),
+  beyond,
+  defaultLimits,
+  log10Abs,
+  nested,
+  spend,
+ )
+import Metron.Numerical.Linear (
+  choleskyRows,
+  determinant,
+  invert,
+  matrixExp,
+ )
+import Metron.Primitive (baseUnit, primArity, typedPrims)
+import Metron.Strictness (strictMarker)
+import Metron.TCore (TAlt (TAlt), TTerm (..))
+import Metron.Type (
+  Arg (..),
+  Kind (..),
+  Len (..),
+  Shape (..),
+  Space (..),
+  Type (..),
+  TypeDef,
+  VarId,
+  conText,
+  freeVars,
+  selfType,
+  spaceLens,
+  substOnce,
+  varArg,
+  pattern TTensor,
+ )
+import Metron.UnitHint (
+  HintMode (PreserveExpression),
+  Preferences,
+  UnitAtom (..),
+  UnitFactor (..),
+  UnitHint (..),
+  combine,
+  hintInv,
+  hintMul,
+  hintPow,
+  hintProduct,
+  mergeAtoms,
+  mkHint,
+  mkHintAs,
+  smallerUnit,
+  unitHintDiv,
+  unitHintMul,
+  unitHintPow,
+ )
 
 {- | Evaluation parameters: the number of significant digits printed, the
 number of standard deviations a comparison must clear to be decided (design
@@ -669,7 +695,8 @@ eval cfg rt = go
     TVr i -> lookupThunk i env
     t@TLit{} -> let !v = go tenv site env t in (# v #)
     TPrimApp marker _ [a]
-      | marker == strictMarker -> let !v = evaluated (inner tenv site env a) in (# v #)
+      | marker == strictMarker ->
+          let !v = evaluated (inner tenv site env a) in (# v #)
     t -> (# inner tenv site env t #)
 
   -- 'delay' over arguments in order, the i-th at child i.
@@ -878,6 +905,7 @@ tensor or a point, so that an accumulator holds no chain of pending
 arithmetic; of data, its constructor only. A component that fails keeps
 its error to itself, as it would unforced.
 -}
+
 {- | A thunk evaluated before its call: to a value and, for a number, its
 one component (a tensor's stay lazy, each failing only where used).
 -}
@@ -930,6 +958,7 @@ appear with opposite signs cancel ( rad^-1@ is a number,  m^-1@ is
 recomputed from what is left. Nothing when a factor cannot be raised to its
 power, which drops the hint.
 -}
+
 {- | Two units combined (design §3.10, U2): their magnitudes and dimensions
 as two numbers', their hints as written.
 -}
@@ -1037,7 +1066,10 @@ runPrim cfg rt prim ty args = case (prim, args) of
               (d1 ++ d2)
               (dimMul dim1 dim2)
               (combine (hintMul p) h1 h2)
-              (V.concatMap (\x -> V.map (\y -> do x' <- x; y' <- y; sized cfg.limits (mulM p x' y')) ys) xs)
+              ( V.concatMap
+                  (\x -> V.map (\y -> do x' <- x; y' <- y; sized cfg.limits (mulM p x' y')) ys)
+                  xs
+              )
           )
   -- Contracting product: the left operand's last index against the right
   -- operand's first.
@@ -1380,7 +1412,9 @@ runPrim cfg rt prim ty args = case (prim, args) of
     (_, _, uh) <- scalarFull =<< u
     -- A unit written twice is one (design §3.10, U9): to dozen/dozen
     -- shows a plain number.
-    let shown h = (\h' -> h'{pinned = True}) <$> mkHintAs PreserveExpression p (mergeAtoms [] h.atoms)
+    let shown h =
+          (\h' -> h'{pinned = True})
+            <$> mkHintAs PreserveExpression p (mergeAtoms [] h.atoms)
     Right (VTensor dims d (shown =<< uh) buf)
   -- Charts (design §3.10, F3, F10). The frame and axes a chart mints are
   -- type-level tags with nothing to compute; every clause is a list of
@@ -1657,7 +1691,10 @@ runPrim cfg rt prim ty args = case (prim, args) of
   exponential sign x =
     let m = midpoint x
         e = sign (fromRational m) * logBase 10 (exp 1) :: Double
-     in maybe (Right ()) (Left . Exceeded Digits . ("the exponential " <>)) (beyond cfg.limits e)
+     in maybe
+          (Right ())
+          (Left . Exceeded Digits . ("the exponential " <>))
+          (beyond cfg.limits e)
   -- A scalar function whose result is an angle in radians.
   angle f a = do
     x <- scalar =<< a
@@ -1947,17 +1984,24 @@ chunksOf n xs
 magnitudes (design §3.5), in the given dimension and display unit. Shared
 by @covariance@, @crossCovariance@ and the REPL's @:covariance@.
 -}
-covarianceMatrix :: Config -> Dim -> Maybe UnitHint -> [Magnitude] -> [Magnitude] -> Value
+covarianceMatrix ::
+  Config -> Dim -> Maybe UnitHint -> [Magnitude] -> [Magnitude] -> Value
 covarianceMatrix cfg d hint as bs =
   VTensor
     [length as, length bs]
     d
     hint
-    (V.fromList [entry a b c | (a, row) <- zip as (crossCovarianceRows as bs), (b, c) <- zip bs row])
+    ( V.fromList
+        [ entry a b c
+        | (a, row) <- zip as (crossCovarianceRows as bs)
+        , (b, c) <- zip bs row
+        ]
+    )
  where
   entry a b c
     | any (isJust . nonLinearAt cfg.nonlinear) [a, b] =
-        Left (Metron.Eval.Domain "covariance of a value marked non-linear is not supported")
+        Left
+          (Metron.Eval.Domain "covariance of a value marked non-linear is not supported")
     | otherwise = Right (Exact c)
 
 {- | Pair the fields of a constructor with an alternative's binders; the

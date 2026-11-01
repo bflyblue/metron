@@ -118,7 +118,9 @@ startSession opts = do
     either (\err -> TIO.hPutStrLn stderr err >> exitFailure) pure
       $ foldM
         ( \l (n, v) ->
-            fromMaybe (Left ("--set: no setting " <> n <> "; :set lists them")) (setLimit n v l)
+            fromMaybe
+              (Left ("--set: no setting " <> n <> "; :set lists them"))
+              (setLimit n v l)
         )
         live.session.config.limits
         opts.settings
@@ -172,7 +174,10 @@ stepWith ::
 stepWith feeder live src = do
   -- The work happens as the outputs are forced, so they are forced here,
   -- under the heap and the clock (design §8.1).
-  result <- runLimited live.session.config.limits (evaluate (forced (feeder live.session src)))
+  result <-
+    runLimited
+      live.session.config.limits
+      (evaluate (forced (feeder live.session src)))
   case join result of
     Left err -> pure (Left err)
     Right (session', outs) -> do

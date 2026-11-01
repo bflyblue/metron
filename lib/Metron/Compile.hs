@@ -11,58 +11,83 @@ module Metron.Compile (
   renderEvalError,
 ) where
 
-import Data.Map.Strict ( Map )
-import Data.Maybe ( fromMaybe, listToMaybe )
-import Data.Text ( Text )
-import Metron.Check
-    ( checkCore,
-      CheckError(CoreLintError, InferenceError),
-      CheckedCore(inferred, linted, typed) )
-import Metron.Codebase
-    ( chartNameFor,
-      lookupTypeDef,
-      unitNameFor,
-      Codebase(derived),
-      Reference(Reference) )
-import Metron.Core ( showHash, Hash, Nat(Z), Term, Vec(VNil) )
-import Metron.Desugar
-    ( desugarClosed,
-      desugarMarked,
-      fillOperands,
-      provenanceAt,
-      DesugarError(BadSpecialForm, UnknownName),
-      Provenance(ascriptions) )
-import Metron.UnitHint ( Preferences )
-import Metron.Eval ( evalAt, evalDefinition, neededAtRuntime, Config(precision, limits), EvalError(..), Runtime(..), Value )
-import Metron.Hash ( hashTerm )
-import Metron.Pretty ( renderValue )
-import Metron.Resolve.Error ( renderResolveError, ResolveError(..) )
-import Metron.NameResolution ( resolverFor )
-import Metron.Resolve ( annotationsWith, ascriptionsIn, typeLookupFor, withHint )
-import Metron.Session.Types ( LastExpr(LastExpr) )
-import Metron.Source ( printerFor )
-import Metron.Limits ( limitHint, newBudget )
-import Metron.Strictness ( signatureAt, signatures, strictify )
-import Metron.TCore ( TTerm )
-import Metron.Type
-    ( freeVars,
-      selfType,
-      Arg(AType),
-      Scheme(..),
-      Type(TData, TFun),
-      VarId,
-      renderScheme )
-import Metron.Infer qualified as I
-    ( hasReadingMarkers,
-      readingsOf,
-      rewriteReadings,
-      TypeError(message, path) )
-import Data.Map.Lazy qualified as LazyMap ( map, mapWithKey )
-import Data.Map.Strict qualified as Map
-    ( empty, lookup, findWithDefault )
-import Metron.Syntax qualified as S
-    ( renderSpanError, Expr(span), Name(span, text), Scope )
-import Data.Text qualified as T ( pack )
+import Data.Map.Lazy qualified as LazyMap (map, mapWithKey)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (
+  empty,
+  findWithDefault,
+  lookup,
+ )
+import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Text (Text)
+import Data.Text qualified as T (pack)
+import Metron.Check (
+  CheckError (CoreLintError, InferenceError),
+  CheckedCore (inferred, linted, typed),
+  checkCore,
+ )
+import Metron.Codebase (
+  Codebase (derived),
+  Reference (Reference),
+  chartNameFor,
+  lookupTypeDef,
+  unitNameFor,
+ )
+import Metron.Core (Hash, Nat (Z), Term, Vec (VNil), showHash)
+import Metron.Desugar (
+  DesugarError (BadSpecialForm, UnknownName),
+  Provenance (ascriptions),
+  desugarClosed,
+  desugarMarked,
+  fillOperands,
+  provenanceAt,
+ )
+import Metron.Eval (
+  Config (limits, precision),
+  EvalError (..),
+  Runtime (..),
+  Value,
+  evalAt,
+  evalDefinition,
+  neededAtRuntime,
+ )
+import Metron.Hash (hashTerm)
+import Metron.Infer qualified as I (
+  TypeError (message, path),
+  hasReadingMarkers,
+  readingsOf,
+  rewriteReadings,
+ )
+import Metron.Limits (limitHint, newBudget)
+import Metron.NameResolution (resolverFor)
+import Metron.Pretty (renderValue)
+import Metron.Resolve (
+  annotationsWith,
+  ascriptionsIn,
+  typeLookupFor,
+  withHint,
+ )
+import Metron.Resolve.Error (ResolveError (..), renderResolveError)
+import Metron.Session.Types (LastExpr (LastExpr))
+import Metron.Source (printerFor)
+import Metron.Strictness (signatureAt, signatures, strictify)
+import Metron.Syntax qualified as S (
+  Expr (span),
+  Name (span, text),
+  Scope,
+  renderSpanError,
+ )
+import Metron.TCore (TTerm)
+import Metron.Type (
+  Arg (AType),
+  Scheme (..),
+  Type (TData, TFun),
+  VarId,
+  freeVars,
+  renderScheme,
+  selfType,
+ )
+import Metron.UnitHint (Preferences)
 
 data CheckedExpr = CheckedExpr
   { term :: Term Z
@@ -243,9 +268,10 @@ checkExpr scope cb src e = do
   let read' = I.rewriteReadings chosen
   checked <-
     either
-      (Left . \case
-        InferenceError err -> typeErr checkProv err
-        CoreLintError err -> "internal error: elaboration produced ill-typed core: " <> err)
+      ( Left . \case
+          InferenceError err -> typeErr checkProv err
+          CoreLintError err -> "internal error: elaboration produced ill-typed core: " <> err
+      )
       Right
       (checkCore (annotationsWith cb asc) (typeLookupFor cb) (read' checkTerm))
   let schemes = checked.inferred

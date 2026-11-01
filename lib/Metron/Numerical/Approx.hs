@@ -19,8 +19,8 @@ module Metron.Numerical.Approx (
   scaleA,
 ) where
 
-import Data.Ratio ( (%), numerator, denominator )
-import GHC.Num ( integerLog2 )
+import Data.Ratio (denominator, numerator, (%))
+import GHC.Num (integerLog2)
 
 type Precision = Int
 
@@ -153,7 +153,8 @@ logApprox p x
   -- The power of two, to within one, from the sizes of x's parts: halving
   -- one step at a time took 330000 steps of a 100000-digit rational for
   -- @log 1e-99999@.
-  k0 = toInteger (integerLog2 (numerator x)) - toInteger (integerLog2 (denominator x))
+  k0 =
+    toInteger (integerLog2 (numerator x)) - toInteger (integerLog2 (denominator x))
   reduce k y
     | y >= 2 = reduce (k + 1) (y / 2)
     | y < 1 = reduce (k - 1) (y * 2)

@@ -17,21 +17,29 @@ module Metron.Limits (
   settingLines,
   setLimit,
   parseCount,
+
   -- * The evaluator's budget
   Budget,
   newBudget,
   spend,
   nested,
+
   -- * Sizes of numbers
   log10Abs,
   beyond,
+
   -- * Around an input
   runLimited,
   applyMemory,
   limitHeap,
 ) where
 
-import Control.Exception (AsyncException (HeapOverflow, StackOverflow), evaluate, throwIO, try)
+import Control.Exception (
+  AsyncException (HeapOverflow, StackOverflow),
+  evaluate,
+  throwIO,
+  try,
+ )
 import Data.Bits (shiftR, unsafeShiftL)
 import Data.Char (isDigit)
 import Data.Ratio (denominator, numerator)
@@ -140,7 +148,8 @@ parseCount t = case T.splitOn "e" (T.filter (/= '_') t) of
   _ -> Nothing
  where
   natural s
-    | not (T.null s) && T.all isDigit s && T.length s <= 18 = Just (read (T.unpack s) :: Int)
+    | not (T.null s) && T.all isDigit s && T.length s <= 18 =
+        Just (read (T.unpack s) :: Int)
     | otherwise = Nothing
   whole m k = case T.splitOn "." m of
     [i] -> scaled i "" k
@@ -248,7 +257,10 @@ runLimited l work = do
   case r of
     Right (Just x) -> pure (Right x)
     Right Nothing ->
-      pure (Left ("error: the input took more than " <> plural l.time "second" <> limitHint Time))
+      pure
+        ( Left
+            ("error: the input took more than " <> plural l.time "second" <> limitHint Time)
+        )
     Left HeapOverflow -> do
       performMajorGC
       pure

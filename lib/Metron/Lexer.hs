@@ -17,45 +17,50 @@ module Metron.Lexer (
   showToken,
 ) where
 
-import Data.Char ( isAlphaNum, isDigit, isLetter )
-import Data.Functor ( ($>) )
-import Data.Maybe ( fromMaybe )
-import Data.Ratio ( (%) )
-import Data.Text ( Text )
-import Data.Text.Normalize ( NormalizationMode(NFC), normalize )
-import Data.Void ( Void )
-import Metron.Core ( NudgeKind(..), lengthLimit )
-import Metron.Limits ( Limit(Digits), Limits(..), defaultLimits, limitHint )
-import Metron.Syntax ( Pos(..), Span(..) )
-import Text.Megaparsec
-    ( (<|>),
-      Parsec,
-      SourcePos(sourceColumn, sourceLine),
-      MonadParsec(takeWhileP, eof, takeWhile1P, notFollowedBy, try),
-      optional,
-      getSourcePos,
-      oneOf,
-      runParser,
-      satisfy,
-      errorBundlePretty,
-      unPos,
-      choice,
-      many,
-      some )
-import Text.Megaparsec.Char ( char, digitChar, space1, string )
-import Text.Megaparsec.Char.Lexer qualified as L
-    ( skipBlockCommentNested, skipLineComment, space )
-import Data.Text qualified as T
-    ( pack,
-      cons,
-      drop,
-      dropWhile,
-      filter,
-      length,
-      map,
-      replicate,
-      toLower,
-      unpack )
+import Data.Char (isAlphaNum, isDigit, isLetter)
+import Data.Functor (($>))
+import Data.Maybe (fromMaybe)
+import Data.Ratio ((%))
+import Data.Text (Text)
+import Data.Text qualified as T (
+  cons,
+  drop,
+  dropWhile,
+  filter,
+  length,
+  map,
+  pack,
+  replicate,
+  toLower,
+  unpack,
+ )
+import Data.Text.Normalize (NormalizationMode (NFC), normalize)
+import Data.Void (Void)
+import Metron.Core (NudgeKind (..), lengthLimit)
+import Metron.Limits (Limit (Digits), Limits (..), defaultLimits, limitHint)
+import Metron.Syntax (Pos (..), Span (..))
+import Text.Megaparsec (
+  MonadParsec (eof, notFollowedBy, takeWhile1P, takeWhileP, try),
+  Parsec,
+  SourcePos (sourceColumn, sourceLine),
+  choice,
+  errorBundlePretty,
+  getSourcePos,
+  many,
+  oneOf,
+  optional,
+  runParser,
+  satisfy,
+  some,
+  unPos,
+  (<|>),
+ )
+import Text.Megaparsec.Char (char, digitChar, space1, string)
+import Text.Megaparsec.Char.Lexer qualified as L (
+  skipBlockCommentNested,
+  skipLineComment,
+  space,
+ )
 
 data Keyword
   = KLet
@@ -221,7 +226,8 @@ number limit = do
             <> (if leading > 0 then " digits" else " zeros after the point")
             <> T.unpack (limitHint Digits)
         )
-    else pure (if e >= 0 then fromInteger (mant * 10 ^ e) else mant % (10 ^ negate e))
+    else
+      pure (if e >= 0 then fromInteger (mant * 10 ^ e) else mant % (10 ^ negate e))
  where
   digits :: Lexer Text
   digits = do

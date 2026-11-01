@@ -35,81 +35,140 @@ module Metron.Desugar (
   renderDesugarError,
 ) where
 
-import Control.Applicative ( (<|>) )
-import Control.Monad ( foldM, when, zipWithM )
-import Control.Monad.Reader ( ReaderT, asks, local, runReaderT )
-import Control.Monad.State.Strict
-    ( StateT, gets, modify', runStateT )
-import Control.Monad.Trans.Class ( lift )
-import Data.Map.Strict ( Map )
-import Data.Maybe ( fromMaybe, isJust )
-import Data.Ratio ( denominator, numerator )
-import Data.Text ( Text )
-import Metron.Builtin
-    ( axesTag,
-      boolC,
-      boolHash,
-      builtinCons,
-      consC,
-      falseC,
-      frameTag,
-      listHash,
-      maxTupleArity,
-      nilC,
-      trueC,
-      tupleC,
-      tupleHash )
-import Metron.Core
-    ( primArity,
-      lengthLimit,
-      vecAppend,
-      vecFromList,
-      vecMap,
-      weakenBy,
-      Alt(..),
-      ConRef(..),
-      Fin(..),
-      Hash,
-      Hint(Hint),
-      Label(Tag, Owner),
-      Lit(..),
-      Nat(Z),
-      NudgeKind(Stat, Bound),
-      Plus,
-      SomeVec(SomeVec),
-      Term(Proj, Pack, Ref, Noise, Uncertain, App, Lam, Lit, PrimApp,
-           Pow, Con, Let, Var, Case),
-      Vec(..) )
-import Metron.Primitive ( baseUnit )
-import Metron.Type ( conText )
-import Data.Map.Strict qualified as Map
-    ( (!), empty, lookup, notMember, fromList, insert )
-import Metron.Syntax qualified as S
-    ( lastSegment,
-      spanUnion,
-      ChartClauses(spin, parent, parameterised, generators, step,
-                   origin),
-      Expr(..),
-      Name(..),
-      Node(Vec, Ascribe, Bool, Tuple, CaseOf, Lam, If, UnitBody,
-           UnitSyntax, Let, SectionL, SectionR, Proj, Slice, Record, FromTo,
-           ChartForm, List, Labelled, Neg, Pow, BinOp, App, FieldOf, Var,
-           Num),
-      Op(..),
-      PatNode(PVar, PWild, PCon),
-      Pattern(..),
-      Pos(line, col),
-      Span(..),
-      TyExpr )
-import Data.Text qualified as T
-    ( intercalate, any,
-      isPrefixOf,
-      length,
-      replace,
-      replicate,
-      splitAt,
-      stripPrefix,
-      pack )
+import Control.Applicative ((<|>))
+import Control.Monad (foldM, when, zipWithM)
+import Control.Monad.Reader (ReaderT, asks, local, runReaderT)
+import Control.Monad.State.Strict (
+  StateT,
+  gets,
+  modify',
+  runStateT,
+ )
+import Control.Monad.Trans.Class (lift)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (
+  empty,
+  fromList,
+  insert,
+  lookup,
+  notMember,
+  (!),
+ )
+import Data.Maybe (fromMaybe, isJust)
+import Data.Ratio (denominator, numerator)
+import Data.Text (Text)
+import Data.Text qualified as T (
+  any,
+  intercalate,
+  isPrefixOf,
+  length,
+  pack,
+  replace,
+  replicate,
+  splitAt,
+  stripPrefix,
+ )
+import Metron.Builtin (
+  axesTag,
+  boolC,
+  boolHash,
+  builtinCons,
+  consC,
+  falseC,
+  frameTag,
+  listHash,
+  maxTupleArity,
+  nilC,
+  trueC,
+  tupleC,
+  tupleHash,
+ )
+import Metron.Core (
+  Alt (..),
+  ConRef (..),
+  Fin (..),
+  Hash,
+  Hint (Hint),
+  Label (Owner, Tag),
+  Lit (..),
+  Nat (Z),
+  NudgeKind (Bound, Stat),
+  Plus,
+  SomeVec (SomeVec),
+  Term (
+    App,
+    Case,
+    Con,
+    Lam,
+    Let,
+    Lit,
+    Noise,
+    Pack,
+    Pow,
+    PrimApp,
+    Proj,
+    Ref,
+    Uncertain,
+    Var
+  ),
+  Vec (..),
+  lengthLimit,
+  primArity,
+  vecAppend,
+  vecFromList,
+  vecMap,
+  weakenBy,
+ )
+import Metron.Primitive (baseUnit)
+import Metron.Syntax qualified as S (
+  ChartClauses (
+    generators,
+    origin,
+    parameterised,
+    parent,
+    spin,
+    step
+  ),
+  Expr (..),
+  Name (..),
+  Node (
+    App,
+    Ascribe,
+    BinOp,
+    Bool,
+    CaseOf,
+    ChartForm,
+    FieldOf,
+    FromTo,
+    If,
+    Labelled,
+    Lam,
+    Let,
+    List,
+    Neg,
+    Num,
+    Pow,
+    Proj,
+    Record,
+    SectionL,
+    SectionR,
+    Slice,
+    Tuple,
+    UnitBody,
+    UnitSyntax,
+    Var,
+    Vec
+  ),
+  Op (..),
+  PatNode (PCon, PVar, PWild),
+  Pattern (..),
+  Pos (col, line),
+  Span (..),
+  TyExpr,
+  lastSegment,
+  spanUnion,
+ )
+import Metron.Type (conText)
 
 -- | Child positions from the root of a Core term.
 type Path = [Int]
@@ -390,7 +449,9 @@ it was.
 qualifiedChain :: Ctx n -> S.Expr -> M S.Expr
 qualifiedChain ctx e = case chain e of
   Just (x, fields@(_ : _))
-    | not (T.any (== '#') x), Nothing <- lookupCtx x ctx -> go fields (length fields)
+    | not (T.any (== '#') x)
+    , Nothing <- lookupCtx x ctx ->
+        go fields (length fields)
   _ -> pure e
  where
   -- The name at the root and each field with the span of the access up to it.

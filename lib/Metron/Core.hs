@@ -56,17 +56,21 @@ module Metron.Core (
   lengthLimit,
 ) where
 
-import Data.Bits ( shiftL, shiftR, (.&.), (.|.) )
-import Data.ByteString ( ByteString )
-import Data.Kind ( Type )
-import Data.Set ( Set )
-import Data.String ( IsString(..) )
-import Data.Text ( Text )
-import Metron.Primitive ( primArity )
-import Data.ByteString qualified as BS ( unpack )
-import Data.Set qualified as Set ( empty, singleton )
-import Data.Text qualified as T
-    ( pack, dropWhile, isPrefixOf, take )
+import Data.Bits (shiftL, shiftR, (.&.), (.|.))
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS (unpack)
+import Data.Kind (Type)
+import Data.Set (Set)
+import Data.Set qualified as Set (empty, singleton)
+import Data.String (IsString (..))
+import Data.Text (Text)
+import Data.Text qualified as T (
+  dropWhile,
+  isPrefixOf,
+  pack,
+  take,
+ )
+import Metron.Primitive (primArity)
 
 -- Type-level naturals ------------------------------------------------------
 
@@ -404,6 +408,7 @@ rewriteRefs f = go
 eta-expand partial applications; the evaluator and type checker rely on
 'PrimApp' nodes being saturated.
 -}
+
 -- Renaming and weakening ------------------------------------------------------
 
 {- | Apply a renaming of free variables, lifting it under binders. The one use

@@ -316,7 +316,8 @@ primScheme name = case name of
   -- Evaluate the first, then give the second (design §7.7): what makes a
   -- left fold strict.
   "seq" ->
-    Just (Forall [(40, KType), (41, KType)] (TFun (TVar 40) (TFun (TVar 41) (TVar 41))))
+    Just
+      (Forall [(40, KType), (41, KType)] (TFun (TVar 40) (TFun (TVar 41) (TVar 41))))
   -- A base unit is a unit (design §3.10, U1).
   _ -> case baseUnit name of
     Just b -> mono (TUnit (dimBase b))
