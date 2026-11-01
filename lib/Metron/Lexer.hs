@@ -12,6 +12,7 @@ module Metron.Lexer (
   Keyword (..),
   Located (..),
   tokenize,
+  tokenizeWithin,
   prepare,
   showToken,
 ) where
@@ -23,7 +24,8 @@ import Data.Ratio ( (%) )
 import Data.Text ( Text )
 import Data.Text.Normalize ( NormalizationMode(NFC), normalize )
 import Data.Void ( Void )
-import Metron.Core ( NudgeKind(..), componentLimit )
+import Metron.Core ( NudgeKind(..), lengthLimit )
+import Metron.Limits ( Limit(Digits), Limits(..), defaultLimits, limitHint )
 import Metron.Syntax ( Pos(..), Span(..) )
 import Text.Megaparsec
     ( (<|>),
@@ -47,6 +49,7 @@ import Data.Text qualified as T
     ( pack,
       cons,
       drop,
+      dropWhile,
       filter,
       length,
       map,
@@ -138,8 +141,15 @@ data Located a = Located {span :: Span, value :: a}
 "Metron.Parser". Errors are rendered as text.
 -}
 tokenize :: Text -> Either Text [Located Token]
-tokenize src =
-  case runParser rawTokens "<input>" (prepare src) of
+tokenize = tokenizeWithin defaultLimits.digits
+
+{- | 'tokenize' under a session's @digits@ (design §8.1): a number literal
+further from 1 than that many decimal places is refused before it is
+written out.
+-}
+tokenizeWithin :: Int -> Text -> Either Text [Located Token]
+tokenizeWithin limit src =
+  case runParser (rawTokens limit) "<input>" (prepare src) of
     Left bundle -> Left (T.pack (errorBundlePretty bundle))
     Right raws -> layout <$> adjacency raws
 
@@ -159,10 +169,10 @@ prepare = T.map fold . normalize NFC
 
 type Lexer = Parsec Void Text
 
-rawTokens :: Lexer [Located Token]
-rawTokens = do
+rawTokens :: Int -> Lexer [Located Token]
+rawTokens limit = do
   ws
-  toks <- many rawToken
+  toks <- many (rawToken limit)
   eof
   pure toks
 
@@ -170,10 +180,10 @@ ws :: Lexer ()
 ws = L.space space1 (L.skipLineComment "--") (L.skipBlockCommentNested "{-" "-}")
 
 -- | One token with its span. Gluedness is derived from spans in 'adjacency'.
-rawToken :: Lexer (Located Token)
-rawToken = do
+rawToken :: Int -> Lexer (Located Token)
+rawToken limit = do
   start <- getSourcePos
-  t <- tokenBody
+  t <- tokenBody limit
   end <- getSourcePos
   ws
   pure (Located (Span (toPos start) (toPos end)) t)
@@ -181,10 +191,10 @@ rawToken = do
 toPos :: SourcePos -> Pos
 toPos p = Pos (unPos (sourceLine p)) (unPos (sourceColumn p))
 
-tokenBody :: Lexer Token
-tokenBody =
+tokenBody :: Int -> Lexer Token
+tokenBody limit =
   choice
-    [ TNum <$> number
+    [ TNum <$> number limit
     , superscript
     , hashLabel
     , identifierOrKeyword
@@ -192,15 +202,26 @@ tokenBody =
     ]
 
 -- | @3@, @9.81@, @1e-3@, @1_000_000@. Always an exact rational.
-number :: Lexer Rational
-number = do
+number :: Int -> Lexer Rational
+number limit = do
   intPart <- digits
   fracPart <- optional (try (char '.' *> digits))
   expPart <- optional (try exponentPart)
-  let mant = read (T.unpack (intPart <> fromMaybe "" fracPart)) :: Integer
+  let written = intPart <> fromMaybe "" fracPart
+      mant = read (T.unpack written) :: Integer
       fracLen = maybe 0 T.length fracPart
       e = fromMaybe 0 expPart - fromIntegral fracLen
-  pure (if e >= 0 then fromInteger (mant * 10 ^ e) else mant % (10 ^ negate e))
+      -- The decimal exponent of the leading digit, known before 10^e is.
+      leading = e + fromIntegral (T.length (T.dropWhile (== '0') written)) - 1
+  if mant /= 0 && abs leading > toInteger limit
+    then
+      fail
+        ( "the literal would have more than "
+            <> show limit
+            <> (if leading > 0 then " digits" else " zeros after the point")
+            <> T.unpack (limitHint Digits)
+        )
+    else pure (if e >= 0 then fromInteger (mant * 10 ^ e) else mant % (10 ^ negate e))
  where
   digits :: Lexer Text
   digits = do
@@ -374,13 +395,13 @@ projection = do
   -- A position is a machine integer: one past any tensor is refused, not
   -- wrapped.
   let i = read (T.unpack ds) :: Integer
-  if i >= componentLimit
+  if i >= lengthLimit
     then
       fail
         ( "projection ."
             <> show i
             <> " is out of range: a tensor has at most "
-            <> show componentLimit
+            <> "2^40"
             <> " components"
         )
     else pure (TProj (fromInteger i))

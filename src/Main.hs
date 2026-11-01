@@ -1,17 +1,19 @@
 module Main (main) where
 
-import Control.Exception (SomeException, displayException, try)
-import Control.Monad (unless, when)
+import Control.Exception (SomeException, displayException, evaluate, try)
+import Control.Monad (foldM, join, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isSpace)
 import Data.IORef
 import Data.List (find)
-import Data.Maybe (catMaybes, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Metron.Codebase (emptyCodebase)
 import Metron.Driver
+import Metron.Eval (Config (..))
+import Metron.Limits (Limits (..), applyMemory, runLimited, setLimit)
 import Metron.Repl qualified as R
 import Metron.Store
 import System.Console.Haskeline
@@ -31,6 +33,10 @@ Every mode works against a codebase on disk (design §7.4): @--codebase DIR@
 names it, otherwise a @.metron@ directory above the working directory, else
 the user store. @--no-codebase@ runs in memory only. @--merge OTHER@ merges
 the store at OTHER into that codebase and exits.
+
+@--set NAME VALUE@, any number of times, starts the session with a
+resource limit changed as @:set NAME VALUE@ would (design §8.1): @memory@,
+@steps@, @depth@, @digits@, @components@ or @time@.
 -}
 main :: IO ()
 main = do
@@ -53,7 +59,7 @@ main = do
   usage = do
     hPutStrLn
       stderr
-      "usage: metron [--codebase DIR | --no-codebase] ['expr' | -f file | -i]\n\
+      "usage: metron [--codebase DIR | --no-codebase] [--set NAME VALUE]… ['expr' | -f file | -i]\n\
       \       metron [--codebase DIR] --merge OTHER"
     exitFailure
 
@@ -61,6 +67,8 @@ data Options = Options
   { storeDir :: Maybe FilePath
   , inMemory :: Bool
   , mergeFrom :: Maybe FilePath
+  , settings :: [(Text, Text)]
+  -- ^ limits to set at the start, in order
   }
 
 options :: [String] -> (Options, [String])
@@ -72,8 +80,10 @@ options args =
     "--codebase" : d : more -> let (o, r) = go more in (o{storeDir = Just d}, r)
     "--no-codebase" : more -> let (o, r) = go more in (o{inMemory = True}, r)
     "--merge" : d : more -> let (o, r) = go more in (o{mergeFrom = Just d}, r)
+    "--set" : n : v : more ->
+      let (o, r) = go more in (o{settings = (T.pack n, T.pack v) : o.settings}, r)
     a : more -> let (o, r) = go more in (o, a : r)
-    [] -> (Options Nothing False Nothing, [])
+    [] -> (Options Nothing False Nothing [], [])
 
 {- | Merge the store at OTHER into this codebase (design §7.4) and say what
 came across. OTHER is only read, and a store of an older format is
@@ -102,7 +112,22 @@ the store, created and seeded if it does not exist yet, loaded on top of
 the empty codebase.
 -}
 startSession :: Options -> IO Live
-startSession opts =
+startSession opts = do
+  live <- openSession opts
+  limits <-
+    either (\err -> TIO.hPutStrLn stderr err >> exitFailure) pure
+      $ foldM
+        ( \l (n, v) ->
+            fromMaybe (Left ("--set: no setting " <> n <> "; :set lists them")) (setLimit n v l)
+        )
+        live.session.config.limits
+        opts.settings
+  applyMemory limits
+  let cfg = live.session.config
+  pure live{session = live.session{config = cfg{limits = limits}}}
+
+openSession :: Options -> IO Live
+openSession opts =
   if opts.inMemory
     then (`Live` Nothing) <$> orFail seededSession
     else do
@@ -144,11 +169,21 @@ stepWith ::
   Live ->
   Text ->
   IO (Either Text (Live, [Text]))
-stepWith feeder live src = case feeder live.session src of
-  Left err -> pure (Left err)
-  Right (session', outs) -> do
-    mapM_ (\st -> sync st live.session.codebase session'.codebase) live.store
-    pure (Right (live{session = session'}, outs))
+stepWith feeder live src = do
+  -- The work happens as the outputs are forced, so they are forced here,
+  -- under the heap and the clock (design §8.1).
+  result <- runLimited live.session.config.limits (evaluate (forced (feeder live.session src)))
+  case join result of
+    Left err -> pure (Left err)
+    Right (session', outs) -> do
+      mapM_ (\st -> sync st live.session.codebase session'.codebase) live.store
+      when (session'.config.limits.memory /= live.session.config.limits.memory)
+        $ applyMemory session'.config.limits
+      pure (Right (live{session = session'}, outs))
+ where
+  forced r = case r of
+    Left err -> T.length err `seq` r
+    Right (_, outs) -> sum (map T.length outs) `seq` r
 
 runOnce :: Options -> Text -> IO ()
 runOnce opts src = do

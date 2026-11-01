@@ -33,7 +33,7 @@ import Metron.Desugar
       DesugarError(BadSpecialForm, UnknownName),
       Provenance(ascriptions) )
 import Metron.UnitHint ( Preferences )
-import Metron.Eval ( evalAt, evalDefinition, neededAtRuntime, Config(precision), EvalError(..), Runtime(..), Value )
+import Metron.Eval ( evalAt, evalDefinition, neededAtRuntime, Config(precision, limits), EvalError(..), Runtime(..), Value )
 import Metron.Hash ( hashTerm )
 import Metron.Pretty ( renderValue )
 import Metron.Resolve.Error ( renderResolveError, ResolveError(..) )
@@ -41,6 +41,7 @@ import Metron.NameResolution ( resolverFor )
 import Metron.Resolve ( annotationsWith, ascriptionsIn, typeLookupFor, withHint )
 import Metron.Session.Types ( LastExpr(LastExpr) )
 import Metron.Source ( printerFor )
+import Metron.Limits ( limitHint, newBudget )
 import Metron.Strictness ( signatureAt, signatures, strictify )
 import Metron.TCore ( TTerm )
 import Metron.Type
@@ -190,6 +191,7 @@ runtimeWith cfg cb = (rt, strictify external)
       , chartName = \h i written -> chartNameFor (Reference h i) written cb
       , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
+      , budget = newBudget cfg.limits cb
       }
   analysed = LazyMap.map (strictify external . snd) cb.derived
   known = LazyMap.map (signatures external . snd) cb.derived
@@ -268,6 +270,7 @@ renderEvalError = \case
   UnknownRef h -> "error: unknown reference " <> showHash h
   BadCycleIndex i -> "error: bad cycle index " <> T.pack (show i)
   Unsupported msg -> "not implemented: " <> msg
+  Exceeded l msg -> "error: " <> msg <> limitHint l
   ChartStep name why ->
     "error: "
       <> maybe "a chart" ("chart " <>) name

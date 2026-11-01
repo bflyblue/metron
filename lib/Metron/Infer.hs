@@ -44,7 +44,7 @@ import Data.Text ( Text )
 import Metron.Builtin
     ( pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, pattern TupleT, boolT, frameDefMoving )
 import Metron.Core
-    ( componentLimit,
+    ( lengthLimit,
       showHash,
       vecAppend,
       vecLength,
@@ -1460,8 +1460,8 @@ infer look p ctx = \case
     unify (0 : p) (numD d) tb
     pure (numD (dimPow n d), TPow b' n)
   Noise k l n
-    | n > componentLimit ->
-        failAt p ("a tensor has at most " <> tshow componentLimit <> " components")
+    | n > lengthLimit ->
+        failAt p ("a tensor has at most " <> "2^40" <> " components")
     | otherwise -> pure (vecT (LLit (fromInteger n)), TNoise k l n)
   -- x ± e over any shape (design §3.4): the uncertainty is a scalar applied
   -- to every component, or a tensor of the value's shape; in both cases one

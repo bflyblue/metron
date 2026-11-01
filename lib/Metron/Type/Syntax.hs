@@ -46,7 +46,7 @@ import Metron.Codebase
       typeNameOf,
       typeOf,
       Codebase(uses) )
-import Metron.Core ( componentLimit, showHash, Hash, Label(Owner) )
+import Metron.Core ( lengthLimit, showHash, Hash, Label(Owner) )
 import Metron.Dimension
     ( baseSymbol, dimBase, dimMul, dimOne, dimPow, dimVar, Dim )
 import Metron.Hash ( hashTypeDef )
@@ -685,13 +685,13 @@ variable its base axes, as many as its space has (design §3.10, F4).
 tyLen :: DataEnv -> S.TyExpr -> Kinds (Len, Axis)
 tyLen env a = case a.node of
   S.TyInt k
-    | k > componentLimit ->
+    | k > lengthLimit ->
         bad
           a
           ( "a length of "
               <> T.pack (show k)
               <> ": a tensor has at most "
-              <> T.pack (show componentLimit)
+              <> "2^40"
               <> " components"
           )
     | k >= 0 -> pure (LLit (fromInteger k), AAnon)
@@ -971,7 +971,7 @@ explicitScheme scope cb outer t0 = do
       bareLengths =
         Set.fromList [b.name.text | b <- binders, Just s <- [b.space], s.text == "Len"]
       amounts = [(b.name.text, t) | b <- binders, Just t <- [b.over]]
-  case [(b, k) | b <- binders, Just k <- [b.size], k > componentLimit] of
+  case [(b, k) | b <- binders, Just k <- [b.size], k > lengthLimit] of
     (b, k) : _ ->
       Left
         ( DataError
@@ -979,7 +979,7 @@ explicitScheme scope cb outer t0 = do
             ( "a length of "
                 <> T.pack (show k)
                 <> ": a tensor has at most "
-                <> T.pack (show componentLimit)
+                <> "2^40"
                 <> " components"
             )
         )

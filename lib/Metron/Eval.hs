@@ -101,7 +101,7 @@ import Metron.Affine
 import Metron.Builtin
     ( pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, boolC, frameDefMoving, spaceOf )
 import Metron.Core
-    ( componentLimit,
+    ( lengthLimit,
       vecAppend,
       vecIndex,
       vecMapIndexed,
@@ -131,6 +131,7 @@ import Metron.Dimension
 import Metron.Numerical.Linear
     ( choleskyRows, determinant, invert, matrixExp )
 import Metron.Primitive ( baseUnit, primArity, typedPrims )
+import Metron.Limits ( Budget, Limit(..), Limits(..), beyond, defaultLimits, log10Abs, nested, spend )
 import Metron.Strictness ( strictMarker )
 import Metron.TCore ( TAlt(TAlt), TTerm(..) )
 import Metron.Type
@@ -203,11 +204,20 @@ data Config = Config
   term may reach before the value is marked non-linear (design §3.2,
   @:set nonlinear@, in percent)
   -}
+  , limits :: Limits
+  -- ^ what an evaluation may ask of the machine (design §8.1)
   }
   deriving stock (Show)
 
 defaultConfig :: Config
-defaultConfig = Config{precision = 20, sigma = 3, unicode = False, nonlinear = 1 / 100}
+defaultConfig =
+  Config
+    { precision = 20
+    , sigma = 3
+    , unicode = False
+    , nonlinear = 1 / 100
+    , limits = defaultLimits
+    }
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
 precisionOf :: Config -> Precision
@@ -237,6 +247,8 @@ data Runtime = Runtime
   per evaluation rather than once per reference. Pure, so sharing changes
   no result; 'Nothing' evaluates the definition afresh
   -}
+  , budget :: Budget
+  -- ^ the steps and nesting this evaluation has spent (design §8.1), its own
   }
 
 data EvalError
@@ -253,6 +265,8 @@ data EvalError
     once a reference to it gives one, and what is wrong with the step
     -}
     ChartStep (Maybe Text) Text
+  | -- | a resource limit reached (design §8.1), and what reached it
+    Exceeded Limit Text
   | -- | Unreachable for linted terms.
     Internal Text
   deriving stock (Eq, Show)
@@ -430,8 +444,31 @@ eval cfg rt = go
  where
   p = precisionOf cfg
 
+  -- One step of the evaluation (design §8.1): every reduction counts.
   go :: TyEnv -> Site -> Env m -> TTerm m -> Thunk
-  go tenv site env = \case
+  go tenv site env t
+    | spend rt.budget t = reduce tenv site env t
+    | otherwise =
+        Left
+          ( Exceeded
+              Steps
+              ("the evaluation took more than " <> tshow cfg.limits.steps <> " steps")
+          )
+
+  {- A value something waits for, so one level deeper (design §8.1): an
+  operand, a scrutinee, the function of a call, a thunk when forced. A
+  call in tail position waits for nothing and is no deeper. -}
+  inner :: TyEnv -> Site -> Env m -> TTerm m -> Thunk
+  inner tenv site env t = nested rt.budget tooDeep (go tenv site env t)
+  tooDeep =
+    Left
+      ( Exceeded
+          Depth
+          ("the evaluation nested more than " <> tshow cfg.limits.depth <> " calls deep")
+      )
+
+  reduce :: TyEnv -> Site -> Env m -> TTerm m -> Thunk
+  reduce tenv site env = \case
     TVr i -> lookupEnv i env
     TRef h mi (Hint written) -> case rt.typedOf h of
       Nothing -> Left (UnknownRef h)
@@ -439,7 +476,7 @@ eval cfg rt = go
         -- A chart whose step may be zero is named by its reference. A
         -- definition is its own term: its type-level variables are its own.
         v <- first (namedChart (rt.chartName h mi written)) $ case mi of
-          Nothing -> fromMaybe (go Map.empty (Site h []) VNil t) (rt.shared h)
+          Nothing -> fromMaybe (inner Map.empty (Site h []) VNil t) (rt.shared h)
           Just i -> case t of
             TCycle vars _ bodies -> cycleMember h i vars bodies
             _ -> Left (BadCycleIndex i)
@@ -451,7 +488,7 @@ eval cfg rt = go
     -- The first evaluated, the second in tail position, so that a strict
     -- left fold runs in constant stack (design §7.7).
     TPrimApp "seq" _ [a, b] -> do
-      v <- go tenv (child 0) env a
+      v <- inner tenv (child 0) env a
       forceValue v `seq` go tenv (child 1) env b
     -- Marked where its call is evaluated; anywhere else the term itself,
     -- at the same site, so a nudge's identity does not see the mark.
@@ -468,7 +505,7 @@ eval cfg rt = go
     -- A boolean is data like any other: @if@ is a case on its constructor.
     TCon c _ args -> Right (VData c (delays tenv site env args))
     TCase sc _ alts ->
-      go tenv (child 0) env sc >>= \case
+      inner tenv (child 0) env sc >>= \case
         VData c fields ->
           case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
             (i, TAlt _ bs body) : _ -> go tenv (child i) (vecAppend (attach bs fields) env) body
@@ -476,7 +513,7 @@ eval cfg rt = go
         _ -> Left (Internal "case: the scrutinee is not data")
     TLamWith _ _ body free -> Right (VClosure (Closure tenv (child 0) (keepFree free env) body))
     TApp f a -> do
-      fv <- go tenv (child 0) env f
+      fv <- inner tenv (child 0) env f
       -- A moving chart applied is an instant of it (design §3.8), named
       -- after it with the arguments it was applied to. Any other
       -- application is a tail call, so a loop runs in constant stack:
@@ -498,9 +535,13 @@ eval cfg rt = go
     TLet _ _ e body -> case delay tenv (child 0) env e of
       (# x #) -> go tenv (child 1) (VCons x env) body
     TPow t n -> do
-      v <- go tenv (child 0) env t
+      v <- inner tenv (child 0) env t
       (x, d, hint) <- scalarFull v
-      r <- arith (powM p x n)
+      -- Its size is known before it is computed (design §8.1).
+      case beyond cfg.limits (fromInteger n * log10Abs (midpoint x)) of
+        Just err -> Left (Exceeded Digits ("the power " <> err))
+        Nothing -> Right ()
+      r <- sized cfg.limits =<< arith (powM p x n)
       Right $ case v of
         -- A power of a unit is a unit (design §3.10, U2).
         VUnit _ ->
@@ -508,20 +549,21 @@ eval cfg rt = go
             (num (dimPow n d) (unitHintPow p n =<< hint) r)
         _ -> num (dimPow n d) (hintPow p n =<< hint) r
     -- Fresh unit nudges, one per component (design §3.2.5).
-    TNoise k l n ->
+    TNoise k l n -> do
+      allocation cfg.limits [fromInteger n]
       let count = fromInteger n
-       in Right
-            ( VTensor
-                [count]
-                dimOne
-                Nothing
-                (V.generate count (Right . unitNoise k . originOf site l))
-            )
+      Right
+        ( VTensor
+            [count]
+            dimOne
+            Nothing
+            (V.generate count (Right . unitNoise k . originOf site l))
+        )
     -- One independent nudge per component, the component index in its
     -- identity (design §3.4); a scalar uncertainty applies to every component.
     TUncertain k l x e -> do
-      (dims, d, hint, xs) <- tensor =<< go tenv (child 0) env x
-      (edims, _, _, es) <- tensor =<< go tenv (child 1) env e
+      (dims, d, hint, xs) <- tensor =<< inner tenv (child 0) env x
+      (edims, _, _, es) <- tensor =<< inner tenv (child 1) env e
       case (dims, edims) of
         -- v ±σ P: v + cholesky P · gauss n, one statistical nudge per
         -- component, identified by this site (design §3.5).
@@ -559,22 +601,23 @@ eval cfg rt = go
     -- display unit is kept.
     -- With none, the element type alone says what the stack holds.
     TPack _ ty ts ->
-      let results = zipWith (\i t -> tensor =<< go tenv (child i) env t) [0 ..] ts
+      let results = zipWith (\i t -> tensor =<< inner tenv (child i) env t) [0 ..] ts
           known = [(dims, d, hint) | Right (dims, d, hint, _) <- results]
        in case (results, known) of
             ([], _) -> case resolveType tenv ty of
               TTensor sh d -> Right (VTensor (0 : runtimeShape sh) (runtimeDim d) Nothing V.empty)
               _ -> Left (Internal "an empty pack of non-tensors")
-            (_, (dims, d, hint) : _) ->
+            (_, (dims, d, hint) : _) -> do
+              allocation cfg.limits (length results : dims)
               let block = \case
                     Right (_, _, _, buf) -> buf
                     Left err -> V.replicate (product dims) (Left err)
-               in Right (VTensor (length results : dims) d hint (V.concat (map block results)))
+              Right (VTensor (length results : dims) d hint (V.concat (map block results)))
             (Left err : _, []) -> Left err
             (Right _ : _, []) -> Left (Internal "unreachable: a tensor with no shape")
     -- Slice out component i: a view, not a copy.
     TProj t i -> do
-      v <- go tenv (child 0) env t
+      v <- inner tenv (child 0) env t
       case v of
         VTensor dims d hint buf -> slice dims (\rest -> VTensor rest d hint) buf
         -- A coordinate of a point (design §3.10, F5): the amount along one
@@ -593,7 +636,7 @@ eval cfg rt = go
     -- only if the body's runtime needs it; otherwise the body is evaluated
     -- once, shared by every application (design §8).
     TTyLam v k b ->
-      let erased = go tenv site env b
+      let erased = inner tenv site env b
        in Right
             ( VTyAbs
                 v
@@ -604,7 +647,7 @@ eval cfg rt = go
                 )
             )
     TTyApp b a ->
-      go tenv site env b >>= \case
+      inner tenv site env b >>= \case
         VTyAbs _ _ f -> f (resolveArg tenv a)
         _ -> Left (Internal "type application to a value that is not polymorphic")
     -- A cycle is not itself a value; it is reached through @TRef h (Just i)@.
@@ -626,8 +669,8 @@ eval cfg rt = go
     TVr i -> lookupThunk i env
     t@TLit{} -> let !v = go tenv site env t in (# v #)
     TPrimApp marker _ [a]
-      | marker == strictMarker -> let !v = evaluated (go tenv site env a) in (# v #)
-    t -> (# go tenv site env t #)
+      | marker == strictMarker -> let !v = evaluated (inner tenv site env a) in (# v #)
+    t -> (# inner tenv site env t #)
 
   -- 'delay' over arguments in order, the i-th at child i.
   delays :: TyEnv -> Site -> Env m -> [TTerm m] -> [Thunk]
@@ -655,7 +698,7 @@ eval cfg rt = go
   cycleMembers :: TyEnv -> Hash -> Vec k (TTerm (Plus k Z)) -> Vec k Thunk
   cycleMembers tenv h bodies = members
    where
-    members = vecMapIndexed (\i -> go tenv (Site h [i]) (vecAppend members VNil)) bodies
+    members = vecMapIndexed (\i -> inner tenv (Site h [i]) (vecAppend members VNil)) bodies
 
   -- A member of a cycle, abstracted over the cycle's type-level variables
   -- as its stored scheme is (every member's lists them all, in order).
@@ -988,13 +1031,13 @@ runPrim cfg rt prim ty args = case (prim, args) of
       _ -> do
         (d1, dim1, h1, xs) <- tensor va
         (d2, dim2, h2, ys) <- tensor vb
-        allocation (d1 ++ d2)
+        allocation cfg.limits (d1 ++ d2)
         Right
           ( VTensor
               (d1 ++ d2)
               (dimMul dim1 dim2)
               (combine (hintMul p) h1 h2)
-              (V.concatMap (\x -> V.map (\y -> mulM p <$> x <*> y) ys) xs)
+              (V.concatMap (\x -> V.map (\y -> sized cfg.limits =<< mulM p <$> x <*> y) ys) xs)
           )
   -- Contracting product: the left operand's last index against the right
   -- operand's first.
@@ -1004,14 +1047,14 @@ runPrim cfg rt prim ty args = case (prim, args) of
     case (reverse dl, dr) of
       (n : d1rev, n' : d2)
         | n == n' -> do
-            allocation (reverse d1rev ++ d2)
+            allocation cfg.limits (reverse d1rev ++ d2)
             let d1 = reverse d1rev
                 stride2 = product d2
                 rows = product d1
                 element k =
                   let (i, j) = k `divMod` stride2
-                   in sumM
-                        <$> sequence
+                   in sized cfg.limits . sumM
+                        =<< sequence
                           [ mulM p <$> (xs V.! (i * n + c)) <*> (ys V.! (c * stride2 + j))
                           | c <- [0 .. n - 1]
                           ]
@@ -1037,7 +1080,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
               dims
               (dimDiv d1 d2)
               (combine (hintMul p) h1 (hintInv p =<< h2))
-              (V.map (\x -> x >>= \x' -> arith (divM p x' k)) xs)
+              (V.map (\x -> x >>= \x' -> sized cfg.limits =<< arith (divM p x' k)) xs)
           )
   ("eq", [a, b]) -> VBool <$> equal a b
   ("ne", [a, b]) -> VBool . not <$> equal a b
@@ -1067,7 +1110,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
         Right
         (dimRoot 2 d)
     Right (num d2 Nothing r)
-  ("exp", [a]) -> dimensionless (Right . expM p) a
+  ("exp", [a]) -> dimensionless (\x -> exponential id x >> Right (expM p x)) a
   ("log", [a]) -> dimensionless (arith . logM p) a
   ("sin", [a]) -> dimensionless (Right . sinM p) a
   ("cos", [a]) -> dimensionless (Right . cosM p) a
@@ -1075,8 +1118,8 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("asin", [a]) -> angle (arith . asinM p) a
   ("acos", [a]) -> angle (arith . acosM p) a
   ("atan", [a]) -> angle (Right . atanM p) a
-  ("sinh", [a]) -> dimensionless (Right . sinhM p) a
-  ("cosh", [a]) -> dimensionless (Right . coshM p) a
+  ("sinh", [a]) -> dimensionless (\x -> exponential abs x >> Right (sinhM p x)) a
+  ("cosh", [a]) -> dimensionless (\x -> exponential abs x >> Right (coshM p x)) a
   ("tanh", [a]) -> dimensionless (arith . tanhM p) a
   ("atan2", [a, b]) -> do
     y <- scalar =<< a
@@ -1141,7 +1184,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
     (_, dim2, h2, ys) <- tensor =<< b
     case da of
       [n] ->
-        allocation [n, n]
+        allocation cfg.limits [n, n]
           >> Right
             ( VTensor
                 [n, n]
@@ -1593,7 +1636,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
   pureOp op x y = Right (op x y)
   elementwise1 op a = do
     (dims, d, hint, buf) <- tensor =<< a
-    Right (VTensor dims d hint (V.map (fmap op) buf))
+    Right (VTensor dims d hint (V.map (>>= sized cfg.limits . op) buf))
   elementwise2 op dimOp hintOp a b = do
     (dims, d1, h1, xs) <- tensor =<< a
     (_, d2, h2, ys) <- tensor =<< b
@@ -1602,12 +1645,19 @@ runPrim cfg rt prim ty args = case (prim, args) of
           dims
           (dimOp d1 d2)
           (hintOp h1 h2)
-          (V.zipWith (\x y -> do x' <- x; y' <- y; op x' y') xs ys)
+          (V.zipWith (\x y -> do x' <- x; y' <- y; op x' y' >>= sized cfg.limits) xs ys)
       )
   -- A scalar function whose result is a bare dimensionless number.
   dimensionless f a = do
     x <- scalar =<< a
     num dimOne Nothing <$> f x
+  -- e^x has about x·log₁₀ e digits: known before the series is summed
+  -- (design §8.1), which for a large x would run for minutes. The
+  -- exponent is the midpoint's, measured by the given sign rule.
+  exponential sign x =
+    let m = midpoint x
+        e = sign (fromRational m) * logBase 10 (exp 1) :: Double
+     in maybe (Right ()) (Left . Exceeded Digits . ("the exponential " <>)) (beyond cfg.limits e)
   -- A scalar function whose result is an angle in radians.
   angle f a = do
     x <- scalar =<< a
@@ -1660,25 +1710,34 @@ runPrim cfg rt prim ty args = case (prim, args) of
 sumM :: [Magnitude] -> Magnitude
 sumM = foldl' addM (Exact 0)
 
-{- | Whether a tensor of these lengths may be allocated: at most
-'componentLimit' components, counted without overflow (design §3.3). A
-product whose operands are each within the limit can exceed it.
+{- | Whether a tensor of these lengths may be built: at most the session's
+@components@ (design §8.1), counted without overflow. A product whose
+operands are each within the limit can exceed it.
 -}
-allocation :: [Int] -> Either EvalError ()
-allocation dims
-  | n > componentLimit =
+allocation :: Limits -> [Int] -> Either EvalError ()
+allocation l dims
+  | n > toInteger l.components =
       Left
-        ( Metron.Eval.Domain
+        ( Exceeded
+            Components
             ( "the result would have "
                 <> tshow n
-                <> " components: a tensor has at most "
-                <> tshow componentLimit
-                <> " components"
+                <> " components, more than "
+                <> tshow l.components
             )
         )
   | otherwise = Right ()
  where
   n = product (map toInteger dims)
+
+{- | A number, unless it is further from 1 than the session's @digits@
+allows (design §8.1). Only a magnitude is measured: an exact result's
+length is the precision's concern (design §3.2.8).
+-}
+sized :: Limits -> Magnitude -> Either EvalError Magnitude
+sized l x = case beyond l (log10Abs (midpoint x)) of
+  Nothing -> Right x
+  Just err -> Left (Exceeded Digits ("the result " <> err))
 
 -- Index arithmetic ----------------------------------------------------------------------
 
@@ -1695,7 +1754,7 @@ positions t = do
     Exact r
       | denominator r == 1
       , r >= 0
-      , numerator r < componentLimit ->
+      , numerator r < lengthLimit ->
           Right (fromInteger (numerator r))
     _ -> Left (Internal "an index position is not a literal natural number")
 

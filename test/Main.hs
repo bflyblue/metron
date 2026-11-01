@@ -8,6 +8,7 @@ import Data.ByteString qualified as BS
 import Support.Render (render)
 
 import Astro (astroTests)
+import Limits (limitTests, measure)
 import Data.List (sort)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
@@ -54,6 +55,7 @@ import Metron.Infer (
  )
 import Metron.Lexer hiding (TNum, TProj)
 import Metron.Lexer qualified as L
+import Metron.Limits (defaultLimits, newBudget, settingLines)
 import Metron.NameResolution (LabelKind (..), Qualified (..), qualifyName)
 import Metron.Parser
 import Metron.Prelude (
@@ -88,10 +90,12 @@ import Test.Tasty.QuickCheck
 
 {- | Every test has a five-minute limit as a backstop to 'caseLimit', which
 times each generated case but not the generator itself: the whole suite
-normally runs in seconds, so a test that reaches it has hung.
+normally runs in seconds, so a test that reaches it has hung. What the
+limits tests measure of the heap runs first, on the main thread ("Limits").
 -}
 main :: IO ()
-main =
+main = do
+  measured <- measure
   defaultMain
     . localOption (mkTimeout 300_000_000)
     $ testGroup
@@ -130,6 +134,7 @@ main =
       , namespaceTests
       , editTests
       , stdlibTests
+      , limitTests measured
       , annotationTests
       , forallTests
       , dimensionSyntaxTests
@@ -219,6 +224,7 @@ run defs t = do
               (\_ _ _ -> Nothing)
               (const Nothing)
               (const Nothing)
+              (newBudget defaultLimits typed)
           )
           typed
       )
@@ -973,23 +979,37 @@ endToEndTests =
           @?= Right ["1"]
         runLines [":type 1 m^-18446744073709551617"]
           @?= Right ["Num (1/m^18446744073709551617)"]
-    , testCase "a length, count or position past the component limit is refused" $ do
+    , testCase "a length, count or position past a machine integer is refused" $ do
         let refused src = case evalText src of
               Left err ->
-                T.isInfixOf "a tensor has at most 10000000 components" err @? T.unpack err
+                T.isInfixOf "a tensor has at most 2^40 components" err @? T.unpack err
               Right out -> assertFailure (show out)
         refused "noise 18446744073709551616"
-        refused "gauss 10000001"
         refused "[1, 2].18446744073709551616"
         refused "contract 0 18446744073709551616 [1, 2; 3, 4]"
         refused "slice 0 18446744073709551616 [1, 2; 3, 4]"
         refused "f :: Vec 18446744073709551616 -> Num\nlet f v = 1"
         refused "g :: forall (a : 18446744073709551616). Vec a -> Vec a\nlet g v = v"
+    , testCase "a tensor past the components limit is refused when built" $ do
+        let refused src = case evalText src of
+              Left err ->
+                T.isInfixOf "more than 10000000 (`:set components`)" err @? T.unpack err
+              Right out -> assertFailure (show out)
+        refused "gauss 10000001"
         -- a product of tensors each within the limit can exceed it
         refused "let v = noise 4000 in outer v v"
         refused "let v = noise 4000 in wedge v v"
         refused "let v = noise 4000 in dot (outer v [1]) (outer [1] v)"
         evalText "let v = noise 3000 in (outer v v).1.2" @?= Right ["0 ± 1"]
+        -- the limit is a setting, and a stack of tensors counts too
+        case runLines [":set components 100", "noise 101"] of
+          Left err -> T.isInfixOf "101 components, more than 100" err @? T.unpack err
+          Right out -> assertFailure (show out)
+        case runLines [":set components 100", "[noise 50, noise 50, noise 50]"] of
+          Left err -> T.isInfixOf "150 components, more than 100" err @? T.unpack err
+          Right out -> assertFailure (show out)
+        runLines [":set components 100", "(noise 100).99", ":set components 150", "(noise 101).100"]
+          @?= Right ["0 ± 1", "0 ± 1"]
     , testCase "an empty tensor takes its element type from context" $ do
         -- an ascription
         evalText "([] :: Vec 0 m)" @?= Right ["[] m"]
@@ -3145,6 +3165,7 @@ pipelineProperties src =
                 (\_ _ _ -> Nothing)
                 (const Nothing)
                 (const Nothing)
+                (newBudget defaultLimits typed)
             )
             typed
             >>= render of
@@ -4326,19 +4347,16 @@ displayTests =
   testGroup
     "display units"
     [ testCase ":set unicode prints the unicode spellings, which read back" $ do
+        let limits = settingLines defaultLimits
         runLinesP [":set"]
-          @?= Right ["precision 20", "sigma 3", "unicode off", "nonlinear 1"]
+          @?= Right (["precision 20", "sigma 3", "unicode off", "nonlinear 1"] ++ limits)
         runLinesP [":set unicode on", ":set", ":set unicode off", ":set"]
           @?= Right
-            [ "precision 20"
-            , "sigma 3"
-            , "unicode on"
-            , "nonlinear 1"
-            , "precision 20"
-            , "sigma 3"
-            , "unicode off"
-            , "nonlinear 1"
-            ]
+            ( ["precision 20", "sigma 3", "unicode on", "nonlinear 1"]
+                ++ limits
+                ++ ["precision 20", "sigma 3", "unicode off", "nonlinear 1"]
+                ++ limits
+            )
         case runLinesP [":set unicode maybe"] of
           Left err -> T.isInfixOf "unicode is on or off" err @? T.unpack err
           Right v -> assertFailure (show v)

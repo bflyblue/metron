@@ -97,9 +97,10 @@ import Metron.Edit
       editorNote,
       applyEdit )
 import Metron.UnitHint ( hintPow, hintProduct, UnitHint(pinned) )
-import Metron.Eval ( covarianceMatrix, precisionOf, Config(nonlinear, Config, precision, sigma, unicode), EvalError(Internal), Value(VData, VTensor) )
+import Metron.Eval ( covarianceMatrix, precisionOf, Config(nonlinear, Config, precision, sigma, unicode, limits), EvalError(Internal), Value(VData, VTensor) )
+import Metron.Limits ( Limits(digits), setLimit, settingLines )
 import Metron.Hash ( hashTerm )
-import Metron.Parser ( parseExpr, parseProgram, parseType )
+import Metron.Parser ( parseExprWithin, parseProgramWithin, parseType )
 import Metron.Prelude ( isLibraryPath, stdlibCodebase )
 import Metron.Pretty
     ( displayParts,
@@ -245,7 +246,7 @@ feed' session src
   | Just cmd <- T.stripPrefix ":" (T.stripStart src) =
       command session src (T.words cmd)
   | otherwise = do
-      stmts <- parseProgram src
+      stmts <- parseProgramWithin session.config.limits.digits src
       -- Namespaces flattened (design §7.6): full paths, each with its scope.
       -- The top-level `use`s last for the session.
       let (decls, exprs, scope') = S.flatten session.scope stmts
@@ -350,12 +351,13 @@ command :: Session -> Text -> [Text] -> Either Text (Session, [Text])
 command session src = \case
   ["set"] ->
     keep
-      ( Right
+      ( Right $
           [ "precision " <> tshow cfg.precision
           , "sigma " <> tshow cfg.sigma
           , "unicode " <> (if cfg.unicode then "on" else "off")
           , "nonlinear " <> T.pack (show (round (100 * cfg.nonlinear) :: Integer))
           ]
+            ++ settingLines cfg.limits
       )
   ["set", "precision", n] ->
     setting n (\k -> cfg{precision = k}) "precision must be a non-negative integer"
@@ -371,9 +373,14 @@ command session src = \case
             , sigma = cfg.sigma
             , unicode = cfg.unicode
             , nonlinear = fromIntegral k / 100
+            , limits = cfg.limits
             }
       )
       "nonlinear must be a non-negative integer, a percentage"
+  -- The resource limits (design §8.1).
+  ["set", name, value]
+    | Just changed <- setLimit name value cfg.limits ->
+        (\l -> (session{config = cfg{limits = l}}, [])) <$> changed
   -- Output spelling (design §2.8, §7.3).
   ["set", "unicode", "on"] -> Right (session{config = cfg{unicode = True}}, [])
   ["set", "unicode", "off"] -> Right (session{config = cfg{unicode = False}}, [])
@@ -515,7 +522,7 @@ command session src = \case
   -- The type the expression's value has as `it`, a named value (design
   -- §3.9, decision 5): when not a function, its free axes anonymous.
   ("type" : rest) -> keep $ do
-    e <- parseExpr (T.unwords rest)
+    e <- parseExprWithin cfg.limits.digits (T.unwords rest)
     CheckedExpr _ _ ty _ <- checkExpr scope ecb (T.unwords rest) e
     pure [maybe "" (renderForallIn spelling . defaultAxes) ty]
   -- Without an editor, :edit prints the source it would open (design
@@ -729,7 +736,7 @@ command session src = \case
     [(k, "")] | k >= (0 :: Int) -> Right (session{config = adjust k}, [])
     _ -> Left err
   evalOf rest = do
-    e <- parseExpr (T.unwords rest)
+    e <- parseExprWithin cfg.limits.digits (T.unwords rest)
     evalValue cfg scope ecb (T.unwords rest) e
   -- Nudges declared in the expression itself are labelled "input".
   inputNamer h h' i written = if h' == h then "input" else refNamer scope ecb h' i written

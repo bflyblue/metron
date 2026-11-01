@@ -5,7 +5,9 @@
 -}
 module Metron.Parser (
   parseProgram,
+  parseProgramWithin,
   parseExpr,
+  parseExprWithin,
   parseType,
 ) where
 
@@ -36,6 +38,7 @@ import Metron.Lexer (
   Token (..),
   showToken,
   tokenize,
+  tokenizeWithin,
  )
 import Metron.Syntax (
   BindKind (ChartDecl, Plain, Unit),
@@ -183,9 +186,23 @@ parseProgram src = do
   toks <- tokenize src
   runP program src toks
 
+{- | 'parseProgram' under a session's @digits@ (design §8.1), which bounds
+how large or small a number literal may be.
+-}
+parseProgramWithin :: Int -> Text -> Either Text [Statement]
+parseProgramWithin digits src = do
+  toks <- tokenizeWithin digits src
+  runP program src toks
+
 parseExpr :: Text -> Either Text Expr
 parseExpr src = do
   toks <- tokenize src
+  runP (P.many (tok TSep) *> expr <* P.many (tok TSep)) src toks
+
+-- | 'parseExpr' under a session's @digits@.
+parseExprWithin :: Int -> Text -> Either Text Expr
+parseExprWithin digits src = do
+  toks <- tokenizeWithin digits src
   runP (P.many (tok TSep) *> expr <* P.many (tok TSep)) src toks
 
 runP :: Parser a -> Text -> [Located Token] -> Either Text a

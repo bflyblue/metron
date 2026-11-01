@@ -15,7 +15,7 @@ import Metron.Builtin (
   listT,
   spaceOf,
  )
-import Metron.Core (ConRef (..), Hash, Lit (..), componentLimit)
+import Metron.Core (ConRef (..), Hash, Lit (..), lengthLimit)
 import Metron.Dimension (
   BaseDim (Ang, T),
   dimBase,
@@ -677,6 +677,6 @@ primSchemeForLits name lits = case name of
     LTensor ([], [r]) -> integral r
     _ -> Nothing
   integral r
-    | denominator r == 1 && r >= 0 && numerator r < componentLimit =
+    | denominator r == 1 && r >= 0 && numerator r < lengthLimit =
         Just (fromInteger (numerator r))
     | otherwise = Nothing

@@ -61,7 +61,7 @@ import Metron.Builtin
       tupleHash )
 import Metron.Core
     ( primArity,
-      componentLimit,
+      lengthLimit,
       vecAppend,
       vecFromList,
       vecMap,
@@ -829,7 +829,7 @@ headApp path ctx hd x args = case lookupCtx x ctx of
               | S.Num n <- a.node
               , denominator n == 1
               , n >= 0
-              , numerator n > componentLimit ->
+              , numerator n > lengthLimit ->
                   failWith
                     ( BadSpecialForm
                         a.span
@@ -837,7 +837,7 @@ headApp path ctx hd x args = case lookupCtx x ctx of
                             <> " "
                             <> T.pack (show (numerator n))
                             <> ": a tensor has at most "
-                            <> T.pack (show componentLimit)
+                            <> "2^40"
                             <> " components"
                         )
                     )
@@ -940,14 +940,14 @@ indexProblem name lits
       | (i, Just (LTensor (_, rs))) <- zip [0 ..] lits
       , r <- rs
       , isNatural r
-      , numerator r >= componentLimit
+      , numerator r >= lengthLimit
       ] =
       Just
         ( i
         , "position "
             <> tshowI r
             <> " is out of range: a tensor has at most "
-            <> tshowI componentLimit
+            <> "2^40"
             <> " components"
         )
   | otherwise = case (name, lits) of
