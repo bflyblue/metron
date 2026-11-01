@@ -28,7 +28,8 @@
 - `std.foldl'`, strict in its accumulator, beside the lazy `std.foldl`, and
   the primitive `seq a b`, which evaluates `a` and every component of a
   number, a tensor or a point before giving `b`. `length` and `reverse` use
-  `foldl'`.
+  `foldl'`, so their hashes change, and `std.foldl'` is a new term: a
+  codebase seeded before keeps the old ones until `:stdlib upgrade`.
 - A sum of many uncertain values is linear in their number: each addition
   filtered every nudge, and compaction sorted by insertion, so `norm
   (noise 1000000)` ran past a minute; it takes 8.5 s. `log` of a tiny

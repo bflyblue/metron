@@ -12,7 +12,10 @@ An error is a value here, not an exception, so evaluating an argument
 early cannot raise an error the program would not have raised; the one
 difference is an argument that never finishes, where the program would
 have failed with another error first, and the evaluator then stops at a
-limit instead.
+limit instead. The evaluator also evaluates the components of a number or
+of a small tensor passed so (Metron.Eval.evaluated), which the analysis
+does not prove are read: one that is never read is computed anyway, or,
+if it never finishes, stops at a limit.
 
 The analysis is the classic one over Typed Core: a case evaluates its
 scrutinee and what every alternative evaluates; a strict primitive its

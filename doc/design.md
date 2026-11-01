@@ -5482,7 +5482,9 @@ unreachable for linted terms and are reported as internal errors.
   solved together from all-strict down). Errors are values, not
   exceptions, so evaluating an argument early raises no error the program
   would not have raised; the components of a number, or of a tensor or point
-  of at most 64 components, are evaluated with it, a larger tensor's stay lazy.
+  of at most 64 components, are evaluated with it, a larger tensor's stay lazy;
+  a component the function never reads is then computed anyway, or, if it
+  never finishes, stops at `steps`.
 - `Con` builds a data value whose fields are thunks; `Case` forces its scrutinee
   to a constructor and binds the fields, unevaluated, in the chosen alternative.
   Booleans are the two nullary constructors; lists are cons cells of thunks, so
@@ -5625,6 +5627,7 @@ RSS, outcome); the numbers in the cause column are the fixes above:
 | `(outer (noise 4000) (noise 4000)).0.0` | refused, fixed limit | 0.07 s: refused, `components` | |
 | `2^100000`, `exp 200`, printed | 0.09 s, 32 MB | the same | printing a long exact value is cheap |
 | `log 1e-99999` | 33 s, 0.96 GB | 28 s, 0.97 GB | its series in exact rationals; see below |
+| a cycle's member referenced from outside it, `ev 2` 300000 times in a loop | not measured | 0.81 s, 32 MB (0.46 s for a function that is no cycle's) | a reference re-ties the cycle each time: a constant cost, not a leak |
 
 The test suite, run with every QuickCheck property at 2000 cases under a
 3 GB cap, is green in 29 s with a peak of 1.0 GB, the generator's slowest
