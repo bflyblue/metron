@@ -137,9 +137,10 @@ merged = \case
     Right vs -> Right <$> merged vs
     Left _ -> Left <$> failure ts
 
-{- | The error batches that failed give together: the @steps@ limit, which
-they share, if any reached it; else their error, if all failed alike;
-else none, and the batches do not merge.
+{- | The error batches that failed give together: the @steps@ limit, if
+any reached it (each has the whole limit and takes the same steps, so
+all reach it alike); else their error, if all failed alike; else none,
+and the batches do not merge.
 -}
 failure :: [Either EvalError a] -> Maybe EvalError
 failure rs = case [e | Left e@(Exceeded Steps _) <- rs] of

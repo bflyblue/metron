@@ -72,7 +72,7 @@ import Metron.Infer qualified as I (
   readingsOf,
   rewriteReadings,
  )
-import Metron.Limits (limitHint, newBudgetOf, remarksAfter, timedRemarksAfter)
+import Metron.Limits (limitHint, newBudget, remarksAfter, timedRemarksAfter)
 import Metron.NameResolution (resolverFor)
 import Metron.Needs (Needs, checkBackend, reachedBy)
 import Metron.Pretty (Display, renderValue)
@@ -192,8 +192,8 @@ shown cfg scope cb prefs v remarks = do
 {- | The double backend's value with its copies evaluated in parallel
 batches (design §8.2, "Metron.Batch"), each batch in its own thread and
 its own runtime, then merged, with the batches' warnings together, or
-the error they fail with together ('failure': the shared @steps@ limit
-among them). 'Nothing' when the batches do not merge, and the input
+the error they fail with together ('failure'). Each batch has the whole
+@steps@ limit. 'Nothing' when the batches do not merge, and the input
 should run as one evaluation.
 -}
 batchedValue ::
@@ -375,10 +375,7 @@ runtimeWith cfg cb = (rt, strictify external)
       , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
       , budget =
-          newBudgetOf
-            (maybe 1 (.batches) cfg.batch)
-            cfg.limits
-            (cb, fmap (.first) cfg.batch)
+          newBudget cfg.limits (cb, fmap (.first) cfg.batch)
       }
   analysed = LazyMap.map (strictify external . snd) cb.derived
   known = LazyMap.map (signatures external . snd) cb.derived

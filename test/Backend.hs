@@ -881,7 +881,7 @@ coresTests =
             )
               @? T.unpack out
           other -> assertFailure (show other)
-    , testCase "the steps limit counts all batches together" $ do
+    , testCase "steps applies to each batch: accepted alike at every K" $ do
         let ls k steps =
               [ "let go n acc = if n == 0 then acc else go (n - 1) (acc + 1)"
               , ":set steps " <> T.pack (show (steps :: Int))
@@ -889,9 +889,12 @@ coresTests =
               , "go 1000 0"
               ]
             run k steps = runWith doubleConfig{samples = 8} (ls k steps)
+        -- `go 1000 0` takes between 5000 and 20000 steps: under a count of
+        -- all batches together, 20000 ran at K = 1 and was refused at K = 4.
         run 1 20000 @?= Right ["1000"]
-        expectLeft "took more than 20000 steps" (run 4 20000)
-        run 4 80000 @?= Right ["1000"]
+        run 4 20000 @?= Right ["1000"]
+        expectLeft "took more than 5000 steps" (run 1 5000)
+        expectLeft "took more than 5000 steps" (run 4 5000)
     , testCase ":set cores and --set cores take a positive count" $ do
         (elem "cores 1" <$> runWith defaultConfig [":set"]) @?= Right True
         fmap (.config.cores) (sessionAfter defaultConfig [":set cores 4"]) @?= Right 4

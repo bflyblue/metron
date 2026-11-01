@@ -21,7 +21,6 @@ module Metron.Limits (
   -- * The evaluator's budget
   Budget,
   newBudget,
-  newBudgetOf,
   spend,
   nested,
   remark,
@@ -182,13 +181,6 @@ would have had, or fails with the limit it hit.
 -}
 data Budget = Budget
   { limits :: Limits
-  , share :: Int
-  {- ^ how many evaluations share the @steps@ limit: the double backend's
-  parallel batches (design §8.2), each taking the same steps, since the
-  same IEEE values decide every branch in each. A batch is stopped once
-  all of them together would pass the limit, with no counter shared
-  between threads
-  -}
   , counters :: ForeignPtr Int
   , remarks :: IORef [(Int, Text)]
   {- ^ warnings the evaluation made along the way, newest first, each with
@@ -197,24 +189,20 @@ data Budget = Budget
   -}
   }
 
-{- | A fresh budget, for one evaluation. Its last argument keeps two
+{- | A fresh budget, for one evaluation. Each of the double backend's
+parallel batches (design §8.2) is one, with the whole @steps@ limit:
+every batch takes the same steps, so an input is accepted or refused
+alike however many batches run it. Its last argument keeps two
 evaluations from sharing one: each passes what it evaluates.
 -}
 newBudget :: Limits -> a -> Budget
-newBudget = newBudgetOf 1
-
-{- | A fresh budget for one of @k@ evaluations that share the @steps@
-limit. Its last argument keeps two evaluations from sharing one, as
-'newBudget' does.
--}
-newBudgetOf :: Int -> Limits -> a -> Budget
-newBudgetOf k l x = unsafeDupablePerformIO $ do
+newBudget l x = unsafeDupablePerformIO $ do
   _ <- evaluate (x `seq` ())
   cs <- mallocForeignPtrArray 2
   withForeignPtr cs $ \p -> pokeElemOff p 0 0 >> pokeElemOff p 1 0
   rs <- newIORef []
-  pure (Budget l k cs rs)
-{-# NOINLINE newBudgetOf #-}
+  pure (Budget l cs rs)
+{-# NOINLINE newBudget #-}
 
 {- | Note a warning, once, and go on with the value. The value makes every
 call its own.
@@ -250,7 +238,7 @@ spend :: Budget -> t -> Bool
 spend b t = unsafeDupablePerformIO $ withForeignPtr b.counters $ \p -> do
   n <- peekElemOff p 0
   pokeElemOff p 0 (n + 1)
-  pure (t `seq` n * b.share < b.limits.steps)
+  pure (t `seq` n < b.limits.steps)
 {-# NOINLINE spend #-}
 
 {- | Evaluate a value that something waits for, one level deeper: the
