@@ -111,6 +111,7 @@ import Metron.Numerical.Approx
       Precision,
       isqrt )
 import Data.ByteString qualified as BS ( length )
+import Data.Map.Merge.Strict qualified as Merge ( merge, preserveMissing, zipWithMaybeMatched )
 import Data.Map.Strict qualified as Map
     ( null,
       delete,
@@ -225,11 +226,16 @@ non-linearity is exact.
 -}
 affine ::
   Rational -> Map NudgeId (Rational, Nudge) -> Rational -> Maybe Skew -> Magnitude
-affine m ts s sk
-  | Map.null ts' && s == 0 && null sk = Exact m
-  | otherwise = Affine m ts' s sk
- where
-  ts' = Map.filter ((/= 0) . fst) ts
+affine m ts = affineNonZero m (Map.filter ((/= 0) . fst) ts)
+
+{- | 'affine' over terms already free of zero coefficients, so that a sum
+need not filter every term, which made a sum of n forms cost n².
+-}
+affineNonZero ::
+  Rational -> Map NudgeId (Rational, Nudge) -> Rational -> Maybe Skew -> Magnitude
+affineNonZero m ts s sk
+  | Map.null ts && s == 0 && null sk = Exact m
+  | otherwise = Affine m ts s sk
 
 parts :: Magnitude -> (Rational, Map NudgeId (Rational, Nudge), Rational)
 parts = \case
@@ -249,13 +255,9 @@ nudges = \case
   Exact _ -> []
   Affine _ ts _ _ -> sortOn (\(c, n) -> (Down (abs c), n.origin)) (Map.elems ts)
 
+-- | Largest magnitude first; ties keep their order.
 sortOnAbs :: (a -> Rational) -> [a] -> [a]
-sortOnAbs f = foldr ins []
- where
-  ins x [] = [x]
-  ins x (y : ys)
-    | abs (f x) >= abs (f y) = x : y : ys
-    | otherwise = y : ins x ys
+sortOnAbs f = sortOn (Down . abs . f)
 
 {- | The radius of the enclosure around the midpoint with every nudge counted
 as a bound: a size, for scaling a rounding grid, never a limit.
@@ -316,9 +318,11 @@ addM (Exact a) (Exact b) = Exact (a + b)
 addM x y =
   let (m1, t1, s1) = parts x
       (m2, t2, s2) = parts y
-   in affine
+      -- Only a nudge both share can cancel to zero.
+      cancel _ a b = let (c, n) = addCoeff a b in if c == 0 then Nothing else Just (c, n)
+   in affineNonZero
         (m1 + m2)
-        (Map.unionWith addCoeff t1 t2)
+        (Merge.merge Merge.preserveMissing Merge.preserveMissing (Merge.zipWithMaybeMatched cancel) t1 t2)
         (s1 + s2)
         (skews [skewOf x, skewOf y])
 
