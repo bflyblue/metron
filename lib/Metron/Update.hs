@@ -24,78 +24,89 @@ module Metron.Update (
   conTypes,
 ) where
 
-import Data.Bifunctor ( first )
-import Data.Foldable ( foldlM )
-import Data.Graph ( flattenSCC, stronglyConnComp )
-import Data.Map.Strict ( Map )
-import Data.Maybe ( fromMaybe )
-import Data.Text ( Text )
-import Metron.Builtin ( axesHash )
-import Metron.Codebase
-    ( addTerm,
-      addTypeDef,
-      bindName,
-      historicalNamesOf,
-      lookupName,
-      lookupTerm,
-      lookupTypeDef,
-      namesOf,
-      setSignature,
-      signatureOf,
-      typeOf,
-      writtenAs,
-      Codebase(names, typeNames, conNames, fieldNames, signatures),
-      Reference(hash, Reference) )
-import Metron.Core
-    ( conTypes,
-      refsWithIndex,
-      refsWritten,
-      rewriteRefs,
-      rewriteRefsWritten,
-      showHash,
-      vecMap,
-      Alt(Alt),
-      ConRef(..),
-      Hash,
-      Label(SpaceLabel, Owner, Axes, FrameLabel),
-      Term(..) )
-import Metron.Hash ( hashTerm, hashTypeDef )
-import Metron.Infer ( elaborateClosed, TypeError(message) )
-import Metron.Resolve ( storeTerm, typeLookupFor )
-import Metron.Type
-    ( Arg(..),
-      Axis(..),
-      Frame(..),
-      FrameSlot(..),
-      Scheme(..),
-      Shape(..),
-      Space(..),
-      SpaceSlot(..),
-      Type(..),
-      TypeDef(..),
-      renderScheme )
-import Metron.Type.Match ( signatureHolds )
-import Data.Map.Strict qualified as Map
-    ( null,
-      elems,
-      empty,
-      keys,
-      lookup,
-      toList,
-      findWithDefault,
-      fromList,
-      insert,
-      map,
-      mapWithKey, union, fromListWith )
-import Data.Set qualified as Set
-    ( Set, unions, empty, singleton, notMember,
-      member,
-      union,
-      difference,
-      disjoint,
-      fromList,
-      null,
-      toList )
+import Data.Bifunctor (first)
+import Data.Foldable (foldlM)
+import Data.Graph (flattenSCC, stronglyConnComp)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (
+  elems,
+  empty,
+  findWithDefault,
+  fromList,
+  fromListWith,
+  insert,
+  keys,
+  lookup,
+  map,
+  mapWithKey,
+  null,
+  toList,
+  union,
+ )
+import Data.Maybe (fromMaybe)
+import Data.Set qualified as Set (
+  Set,
+  difference,
+  disjoint,
+  empty,
+  fromList,
+  member,
+  notMember,
+  null,
+  singleton,
+  toList,
+  union,
+  unions,
+ )
+import Data.Text (Text)
+import Metron.Builtin (axesHash)
+import Metron.Codebase (
+  Codebase (conNames, fieldNames, names, signatures, typeNames),
+  Reference (Reference, hash),
+  addTerm,
+  addTypeDef,
+  bindName,
+  historicalNamesOf,
+  lookupName,
+  lookupTerm,
+  lookupTypeDef,
+  namesOf,
+  setSignature,
+  signatureOf,
+  typeOf,
+  writtenAs,
+ )
+import Metron.Core (
+  Alt (Alt),
+  ConRef (..),
+  Hash,
+  Label (Axes, FrameLabel, Owner, SpaceLabel),
+  Term (..),
+  conTypes,
+  refsWithIndex,
+  refsWritten,
+  rewriteRefs,
+  rewriteRefsWritten,
+  showHash,
+  vecMap,
+ )
+import Metron.Hash (hashTerm, hashTypeDef)
+import Metron.Infer (TypeError (message), elaborateClosed)
+import Metron.Resolve (storeTerm, typeLookupFor)
+import Metron.Type (
+  Arg (..),
+  Axis (..),
+  Frame (..),
+  FrameSlot (..),
+  Scheme (..),
+  Shape (..),
+  Space (..),
+  SpaceSlot (..),
+  Type (..),
+  TypeDef (..),
+  renderScheme,
+ )
+import Metron.Type.Match (signatureHolds)
 
 type RefMap = Map Reference Reference
 
@@ -133,7 +144,12 @@ made under.
 -}
 propagateNamed :: Written -> RefMap -> Codebase -> Propagation
 propagateNamed written refmap cb =
-  propagateKeeping (Set.unions (Map.elems written)) (appliesTo cb written) Map.empty refmap cb
+  propagateKeeping
+    (Set.unions (Map.elems written))
+    (appliesTo cb written)
+    Map.empty
+    refmap
+    cb
 
 -- | By hash alone, every written name included: for re-stamping.
 propagateWith :: ConMap -> RefMap -> Codebase -> Propagation
@@ -146,7 +162,12 @@ propagateScoped = propagateKeeping Set.empty
 -- Accepted replacements keep their bodies even when another name shares
 -- their hash. Other holders of that same content can still be upgraded.
 propagateKeeping ::
-  Set.Set Text -> (Reference -> Text -> Bool) -> ConMap -> RefMap -> Codebase -> Propagation
+  Set.Set Text ->
+  (Reference -> Text -> Bool) ->
+  ConMap ->
+  RefMap ->
+  Codebase ->
+  Propagation
 propagateKeeping protected applies cons initial cb0 =
   go cb0 initial Map.empty (Propagation cb0 [] []) affectedInOrder
  where
@@ -219,75 +240,80 @@ propagateKeeping protected applies cons initial cb0 =
   go cb refmap rewritten acc (h : hs)
     | null holders = go cb refmap rewritten acc hs
     | otherwise = case lookupTerm h cb of
-    Nothing -> go cb refmap rewritten acc hs
-    Just t ->
-      let t' =
-            rewriteRefsWritten
-              ( \rh ri w ->
-                  if follows (Reference rh ri) w
-                    then (\(Reference nh ni) -> (nh, ni)) <$> Map.lookup (Reference rh ri) refmap
-                    else Nothing
-              )
-              (restampTerm id newCon t)
-       in case elaborateClosed (typeLookupFor cb) t' of
-            Left err ->
-              go
-                cb
-                refmap
-                rewritten
-                acc
-                  { skipped = [(n, Reference h i, err.message) | (n, i) <- holders] ++ acc.skipped
-                  }
-                hs
-            -- A signed name stays on its version when its signature would not
-            -- hold of the new one (design §4.8).
-            Right (schemes, _)
-              | (n, sig, general) : _ <-
-                  [ (n, sig, general)
-                  | (n, i) <- holders
-                  , Just sig <- [retyped <$> signatureOf n cb]
-                  , general : _ <- [drop (fromMaybe 0 i) schemes]
-                  , not (signatureHolds sig general)
-                  ] ->
+        Nothing -> go cb refmap rewritten acc hs
+        Just t ->
+          let t' =
+                rewriteRefsWritten
+                  ( \rh ri w ->
+                      if follows (Reference rh ri) w
+                        then (\(Reference nh ni) -> (nh, ni)) <$> Map.lookup (Reference rh ri) refmap
+                        else Nothing
+                  )
+                  (restampTerm id newCon t)
+           in case elaborateClosed (typeLookupFor cb) t' of
+                Left err ->
                   go
                     cb
                     refmap
                     rewritten
                     acc
-                      { skipped =
-                          [ ( m
-                            , Reference h i
-                            , "the new version of `"
-                                <> n
-                                <> "` has type "
-                                <> renderScheme general
-                                <> ", not as general as its signature "
-                                <> renderScheme sig
-                            )
-                          | (m, i) <- holders
-                          ]
-                            ++ acc.skipped
+                      { skipped = [(n, Reference h i, err.message) | (n, i) <- holders] ++ acc.skipped
                       }
                     hs
-            Right (schemes, typed) ->
-              let h' = hashTerm t'
-                  renamed = [(n, Reference h i, Reference h' i) | (n, i) <- holders]
-                  refmap' = foldr (\(_, old, new) -> Map.insert old new) refmap renamed
-                  rewritten' = Map.union
-                    (Map.fromListWith Set.union [(old, Set.singleton n) | (n, old, _) <- renamed])
-                    rewritten
-                  -- The signature, retyped, holds of the new version: set it
-                  -- first, so that the rebinding keeps it.
-                  rebind (n, _, new) acc' =
-                    bindName
-                      n
-                      new
-                      (maybe acc' (\s -> setSignature n (retyped s) acc') (signatureOf n acc'))
-                  cb' = foldr rebind (addTerm h' t' schemes typed cb) renamed
-               in go cb' refmap' rewritten' acc{upgraded = reverse renamed ++ acc.upgraded} hs
+                -- A signed name stays on its version when its signature would not
+                -- hold of the new one (design §4.8).
+                Right (schemes, _)
+                  | (n, sig, general) : _ <-
+                      [ (n, sig, general)
+                      | (n, i) <- holders
+                      , Just sig <- [retyped <$> signatureOf n cb]
+                      , general : _ <- [drop (fromMaybe 0 i) schemes]
+                      , not (signatureHolds sig general)
+                      ] ->
+                      go
+                        cb
+                        refmap
+                        rewritten
+                        acc
+                          { skipped =
+                              [ ( m
+                                , Reference h i
+                                , "the new version of `"
+                                    <> n
+                                    <> "` has type "
+                                    <> renderScheme general
+                                    <> ", not as general as its signature "
+                                    <> renderScheme sig
+                                )
+                              | (m, i) <- holders
+                              ]
+                                ++ acc.skipped
+                          }
+                        hs
+                Right (schemes, typed) ->
+                  let h' = hashTerm t'
+                      renamed = [(n, Reference h i, Reference h' i) | (n, i) <- holders]
+                      refmap' = foldr (\(_, old, new) -> Map.insert old new) refmap renamed
+                      rewritten' =
+                        Map.union
+                          (Map.fromListWith Set.union [(old, Set.singleton n) | (n, old, _) <- renamed])
+                          rewritten
+                      -- The signature, retyped, holds of the new version: set it
+                      -- first, so that the rebinding keeps it.
+                      rebind (n, _, new) acc' =
+                        bindName
+                          n
+                          new
+                          (maybe acc' (\s -> setSignature n (retyped s) acc') (signatureOf n acc'))
+                      cb' = foldr rebind (addTerm h' t' schemes typed cb) renamed
+                   in go cb' refmap' rewritten' acc{upgraded = reverse renamed ++ acc.upgraded} hs
    where
-    holders = [(n, i) | (n, Reference rh i) <- Map.toList cb.names,
-                       rh == h, Set.notMember n protected]
+    holders =
+      [ (n, i)
+      | (n, Reference rh i) <- Map.toList cb.names
+      , rh == h
+      , Set.notMember n protected
+      ]
     follows r w = case Map.lookup r rewritten of
       Just labels -> any (writtenAs cb w) labels
       Nothing -> applies r w
