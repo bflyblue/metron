@@ -5855,7 +5855,7 @@ session never reaches.
 | setting | what it bounds | where it is checked |
 |---|---|---|
 | `:set memory` | the heap, in GB (the GHC runtime's maximum heap) | the runtime: a heap overflow becomes the error "the expression needed more than N GB (`:set memory`)", the session survives |
-| `:set steps` | evaluation steps per expression (fuel) | the evaluator, counted per reduction |
+| `:set steps` | evaluation steps per expression (fuel), along each path where Monte Carlo splits the copies (below, steps per path) | the evaluator, counted per reduction |
 | `:set depth` | nesting of calls | the evaluator |
 | `:set digits` | a number's magnitude, its decimal exponent either way (by the owner's decision in §3.2.8: an exact result's length is the precision's) | arithmetic, *before* computing where the size can be predicted (a power's result from its exponent, a literal's exponent, an exponential), after otherwise |
 | `:set components` | a tensor's elements (a list's length is not known until it is walked, so `steps` and `memory` bound it) | construction (formerly the fixed `componentLimit`, 10⁷) |
@@ -5881,7 +5881,7 @@ ends with the setting to change, and the session goes on:
 | setting | default | how it is checked | the error |
 |---|---|---|---|
 | `memory` | 4 GB | the runtime's maximum heap, set at startup and whenever the setting changes: `RtsFlags.GcFlags.maxHeapSize`, which the collector reads at every collection, so a change takes effect at once (measured: `:set memory 1` stops `reverse (range 0 1e8)` at 1.1 GB). The executable links with `-rtsopts`; `--set memory` supersedes `+RTS -M`. The runtime throws `HeapOverflow` to the main thread, which in the executable is the one evaluating; it is caught around each input, whose outputs are forced inside the handler, and a collection frees what the input built | `the evaluation needed more than 4 GB` |
-| `steps` | 10⁸ per expression | every reduction of the evaluator counts against a budget made for that expression's evaluation | `the evaluation took more than 100000000 steps` |
+| `steps` | 10⁸ per path of an expression | every reduction of the evaluator counts against the path it is on, in a budget made for that expression's evaluation: one path, unless Monte Carlo splits the copies (steps per path, below) | `the evaluation took more than 100000000 steps` |
 | `depth` | 10⁵ | the budget's second counter: one level for each value something waits for (an operand, a scrutinee, the function of a call, a thunk when forced); a call in tail position is no deeper | `the evaluation nested more than 100000 calls deep` |
 | `digits` | 10⁵ | a number's magnitude, `log₁₀` of its size from the leading bits of its numerator and denominator. Before computing: a power from its exponent (`n · log₁₀ |x|`), a literal in the lexer from its exponent, an exponential (`exp`, `sinh`, `cosh`) from its argument. After: every result of `+ − * /`, `outer` and `dot` | `the power would have more than 100000 digits`, or `… zeros after the point` |
 | `components` | 10⁷ | where a tensor is built: `noise`/`gauss`, a stack of tensors, `outer`, `dot`, a matrix from a vector. A length a type or a literal names has a fixed bound of 2^40 instead, so that a definition checks the same in every session | `the result would have 16000000 components, more than 10000000` |
@@ -5889,14 +5889,56 @@ ends with the setting to change, and the session goes on:
 
 The budget is counted in place: the evaluator is pure, its values lazy
 thunks, and threading a counter through them would make every value a
-computation. `newBudget` makes a pair of counters per evaluation (in
-`Compile.runtimeWith`); `spend` and `nested` read and write them with
+computation. `newBudget` makes the counters per evaluation (in
+`Compile.runtimeWith`), among them the nominal path's steps and the
+nesting, and each group of copies a split makes has one more, its path's
+steps; `spend` and `nested` read and write them with
 `unsafeDupablePerformIO`, `NOINLINE` and an argument that makes each call
 its own. A limit reached is a `Left`, an `EvalError` like any other, so
 `feed` stays pure and the tests see it; `memory` and `time` are the only
 ones that need `IO`, in `runLimited`. A Haskell stack overflow is caught
 there too and named `depth`, but the stack is heap, so `memory` stops it
 first.
+
+**Steps per path** (decided by the owner, 2026-11-01). Under Monte Carlo
+a branch point splits the copies into groups, each evaluating its own
+alternative (§8.2, branches under copies), and `steps` counts along each
+copy's path rather than per batch, so that an input is accepted or
+refused alike at every `:set cores`:
+
+- a group's evaluation starts from its parent path's count at the split,
+  so the work shared before the split counts once for each path that
+  continues from it;
+- the limit applies to every path's own count: the nominal path's and
+  each split group's;
+- at the join, where the groups' results are put back together, the
+  parent path continues from the longest of its groups' counts, so the
+  work after the join is on every path through it;
+- a copy's path is the same however the copies are batched, so a path's
+  count, and so acceptance, do not depend on K. A batch whose copies all
+  take one alternative does not split, and its one path takes the same
+  steps as that alternative's group where they split.
+
+As built: a `Limits.Context` carries its path's counter, the root's
+being the budget's own. `enter` starts a group's at its parent's count,
+and `Eval.perOption` enters every group of a split before any evaluates,
+so a group never starts from a sibling's work. `spend` counts on the
+context the term's evaluation was made in, so a thunk counts on the path
+that made it, whoever forces it. `within`, which forces a group's part of
+a recombined value, raises the parent's count to the group's after. A
+path is not a batch: one evaluation's total work is bounded by its paths
+times the limit, at most (N + 1) · `steps` with N copies, not by `steps`.
+Checked at K = 1, 2 and 4 at eight copies: a split whose two costly
+groups never share a batch at K = 2 or 4 (refused at K = 1 when counted
+per batch), work after the join, work bound before the split and forced
+by one group, and a runaway on one path. `f 0` to the limit takes 6.0 s
+against 5.9 s before. *Open:* a value made before a split and forced by
+a group counts on the parent's path when it is forced, after the groups
+before it in the split; with three or more groups, which of those a
+batch has depends on K, so such an input near the limit could be
+accepted at one K and refused at another. A part of a recombined value
+forced after the join (a field read later) counts on its group's path
+and raises the parent's when it finishes, not where it is read.
 
 **Leaks fixed rather than limited.** Measuring the catalogue below found
 that most of the runaways were not programs asking for much but the
@@ -6104,8 +6146,9 @@ the same term runs under any backend that has the built-ins it uses.
     by the parallel update (Chan et al.), samples concatenated for
     quantiles, an unstable branch's count of copies by sum (this replaces
     "flags by union": the warning counts all the copies, as built under
-    *Comparisons* below). The `steps` limit counts all
-    batches together; the `memory` limit is the process's and covers them.
+    *Comparisons* below). The `steps` limit counts along each path, in
+    every batch alike (§8.1, steps per path); the `memory` limit is the
+    process's and covers them.
     `affine` and `samples 0` are unaffected.
 - **Branches under copies** (decided by the owner, 2026-11-01). This
   replaces the per-comparison warning.
@@ -6175,7 +6218,8 @@ the same term runs under any backend that has the built-ins it uses.
     copy follows it and the table is the warning that the branch is
     unstable.
   - Splitting evaluates an alternative once per group, and `steps`
-    counts those evaluations. Each batch splits its own copies; the
+    counts each group's evaluation on its own path (§8.1, steps per
+    path). Each batch splits its own copies; the
     recombined copies are keyed by their global number, so results stay
     identical for every `cores`.
   - *As built (2026-11-01): branches under copies.* `Metron.Remark`
@@ -6265,11 +6309,10 @@ the same term runs under any backend that has the built-ins it uses.
       not the probabilities. `classify` with `x = 0.05 ±σ 0.1`: `Neg` in
       31.0% of 10⁴ (Φ(−0.5) = 30.85%), and `case classify x of Neg -> -1;
       Pos -> 1` a sample of mean 0.380 (1 − 2p = 0.383).
-    - *Steps.* Each group's evaluation counts against its batch's
-      budget, so batches no longer take the same steps: one whose copies
-      split evaluates more alternatives. Near the limit an input can be
-      refused at K = 1 and accepted at K = 4. This replaces "every batch
-      takes the same steps" (corrections above).
+    - *Steps.* A batch whose copies split evaluates more alternatives
+      than one whose copies do not, so batches take different steps;
+      `steps` counts along each path instead (§8.1, steps per path), and
+      a path takes the same steps in every batch.
     - *Cost.* The orbit workload (100 positions, ten Newton steps of
       Kepler's equation each, `a = 7000 ±σ 1 km`), random rounding:
       0.744 s before and 0.765 s after at 10³ copies on one core, 0.341 s
@@ -6300,9 +6343,9 @@ the same term runs under any backend that has the built-ins it uses.
     - *`noise` is refused under `double`.* It makes a bound unknown (`x ±
       e` is `x + e * noise 1`), so drawing it as a normal would let a bound
       in as a σ. `gauss` is drawn; `noise` is refused as `±` is.
-    - *`steps` applies to each batch,* as to one evaluation: every batch
-      takes the same steps, so an input is accepted or refused alike for
-      every `K`. This replaces "counts all batches together".
+    - *`steps` applies to each path,* in whichever batch, against the
+      whole limit (§8.1, steps per path), so an input is accepted or
+      refused alike for every `K`.
     - *The default for `cores` is the logical core count,* since the
       runtime does not expose physical cores.
 
@@ -6332,9 +6375,9 @@ the same term runs under any backend that has the built-ins it uses.
     `sd` ``", at run time, since the check before running cannot see
     draws. `noise` left `sampledOwn`, so the check refuses it at every
     setting with "`` `noise` is the affine backend's; the double backend
-    does not have it ``", and the backend refuses it too. The `steps`
-    budget lost its share: each batch counts its own steps against the
-    whole limit. `cores` needed no change: the command line takes
+    does not have it ``", and the backend refuses it too. Each batch has
+    a budget of its own, and each of its paths the whole `steps` limit.
+    `cores` needed no change: the command line takes
     `getNumProcessors`, the logical count, which `:set` lists as `cores
     K`. Building it found the copies' mean taken by a plain sum, which
     rounds in its last digits over 10⁴ copies and so gave copies that
@@ -6434,14 +6477,12 @@ the same term runs under any backend that has the built-ins it uses.
     disagree in anything but their copies. So `sd T` does not run in
     parallel; `T` does. K is at most N/2, so a batch always has the two
     copies a spread needs.
-  - *Steps.* Every batch takes the same steps, since the same IEEE
-    values decide every branch, and each counts its own against the
-    whole limit, as one evaluation does (corrections above), so an input
-    is accepted or refused alike at every K: `go 1000 0`, between 5000
-    and 20000 steps, runs under `steps 20000` at K = 1 and at K = 4. A
-    batch that reaches the limit fails the input with the user's limit
-    named. (Until the corrections, a batch stopped once K times its own
-    count passed the limit, which refused that input at K = 4.) *Open:*
+  - *Steps.* Each batch counts each of its paths against the whole
+    limit (§8.1, steps per path), and a copy's path is the same in every
+    batch, so an input is accepted or refused alike at every K: `go 1000
+    0`, between 5000 and 20000 steps, runs under `steps 20000` at K = 1
+    and at K = 4. A batch that reaches the limit fails the input with the
+    user's limit named. *Open:*
     `exactly`, which asks whether a number's copies
     spread at all (an index position must be exact), sees only its
     batch's; a small batch can agree by chance where all N would not, so

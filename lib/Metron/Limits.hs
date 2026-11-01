@@ -202,18 +202,21 @@ tshow = T.pack . show
 
 -- The budget ------------------------------------------------------------------------
 
-{- | What one evaluation has spent: the steps it took and how deeply it is
-nested now; and what it noted on the way, the branch points its copies
-reached (design §8.2). Counted in place: the evaluator is pure, and
-threading a counter through every thunk would make every value a
-computation. The count changes no value: an evaluation either finishes
-with the value it would have had, or fails with the limit it hit.
+{- | What one evaluation has spent: the steps its nominal path took (each
+group of copies a branch point splits off counts its own path's steps in
+its 'Context', design §8.1) and how deeply it is nested now; and what it
+noted on the way, the branch points its copies reached (design §8.2).
+Counted in place: the evaluator is pure, and threading a counter through
+every thunk would make every value a computation. The count changes no
+value: an evaluation either finishes with the value it would have had,
+or fails with the limit it hit.
 -}
 data Budget = Budget
   { limits :: Limits
   , counters :: ForeignPtr Int
-  {- ^ the steps taken, the nesting now, the branch points the nominal path
-  has reached, and the contexts made (design §8.2)
+  {- ^ the steps the evaluation's own path took, the nesting now, the
+  branch points the nominal path has reached, and the contexts made
+  (design §8.2)
   -}
   , branches :: IORef (Map Site Pending)
   -- ^ the branch points reached with copies, kept in place as the counters are
@@ -228,9 +231,9 @@ data Budget = Budget
   }
 
 {- | A fresh budget, for one evaluation. Each of the double backend's
-parallel batches (design §8.2) is one, with the whole @steps@ limit. Its
-last argument keeps two evaluations from sharing one: each passes what it
-evaluates.
+parallel batches (design §8.2) is one, and each of its paths has the
+whole @steps@ limit. Its last argument keeps two evaluations from
+sharing one: each passes what it evaluates.
 -}
 newBudget :: Limits -> a -> Budget
 newBudget l x = unsafeDupablePerformIO $ do
@@ -243,9 +246,10 @@ newBudget l x = unsafeDupablePerformIO $ do
 {- | Where an evaluation is, among the double backend's copies (design
 §8.2): a key of its own, the copies it carries, whether it is the
 evaluation of the whole batch, and whether it follows the nominal path;
-and the copies, by global number, that an earlier branch point this
+the copies, by global number, that an earlier branch point this
 evaluation is inside took along although their own scrutinee chose
-another alternative: they have left the evaluated path.
+another alternative: they have left the evaluated path; and the steps
+its path has taken (design §8.1), counted in place.
 -}
 data Context = Context
   { key :: Int
@@ -253,26 +257,35 @@ data Context = Context
   , whole :: Bool
   , nominal :: Bool
   , departed :: IntSet
+  , pathSteps :: ForeignPtr Int
   }
 
 -- | A context whose evaluation has taken more copies off their path.
 departing :: IntSet -> Context -> Context
-departing off ctx = Context ctx.key ctx.members ctx.whole ctx.nominal off
+departing off ctx = Context ctx.key ctx.members ctx.whole ctx.nominal off ctx.pathSteps
 
--- | The evaluation of a whole batch.
-rootContext :: Members -> Context
-rootContext m = Context 0 m True True IntSet.empty
+{- | The evaluation of a whole batch: its path's steps are the budget's
+own.
+-}
+rootContext :: Budget -> Members -> Context
+rootContext b m = Context 0 m True True IntSet.empty b.counters
 
 {- | The evaluation of a group of a context's copies, the ones a branch
 point sent down one alternative, on the nominal path or off it. Its key
-is new. The members make every call its own.
+is new, and its path starts from the steps the context's path has taken
+(design §8.1): the work before the split is on every path that continues
+from it. So the group must be entered at the split, before any group
+evaluates. The members make every call its own.
 -}
 enter :: Budget -> Context -> Members -> Bool -> Context
 enter b outer m nominal = unsafePerformIO $ withForeignPtr b.counters $ \p -> do
   _ <- evaluate m
   k <- peekElemOff p 3
   pokeElemOff p 3 (k + 1)
-  pure (Context (k + 1) m False nominal outer.departed)
+  taken <- withForeignPtr outer.pathSteps (`peekElemOff` 0)
+  own <- mallocForeignPtrArray 1
+  withForeignPtr own $ \q -> pokeElemOff q 0 taken
+  pure (Context (k + 1) m False nominal outer.departed own)
 {-# NOINLINE enter #-}
 
 {- | Note that an evaluation reached a branch point (design §8.2): the
@@ -365,15 +378,22 @@ overlap b ctx g = do
       modifyIORef' b.overlaps (IntMap.insert (pair ctx g) ps)
       pure ps
 
-{- | Evaluate a value for a group of copies: its branch points count only
-them. The group in force before is restored after.
+{- | Evaluate a value for a group of the copies of an evaluation (the
+first context): the group's branch points count only them. The group in
+force before is restored after. The evaluation's path then continues
+from the longest of its groups' (design §8.1): what it does after the
+join is on every path that reaches it.
 -}
-within :: Budget -> Context -> a -> a
-within b g x = unsafePerformIO $ do
+within :: Budget -> Context -> Context -> a -> a
+within b outer g x = unsafePerformIO $ do
   before <- readIORef b.current
   writeIORef b.current (Just g)
   r <- evaluate x
   writeIORef b.current before
+  taken <- withForeignPtr g.pathSteps (`peekElemOff` 0)
+  withForeignPtr outer.pathSteps $ \p -> do
+    n <- peekElemOff p 0
+    when (taken > n) (pokeElemOff p 0 taken)
   pure r
 {-# NOINLINE within #-}
 
@@ -407,12 +427,12 @@ remarksAfter x b = unsafeDupablePerformIO $ do
   remarksOf <$> readIORef b.branches
 {-# NOINLINE remarksAfter #-}
 
-{- | Count one step of the evaluation of the given term: 'False' once the
-evaluation has taken more than its steps. The term makes every call its
-own, so that no two are shared.
+{- | Count one step of the evaluation of the given term on its path (design
+§8.1): 'False' once the path has taken more than its steps. The term
+makes every call its own, so that no two are shared.
 -}
-spend :: Budget -> t -> Bool
-spend b t = unsafeDupablePerformIO $ withForeignPtr b.counters $ \p -> do
+spend :: Budget -> Context -> t -> Bool
+spend b ctx t = unsafeDupablePerformIO $ withForeignPtr ctx.pathSteps $ \p -> do
   n <- peekElemOff p 0
   pokeElemOff p 0 (n + 1)
   pure (t `seq` n < b.limits.steps)

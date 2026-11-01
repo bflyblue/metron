@@ -6,6 +6,7 @@ session chooses a backend.
 module Backend (backendTests) where
 
 import Control.Monad (foldM)
+import Data.Foldable (for_)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Set qualified as Set
@@ -887,7 +888,7 @@ splitTests =
               <> ["let loop n = loop n", ":set steps 100000", "if x > 0.5 then 1 else loop 0"]
           )
           @?= Right ["1"]
-    , testCase "steps counts every group's evaluation" $ do
+    , testCase "steps counts each path: a split's groups are not added together" $ do
         let run x =
               runWith
                 batchedConfig
@@ -896,9 +897,9 @@ splitTests =
                 , ":set steps 3000"
                 , "if x > 0.9 then work 300 else work 300"
                 ]
-        -- Unsplit, one evaluation of `work 300` fits; split, two do not.
+        -- One evaluation of `work 300` fits; split, each path takes one.
         run "1" @?= Right ["0"]
-        expectLeft "the evaluation took more than 3000 steps" (run "1 ±σ 0.1")
+        fmap (map (T.takeWhile (/= ' '))) (run "1 ±σ 0.1") @?= Right ["0"]
     , testCase "1, 2 and 4 cores give the same copies, bit for bit" $ do
         let src =
               "let x = 1 ±σ 0.1 in let y = 2 ±σ 0.3 in [if x > 0.9 then x * y else y, if y > 2 then (if x > 1 then 1 else 2) else 3]"
@@ -1617,7 +1618,7 @@ coresTests =
             [ "2\n"
                 <> ifTable "warning" "1 + 1e-16 > 1" "10 samples (lost in rounding" (7, 3) False
             ]
-    , testCase "steps applies to each batch: accepted alike at every K" $ do
+    , testCase "steps counts each path: accepted alike at every K" $ do
         let ls k steps =
               [ "let go n acc = if n == 0 then acc else go (n - 1) (acc + 1)"
               , ":set steps " <> T.pack (show (steps :: Int))
@@ -1631,6 +1632,67 @@ coresTests =
         run 4 20000 @?= Right ["1000"]
         expectLeft "took more than 5000 steps" (run 1 5000)
         expectLeft "took more than 5000 steps" (run 4 5000)
+    , testCase "a split near the limit: accepted or refused alike at K = 1, 2 and 4" $ do
+        -- Two groups that never share a batch at K = 2 or 4, each doing
+        -- one `work 1000` (7000 to 8000 steps); the nominal copy does
+        -- none. Counted per batch, K = 1 took both and was refused at
+        -- 12000 steps where K = 2 and 4 were not; per path, each path
+        -- takes one.
+        cs <- copiesAfter eight ["let x = 1 ±σ 0.1"] "x"
+        let at i = T.pack (show (cs VU.! i))
+            is i = "x == " <> at i
+            program =
+              "if "
+                <> is 0
+                <> " || "
+                <> is 1
+                <> " then work 1000 else (if "
+                <> is 6
+                <> " then work 1000 else 0)"
+            outs k steps = runWith eight (pathLines k steps <> [program])
+        VU.length cs @?= 8
+        for_ [1, 2, 4] $ \k -> do
+          fmap (map firstWord) (outs k 12000) @?= Right ["0"]
+          expectLeft "took more than 4000 steps" (outs k 4000)
+    , testCase "work shared before a split is on each path that forces it" $ do
+        -- `w` is bound before the split and forced only by the group of
+        -- copy 0, then the evaluation goes on: on copy 0's path, `w` and
+        -- the work after the join, at every K.
+        cs <- copiesAfter eight ["let x = 1 ±σ 0.1"] "x"
+        let program =
+              "let w = work 1000 in (if x == "
+                <> T.pack (show (cs VU.! 0))
+                <> " then w else 0) + work 1000"
+            outs k steps = runWith eight (pathLines k steps <> [program])
+        for_ [1, 2, 4] $ \k -> do
+          fmap (map firstWord) (outs k 25000) @?= Right ["0"]
+          expectLeft "took more than 12000 steps" (outs k 12000)
+    , testCase "the work after a join is on every path through it" $ do
+        -- Each group does one `work 1000`, and the evaluation goes on
+        -- with another: every path takes two, whether its batch split
+        -- (K = 1) or not (the batches without copy 0 at K = 2 and 4).
+        cs <- copiesAfter eight ["let x = 1 ±σ 0.1"] "x"
+        let program =
+              "(if x == "
+                <> T.pack (show (cs VU.! 0))
+                <> " then work 1000 else work 1000) + work 1000"
+            outs k steps = runWith eight (pathLines k steps <> [program])
+        for_ [1, 2, 4] $ \k -> do
+          fmap (map firstWord) (outs k 25000) @?= Right ["0"]
+          expectLeft "took more than 12000 steps" (outs k 12000)
+    , testCase "a runaway on one split path is still stopped"
+        $ for_ [1, 2, 4]
+        $ \k ->
+          expectLeft
+            "took more than 100000 steps"
+            ( runWith
+                batchedConfig{cores = k}
+                [ "let x = 1 ±σ 0.1"
+                , "let loop n = loop n"
+                , ":set steps 100000"
+                , "if x > 0.9 then 1 else loop 0"
+                ]
+            )
     , testCase ":set cores and --set cores take a positive count" $ do
         (elem "cores 1" <$> runWith defaultConfig [":set"]) @?= Right True
         fmap (.config.cores) (sessionAfter defaultConfig [":set cores 4"]) @?= Right 4
@@ -1651,6 +1713,23 @@ coresTests =
 -- | Monte Carlo at 1000 copies, rounding to nearest, to batch.
 batchedConfig :: Config
 batchedConfig = doubleConfig{samples = 1000, rounding = RoundNearest}
+
+-- | Monte Carlo at eight copies, rounding to nearest: few enough to place.
+eight :: Config
+eight = batchedConfig{samples = 8}
+
+-- | A countdown, the steps limit and the cores, for the steps-per-path tests.
+pathLines :: Int -> Int -> [Text]
+pathLines k steps =
+  [ "let x = 1 ±σ 0.1"
+  , "let work n = if n == 0 then 0 else work (n - 1)"
+  , ":set steps " <> T.pack (show steps)
+  , ":set cores " <> T.pack (show k)
+  ]
+
+-- | A printed value's first word: its IEEE value, before any statistics.
+firstWord :: Text -> Text
+firstWord = T.takeWhile (/= ' ')
 
 -- | The copies of each component of a vector, evaluated in batches.
 copiesBatched :: Config -> Text -> Either Text (Maybe [VU.Vector Double])

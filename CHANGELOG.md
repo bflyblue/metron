@@ -29,8 +29,13 @@
   prints its nominal value with a table of outcomes, their shares and
   each number's mean and sd. `:set outcomes K` (default 1000) caps the
   outcomes. Copies that differ by rounding alone still follow the nominal
-  branch, and their table is a warning. `steps` counts every group's
-  evaluation, so batches can take different steps.
+  branch, and their table is a warning.
+- `steps` counts along each path (design §8.1, steps per path). Under
+  Monte Carlo, a group of copies split off at a branch point starts from
+  its parent's count, the limit applies to each path's own count, and at
+  the join the parent continues from its longest group's, so an input is
+  accepted or refused alike at every `:set cores`, whether a batch's
+  copies split or not.
 - Monte Carlo under double, corrected (design §8.2, corrections after
   building). A value whose copies carry draws of a declared σ prints its
   nominal IEEE value with the sample beside it, `0 (Monte Carlo: mean
@@ -45,9 +50,7 @@
   and copies that agree have none (`errorOf (0.1 + 0.2)` at 10⁴ copies
   rounded to nearest is `0`). `noise` is refused under double at
   every setting, as `±` is: it makes a bound unknown, which has no
-  distribution to draw. `gauss` is still drawn. The `steps` limit applies
-  to each batch, as to one evaluation, so an input is accepted or refused
-  alike at every `:set cores`. `cores` starts at the machine's logical
+  distribution to draw. `gauss` is still drawn. `cores` starts at the machine's logical
   core count.
 - Declared σ is sampled under double (design §8.2, Monte Carlo, as
   built). With `:set samples N`, `x ±σ e` is `x + |e|·z` in each copy, `z`
@@ -69,7 +72,7 @@
   copies, and merges them into exactly what one evaluation gives. The
   orbit workload at 10⁴ copies takes 2.0 s instead of 8.0 s. Inputs that
   use `mid`, `sd`, `errorOf` or `digitsOf` still run as one evaluation.
-  Each batch has the whole `steps` limit. The executable's garbage
+  Each path in each batch has the whole `steps` limit. The executable's garbage
   collector is now `-qg1 -qn4`, which keeps affine's timings with many
   cores.
 - Linear results are held to the same length (design §3.2.8, linear

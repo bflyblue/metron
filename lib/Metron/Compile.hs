@@ -216,8 +216,8 @@ withTables cfg scope cb input out remarks =
 {- | The double backend's value with its copies evaluated in parallel
 batches (design §8.2, "Metron.Batch"), each batch in its own thread and
 its own runtime, then merged, with the batches' warnings combined, or
-the error they fail with together ('failure'). Each batch has the whole
-@steps@ limit. 'Nothing' when the batches do not merge, and the input
+the error they fail with together ('failure'). Each path in a batch has
+the whole @steps@ limit (design §8.1). 'Nothing' when the batches do not merge, and the input
 should run as one evaluation.
 -}
 batchedValue ::
@@ -394,11 +394,10 @@ runtimeWith cfg cb = (rt, strictify external)
       , chartName = \h i written -> chartNameFor (Reference h i) written cb
       , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
-      , budget =
-          newBudget cfg.limits (cb, fmap (.first) cfg.batch)
-      , context =
-          rootContext (batchMembers cfg)
+      , budget
+      , context = rootContext budget (batchMembers cfg)
       }
+  budget = newBudget cfg.limits (cb, fmap (.first) cfg.batch)
   analysed = LazyMap.map (strictify external . snd) cb.derived
   known = LazyMap.map (signatures external . snd) cb.derived
   external h mi = Map.lookup h known >>= (`signatureAt` mi)

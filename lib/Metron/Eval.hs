@@ -671,7 +671,7 @@ eval cfg rt = go
   -- One step of the evaluation (design §8.1): every reduction counts.
   go :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
   go tenv site env t
-    | spend rt.budget t = reduce tenv site env t
+    | spend rt.budget rt.context t = reduce tenv site env t
     | otherwise =
         Left
           ( Exceeded
@@ -1249,9 +1249,14 @@ perOption ::
   (Config -> RuntimeOf s -> Narrowing -> ValueOf s -> ThunkOf s) ->
   ThunkOf s
 perOption cfg rt m k =
-  recombine
-    rt
-    cfg.limits.outcomes
+  -- Every group is entered before any evaluates, so that each path
+  -- starts from the steps taken before the split (design §8.1).
+  foldr
+    (\(Part ctx _ _) rest -> ctx `seq` rest)
+    (recombine rt cfg.limits.outcomes parts)
+    parts
+ where
+  parts =
     [ Part rt'.context nominal (k cfg' rt' r o.value)
     | (i, o) <- zip [0 :: Int ..] m.options
     , let nominal = rt.context.nominal && m.nominal == Just i
@@ -1274,7 +1279,7 @@ options than the @outcomes@ limit stop the evaluation.
 recombine :: (Scalar s) => RuntimeOf s -> Int -> [Part s] -> ThunkOf s
 recombine rt limit parts =
   assemble
-    rt.budget
+    (Join rt.budget rt.context)
     limit
     (memberVector rt.context.members)
     [ Piece ctx (memberVector ctx.members) nominal t
@@ -1288,12 +1293,18 @@ copies by global number, whether it is the nominal value, and the value.
 -}
 data Piece s = Piece Context (VU.Vector Int) Bool (ThunkOf s)
 
+{- | Where groups' results are put back together: the budget, and the
+evaluation they were split from, whose path continues from theirs
+(design §8.1).
+-}
+data Join = Join Budget Context
+
 {- | Pieces that together are a value for the given copies, put together:
 'recombine', for a value or for one field of the data its groups share.
 The nominal piece, if any, first.
 -}
 assemble ::
-  (Scalar s) => Budget -> Int -> VU.Vector Int -> [Piece s] -> ThunkOf s
+  (Scalar s) => Join -> Int -> VU.Vector Int -> [Piece s] -> ThunkOf s
 assemble b limit target pieces = do
   values <-
     traverse
@@ -1427,20 +1438,21 @@ placesWithin :: VU.Vector Int -> VU.Vector Int -> VU.Vector Int
 placesWithin outer group = VU.findIndices (inSorted group) outer
 
 {- | A value forced for a group's copies, so that a branch point it
-reaches counts only them (design §8.2).
+reaches counts only them (design §8.2), and the path of the evaluation
+they were split from continues from the group's (design §8.1).
 -}
-forcedFor :: Budget -> Context -> ThunkOf s -> ThunkOf s
-forcedFor b ctx t = within b ctx (either (const t) (`seq` t) t)
+forcedFor :: Join -> Context -> ThunkOf s -> ThunkOf s
+forcedFor (Join b outer) ctx t = within b outer ctx (either (const t) (`seq` t) t)
 
 -- | A tensor element forced for a group's copies.
-forcedElement :: Budget -> Context -> ElemOf s -> ElemOf s
-forcedElement b ctx e = within b ctx (either (const e) (`seq` e) e)
+forcedElement :: Join -> Context -> ElemOf s -> ElemOf s
+forcedElement (Join b outer) ctx e = within b outer ctx (either (const e) (`seq` e) e)
 
 {- | A group's value passed on whole, its parts forced, whenever they are,
 for the group's copies: its branch points count them, not those of
 whatever group forces the value later.
 -}
-bracketed :: Budget -> Context -> ValueOf s -> ValueOf s
+bracketed :: Join -> Context -> ValueOf s -> ValueOf s
 bracketed b ctx = \case
   VCon c fields choice -> VCon c (map (forcedFor b ctx . fmap (bracketed b ctx)) fields) choice
   VTensor dims d hint buf -> VTensor dims d hint (V.map (forcedElement b ctx) buf)

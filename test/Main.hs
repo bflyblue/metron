@@ -220,6 +220,7 @@ run defs t = do
   (_, typed) <-
     first (("type error: " <>) . (.message)) (elaborateClosed typesOf t)
   _ <- first ("lint: " <>) (lintClosed typesOf typed)
+  let budget = newBudget defaultLimits typed
   v <-
     first
       (T.pack . show)
@@ -231,8 +232,8 @@ run defs t = do
               (\_ _ _ -> Nothing)
               (const Nothing)
               (const Nothing)
-              (newBudget defaultLimits typed)
-              (rootContext (Range 0 0))
+              budget
+              (rootContext budget (Range 0 0))
           )
           typed
       )
@@ -3183,24 +3184,25 @@ pipelineProperties src =
       $ forProgram src
       $ \e ->
         withElaborated src e $ \_ (_, typed) ->
-          case evalClosed
-            defaultConfig
-            ( Runtime
-                (const Nothing)
-                (\_ _ _ -> Nothing)
-                (\_ _ _ -> Nothing)
-                (const Nothing)
-                (const Nothing)
-                (newBudget defaultLimits typed)
-                (rootContext (Range 0 0))
-            )
-            typed
-            >>= render of
-            Left (Internal msg) -> counterexample (T.unpack msg) False
-            Left (UnknownRef _) -> property False
-            Left (BadCycleIndex _) -> property False
-            Left err -> label (evalOutcome err) True
-            Right _ -> label "value" True
+          let budget = newBudget defaultLimits typed
+           in case evalClosed
+                defaultConfig
+                ( Runtime
+                    (const Nothing)
+                    (\_ _ _ -> Nothing)
+                    (\_ _ _ -> Nothing)
+                    (const Nothing)
+                    (const Nothing)
+                    budget
+                    (rootContext budget (Range 0 0))
+                )
+                typed
+                >>= render of
+                Left (Internal msg) -> counterexample (T.unpack msg) False
+                Left (UnknownRef _) -> property False
+                Left (BadCycleIndex _) -> property False
+                Left err -> label (evalOutcome err) True
+                Right _ -> label "value" True
   , testProperty "inference is deterministic"
       $ forProgram src
       $ \e ->
