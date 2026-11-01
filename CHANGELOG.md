@@ -2,19 +2,36 @@
 
 ## Unreleased
 
-- The warning for a comparison the copies disagree on says how many copies
-  the condition held for, over all of them: `warning: the comparison 1 >
-  0.9 goes both ways (true in 856 of 1000 samples): the condition depends
-  on the declared uncertainty`, in place of "across the 1000 samples".
-  The count is the same at every `:set cores`, to the copy. A comparison
-  is kept by its place in the term and its operands, so two comparisons
-  with the same operands are two warnings, a comparison in a loop is one
-  for each set of operands, and one made again with the same operands
-  adds its copies (`f x + f x` gives `of 2000 samples` at 1000).
-- An `if` or `case` whose comparison the copies disagree on because of
-  draws of a declared σ (Monte Carlo under double) is flagged as depending
-  on the declared uncertainty, not as "lost in rounding", which stays the
-  message when the copies differ by rounding alone.
+- Branches under copies (design §8.2). The per-comparison warning is
+  gone. Under `:set samples N`, an `if` or `case` whose copies' own
+  scrutinees would choose different alternatives prints a table after
+  the value, one row per alternative, the nominal branch marked:
+
+  ```
+  note: the branch at `if x > 0.9` goes both ways across 1000 samples (by the declared uncertainty):
+    then   856   ← taken (the nominal branch)
+    else   144
+  ```
+
+  The header says the cause (`lost in rounding`, or `by the declared
+  uncertainty`), `k evaluations × N samples` for a point reached more
+  than once, and how many copies had left the evaluated path at an
+  earlier branch point. The scrutinee prints as written, so `/=` reads as
+  `/=`. The counts are summed over every batch and are the same at every
+  `:set cores`.
+- Monte Carlo follows each sample's own branch. When the copies carry
+  draws of a declared σ, a branch point splits them: each alternative is
+  evaluated with the copies that select it, and the results are put
+  together copy by copy, so `if x > 0.9 then 1 else 2` with `x = 1 ±σ 0.1`
+  is a sample of mean 1.159, not 1. Numbers, tensors and data with the
+  same constructor recombine; where the samples give different
+  constructors, or functions, the value is a mixture of outcomes, which
+  `case`, application and the conditions handle per outcome, and which
+  prints its nominal value with a table of outcomes, their shares and
+  each number's mean and sd. `:set outcomes K` (default 1000) caps the
+  outcomes. Copies that differ by rounding alone still follow the nominal
+  branch, and their table is a warning. `steps` counts every group's
+  evaluation, so batches can take different steps.
 - Monte Carlo under double, corrected (design §8.2, corrections after
   building). A value whose copies carry draws of a declared σ prints its
   nominal IEEE value with the sample beside it, `0 (Monte Carlo: mean

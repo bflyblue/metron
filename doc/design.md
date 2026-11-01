@@ -6181,6 +6181,115 @@ the same term runs under any backend that has the built-ins it uses.
     counts those evaluations. Each batch splits its own copies; the
     recombined copies are keyed by their global number, so results stay
     identical for every `cores`.
+  - *As built (2026-11-01): branches under copies.* `Metron.Remark`
+    (the records), `Metron.Limits` (`reach`, contexts), `Metron.Branch`
+    (the table as text), and in `Metron.Eval` the values, the split and
+    the recombination; `Metron.Pretty` prints mixtures, `Metron.Batch`
+    merges them.
+    - *How a copy's alternative is known.* A constructor value
+      (`VCon`) carries a `Choice`: nothing, or, when the copies differ by
+      rounding alone, each copy's own constructor beside the nominal
+      one. A comparison (`<`, `<=`, `>`, `>=`, `==`, `/=`) gives each
+      copy its own result; `not`, `&&` and `||` combine them copy by
+      copy, and `==` on tensors, points and data does over every
+      component, every one evaluated. Where the copies carry draws and
+      differ, among themselves or from the nominal result, the condition
+      is a mixture instead (below), so a `case` on it splits. A case
+      result that recombines, and a mixture's options, say what each
+      copy has. A value built without copies (a literal list, a tuple)
+      has nothing of its own, and a `case` on it does not split.
+      `isNaN` and `isInfinite` decide on the nominal value only. The
+      rows are a Core `case`'s constructors: surface patterns compile to
+      cases on constructors, so a list case lists `{}` and `y : ys`, and
+      an `if` and a `case` on Bool, which are the same Core, both list
+      `then` and `else`.
+    - *The tables.* Every `case` evaluated under `samples N` notes a
+      reach (`Limits.reach`), with or without copies of its own, so that
+      each copy is counted wherever it reaches one, in whichever batch:
+      the copies counted by their own alternative, and only those of the
+      group being forced (`Budget.current`). A batch keeps a record per
+      site; batches merge by sum, and a point's evaluations are the most
+      times any one copy reached it, kept per set of copies. Tables print
+      in the order the nominal path first reached them. The header says
+      `(lost in rounding)` or `(by the declared uncertainty)`, `k
+      evaluations × N samples` when k > 1, and `; D had left the
+      evaluated path at an earlier branch point` when D > 0, D being k·N
+      less the copies counted, plus the counted copies a nominal branch
+      took along against their own scrutinee: inside an alternative
+      reached so (the context carries them, so it follows control, not
+      data), or decided by a short circuit that skipped their own second
+      operand. It is a `note:` where the copies split, a `warning:`
+      otherwise. `Metron.Branch` finds the `case` by its site in the
+      input's or the definition's Core and prints its scrutinee, so
+      `if x /= 1` reads as written; a row of 0 is a plain 0.
+    - *Splitting.* A group is evaluated with `Config.group`, its copies'
+      global numbers (so draws and roundings keyed as before), and a
+      `Limits.Context` of its own (on the nominal path or off it). Its
+      environment, closures, charts and the batch's shared definitions
+      are narrowed to it lazily (`Eval.narrow`). An option with copies is
+      evaluated, and the nominal one on the nominal path even with none,
+      for the nominal value; no other. The groups' results are forced to
+      their constructors, nominal first, each for its own copies, and put
+      back together (`Eval.recombine`): numbers, tensors, units and
+      points copy by copy (`Scalar.scatterM`; the nominal value from the
+      nominal group, a NaN off the nominal path, the copies carrying
+      draws), data of one constructor field by field, lazily, and
+      different constructors or functions as a mixture.
+    - *Mixtures.* `VMixture`: options, each a set of global copy numbers
+      with its own value, never a number. `case`, application, type
+      application, `not`, `&&`, `||`, `==` and `/=` run once per option,
+      their other operands narrowed to it (`Eval.perOption`); two
+      mixtures so meet as intersections. A primitive on charts or lists
+      refuses one ("an operation on a value whose samples have different
+      outcomes (a mixture)"). More options than `:set outcomes` (and
+      `--set outcomes`, default 1000) stop the evaluation, and so do more
+      outcomes than that when printing. A mixture prints its nominal
+      value, then a table: each outcome is the value's structure with
+      `_` for each number, a record by its constructor alone; its
+      samples and share; each number by its path (a record's field by
+      name, any other by place) with its own cluster's mean and sd in its
+      unit (`Double.clusterNote`); the ten commonest, then `and k
+      others`; `← nominal`. The bullet's `Hit {at = …} | Miss` cannot be
+      declared (a record has one constructor, and `at` is a keyword), so
+      the test is `data Shot = Hit Impact | Miss` with `Impact` a
+      record: `Hit Impact  8430  84.3%  0.arrival: mean 13.02877 s, …`.
+    - *Batches.* Each splits its own copies. `Batch.forced` forces every
+      outcome before the batch's notes are read, and `Batch.merged`
+      merges mixtures by outcome, each outcome's copies in batch order,
+      comparing IEEE values on the nominal path only. Results and tables
+      are the same at 1, 2, 4 and 32 cores (tested, with a recursion that
+      splits at every level).
+    - *Checked.* `if x > 0.9 then 1 else 2`, `x = 1 ±σ 0.1`, at 10⁴
+      samples to nearest: mean and sd within five standard errors of 1 +
+      Φ(−1) = 1.1587 and √(p(1 − p)) = 0.3654. The bullet's 0.856, 1.144
+      and 0.351 are the sample of 1000 at seed 1 (856 of 1000 copies),
+      not the probabilities. `classify` with `x = 0.05 ±σ 0.1`: `Neg` in
+      31.0% of 10⁴ (Φ(−0.5) = 30.85%), and `case classify x of Neg -> -1;
+      Pos -> 1` a sample of mean 0.380 (1 − 2p = 0.383).
+    - *Steps.* Each group's evaluation counts against its batch's
+      budget, so batches no longer take the same steps: one whose copies
+      split evaluates more alternatives. Near the limit an input can be
+      refused at K = 1 and accepted at K = 4. This replaces "every batch
+      takes the same steps" (corrections above).
+    - *Cost.* The orbit workload (100 positions, ten Newton steps of
+      Kepler's equation each, `a = 7000 ±σ 1 km`), random rounding:
+      0.744 s before and 0.765 s after at 10³ copies on one core, 0.341 s
+      and 0.349 s at 32, 5.93 s and 6.11 s at 10⁴ on one core (3%; it has
+      no branch on drawn values). With a convergence test on drawn
+      values, so that each sample stops at its own step, 10³ copies take
+      0.50 s, against 0.45 s following the nominal branch before.
+    - *Open.* A value shared with the evaluation around a split (a
+      `let`, an argument, a definition the batch shares) is computed once
+      for all its copies; its branch points count the copies of the group
+      that first forces it, nominal group first: in `let w = if x > 0.85
+      then 3 else 4 in if x > 0.9 then w else w + 1`, only the
+      then-group's. Its values are right, and the same at every K. "Left
+      the evaluated path" follows control: a branch point on a value
+      computed off its copies' path earlier does not count them. A split
+      `case` is not a tail call, so a loop whose condition carries draws
+      nests once per iteration. Off the nominal path a recombined
+      number's IEEE value is a NaN, so an index position (`exactly`)
+      refuses it there.
   - **Corrections after building** (decided by the owner, 2026-11-01):
     - *Printing under Monte Carlo.* When a value's copies carry draws of
       declared σ, it prints its nominal IEEE value with the sample beside
@@ -6317,10 +6426,11 @@ the same term runs under any backend that has the built-ins it uses.
     IEEE value is computed in every batch, alike, and taken from the
     first. Each batch forces its value as the printer does, in order and
     up to the first error, so it makes the reductions one evaluation's
-    printing makes and no others. A warning records the step it was made
+    printing makes and no others. ~~A warning records the step it was made
     at, the same in every batch, and the batches' warnings print in the
     order of the first step any made each at, which is one evaluation's
-    order; they say the total N.
+    order; they say the total N.~~ The branch points' records merge by
+    sum (see "Branches under copies", as built).
   - *One evaluation instead* when the input reaches `mid`, `sd`,
     `errorOf` or `digitsOf` (they read across a number's copies and
     would see only their batch's; the check's memo says which an input
@@ -6498,7 +6608,9 @@ Few copies can all agree by chance, and the value then prints as exact:
 at seed 1 and `0` at seed 3, the method's known weakness at small N.
 
 *Comparisons.* The IEEE result decides (`NaN` compares false, `/=` true).
-Under samples, a comparison any of whose copies disagrees with the IEEE
+The rest of this paragraph and the next are superseded: the
+per-comparison warning is gone, and a branch point reports a table
+(see "Branches under copies", as built). ~~Under samples, a comparison any of whose copies disagrees with the IEEE
 result is noted on the evaluation's budget (`Metron.Limits.remark`, kept
 in place for the reason the step counter is) and printed after the value:
 `warning: the comparison 1 > 1 goes both ways (true in 1 of 3 samples):
@@ -6507,9 +6619,9 @@ declared σ (a Monte Carlo sample), the disagreement is the input
 uncertainty, not rounding, and the warning says so: `…: the condition
 depends on the declared uncertainty`; an `if` and a `case` on the
 comparison are flagged alike. The design's wording names the `if`'s
-source; the comparison and its operands are what the evaluator has.
+source; the comparison and its operands are what the evaluator has.~~
 
-*As built (2026-11-01): the count over all the copies.* A note is data
+~~*As built (2026-11-01): the count over all the copies.* A note is data
 until the value is shown (`Metron.Remark`): the comparison's site, the
 same `Site` (definition and path) that names a nudge, threaded into
 `runPrim` from the primitive's node; its relation and operands' IEEE
@@ -6532,7 +6644,7 @@ copy, at every K (tested at 1, 2 and 4, with batches that note nothing).
 A comparison made again with the same operands adds its copies: `f x + f
 x`, with `f z = if z > 0.9 then 1 else 0`, says `of 2000 samples` at
 1000. The text, `true in X of N samples` and the cause, is written last,
-in the order of each note's first number.
+in the order of each note's first number.~~
 
 *Printing.* The shortest digits that read back, written as Metron writes
 numbers (scientific outside `[10⁻⁴, 10¹⁵)`), then `± e` to two digits,
