@@ -68,6 +68,7 @@ import Metron.Affine qualified as A
 import Metron.Core (NudgeKind)
 import Metron.Dimension (Dim)
 import Metron.Numerical.Linear qualified as L
+import Metron.Remark (Split)
 
 -- | The evaluators of the scalars a session can choose (@:backend@).
 data Backend
@@ -239,11 +240,11 @@ settingsAt p =
 data Rel = Lt | Le | Gt | Ge
   deriving stock (Eq, Show)
 
-{- | A decided comparison, and whether the decision is lost in rounding:
-the double backend's copies disagree about it (design §8.2). The result
-alone decides the branch; the flag is a warning.
+{- | A decided comparison, and, when the operands have copies, how the
+copies split on it (design §8.2). The result alone decides the branch;
+copies that disagree with it are a warning.
 -}
-data Decision = Decision {holds :: Bool, lost :: Maybe Text}
+data Decision = Decision {holds :: Bool, split :: Maybe Split}
   deriving stock (Eq, Show)
 
 -- | Where an elementwise built-in's result lives.
@@ -408,7 +409,7 @@ instance Scalar Magnitude where
     _ -> Nothing
 
 decided :: Bool -> Decision
-decided b = Decision{holds = b, lost = Nothing}
+decided b = Decision{holds = b, split = Nothing}
 
 -- | An accessor of a mean or a σ, refusing a value marked non-linear.
 described ::

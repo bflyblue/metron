@@ -17,20 +17,17 @@ module Metron.Compile (
 
 import Control.Concurrent.Async (forConcurrently)
 import Control.Exception (evaluate)
-import Data.List (sortOn)
 import Data.Map.Lazy qualified as LazyMap (map, mapWithKey)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map (
   empty,
   findWithDefault,
-  fromListWith,
   lookup,
-  toList,
  )
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Set qualified as Set (disjoint)
 import Data.Text (Text)
-import Data.Text qualified as T (intercalate, length, pack)
+import Data.Text qualified as T (intercalate, pack)
 import Metron.Affine (Magnitude)
 import Metron.Batch (acrossCopies, batchesOf, failure, forced, merged)
 import Metron.Check (
@@ -54,7 +51,7 @@ import Metron.Desugar (
   fillOperands,
   provenanceAt,
  )
-import Metron.Double (Dbl)
+import Metron.Double (Dbl, warningText)
 import Metron.Eval (
   Config (backend, batch, cores, limits, precision, samples),
   EvalError (..),
@@ -72,10 +69,11 @@ import Metron.Infer qualified as I (
   readingsOf,
   rewriteReadings,
  )
-import Metron.Limits (limitHint, newBudget, remarksAfter, timedRemarksAfter)
+import Metron.Limits (limitHint, newBudget, remarksAfter)
 import Metron.NameResolution (resolverFor)
 import Metron.Needs (Needs, checkBackend, reachedBy)
 import Metron.Pretty (Display, renderValue)
+import Metron.Remark (Remarks, warnings)
 import Metron.Resolve (
   annotationsWith,
   ascriptionsIn,
@@ -179,7 +177,7 @@ shown ::
   Codebase ->
   Preferences ->
   ValueOf s ->
-  [Text] ->
+  Remarks ->
   Either Text Text
 shown cfg scope cb prefs v remarks = do
   out <-
@@ -187,11 +185,21 @@ shown cfg scope cb prefs v remarks = do
       (Left . renderEvalError)
       Right
       (renderValue (printerFor cfg scope cb) cfg.precision prefs v)
-  pure (T.intercalate "\n" (out : map ("warning: " <>) remarks))
+  pure (withWarnings out remarks)
+
+{- | A printed value and a line for each warning its evaluation made, in the
+order one evaluation first made them: text only now, once every batch's
+remarks are in (design §8.2).
+-}
+withWarnings :: Text -> Remarks -> Text
+withWarnings out remarks =
+  T.intercalate
+    "\n"
+    (out : map (("warning: " <>) . warningText) (warnings remarks))
 
 {- | The double backend's value with its copies evaluated in parallel
 batches (design §8.2, "Metron.Batch"), each batch in its own thread and
-its own runtime, then merged, with the batches' warnings together, or
+its own runtime, then merged, with the batches' warnings combined, or
 the error they fail with together ('failure'). Each batch has the whole
 @steps@ limit. 'Nothing' when the batches do not merge, and the input
 should run as one evaluation.
@@ -201,7 +209,7 @@ batchedValue ::
   Codebase ->
   Hash ->
   TTerm Z ->
-  Maybe (Either EvalError (ValueOf Dbl, [Text]))
+  Maybe (Either EvalError (ValueOf Dbl, Remarks))
 batchedValue cfg cb h typed = unsafePerformIO $ do
   -- A heap overflow or a timeout reaches this thread, and forConcurrently
   -- stops the batches; the further overflows they cause while stopping are
@@ -213,17 +221,14 @@ batchedValue cfg cb h typed = unsafePerformIO $ do
       Left err -> pure (Left err)
       Right v -> do
         _ <- forced v
-        remarks <- evaluate (timedRemarksAfter v rt.budget)
-        _ <- evaluate (sum (map (T.length . snd) remarks))
+        remarks <- evaluate (remarksAfter v rt.budget)
         pure (Right (v, remarks))
   pure $ case sequence results of
     Left _ -> Left <$> failure results
     Right batches -> do
       v <- merged (map fst batches)
-      -- Each warning at the first step any batch made it at: the order one
-      -- evaluation makes them in.
-      let firsts = Map.fromListWith min [(t, n) | (n, t) <- concatMap snd batches]
-      Just (Right (v, map snd (sortOn fst [(n, t) | (t, n) <- Map.toList firsts])))
+      -- Each comparison's copies counted over all the batches.
+      Just (Right (v, foldMap snd batches))
 {-# NOINLINE batchedValue #-}
 
 {- | 'evalValueAs' for the double backend with its copies in parallel
@@ -264,8 +269,7 @@ evalShown cfg prefs scope cb h typed = do
       Right
       (renderValue (printerFor cfg scope cb) cfg.precision prefs v)
   -- The warnings are read once the printing has evaluated the value.
-  pure
-    (T.intercalate "\n" (out : map ("warning: " <>) (remarksAfter out rt.budget)))
+  pure (withWarnings out (remarksAfter out rt.budget))
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design

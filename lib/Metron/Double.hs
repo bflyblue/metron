@@ -65,6 +65,7 @@ module Metron.Double (
   nextDownDouble,
   libmUlps,
   studentT,
+  warningText,
 ) where
 
 import Data.Bits (shiftR, testBit, xor)
@@ -86,6 +87,7 @@ import Metron.Affine (
  )
 import Metron.Core (NudgeKind (..))
 import Metron.Dimension (dimMul, dimOne)
+import Metron.Remark (Cause (..), Split (..), Warning (..))
 import Metron.Scalar (
   Backend (..),
   Batch (..),
@@ -799,42 +801,54 @@ relText = \case
   Gt -> ">"
   Ge -> ">="
 
-{- | The IEEE result decides; with copies, a comparison they disagree about
-is flagged: lost in rounding when the copies differ only by rounding, and
-dependent on the declared uncertainty when they carry draws (a Monte Carlo
-sample, design §8.2). The message is the same in every batch, so the
-batches give one warning, as a single evaluation does.
+{- | The IEEE result decides; with copies, how they split on the comparison
+goes with it, and copies that disagree with the result are a warning
+('warningText'): the split is this evaluation's, which under parallel
+batches is one batch's, and the batches' splits are combined before the
+value is shown (design §8.2).
 -}
 decide ::
   Settings -> Text -> (Double -> Double -> Bool) -> Dbl -> Dbl -> Decision
 decide s what holds x y =
-  let result = holds x.value y.value
-      lost = case copyCount [x, y] of
-        Nothing -> Nothing
-        Just _
-          | VU.any (/= result) outcomes ->
-              Just
-                ( "the comparison "
-                    <> showDouble x.value
-                    <> " "
-                    <> what
-                    <> " "
-                    <> showDouble y.value
-                    <> " goes both ways across the "
-                    <> T.pack (show s.samples)
-                    <> " samples"
-                    <> reason
-                )
-          | otherwise -> Nothing
-   in Decision{holds = result, lost}
+  Decision{holds = result, split = splitOf <$> copyCount [x, y]}
  where
-  outcomes = case copyCount [x, y] of
-    Nothing -> VU.empty
-    Just n -> VU.zipWith holds (copiesOf n x) (copiesOf n y)
-  reason
-    | carriesDraws x || carriesDraws y =
-        ": the condition depends on the declared uncertainty"
-    | otherwise = ": the condition is lost in rounding"
+  result = holds x.value y.value
+  splitOf n =
+    Split
+      { relation = what
+      , left = x.value
+      , right = y.value
+      , result
+      , cause = if carriesDraws x || carriesDraws y then Draws else Rounding
+      , held =
+          VU.foldl'
+            (\k b -> if b then k + 1 else k)
+            0
+            (VU.zipWith holds (copiesOf n x) (copiesOf n y))
+      , copies = n
+      , samples = s.samples
+      }
+
+{- | A comparison the copies disagree about, as a line after the value: how
+many of all the copies the condition held for, and what the copies spread
+by, rounding alone or draws of a declared σ (a Monte Carlo sample).
+-}
+warningText :: Warning -> Text
+warningText w =
+  "the comparison "
+    <> showDouble w.left
+    <> " "
+    <> w.relation
+    <> " "
+    <> showDouble w.right
+    <> " goes both ways (true in "
+    <> T.pack (show w.held)
+    <> " of "
+    <> T.pack (show w.copies)
+    <> " samples): "
+    <> case w.cause of
+      Draws -> "the condition depends on the declared uncertainty"
+      Rounding -> "the condition is lost in rounding"
 
 -- Estimates ----------------------------------------------------------------------------
 

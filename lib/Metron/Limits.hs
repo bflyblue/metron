@@ -25,7 +25,6 @@ module Metron.Limits (
   nested,
   remark,
   remarksAfter,
-  timedRemarksAfter,
 
   -- * Sizes of numbers
   log10Abs,
@@ -54,7 +53,8 @@ import Data.Word (Word64)
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrArray, withForeignPtr)
 import Foreign.Storable (peekElemOff, pokeElemOff)
 import GHC.Num.Integer (integerLog2)
-import System.IO.Unsafe (unsafeDupablePerformIO)
+import Metron.Remark (Remarks, Site, Split, noted)
+import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import System.Mem (performMajorGC)
 import System.Timeout (timeout)
 
@@ -173,19 +173,20 @@ tshow = T.pack . show
 
 -- The budget ------------------------------------------------------------------------
 
-{- | What one evaluation has spent: the steps it took and how deeply it is
-nested now. Counted in place: the evaluator is pure, and threading a
-counter through every thunk would make every value a computation. The
-count changes no value: an evaluation either finishes with the value it
-would have had, or fails with the limit it hit.
+{- | What one evaluation has spent: the steps it took, how deeply it is
+nested now, and how many comparisons with copies it has made. Counted in
+place: the evaluator is pure, and threading a counter through every
+thunk would make every value a computation. The count changes no value:
+an evaluation either finishes with the value it would have had, or fails
+with the limit it hit.
 -}
 data Budget = Budget
   { limits :: Limits
   , counters :: ForeignPtr Int
-  , remarks :: IORef [(Int, Text)]
-  {- ^ warnings the evaluation made along the way, newest first, each with
-  the step it was made at: a branch the double backend's samples disagree
-  about (design §8.2). Kept in place for the reason the counters are
+  , remarks :: IORef Remarks
+  {- ^ warnings the evaluation made along the way: a comparison the double
+  backend's copies disagree about (design §8.2). Kept in place for the
+  reason the counters are
   -}
   }
 
@@ -198,37 +199,34 @@ evaluations from sharing one: each passes what it evaluates.
 newBudget :: Limits -> a -> Budget
 newBudget l x = unsafeDupablePerformIO $ do
   _ <- evaluate (x `seq` ())
-  cs <- mallocForeignPtrArray 2
-  withForeignPtr cs $ \p -> pokeElemOff p 0 0 >> pokeElemOff p 1 0
-  rs <- newIORef []
+  cs <- mallocForeignPtrArray 3
+  withForeignPtr cs $ \p -> mapM_ (\i -> pokeElemOff p i 0) [0, 1, 2]
+  rs <- newIORef mempty
   pure (Budget l cs rs)
 {-# NOINLINE newBudget #-}
 
-{- | Note a warning, once, and go on with the value. The value makes every
-call its own.
+{- | Note a comparison with copies, made at a site, and go on with the
+value. Comparisons are numbered in the order the evaluation makes them,
+which every batch of the double backend makes alike (design §8.2), and
+one is kept when a copy disagrees with the result. Not dupable, since a
+number must be taken once. The value makes every call its own.
 -}
-remark :: Budget -> Text -> a -> a
-remark b t x = unsafeDupablePerformIO $ do
-  n <- withForeignPtr b.counters (`peekElemOff` 0)
-  modifyIORef' b.remarks (\rs -> if t `elem` map snd rs then rs else (n, t) : rs)
+remark :: Budget -> Site -> Split -> a -> a
+remark b site sp x = unsafePerformIO $ withForeignPtr b.counters $ \p -> do
+  n <- peekElemOff p 2
+  pokeElemOff p 2 (n + 1)
+  modifyIORef' b.remarks (noted n site sp)
   pure x
 {-# NOINLINE remark #-}
 
-{- | The warnings so far, oldest first: read after the value they came from
-has been evaluated, which the first argument forces.
+{- | The warnings so far: read after the value they came from has been
+evaluated, which the first argument forces.
 -}
-remarksAfter :: a -> Budget -> [Text]
-remarksAfter x b = map snd (timedRemarksAfter x b)
-
-{- | The warnings so far, oldest first, each with the step it was made at:
-the double backend's batches each take the same steps, so a warning
-several make is ordered by the first step any made it at.
--}
-timedRemarksAfter :: a -> Budget -> [(Int, Text)]
-timedRemarksAfter x b = unsafeDupablePerformIO $ do
+remarksAfter :: a -> Budget -> Remarks
+remarksAfter x b = unsafeDupablePerformIO $ do
   _ <- evaluate x
-  reverse <$> readIORef b.remarks
-{-# NOINLINE timedRemarksAfter #-}
+  readIORef b.remarks
+{-# NOINLINE remarksAfter #-}
 
 {- | Count one step of the evaluation of the given term: 'False' once the
 evaluation has taken more than its steps. The term makes every call its

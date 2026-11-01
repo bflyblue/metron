@@ -69,6 +69,7 @@ library
     , Metron.Parser
     , Metron.Prelude
     , Metron.Pretty
+    , Metron.Remark
     , Metron.Repl
     , Metron.Scalar
     , Metron.Resolve

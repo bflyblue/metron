@@ -145,10 +145,11 @@ import Metron.Limits (
   spend,
  )
 import Metron.Primitive (baseUnit, primArity, typedPrims)
+import Metron.Remark (Site (..))
 import Metron.Scalar (
   Backend (..),
   Batch,
-  Decision (holds, lost),
+  Decision (holds, split),
   Own (..),
   Rel (..),
   Rounding (..),
@@ -331,13 +332,6 @@ type Elem = ElemOf Magnitude
 
 -- | The environment for a term in scope @n@.
 type Env s n = Vec n (ThunkOf s)
-
-{- | Where a node sits: the enclosing top-level definition and the path of
-child indices down to it, innermost first. Declared uncertainty takes its
-identity from here (design §3.2.4). Erased type nodes do not count, so
-the path is the Core path and survives re-elaboration.
--}
-data Site = Site {definition :: Hash, path :: [Int]}
 
 {- | A chart (design §3.10): a step, an origin and axes relative to its
 parent. Points store frame coordinates with the step applied. Local
@@ -573,6 +567,7 @@ eval cfg rt = go
       runPrim
         cfg
         rt
+        site
         prim
         (resolveType tenv ty)
         (delays tenv site env args)
@@ -1045,17 +1040,20 @@ only as the primitive needs them; elementwise operations stay lazy per
 element. Dimensions follow the rules of design §4.3, display units those
 of §3.2.12, magnitudes those of §3.2. The type is the primitive's, as
 instantiated where it is used, under the type-level arguments in force.
+The site is the primitive's place in the term, which a comparison's
+warning is kept by (design §8.2).
 -}
 runPrim ::
   forall s.
-  (Scalar s) => Config -> RuntimeOf s -> Text -> Type -> [ThunkOf s] -> ThunkOf s
+  (Scalar s) =>
+  Config -> RuntimeOf s -> Site -> Text -> Type -> [ThunkOf s] -> ThunkOf s
 {-# SPECIALIZE runPrim ::
-  Config -> Runtime -> Text -> Type -> [Thunk] -> Thunk
+  Config -> Runtime -> Site -> Text -> Type -> [Thunk] -> Thunk
   #-}
 {-# SPECIALIZE runPrim ::
-  Config -> RuntimeOf Dbl -> Text -> Type -> [ThunkOf Dbl] -> ThunkOf Dbl
+  Config -> RuntimeOf Dbl -> Site -> Text -> Type -> [ThunkOf Dbl] -> ThunkOf Dbl
   #-}
-runPrim cfg rt prim ty args = case (prim, args) of
+runPrim cfg rt site prim ty args = case (prim, args) of
   -- A base unit is a unit (design §3.10, U1).
   (unit, [])
     | Just b <- baseUnit unit ->
@@ -1788,9 +1786,9 @@ runPrim cfg rt prim ty args = case (prim, args) of
     y <- ordered =<< b
     VBool . settle <$> arith (relate p rel x y)
   equalAll xs ys = and <$> mapM (\(u, v) -> settle <$> arith (equalM p u v)) (zip xs ys)
-  -- A decision lost in rounding is the result all the same, with a warning
-  -- (design §8.2).
-  settle d = maybe d.holds (\why -> remark rt.budget why d.holds) d.lost
+  -- The result decides; how the copies split on it is noted at this site,
+  -- a warning when some disagree (design §8.2).
+  settle d = maybe d.holds (\sp -> remark rt.budget site sp d.holds) d.split
   -- Tensors of one shape (lint agrees), data or points: the equality
   -- instances of design §4.2. Tensors are equal when every component is
   -- decided equal (design §3.2.9).

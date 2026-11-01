@@ -550,22 +550,18 @@ samplesTests =
             length (filter (/= "0") values) @?= 0
             (length (Set.fromList estimates) > 1) @? show estimates
     , testCase "at samples 3, the unstable branch of the default seed is flagged"
-        $ case runWith
+        $ runWith
           defaultConfig
-          [":set samples 3", ":backend double", "if 1 + 1e-16 > 1 then 1 else 2"] of
-          Right [out] ->
-            ( "2\nwarning: the comparison 1 > 1 goes both ways across the 3 samples"
-                `T.isPrefixOf` out
-            )
-              @? T.unpack out
-          other -> assertFailure (show other)
+          [":set samples 3", ":backend double", "if 1 + 1e-16 > 1 then 1 else 2"]
+          @?= Right
+            [ "2\nwarning: the comparison 1 > 1 goes both ways (true in 1 of 3 samples): the condition is lost in rounding"
+            ]
     , testCase
         "a branch the copies disagree on is flagged, and the IEEE result decides"
-        $ case runWith doubleConfig{samples = 10} ["if 1 + 1e-16 > 1 then 1 else 2"] of
-          Right [out] ->
-            ("2\nwarning: the comparison 1 > 1 goes both ways" `T.isPrefixOf` out)
-              @? T.unpack out
-          other -> assertFailure (show other)
+        $ runWith doubleConfig{samples = 10} ["if 1 + 1e-16 > 1 then 1 else 2"]
+          @?= Right
+            [ "2\nwarning: the comparison 1 > 1 goes both ways (true in 7 of 10 samples): the condition is lost in rounding"
+            ]
     , testCase "a stable branch is not"
         $ runWith doubleConfig{samples = 10} ["if 1 + 1e-3 > 1 then 1 else 2"]
           @?= Right ["1"]
@@ -577,11 +573,11 @@ samplesTests =
           doubleConfig{samples = 1000}
           [":set rounding nearest", "let x = 1 ±σ 0.1", "if x > 0.9 then 1 else 2"] of
           Right [out] -> do
-            ("1\nwarning: the comparison 1 > 0.9 goes both ways" `T.isPrefixOf` out)
-              @? T.unpack out
-            ("the condition depends on the declared uncertainty" `T.isInfixOf` out)
-              @? T.unpack out
-            not ("lost in rounding" `T.isInfixOf` out) @? T.unpack out
+            let start = "1\nwarning: the comparison 1 > 0.9 goes both ways (true in "
+                end =
+                  " of 1000 samples): the condition depends on the declared uncertainty"
+            (start `T.isPrefixOf` out) @? T.unpack out
+            (end `T.isSuffixOf` out) @? T.unpack out
           other -> assertFailure (show other)
     , testCase "a case that compares with draws names them too"
         $ case runWith
@@ -1026,13 +1022,10 @@ coresTests =
                 ]
         two 3 @?= two 1
         two 2 @?= two 1
-        case outs 4 of
-          Right [out] ->
-            ( "warning: the comparison 1 > 1 goes both ways across the 10 samples"
-                `T.isInfixOf` out
-            )
-              @? T.unpack out
-          other -> assertFailure (show other)
+        outs 4
+          @?= Right
+            [ "2\nwarning: the comparison 1 > 1 goes both ways (true in 7 of 10 samples): the condition is lost in rounding"
+            ]
     , testCase "steps applies to each batch: accepted alike at every K" $ do
         let ls k steps =
               [ "let go n acc = if n == 0 then acc else go (n - 1) (acc + 1)"
