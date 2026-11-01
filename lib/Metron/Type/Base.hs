@@ -1,5 +1,3 @@
-{-# LANGUAGE PatternSynonyms #-}
-
 {- | The type language's data (design §4.1): kinds, types, lengths, shapes,
 schemes, substitution, and declared data types. "Metron.Type" re-exports all
 of it with the renderers and the constructor tables; this module sits
@@ -9,8 +7,7 @@ below "Metron.Encode" and "Metron.Builtin", which hash declarations, so that
 module Metron.Type.Base (
   Kind (..),
   VarId,
-  Type (.., TTensor, TUnit),
-  Role (..),
+  Type (..),
   Frame (..),
   FrameSlot (..),
   Space (..),
@@ -35,7 +32,6 @@ module Metron.Type.Base (
   applyShape,
   applyDim,
   applyAxis,
-  applyRole,
   applyFrame,
   applySpace,
   applyArg,
@@ -52,47 +48,48 @@ module Metron.Type.Base (
   appendShape,
 ) where
 
-import Data.List ( nubBy )
-import Data.Map.Strict ( Map )
-import Data.Maybe ( fromMaybe )
-import Metron.Core ( Hash(..), Label(..) )
-import Metron.Dimension
-    ( dimAtoms,
-      dimFromAtoms,
-      dimMul,
-      dimOne,
-      dimPow,
-      dimVar,
-      dimVars,
-      substDimVar,
-      Dim,
-      DimAtom(DVar) )
-import Data.ByteString qualified as BS ( replicate )
-import Data.Map.Strict qualified as Map ( empty, lookup )
-import Data.Set qualified as Set ( Set, empty, insert )
+import Data.ByteString qualified as BS (replicate)
+import Data.List (nubBy)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (empty, lookup)
+import Data.Maybe (fromMaybe)
+import Data.Set qualified as Set (Set, empty, insert)
+import Metron.Core (Hash (..), Label (..))
+import Metron.Dimension (
+  Dim,
+  DimAtom (DVar),
+  dimAtoms,
+  dimFromAtoms,
+  dimMul,
+  dimOne,
+  dimPow,
+  dimVar,
+  dimVars,
+  substDimVar,
+ )
 
 {- | The kinds of variables. 'KAxis' is the kind of the name slot of a
 shape position (design §3.9, §4.1): an axis variable. 'KFrame' and
 'KSpace' are the kinds of the slots of a frame and of a space (design
 §3.10, F1): a frame variable stands for a frame's identity, a space
 variable for a space's, each beside companions of the other kinds that
-stand for what the identity determines ('Frame', 'Space'). 'KRole' is the
-kind of a quantity's role (design §3.10, U9): an amount or a unit.
+stand for what the identity determines ('Frame', 'Space').
 -}
-data Kind = KType | KLen | KShape | KDim | KAxis | KFrame | KSpace | KRole
+data Kind = KType | KLen | KShape | KDim | KAxis | KFrame | KSpace
   deriving stock (Eq, Ord, Show)
 
 type VarId = Int
 
 data Type
-  = {- | a quantity in a role (design §3.10, U9): @Quantity r δ@, a tensor
-    of a shape in a dimension. An amount ('TTensor') has any shape; a unit
-    ('TUnit') is one number, so its shape is always @[]@; a role variable
-    stands for either, and its shape is @[]@ by the time it is
-    generalised. A unit and an amount are one magnitude with a display
-    hint at run time; the role keeps them apart in the types
+  = -- | an amount, @Tensor σ δ@ (@Num δ@ at rank zero): a tensor of a shape in a dimension
+    TTensor Shape Dim
+  | {- | a unit of a dimension (design §3.10, U1, U9), always one number:
+    internal to the type checker, which keeps units apart from amounts
+    while it elaborates unit syntax. A unit and an amount are one
+    magnitude with a display hint at run time. No written type names a
+    unit, and no variable ranges over both
     -}
-    TQty Role Shape Dim
+    TUnit Dim
   | -- | a point on a frame (design §3.10, F4): @Point c@
     TPoint Frame
   | -- | a chart whose frame is @c@ (design §3.10, F4): @Chart c@
@@ -109,24 +106,6 @@ data Type
   | TFun Type Type
   | TVar VarId
   deriving stock (Eq, Ord, Show)
-
-{- | The role of a quantity (design §3.10, U9): an amount, a unit, or a
-role variable, of kind 'KRole'. Roles unify syntactically.
--}
-data Role = RAmount | RUnit | RVar VarId
-  deriving stock (Eq, Ord, Show)
-
-{- | An amount, @Tensor σ δ@ (@Num δ@ at rank zero): a quantity in the
-amount role.
--}
-pattern TTensor :: Shape -> Dim -> Type
-pattern TTensor sh d = TQty RAmount sh d
-
-{- | A unit of a dimension, @Unit δ@ (design §3.10, U1, U9): a quantity in
-the unit role, always one number.
--}
-pattern TUnit :: Dim -> Type
-pattern TUnit d = TQty RUnit SNil d
 
 {- | A frame as a type (design §3.10, F1, F3): its identity, a minted
 frame's hash or a frame variable, beside its axes (@Axes c@: its own, its
@@ -225,7 +204,6 @@ data Arg
   | AAxis Axis
   | AFrame FrameSlot
   | ASpace SpaceSlot
-  | ARole Role
   deriving stock (Eq, Ord, Show)
 
 -- | A variable of a kind, as an argument.
@@ -238,7 +216,6 @@ varArg k v = case k of
   KAxis -> AAxis (AVar v)
   KFrame -> AFrame (FrVar v)
   KSpace -> ASpace (SpVar v)
-  KRole -> ARole (RVar v)
 
 -- | @forall (v : kind)…. type@.
 data Scheme = Forall [(VarId, Kind)] Type
@@ -270,7 +247,8 @@ shapeOfDims = foldr (\k -> SCons (LLit k) AAnon) SNil
 
 applyType :: Subst -> Type -> Type
 applyType s = \case
-  TQty r sh d -> TQty (applyRole s r) (applyShape s sh) (applyDim s d)
+  TTensor sh d -> TTensor (applyShape s sh) (applyDim s d)
+  TUnit d -> TUnit (applyDim s d)
   TPoint f -> TPoint (applyFrame s f)
   TChart f -> TChart (applyFrame s f)
   -- A synonym reduces once its space's shape is known.
@@ -321,11 +299,6 @@ applyShape s = \case
     Just (AShape sh) -> applyShape s sh
     _ -> SVar v
 
-applyRole :: Subst -> Role -> Role
-applyRole s = \case
-  RVar v | Just (ARole r) <- Map.lookup v s -> applyRole s r
-  r -> r
-
 applyAxis :: Subst -> Axis -> Axis
 applyAxis s = \case
   AVar v | Just (AAxis a) <- Map.lookup v s -> applyAxis s a
@@ -352,7 +325,6 @@ applyArg s = \case
   ASpace sp -> case sp of
     SpVar v | Just a@(ASpace _) <- Map.lookup v s -> applyArg s a
     _ -> ASpace sp
-  ARole r -> ARole (applyRole s r)
 
 {- | Apply to the body of a scheme; quantified variables are never in the
 substitution's domain.
@@ -371,7 +343,8 @@ substOnce :: Map VarId Arg -> Type -> Type
 substOnce m = go
  where
   go = \case
-    TQty r sh d -> TQty (role r) (shape sh) (dim d)
+    TTensor sh d -> TTensor (shape sh) (dim d)
+    TUnit d -> TUnit (dim d)
     TPoint f -> TPoint (frame f)
     TChart f -> TChart (frame f)
     TOver f md -> overType (frame f) (dim <$> md)
@@ -406,9 +379,6 @@ substOnce m = go
   axis = \case
     AVar v | Just (AAxis a) <- Map.lookup v m -> a
     a -> a
-  role = \case
-    RVar v | Just (ARole r) <- Map.lookup v m -> r
-    r -> r
   len = \case
     LLit k -> LLit k
     LVar v k -> case Map.lookup v m of
@@ -427,7 +397,6 @@ substOnce m = go
     AFrame f -> AFrame f
     ASpace (SpVar v) | Just x@(ASpace _) <- Map.lookup v m -> x
     ASpace sp -> ASpace sp
-    ARole r -> ARole (role r)
   dim d =
     foldr
       dimMul
@@ -446,7 +415,8 @@ freeVars :: Type -> [(VarId, Kind)]
 freeVars = nubBy (\a b -> fst a == fst b) . go
  where
   go = \case
-    TQty r sh d -> role r ++ shape sh ++ [(v, KDim) | v <- dimVars d]
+    TTensor sh d -> shape sh ++ [(v, KDim) | v <- dimVars d]
+    TUnit d -> [(v, KDim) | v <- dimVars d]
     TPoint f -> frame f
     TChart f -> frame f
     TOver f md -> frame f ++ maybe [] (\d -> [(v, KDim) | v <- dimVars d]) md
@@ -467,9 +437,6 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
   axis = \case
     AVar v -> [(v, KAxis)]
     _ -> []
-  role = \case
-    RVar v -> [(v, KRole)]
-    _ -> []
   len = \case
     LLit _ -> []
     LVar v _ -> [(v, KLen)]
@@ -484,7 +451,6 @@ freeVars = nubBy (\a b -> fst a == fst b) . go
     AFrame _ -> []
     ASpace (SpVar v) -> [(v, KSpace)]
     ASpace _ -> []
-    ARole r -> role r
 
 {- | A declared data type (design §2.3): its parameters by kind (variables
 0 .. k-1 in the field types), its constructors' field types in declaration
@@ -526,7 +492,6 @@ closedLens = \case
 
 appendShape :: [(Len, Axis)] -> Shape -> Shape
 appendShape ls tl = foldr (uncurry SCons) tl ls
-
 
 -- | The declared types a type mentions.
 typeRefs :: Type -> Set.Set Hash

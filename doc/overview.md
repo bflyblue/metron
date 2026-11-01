@@ -223,7 +223,6 @@ Terms in alphabetical order. The design section in parentheses has the rules.
 - **Point.** A position in an affine space: a temperature, an instant, a place. Two points subtract to an amount (`.-`), and an amount added to a point gives a point (`.+`). Points never add (§3.6).
 - **Propagation.** Rewriting the dependents of a re-bound name to the new version, re-checking each, on `:update` or `:upgrade` (§7.5).
 - **Quantity rule.** A literal followed by unit syntax is an amount (`3 m`), and a literal followed by a chart is a point (`20 degC`) (§2.6, §3.10 U4).
-- **Role.** Internal to the type checker: whether a quantity type is an amount or a unit. Roles cannot be written in a type, and there is no role polymorphism in the language (§3.10 U9).
 - **Scratch.** Pending definitions: checked, hashed and usable, but not stored until `:add` or `:update` (§7.5).
 - **Slack.** The anonymous worst-case radius of an affine form. It never cancels and never shrinks (§3.2.7).
 - **Space.** A declared set of points that convert among each other, with the type of its amounts: `space ITS90 = Num K`, `space GCRS = Vec 3 m`. Points of two spaces never meet (§3.10, F2).

@@ -97,11 +97,10 @@ import Metron.Type (
   Frame (space),
   Kind (..),
   Len (LLit, LRank, LVar),
-  Role (RAmount),
   Scheme (..),
   Shape (SCons, SNil),
   Space (dim, shape),
-  Type (TData, TFun, TOver, TPoint, TQty, TTensor),
+  Type (TData, TFun, TOver, TPoint, TTensor),
   TypeDef,
   TypeLookup (schemesOf, typeDefOf),
   VarId,
@@ -402,7 +401,7 @@ lint look ctx = \case
   TPow b n -> do
     tb <- monoOf b
     case tb of
-      -- A power of a number in its role (design §3.10, U9).
+      -- A power of a number (design §4.3).
       TTensor SNil d -> mono (numD (dimPow n d))
       _ -> Left "power of a non-number"
   TNoise _ _ k -> mono (vecT (LLit (fromIntegral k)))
@@ -480,7 +479,6 @@ lint look ctx = \case
     AAxis _ -> KAxis
     AFrame _ -> KFrame
     ASpace _ -> KSpace
-    ARole _ -> KRole
 
 {- | The primitives whose types are relations rather than schemes (design
 §4.2). Inference solved or defaulted their constraints; lint re-checks the
@@ -489,8 +487,7 @@ relation on the elaborated type.
 lintConstrained :: TypeLookup -> Text -> Type -> Either Text ()
 lintConstrained look name ty = case (name, ty) of
   -- Ordinary arithmetic takes amounts; unit syntax is elaborated separately.
-  ("outer", TFun (TQty r1 s1 d1) (TFun (TQty r2 s2 d2) (TQty r3 s3 d3))) -> do
-    require (all (== RAmount) [r1, r2, r3]) "outer: arithmetic takes amounts"
+  ("outer", TFun (TTensor s1 d1) (TFun (TTensor s2 d2) (TTensor s3 d3))) -> do
     if s2 == SNil
       then require (s3 == s1) "outer: a scalar right operand preserves the left shape"
       else do
@@ -656,7 +653,6 @@ renderTTerm namer = go 0
     KAxis -> "x" <> T.pack (show v)
     KFrame -> "f" <> T.pack (show v)
     KSpace -> "sp" <> T.pack (show v)
-    KRole -> "r" <> T.pack (show v)
   -- A whole number prints as one, so that a slice's or a contraction's
   -- positions read as positions: `slice 1 0 t`.
   showD r

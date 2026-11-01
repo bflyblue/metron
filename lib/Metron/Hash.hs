@@ -75,13 +75,12 @@ import Metron.Encode (
   varint,
  )
 import Metron.Type (
-  Arg (AAxis, ADim, AFrame, ALen, ARole, AShape, ASpace, AType),
+  Arg (AAxis, ADim, AFrame, ALen, AShape, ASpace, AType),
   Axis (AAnon, ANamed, AVar),
   Frame (Frame),
   FrameSlot (FrNamed, FrVar),
-  Kind (KAxis, KDim, KFrame, KLen, KRole, KShape, KSpace, KType),
+  Kind (KAxis, KDim, KFrame, KLen, KShape, KSpace, KType),
   Len (LLit, LRank, LVar),
-  Role (RAmount, RUnit, RVar),
   Shape (SCons, SNil, SVar),
   Space (Space),
   SpaceSlot (SpNamed, SpVar),
@@ -411,7 +410,6 @@ decodeTypeDef bs = do
       4 -> pure KAxis
       5 -> pure KFrame
       6 -> pure KSpace
-      7 -> pure KRole
       k -> failDec ("unknown kind " <> T.pack (show k))
 
 decType :: Dec Type
@@ -419,7 +417,6 @@ decType =
   byte >>= \case
     0x21 -> TTensor <$> decShape <*> decDim
     0x2A -> TUnit <$> decDim
-    0x2E -> TQty <$> decRole <*> decShape <*> decDim
     0x2B -> TPoint <$> decFrame
     0x2C -> TChart <$> decFrame
     0x2D ->
@@ -448,14 +445,7 @@ decType =
       4 -> AAxis <$> decAxis
       5 -> AFrame <$> decFrameSlot
       6 -> ASpace <$> decSpaceSlot
-      7 -> ARole <$> decRole
       k -> failDec ("unknown argument kind " <> T.pack (show k))
-  decRole =
-    byte >>= \case
-      0 -> pure RAmount
-      1 -> pure RUnit
-      2 -> RVar . fromIntegral <$> decVarint
-      k -> failDec ("unknown role " <> T.pack (show k))
   decShape =
     byte >>= \case
       0 -> pure SNil

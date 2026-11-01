@@ -38,7 +38,6 @@ import Metron.Type.Base (
   FrameSlot (..),
   Kind (..),
   Len (..),
-  Role (..),
   Shape (..),
   Space (base, dim, shape, slot),
   SpaceSlot (..),
@@ -123,8 +122,6 @@ kindByte = \case
   -- A frame and a space (design §3.10, F1).
   KFrame -> word8 5
   KSpace -> word8 6
-  -- A role (design §3.10, U9).
-  KRole -> word8 7
 
 encType :: Type -> Builder
 -- @Bool@, tuples and lists are declared types, 0x28 on the built-in hashes
@@ -133,9 +130,6 @@ encType = \case
   TTensor sh d -> word8 0x21 <> encShape sh <> encDim d
   -- A unit (design §3.10, U1).
   TUnit d -> word8 0x2A <> encDim d
-  -- A quantity of a role variable (design §3.10, U9); an amount is 0x21 and
-  -- a unit 0x2A.
-  TQty r sh d -> word8 0x2E <> encRole r <> encShape sh <> encDim d
   -- Points, charts and amounts on frames (design §3.10, F4, F9).
   TPoint f -> word8 0x2B <> encFrame f
   TChart f -> word8 0x2C <> encFrame f
@@ -157,14 +151,6 @@ encArg = \case
   AAxis a -> word8 4 <> encAxis a
   AFrame f -> word8 5 <> encFrameSlot f
   ASpace sp -> word8 6 <> encSpaceSlot sp
-  ARole r -> word8 7 <> encRole r
-
--- | A role (design §3.10, U9): an amount, a unit, or a variable.
-encRole :: Role -> Builder
-encRole = \case
-  RAmount -> word8 0
-  RUnit -> word8 1
-  RVar v -> word8 2 <> varint (fromIntegral v)
 
 {- | A frame (design §3.10, F9): its slot, its axes and its space, a
 space its slot, shape, dimension and base axes.

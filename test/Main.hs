@@ -26,11 +26,11 @@ import Lang.Syntax (
  )
 import Lang.Tensors (contractionTests, productTests, sliceTests)
 import Lang.Types (
+  amountTests,
   annotationTests,
   dimensionSyntaxTests,
   forallTests,
   lintRegressionTests,
-  roleTests,
   typeTests,
  )
 import Lang.Units (
@@ -106,7 +106,7 @@ main = do
       , readingTests
       , partUTests
       , partFTests
-      , roleTests
+      , amountTests
       , astroTests
       , precisionTests
       ]

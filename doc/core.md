@@ -444,13 +444,12 @@ Applying the test to the roadmap, in order:
   a `let`, and `to` gained two readings the types choose (a point on a
   chart, a vector along a chart's axes) written into the term as before.
   No Core change: Core stays at 15 constructors.
-- **Roles (design §3.10, U9).** A unit and an amount became one quantity
-  type in two roles: the type language's tensor gained a role, `Amount`,
-  `Unit` or a variable of a new kind, and `Unit δ` is the unit role at the
-  shape `[]`. `*`, `/`, `^k` and `unit` are polymorphic in the role, so
-  arithmetic's static reading went and the quantity rule and `to` are the
-  only readings left. No Core change, and no hash moved, since a term's
-  hash does not cover its type.
+- **Units are internal (design §3.10, U9).** A unit keeps its own type,
+  `Unit δ`, internal to elaboration: no written type names it, and no type
+  ranges over both units and amounts. Arithmetic takes amounts, so its
+  static reading went and the quantity rule and `to` are the only readings
+  left. No Core change, and no hash moved, since a term's hash does not
+  cover its type.
 - **Affine arithmetic, units, printing, covariance.** Runtime and prelude work.
   `Noise` and `Uncertain` already existed for it, and the arithmetic itself
   landed without touching Core: `Metron.Affine` sits entirely under the

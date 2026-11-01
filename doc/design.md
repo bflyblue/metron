@@ -3419,8 +3419,9 @@ construction in unit contexts, so declarations, exports and edits read
 back with the same hashes: `:view speed` is `speed = km / h`, `:view km` is
 `km = kilo * 1 metre`, and `let q = 3 * km` views as `q = 3 * 1 km`.
 
-**U9. Roles are internal.** There is no surface role polymorphism. `Unit`,
-`Quantity` and `Amount` are refused in written types:
+**U9. Units are internal.** No written type names a unit, and no type ranges
+over both units and amounts. `Unit`, `Quantity` and `Amount` are refused in
+written types:
 
 | written | message |
 |---|---|
@@ -3428,11 +3429,13 @@ back with the same hashes: `:view speed` is `speed = km / h`, `:view km` is
 | `b :: Quantity Amount m` | "quantities are amounts: use Num d or Tensor s d" |
 | `c :: Amount` | "Amount is not a type: an amount is Num d, or Tensor s d" |
 
-The type checker keeps an internal role on a quantity type, an amount or a
-unit, to tell the two apart during elaboration. Applying a chart still
-constructs a point, and points do not enter ordinary arithmetic.
+The type checker keeps a unit apart from an amount with a type of its own,
+`Unit δ` (U1), internal to elaboration: a unit is one number, and only unit
+syntax and a unit declaration have a unit's type. Arithmetic, equality and
+comparison take amounts. Applying a chart still constructs a point, and
+points do not enter ordinary arithmetic.
 
-**Implemented in:** `Metron.Desugar` (`regroup`, `quantityOf`, `staticUnit`, `bareUnit`, `desugarFactor`, `unitAmount`, `desugarUnit`, `quantityHints`), `Metron.Infer` (`decide`, `readingsOf`, `rewriteReadings`, `settleReadings`), `Metron.Resolve` (`withReadings`), `Metron.Eval` (`runPrim`, `unitOp`, `asUnit`, `asChart`), `Metron.UnitHint` (`mkHintAs`), `Metron.Pretty` (`renderTermUnits`), `Metron.Type.Syntax` (`tyType`, `tyRole`), `Metron.Session.Preferences` (`preferenceHint`).
+**Implemented in:** `Metron.Desugar` (`regroup`, `quantityOf`, `staticUnit`, `bareUnit`, `desugarFactor`, `unitAmount`, `desugarUnit`, `quantityHints`), `Metron.Infer` (`decide`, `readingsOf`, `rewriteReadings`, `settleReadings`), `Metron.Resolve` (`withReadings`), `Metron.Eval` (`runPrim`, `unitOp`, `asUnit`, `asChart`), `Metron.UnitHint` (`mkHintAs`), `Metron.Pretty` (`renderTermUnits`), `Metron.Type.Syntax` (`tyType`), `Metron.Type.Base` (`Type`), `Metron.Session.Preferences` (`preferenceHint`).
 **Tested by:** "units are syntax"; "internal units and public amount arithmetic"; "amount arithmetic"; "products" › "juxtaposition is for units and charts, by type"; "display units".
 
 #### Part F: spaces and frames
@@ -3874,7 +3877,7 @@ Diff c`. A binder names a frame's space: `forall (c : ITS90)`, `forall s (c :
 s) (c1 : s)`.
 
 `Unit δ` is internal to unit elaboration and display (§3.10, U1). It is not a
-type that a user can write, and there is no surface role polymorphism
+type that a user can write, and no type ranges over both units and amounts
 (§3.10, U9). Ordinary arithmetic takes amounts.
 
 #### Dimension syntax
@@ -3986,9 +3989,6 @@ kind is an index domain with its own equational theory and its own unifier:
 | `Dim` | Kennedy's algorithm (§4.4) |
 | `Axis` | syntactic (§3.9) |
 | `Frame`, `Space` | by identity, then the companions (§3.10, F4) |
-
-The code also has an internal role kind, which no written type can name
-(§3.10, U9).
 
 A written length variable stands for a whole axis set: a length variable and
 a companion axis variable, introduced together. A written literal length has
@@ -5039,7 +5039,6 @@ field count and each field type, then the label.
 | 4 | axis |
 | 5 | frame |
 | 6 | space |
-| 7 | role (internal, §3.10, U9) |
 
 The label is one of: 0 and the type's full path (an owner stamp), 1 and an
 empty text for `structural`, 2 and a chart's or a vector space's full path for
@@ -5060,7 +5059,6 @@ own:
 | 0x2B | `Point φ` | frame (§3.10, F4) |
 | 0x2C | `Chart φ` | frame (§3.10, F4) |
 | 0x2D | `Diff φ`, `Coords φ` | frame, then 0 for `Diff`, or 1 and a dimension for `Coords` (dimension 1): the residual amount type until the space's shape is known (§3.10, F4) |
-| 0x2E | a quantity of a role variable | role, shape, dimension (internal, §3.10, U9) |
 
 The parts:
 
@@ -5080,9 +5078,8 @@ The parts:
   frame type, or 1 and a variable id), then its axis and its space. A
   **space** is its slot (0 and the hash of its minted space type, or 1 and a
   variable id), then its shape, dimension and base axis.
-- A **role** is 0 for an amount, 1 for a unit, or 2 and a variable id.
 - A declared type's **argument** is its kind byte and then a type, length,
-  shape, dimension, axis, frame slot, space slot or role, by the kind.
+  shape, dimension, axis, frame slot or space slot, by the kind.
 
 A recursive occurrence of the type being declared is `0x28` with the
 all-zero hash, so the definition never contains its own hash. A length

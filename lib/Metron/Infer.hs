@@ -131,7 +131,6 @@ import Metron.Type (
   FrameSlot (..),
   Kind (..),
   Len (..),
-  Role (..),
   Scheme (..),
   Shape (..),
   Space (base, dim, shape, slot),
@@ -147,7 +146,6 @@ import Metron.Type (
   applyDim,
   applyFrame,
   applyLen,
-  applyRole,
   applyScheme,
   applyShape,
   applyType,
@@ -331,7 +329,6 @@ fresh = \case
     pure (AAxis (AVar st.nextAxis))
   KFrame -> AFrame . FrVar <$> freshId
   KSpace -> ASpace . SpVar <$> freshId
-  KRole -> ARole . RVar <$> freshId
  where
   freshId = do
     st <- get
@@ -417,11 +414,11 @@ unify p expected actual = do
       unifyAxis p f1.axes f2.axes
       unifyShape p f1.space.shape f2.space.shape
       unifyDim p (fromMaybe f1.space.dim m1) (fromMaybe f2.space.dim m2)
-    -- The amount between points is an amount (design §3.10, U9).
-    (TOver f md, TQty r sh d) | r /= RUnit -> unifyRole p RAmount r >> overTensor p f md sh d
-    (TQty r sh d, TOver f md) | r /= RUnit -> unifyRole p RAmount r >> overTensor p f md sh d
-    -- A unit is not an amount (design §3.10, U3): `1 km` is the amount.
-    (TQty RUnit _ _, TQty RAmount _ _) ->
+    -- The amount between points is an amount (design §3.10, F4).
+    (TOver f md, TTensor sh d) -> overTensor p f md sh d
+    (TTensor sh d, TOver f md) -> overTensor p f md sh d
+    -- A unit is not an amount (design §3.10, U3, U9): `1 km` is the amount.
+    (TUnit _, TTensor _ _) ->
       failAt
         p
         ( "expected "
@@ -430,7 +427,7 @@ unify p expected actual = do
             <> renderType a
             <> ": an amount where a unit goes; a unit is written by its name, km or km/h"
         )
-    (TQty RAmount _ _, TQty RUnit _ _) ->
+    (TTensor _ _, TUnit _) ->
       failAt
         p
         ( "expected "
@@ -439,16 +436,9 @@ unify p expected actual = do
             <> renderType a
             <> ": a unit where an amount goes; one of it is written 1 km"
         )
-    -- One role, then the shapes and dimensions (design §3.10, U9).
-    (TQty r1 s1 d1, TQty r2 s2 d2) -> do
-      unifyRole p r1 r2
-      st <- get
-      case runStateT (unifyShape p s1 s2 >> unifyDim p d1 d2) st of
-        Right ((), st') -> put st'
-        Left (TypeError _ detail) ->
-          failAt
-            p
-            ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
+    -- The shapes, then the dimensions, reported as the types they are in.
+    (TTensor s1 d1, TTensor s2 d2) -> inTypes e a (unifyShape p s1 s2 >> unifyDim p d1 d2)
+    (TUnit d1, TUnit d2) -> inTypes e a (unifyDim p d1 d2)
     (TPoint _, TTensor _ _) ->
       failAt
         p
@@ -469,6 +459,15 @@ unify p expected actual = do
         )
     _ -> failAt p ("expected " <> renderType e <> ", got " <> renderType a)
  where
+  -- A mismatch inside, reported with the two types it is in.
+  inTypes e a inner = do
+    st <- get
+    case runStateT inner st of
+      Right ((), st') -> put st'
+      Left (TypeError _ detail) ->
+        failAt
+          p
+          ("expected " <> renderType e <> ", got " <> renderType a <> ": " <> detail)
   -- Arguments of a declared type, by kind; a kind mismatch cannot happen for
   -- a well-formed type, so it reports as a plain mismatch.
   unifyArg x y = case (x, y) of
@@ -479,24 +478,8 @@ unify p expected actual = do
     (AAxis a1, AAxis a2) -> unifyAxis p a1 a2
     (AFrame f1, AFrame f2) -> unifyFrameSlot p "frames" f1 f2
     (ASpace s1, ASpace s2) -> unifySpaceSlot p s1 s2
-    (ARole r1, ARole r2) -> unifyRole p r1 r2
     _ ->
       failAt p ("expected " <> renderType expected <> ", got " <> renderType actual)
-
-{- | Two roles (design §3.10, U9): an amount and a unit never meet; the
-callers that can say more say it first.
--}
-unifyRole :: Path -> Role -> Role -> Infer ()
-unifyRole p x y = do
-  s <- gets (.subst)
-  case (applyRole s x, applyRole s y) of
-    (a, b) | a == b -> pure ()
-    (RVar v, b) -> bindVar p v (ARole b)
-    (a, RVar v) -> bindVar p v (ARole a)
-    _ ->
-      failAt
-        p
-        "an amount and a unit: a unit is written by its name, and one of it is 1 km"
 
 {- | Two frames (design §3.10, F4, F5): one space, then one identity and one
 axis set. The space comes first, so frames of two spaces are reported as
@@ -590,7 +573,6 @@ bindVar p v arg = do
         AAxis _ -> False
         AFrame _ -> False
         ASpace _ -> False
-        ARole _ -> False
       trivial = case arg of
         AType (TVar w) -> w == v
         AShape (SVar w) -> w == v
@@ -599,7 +581,6 @@ bindVar p v arg = do
         AAxis (AVar w) -> w == v
         AFrame (FrVar w) -> w == v
         ASpace (SpVar w) -> w == v
-        ARole (RVar w) -> w == v
         _ -> False
   unless trivial
     $ if occurs
@@ -830,7 +811,7 @@ solveOne p = \case
     case t' of
       -- Equality takes amounts (design §3.10, U9).
       TUnit _ -> failAt p ("no equality on " <> renderType t')
-      TQty r _ _ -> unifyRole p RAmount r >> pure True
+      TTensor _ _ -> pure True
       TPoint _ -> pure True
       TOver _ _ -> pure True
       -- A declared type compares when its fields do (design §4.2): Bool,
@@ -847,10 +828,6 @@ solveOne p = \case
     case t' of
       TTensor SNil _ -> pure True
       TTensor (SVar _) _ -> pure False
-      -- Comparison takes amounts (design §3.10, U9).
-      TQty r@(RVar _) sh d -> do
-        unifyRole p RAmount r
-        solveOne p (OrdInstance (TTensor sh d))
       TPoint f | f.space.shape == SNil -> pure True
       TPoint f | SVar _ <- f.space.shape -> pure False
       TVar _ -> pure False
@@ -866,7 +843,7 @@ solveOne p = \case
   OverIs f md t -> do
     s <- gets (.subst)
     case (overType (applyFrame s f) (applyDim s <$> md), applyType s t) of
-      (TOver _ _, TQty _ sh _) | Nothing <- closedLens sh -> pure False
+      (TOver _ _, TTensor sh _) | Nothing <- closedLens sh -> pure False
       (TOver _ _, TVar _) -> pure False
       (o, t') -> unify p o t' >> pure True
   Fixed f -> do
@@ -889,8 +866,8 @@ solveOne p = \case
 
 {- | Choose a reading once the types say which (design §3.10). A quantity is
 read by what follows its literal, or by its result where that already
-says; a @to@ by its target, or by its value or result. A quantity of a
-role not yet known after a literal or a @to@ can only be a unit (U9).
+says; a @to@ by its target, or by its value or result. Unit syntax after
+a literal or a @to@ is a unit (U9), the one place a unit type arises.
 Returns whether the reading was chosen.
 -}
 decide :: Path -> Reading -> Infer Bool
@@ -899,9 +876,9 @@ decide p = \case
     atom' <- resolve atom
     res' <- resolve res
     case (atom', res') of
-      (TQty r _ _, _) | r /= RAmount -> scaleReading
+      (TUnit _, _) -> scaleReading
       (TChart _, _) -> chartReading
-      (TVar _, TQty{}) -> pure False
+      (TVar _, TTensor{}) -> pure False
       (TVar _, TPoint _) -> chartReading
       (TVar _, _) -> pure False
       (other, _) ->
@@ -926,7 +903,7 @@ decide p = \case
     val' <- resolve val
     res' <- resolve res
     case (tgt', val', res') of
-      (TQty r _ _, _, _) | r /= RAmount -> unitTo
+      (TUnit _, _, _) -> unitTo
       (TChart _, v, w)
         | any isPoint [v, w] -> chartTo
         | any isAmount [v, w] -> axesTo
@@ -935,7 +912,7 @@ decide p = \case
         | any isAmount [v, w] -> axesTo
         | any isPoint [v, w] -> chartTo
         | otherwise -> pure False
-      (TQty{}, _, _) ->
+      (TTensor{}, _, _) ->
         failAt
           (1 : p)
           "an amount after `to`, which takes a unit or a chart: write the unit, as in to km or to km/h"
@@ -964,9 +941,9 @@ decide p = \case
               (0 : p)
               ("`from … to` converts a point or an amount, not " <> renderType v)
  where
-  -- An amount, or a quantity whose role is not yet known: not a unit.
+  -- An amount, or the amount between points of a frame not yet known.
   isAmount = \case
-    TQty r _ _ -> r /= RUnit
+    TTensor{} -> True
     TOver _ _ -> True
     _ -> False
   isPoint = \case
@@ -1259,7 +1236,8 @@ negativeOnly quantified ts =
   ]
  where
   exponents v = \case
-    TQty _ _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TTensor _ d -> [k | (DVar w, k) <- dimAtoms d, w == v]
+    TUnit d -> [k | (DVar w, k) <- dimAtoms d, w == v]
     TPoint f -> frameExps f
     TOver f md -> frameExps f ++ maybe [] dimExps md
     TChart f -> frameExps f
@@ -1868,7 +1846,6 @@ constructorType look p c k = case c of
     KAxis -> fresh KAxis
     KFrame -> fresh KFrame
     KSpace -> fresh KSpace
-    KRole -> fresh KRole
 
 {- | One alternative: the constructor's fields enter scope at their types and
 the body must have the case's result type.

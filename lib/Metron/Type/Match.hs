@@ -4,26 +4,36 @@ module Metron.Type.Match (
   isInstanceOf,
 ) where
 
-import Control.Monad ( foldM )
-import Metron.Dimension
-    ( dimAtoms, dimDiv, dimFromAtoms, dimRoot, DimAtom(DVar) )
-import Metron.Type
-    ( applyType,
-      substOnce,
-      varArg,
-      Arg(ADim, AType, ARole, AFrame, ASpace, AShape, AAxis, ALen),
-      Axis(AVar),
-      Frame(Frame),
-      FrameSlot(FrVar),
-      Len(LRank, LLit, LVar),
-      Role(RVar),
-      Scheme(..),
-      Shape(SNil, SVar, SCons),
-      Space(Space),
-      SpaceSlot(SpVar),
-      Type(TTensor, TVar, TFun, TQty, TPoint, TChart, TOver, TData) )
-import Data.Map.Strict qualified as Map
-    ( empty, lookup, member, fromList, insert )
+import Control.Monad (foldM)
+import Data.Map.Strict qualified as Map (
+  empty,
+  fromList,
+  insert,
+  lookup,
+  member,
+ )
+import Metron.Dimension (
+  DimAtom (DVar),
+  dimAtoms,
+  dimDiv,
+  dimFromAtoms,
+  dimRoot,
+ )
+import Metron.Type (
+  Arg (AAxis, ADim, AFrame, ALen, AShape, ASpace, AType),
+  Axis (AVar),
+  Frame (Frame),
+  FrameSlot (FrVar),
+  Len (LLit, LRank, LVar),
+  Scheme (..),
+  Shape (SCons, SNil, SVar),
+  Space (Space),
+  SpaceSlot (SpVar),
+  Type (TChart, TData, TFun, TOver, TPoint, TTensor, TUnit, TVar),
+  applyType,
+  substOnce,
+  varArg,
+ )
 
 {- | Whether a signature holds of a definition's scheme (design §4.8): the
 signature's type, its own variables held fixed as if they were constants,
@@ -60,8 +70,8 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
   matchType p t m = case (p, t) of
     (TVar v, _) | quantified v -> bindArg v (AType t) m
     (TFun a b, TFun c d) -> matchType a c m >>= matchType b d
-    (TQty r sa da, TQty r' sb db) ->
-      matchRole r r' m >>= matchShape sa sb >>= matchDim da db
+    (TTensor sa da, TTensor sb db) -> matchShape sa sb m >>= matchDim da db
+    (TUnit da, TUnit db) -> matchDim da db m
     (TPoint f, TPoint g) -> matchFrame f g m
     (TChart f, TChart g) -> matchFrame f g m
     -- A synonym is checked by the comparison at the end, reduced.
@@ -78,11 +88,7 @@ isInstanceOf ty (Forall vs0 pat0) = case matchType pat ty Map.empty of
     (AAxis x, AAxis y) -> matchAxis x y m
     (AFrame x, AFrame y) -> matchFrameSlot x y m
     (ASpace x, ASpace y) -> matchSpaceSlot x y m
-    (ARole x, ARole y) -> matchRole x y m
     _ -> Nothing
-  matchRole p a m = case p of
-    RVar v | quantified v -> bindArg v (ARole a) m
-    _ -> if p == a then Just m else Nothing
   matchFrame (Frame s a sp) (Frame s' a' sp') m =
     matchFrameSlot s s' m >>= matchAxis a a' >>= matchSpace sp sp'
   matchSpace (Space s sh d b) (Space s' sh' d' b') m =

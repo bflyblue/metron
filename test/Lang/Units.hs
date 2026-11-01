@@ -8,7 +8,13 @@ module Lang.Units (
 
 import Control.Monad (forM_)
 import Data.Bifunctor (first)
-import Data.ByteString qualified as BS (replicate)
+import Data.ByteString qualified as BS (
+  drop,
+  replicate,
+  singleton,
+  take,
+  unpack,
+ )
 import Data.Text (Text)
 import Data.Text qualified as T (
   concat,
@@ -67,7 +73,8 @@ import Metron.TCore (lintClosed)
 import Metron.Type (
   Kind (KDim),
   Scheme (Forall),
-  Type (TUnit),
+  Shape (SNil),
+  Type (TTensor, TUnit),
   TypeDef (TypeDef),
   TypeLookup (TypeLookup),
   numD,
@@ -111,6 +118,17 @@ readingTests =
     , testCase "internal unit types still encode and decode" $ do
         let def = TypeDef [(0, KDim)] [[TUnit (Dimension.dimVar 0)]] structuralLabel
         decodeTypeDef (encodeTypeDef def) @?= Right def
+    , testCase "a role is neither a kind nor a type: their encodings are refused" $ do
+        -- Roles were a kind (byte 7) and a quantity of a role variable a
+        -- type (tag 0x2E). Nothing written could make either, so both are
+        -- gone, and no stored type held them (design §3.10, U9).
+        let def = TypeDef [(0, KDim)] [[TTensor SNil (Dimension.dimVar 0)]] structuralLabel
+            bytes = encodeTypeDef def
+            patched i b = BS.take i bytes <> BS.singleton b <> BS.drop (i + 1) bytes
+        BS.unpack (BS.take 5 bytes) @?= [1, 3, 1, 1, 0x21]
+        decodeTypeDef bytes @?= Right def
+        expectLeft (decodeTypeDef (patched 1 7)) "unknown kind 7"
+        expectLeft (decodeTypeDef (patched 4 0x2E)) "unknown type tag 46"
     ]
  where
   km = Hash (BS.replicate 32 0xb1)

@@ -1,11 +1,11 @@
--- | Types, signatures, annotations, foralls, dimensions and roles.
+-- | Types, signatures, annotations, foralls, dimensions and amount arithmetic.
 module Lang.Types (
   typeTests,
   lintRegressionTests,
   annotationTests,
   forallTests,
   dimensionSyntaxTests,
-  roleTests,
+  amountTests,
 ) where
 
 import Control.Monad (forM_)
@@ -191,8 +191,7 @@ typeTests =
         -- Amounts: the left operand is a scalar, the right any tensor.
         typeOfText "\\k v -> (1 * k) * v"
           @?= Right "forall d s d1. Num d -> Tensor s d1 -> Tensor s (d1*d)"
-        -- A role left open keeps both operands scalar, so that the role
-        -- generalises (design §3.10, U9).
+        -- A left operand of unseen rank defaults to a scalar (design §4.2).
         typeOfText "\\k v -> k * v"
           @?= Right "forall d s d1. Num d -> Tensor s d1 -> Tensor s (d*d1)"
         typeOfText "\\a b -> a @ b"
@@ -362,8 +361,8 @@ typeTests =
             other -> assertFailure (show other)
     ]
 
-roleTests :: TestTree
-roleTests =
+amountTests :: TestTree
+amountTests =
   testGroup
     "amount arithmetic"
     [ testCase "generic multiplication retains tensor polymorphism" $ do

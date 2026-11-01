@@ -85,9 +85,8 @@ import Metron.Syntax qualified as S (
   qualify,
  )
 import Metron.Type (
-  Role (RUnit),
   Scheme (Forall),
-  Type (TChart, TFun, TQty),
+  Type (TChart, TFun, TUnit),
   TypeDef (constructors),
  )
 import Text.Read (readMaybe)
@@ -246,8 +245,9 @@ groupResolver group members scope cb query
 
 {- | Hashes select stored terms, never a local binder. A name narrows the
 search to its current and historical references. Bare hashes search all
-terms. Unit/chart roles come from the selected term's type, not from the
-name's current flags, which may describe a different version entirely.
+terms. Whether it is a unit or a chart comes from the selected term's type,
+not from the name's current flags, which may describe a different version
+entirely.
 -}
 historicalReference :: S.Scope -> Codebase -> Text -> Maybe Resolved
 historicalReference scope cb query = Just $ either AInvalidReference id $ do
@@ -306,7 +306,7 @@ historicalReference scope cb query = Just $ either AInvalidReference id $ do
     _ -> Left "hash reference is not a stored term"
   Forall _ ty <-
     maybe (Left "hash reference has no stored type") Right (typeOf r cb)
-  let unit = case ty of TQty RUnit _ _ -> True; _ -> False
+  let unit = case ty of TUnit _ -> True; _ -> False
       chart = returnsChart ty
       parameterised = case ty of TFun _ _ -> chart; _ -> False
   pure

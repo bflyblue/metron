@@ -315,7 +315,7 @@ retypeType m = \case
   TFun a b -> TFun (retypeType m a) (retypeType m b)
   -- A chart's axes are a declared type's (design §3.9): a named slot
   -- follows it too.
-  TQty r sh d -> TQty r (shape sh) d
+  TTensor sh d -> TTensor (shape sh) d
   TPoint f -> TPoint (frame f)
   TChart f -> TChart (frame f)
   TOver f md -> TOver (frame f) md

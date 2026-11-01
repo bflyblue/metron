@@ -126,7 +126,6 @@ import Metron.Type (
   FrameSlot (FrNamed, FrVar),
   Kind (..),
   Len (LLit, LVar),
-  Role (..),
   Scheme (..),
   Shape (..),
   Space (..),
@@ -426,7 +425,6 @@ kindNoun = \case
   KAxis -> "an axis set"
   KFrame -> "a frame"
   KSpace -> "a space"
-  KRole -> "a role"
 
 -- | A parameter used at a kind: record it, or report the clash.
 useParam :: DataEnv -> S.TyExpr -> Text -> Kind -> Kinds VarId
@@ -487,8 +485,8 @@ tyType env t = case t.node of
         ("Num", [d]) -> TTensor SNil <$> tyDim env d
         -- A unit takes its dimension as Num does (design §3.10, U1).
         ("Unit", _) -> bad t "units are syntax, not value types; pass an amount such as 1 km"
-        -- A quantity in a role (design §3.10, U9): @Quantity Amount d@ is
-        -- @Num d@ and @Quantity Unit d@ is @Unit d@.
+        -- No written type names a unit, or ranges over units and amounts
+        -- (design §3.10, U9).
         ("Quantity", _) -> bad t "quantities are amounts: use Num d or Tensor s d"
         ("Vec", [n]) -> (\l -> TTensor (position l SNil) dimOne) <$> tyLen env n
         ("Vec", [n, d]) -> (\l -> TTensor (position l SNil)) <$> tyLen env n <*> tyDim env d
@@ -521,16 +519,6 @@ tyType env t = case t.node of
   S.TyShapeCons _ _ -> bad t "a shape is not a type; write Tensor (n : s) d"
   S.TyDim _ -> bad t "a dimension is not a type: a quantity of it is Num (m/s)"
   S.TyForall _ _ -> bad t "forall goes only at the head of a signature or an ascription"
-
-{- | A role (design §3.10, U9): @Amount@, @Unit@, or a variable of kind
-role.
--}
-tyRole :: DataEnv -> S.TyExpr -> Kinds Role
-tyRole env a = case a.node of
-  S.TyName p | Map.member p env.params -> RVar <$> useParam env a p KRole
-  S.TyName "Amount" -> pure RAmount
-  S.TyName "Unit" -> pure RUnit
-  _ -> bad a "a role is Amount or Unit, or a variable, as in Quantity r m"
 
 {- | A frame (design §3.10, F4): a frame variable, with its companions, or
 a chart's name, which names the frame it minted, read off the chart's
@@ -703,7 +691,6 @@ argOf env k a = case k of
   KFrame -> (\f -> (AFrame f.slot, FrameOf f)) <$> tyFrame env a
   KAxis -> bad a "an axis set cannot be written"
   KSpace -> bad a "a space is written as a frame's: (c : ITS90)"
-  KRole -> (,NoCompanion) . ARole <$> tyRole env a
 
 -- | A position of a shape: a length and its axes.
 position :: (Len, Axis) -> Shape -> Shape
