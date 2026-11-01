@@ -5371,6 +5371,33 @@ unreachable for linted terms and are reported as internal errors.
 
 ---
 
+### 8.1 Resource limits (design; decided by the owner, 2026-11-01)
+
+A program in Metron can ask for more than a machine has: a huge exact
+number (`2^(2^64)`, `1e1000000000`), rationals that grow with every step of
+an iteration, recursion with no base case, an enormous list (`range 0 1e9`),
+a vast tensor. Each such program must fail as an ordinary error naming the
+limit it hit, never by exhausting the machine. A limit is a run-time setting,
+changed with `:set` (and on the command line), with a default that a normal
+session never reaches.
+
+| setting | what it bounds | where it is checked |
+|---|---|---|
+| `:set memory` | the heap, in GB (the GHC runtime's maximum heap) | the runtime: a heap overflow becomes the error "the expression needed more than N GB (`:set memory`)", the session survives |
+| `:set steps` | evaluation steps per expression (fuel) | the evaluator, counted per reduction |
+| `:set depth` | nesting of calls | the evaluator |
+| `:set digits` | the size of an exact integer or rational, in decimal digits | arithmetic, *before* computing where the size can be predicted (a power's result from its exponent, a literal's exponent), after otherwise |
+| `:set components` | a tensor's or a list's elements | construction (today the fixed `componentLimit`, 10⁷) |
+| `:set time` | wall-clock seconds per expression | the REPL, by a timeout; off by default |
+
+The defaults are chosen by measurement, so that the test suite, the library
+and the tutorial run well inside them while a runaway stops within seconds:
+a starting point is `memory` 4, `steps` 10⁹, `depth` 10⁵, `digits` 10⁵,
+`components` 10⁷. `:set` with no arguments lists them. A limit is a
+property of the session, not of a term: it never changes a value or a hash,
+only whether an evaluation finishes. Precision (`:set precision`) is
+separate, being a property of the result.
+
 ## 9. Module layout and libraries
 
 Library code in `lib/`, executable in `src/`, as `doc/style.md` requires.
