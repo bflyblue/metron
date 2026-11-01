@@ -159,8 +159,7 @@ depthTests =
           @?= Right ["0"]
     , testCase "a tail call through a split is no deeper (design §8.2)"
         -- 2000 samples stop at their own steps, so the copies split at
-        -- most of the loop's steps; put together one inside another, the
-        -- groups nested more than 30 deep.
+        -- most of the loop's steps.
         $ case run
           ( drawn 10
               <> ["let count n = if n * x > 1000 then n else count (n + 1)", "count 0"]

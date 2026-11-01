@@ -6267,11 +6267,12 @@ the same term runs under any backend that has the built-ins it uses.
       global numbers (so draws and roundings keyed as before), and a
       `Limits.Context` of its own (on the nominal path or off it). Its
       environment and charts are narrowed to it lazily (`Eval.narrow`).
-      A closure carries its narrowing and narrows its environment when it
-      is applied, a second narrowing composed with the first
-      (`Eval.andThen`), and a definition the batch shares is narrowed from
-      the batch's copies where it is referenced: neither grows a chain
-      through a loop that splits at every step. An option with copies is
+      A closure keeps the environment it was made with and one narrowing
+      from it, a second narrowing composed with the first
+      (`Eval.andThen`), with the environment so narrowed made once, lazily,
+      for all its applications; a definition the batch shares is narrowed
+      from the batch's copies where it is referenced: neither grows a
+      chain through a loop that splits at every step. An option with copies is
       evaluated, and the nominal one on the nominal path even with none,
       for the nominal value; no other. The groups' results are forced to
       their constructors, nominal first, each for its own copies, and put
@@ -6291,17 +6292,22 @@ the same term runs under any backend that has the built-ins it uses.
       nominal first, from a worklist: a group whose result is itself a
       split gives its groups in its place, so a loop whose condition
       carries draws, each group going on with its own iterations, is
-      forced group after group and put together once, not one level per
-      split. Forcing a group's part is waiting for it, so it counts one
-      level of `depth`: a split whose value something waits for (`1 + g
-      (n + 1)` under a condition on draws) nests, and stops at the limit.
-      The order the groups are forced in, and so the tables, are those of
-      putting each split together where it is. Checked: under `:set depth
-      10` with 2000 samples, the countdown `count n = if n * x > 1000 then
-      n else count (n + 1)` with `x = 1 ±σ 0.1` runs (put together one
-      inside another it stopped at a depth of 30); `count 0` to 10⁵ at
-      10 samples gives each copy the first `n` with `n · x > 10⁵` in its
-      own doubles, up to 1.4 · 10⁵ steps, under the default `depth`.
+      forced group after group and put together once, not one inside
+      another. The order the groups are forced in, and so the tables, are
+      those of putting each split together where it is. Forcing a group's
+      part counts no level of `depth`: a batch whose copies agree does not
+      split, so a level there would make `depth` differ by K (measured: a
+      recursion under a condition on draws, refused at K = 1 and accepted
+      at K = 2 and 4 at the same `depth`). A split whose value something
+      waits for (`1 + g (n + 1)`) nests through `inner` as any such call
+      does. Checked: put together one inside another, the countdown below
+      at 10⁴ samples over 10⁴ steps overflowed a 100 KB Haskell stack, and
+      now runs in it; `count 0` to 10⁵ at 10 samples gives each copy the
+      first `n` with `n · x > 10⁵` in its own doubles, up to 1.4 · 10⁵
+      steps, under the default `depth`; under `:set depth 10` at 2000
+      samples, `count n = if n * x > 1000 then n else count (n + 1)` with
+      `x = 1 ±σ 0.1` runs; and `depth` near the limit refuses and accepts
+      alike at K = 1, 2 and 4.
       Measuring the loop found four more causes of growth, fixed with it:
       a branch point's record (`Remark.Pending`) summed its counts lazily,
       a chain forced only when the tables were read; a closure narrowed
@@ -6368,7 +6374,7 @@ the same term runs under any backend that has the built-ins it uses.
       in which samples stop at many different steps keeps each stopped
       group's environment until the loop ends, since the groups are put
       together, nominal first, at the end: 10⁴ samples stopping over 10⁴
-      steps keep 470 MB. Off the nominal path a recombined
+      steps keep 350 MB. Off the nominal path a recombined
       number's IEEE value is a NaN, so an index position (`exactly`)
       refuses it there.
   - **Corrections after building** (decided by the owner, 2026-11-01):

@@ -7,9 +7,7 @@
   draws, each sample stopping at its own step, runs group after group in
   constant stack and memory: `count n = if n * x > 100000 then n else
   count (n + 1)` with `x = 1 ±σ 0.1` at 100 samples took 2.6 s with
-  477 MB live and takes 1.6 s with 4 MB. Forcing a group's part counts
-  one level of `:set depth`, so a split whose value something waits for
-  nests and stops at the limit.
+  477 MB live and takes 1.6 s with 4 MB.
 - Branches under copies (design §8.2). Under `:set samples N`, an `if` or `case` whose copies' own
   scrutinees would choose different alternatives prints a table after
   the value, one row per alternative, the nominal branch marked:

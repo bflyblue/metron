@@ -1698,6 +1698,22 @@ coresTests =
         for_ [1, 2, 4] $ \k -> do
           fmap (map firstWord) (outs k 25000) @?= Right ["0"]
           expectLeft "took more than 12000 steps" (outs k 12000)
+    , testCase "depth near the limit: refused or accepted alike at K = 1, 2 and 4" $ do
+        -- A recursion that is not a tail call, under a condition on
+        -- draws: some batches split where others do not, and the depth
+        -- along a path is the same either way.
+        let outs k d =
+              runWith
+                eight
+                [ "let x = 1 ±σ 0.1"
+                , "let g n = if n * x > 100 then 0 else 1 + g (n + 1)"
+                , ":set depth " <> T.pack (show (d :: Int))
+                , ":set cores " <> T.pack (show (k :: Int))
+                , "g 0"
+                ]
+        for_ [1, 2, 4] $ \k -> do
+          expectLeft "nested more than 105 calls deep" (outs k 105)
+          fmap (map firstWord) (outs k 110) @?= Right ["101"]
     , testCase "a runaway on one split path is still stopped"
         $ for_ [1, 2, 4]
         $ \k ->

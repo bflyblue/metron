@@ -616,14 +616,17 @@ conIndex :: ConRef -> Int
 conIndex (UserCon _ k) = k
 
 {- | A function value: a body under one binder, closed over its environment
-and its site; and, for a function narrowed to a group of the double
-backend's copies (design §8.2), how its environment is narrowed when it
-is applied. Narrowing it again composes the two, so a function passed
-down through a loop that splits at every step stays one closure, not a
-chain of them.
+and its site. For a function narrowed to a group of the double backend's
+copies (design §8.2), the environment as it was made, the narrowing from
+it, and the environment so narrowed, lazily, which every application
+shares. Narrowing it again composes the two narrowings and narrows the
+environment as it was made, so a function passed down through a loop
+that splits at every step stays one narrowing from where it was made, not
+a chain of them.
 -}
 data ClosureOf s
-  = forall n. Closure TyEnv Site !(Env s n) (TTerm (S n)) !(Maybe Narrowing)
+  = forall n.
+    Closure TyEnv Site !(Env s n) (TTerm (S n)) !(Maybe Narrowing) (Env s n)
 
 type Closure = ClosureOf Magnitude
 
@@ -634,13 +637,6 @@ empty tensor literal, and the result of a mapping primitive. A variable
 with no argument here is unconstrained, and any instance is a valid one.
 -}
 type TyEnv = Map VarId Arg
-
--- | The error for nesting deeper than the @depth@ limit (design §8.1).
-deepError :: Limits -> EvalError
-deepError l =
-  Exceeded
-    Depth
-    ("the evaluation nested more than " <> tshow l.depth <> " calls deep")
 
 -- | Evaluate a closed term that belongs to no definition.
 evalClosed :: (Scalar s) => Config -> RuntimeOf s -> TTerm Z -> ThunkOf s
@@ -714,7 +710,12 @@ eval cfg rt = go
   (design §8.2). -}
   inner :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
   inner tenv site env t = nested rt.budget tooDeep (settle (go tenv site env t))
-  tooDeep = Left (deepError cfg.limits)
+  tooDeep =
+    Left
+      ( Exceeded
+          Depth
+          ("the evaluation nested more than " <> tshow cfg.limits.depth <> " calls deep")
+      )
 
   reduce :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
   reduce tenv site env = \case
@@ -787,7 +788,8 @@ eval cfg rt = go
      where
       alternative = alternativeFor alts
     TLamWith _ _ body free ->
-      Right (VClosure (Closure tenv (child 0) (keepFree free env) body Nothing))
+      let kept = keepFree free env
+       in Right (VClosure (Closure tenv (child 0) kept body Nothing kept))
     TApp f a -> do
       fv <- inner tenv (child 0) env f
       -- A moving chart applied is an instant of it (design §3.8), named
@@ -1113,14 +1115,8 @@ applyTail ::
   Config -> RuntimeOf Dbl -> ValueOf Dbl -> ThunkOf Dbl -> ThunkOf Dbl
   #-}
 applyTail cfg rt f arg = case f of
-  VClosure (Closure tenv site env body narrowing) ->
-    eval
-      cfg
-      rt
-      tenv
-      site
-      (VCons arg (maybe env (\r -> vecMap (fmap (narrow r)) env) narrowing))
-      body
+  VClosure (Closure tenv site _ body _ applied) ->
+    eval cfg rt tenv site (VCons arg applied) body
   -- A mixture of functions (design §8.2): each applied for its own copies.
   VMixture m ->
     perOption cfg rt m (\cfg' rt' r g -> applyTail cfg' rt' g (narrow r <$> arg))
@@ -1215,8 +1211,9 @@ narrow r = \case
           NoCopies -> NoCopies
           Copied cause left alts -> Copied cause left (VU.backpermute alts r.places)
       )
-  VClosure (Closure tenv site env body narrowing) ->
-    VClosure (Closure tenv site env body (Just (maybe r (`andThen` r) narrowing)))
+  VClosure (Closure tenv site env body narrowing _) ->
+    let r' = maybe r (`andThen` r) narrowing
+     in VClosure (Closure tenv site env body (Just r') (vecMap (fmap (narrow r')) env))
   VUnit v -> VUnit (narrow r v)
   VTyAbs v k f -> VTyAbs v k (fmap (narrow r) . f)
   -- Never held where a group narrows it: whatever holds a value waited
@@ -1317,7 +1314,7 @@ splitOver cfg rt m k =
     ( Right
         ( VSplit
             ( Split
-                (Join rt.budget rt.context (deepError cfg.limits))
+                (Join rt.budget rt.context)
                 cfg.limits.outcomes
                 parts
             )
@@ -1361,7 +1358,7 @@ result is a split of its own gives its groups instead, in its place, so
 a split in tail position, however deep, is put together once.
 -}
 recombine :: (Scalar s) => Split s -> ThunkOf s
-recombine (Split j@(Join _ ctx _) limit parts) =
+recombine (Split j@(Join _ ctx) limit parts) =
   assemble j limit (memberVector ctx.members) (piecesOf parts)
 
 -- | A split's groups as pieces, the nominal one first.
@@ -1378,12 +1375,11 @@ copies by global number, whether it is the nominal value, and the value.
 -}
 data Piece s = Piece Context (VU.Vector Int) Bool (ThunkOf s)
 
-{- | Where groups' results are put back together: the budget, the
+{- | Where groups' results are put back together: the budget, and the
 evaluation they were split from, whose path continues from theirs
-(design §8.1), and the error for nesting too deeply, since forcing a
-group's part is waiting for it.
+(design §8.1).
 -}
-data Join = Join Budget Context EvalError
+data Join = Join Budget Context
 
 {- | Pieces that together are a value for the given copies, put together:
 'recombine', for a value or for one field of the data its groups share.
@@ -1546,17 +1542,14 @@ placesWithin outer group = VU.findIndices (inSorted group) outer
 
 {- | A value forced for a group's copies, so that a branch point it
 reaches counts only them (design §8.2), and the path of the evaluation
-they were split from continues from the group's (design §8.1). Whatever
-forces it waits for it, one level deeper.
+they were split from continues from the group's (design §8.1).
 -}
 forcedFor :: Join -> Context -> ThunkOf s -> ThunkOf s
-forcedFor (Join b outer deep) ctx t =
-  within b outer ctx (nested b (Left deep) (either (const t) (`seq` t) t))
+forcedFor (Join b outer) ctx t = within b outer ctx (either (const t) (`seq` t) t)
 
 -- | A tensor element forced for a group's copies.
 forcedElement :: Join -> Context -> ElemOf s -> ElemOf s
-forcedElement (Join b outer deep) ctx e =
-  within b outer ctx (nested b (Left deep) (either (const e) (`seq` e) e))
+forcedElement (Join b outer) ctx e = within b outer ctx (either (const e) (`seq` e) e)
 
 {- | A group's value passed on whole, its parts forced, whenever they are,
 for the group's copies: its branch points count them, not those of
