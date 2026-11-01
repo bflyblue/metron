@@ -228,7 +228,7 @@ data Config = Config
   , cores :: Int
   {- ^ how many evaluations carry the copies in parallel, each a batch of
   them (design §8.2, @:set cores@); the command line starts it at the
-  machine's cores
+  machine's logical cores, a library session at 1
   -}
   , batch :: Maybe Batch
   {- ^ the batch of the copies this evaluation carries, set only by the

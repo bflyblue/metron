@@ -137,8 +137,9 @@ startSession opts = do
   pure live{session = chosen}
 
 {- | The cores the double backend's batches run on (design §8.2, @:set
-cores@): the machine's, unless @+RTS -N@ chose a number of capabilities,
-which then wins.
+cores@): the machine's logical cores (@getNumProcessors@; the runtime
+does not expose physical ones), unless @+RTS -N@ chose a number of
+capabilities, which then wins.
 -}
 startCores :: IO Int
 startCores = do

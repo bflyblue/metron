@@ -6125,6 +6125,42 @@ the same term runs under any backend that has the built-ins it uses.
     - *The default for `cores` is the logical core count,* since the
       runtime does not expose physical cores.
 
+    *As built (2026-11-01): the corrections.* A number's copies say what
+    they spread by, `Metron.Double.Spread`: rounding alone, or draws as
+    well. A draw of a declared unknown carries draws; a literal's and
+    `pi`'s copies do not; an operation's result carries them when any
+    operand's do (`x + (0.1 + 0.2)` does, `0.1 + 0.2` does not), so `x -
+    x` still carries them, all zero, and prints `0 (Monte Carlo: mean 0,
+    sd 0, 10000 samples)`; `mid` and `sd` are numbers known exactly and
+    carry none; merged batches keep the flag. A value any of whose numbers
+    carry draws prints its IEEE values alone, then each number's mean and
+    deviation laid out in the value's own shape and unit: `5828.501263698674
+    s (Monte Carlo: mean 5828.5079 s, sd 0.3027 s, 10000 samples)` for the
+    orbital period below, `[0, 0, 2] m (Monte Carlo: mean [-0.016, 1.015,
+    2] m, sd [1.0073, 1.441, 0] m, 10000 samples)` for `[n, n * n, 2] * 1
+    m`. A record or a tuple prints each field so. The digits (chosen
+    here): each statistic is rounded to the place of the second
+    significant digit of its own standard error, `s/√N` for the mean and
+    `s/√(2(N − 1))` for the deviation, trailing zeros kept, as the
+    shortest digits when that error is 0 or the place asks for more digits
+    than a double holds. That gives example one's `1.015` and `1.441`
+    exactly; the second example's `5828.50` and `0.065` are not the
+    standard error's digits at 10⁴ samples, so it was taken for the form
+    only. `errorOf` and `digitsOf` refuse a number that carries draws,
+    "`` `errorOf` measures rounding: its copies carry declared σ; read
+    `sd` ``", at run time, since the check before running cannot see
+    draws. `noise` left `sampledOwn`, so the check refuses it at every
+    setting with "`` `noise` is the affine backend's; the double backend
+    does not have it ``", and the backend refuses it too. The `steps`
+    budget lost its share: each batch counts its own steps against the
+    whole limit. `cores` needed no change: the command line takes
+    `getNumProcessors`, the logical count, which `:set` lists as `cores
+    K`. Building it found the copies' mean taken by a plain sum, which
+    rounds in its last digits over 10⁴ copies and so gave copies that
+    agree a spread of their own (`errorOf (0.1 + 0.2)` at 10⁴ copies
+    rounded to nearest was `7.0e-16`); the mean is now taken about the
+    first copy, `c₀ + Σ(cᵢ − c₀)/N`, and that is `0`.
+
   *As built (2026-11-01): Monte Carlo.* `Metron.Double`'s `noiseM` and
   `uncertainM`. A unit unknown is a number whose value is 0 and whose
   copies are standard normal draws; `x ±σ e` is then `x + |e|·z` by the
@@ -6152,15 +6188,16 @@ the same term runs under any backend that has the built-ins it uses.
     1`, each a number known exactly. A number with no copies under samples
     (an exact constant such as `errorOf x`) has its value as its mean and
     0 as its deviation.
-  - *The check* depends on `:set samples` for `±σ`, `gauss` and `noise` as
-    well as `mid` and `sd`: the three forms must pass it under `N > 0`
-    too, so "these two only" above is loose. `Metron.Scalar.refusalOf`
+  - *The check* depends on `:set samples` for `±σ` and `gauss` as well as
+    `mid` and `sd`: the two forms must pass it under `N > 0` too, so
+    "these two only" above is loose. `Metron.Scalar.refusalOf`
     answers per backend, samples and name: available, lacked, or needing
     samples; the memo still holds names only. Under `samples 0`: "`` `sd`
     needs `:set samples N` under the double backend ``", or, through
     definitions, "`` `orbitError` uses `sd` (through `budgetOf`), which
-    needs `:set samples N` under the double backend ``". `±`, `bound`,
-    `covariance` and `crossCovariance` are refused under every setting.
+    needs `:set samples N` under the double backend ``". `±`, `noise`,
+    `bound`, `covariance` and `crossCovariance` are refused under every
+    setting.
   - *Checked against `affine`.* The orbital period `2π√(a³/(G·M))` with
     CODATA's `astro.G` and `M = 5.9722e24 kg ±σ 6e20 kg` at 10⁴ copies,
     rounding to nearest: `sd` 0.30270 s against affine's first-order
@@ -6177,18 +6214,18 @@ the same term runs under any backend that has the built-ins it uses.
     10⁵. A heavier workload, 100 positions each from ten Newton steps of
     Kepler's equation, at 10⁴ copies: 16 s, 38 MB, about 25 ns a copy per
     operation.
-  - *Open, for the owner.* (1) `noise` is drawn as a standard normal, as
-    written, but it is `±`'s primitive (`x ± e` is `x + e * noise 1`), so
-    `x + e * noise 1` runs where `x ± e` is refused, and gives a bound a
-    σ. Refusing `noise` with `±` would close it. (2) The printed `± e`,
-    `errorOf` and `digitsOf` are still CESTAC's `τ·s/√N`, the error of
-    the copies' mean, not the spread of the input: at 10⁴ copies `1 ±σ
-    0.1` prints `1 ± 0.0020 (estimate, 10000 samples)`, and `sd` is the
-    way to read its σ.
+  - *Closed by the corrections above.* `noise` was drawn as a standard
+    normal, so `x + e * noise 1` ran where `x ± e` was refused; it is now
+    refused as `±` is. The printed `± e`, `errorOf` and `digitsOf` were
+    CESTAC's `τ·s/√N`, the error of the copies' mean, not the spread of
+    the input (`1 ±σ 0.1` printed `1 ± 0.0020 (estimate, 10000
+    samples)`); it now prints `1 (Monte Carlo: mean 1.0001, sd 0.10034,
+    10000 samples)`, and `errorOf` and `digitsOf` refuse it.
 
   *As built (2026-11-01): parallel batches.* `Metron.Batch` and
   `Compile.batchedValue`. `:set cores K` and `--set cores K`; the command
-  line starts it at the machine's cores, raising the runtime's
+  line starts it at the machine's logical cores (`getNumProcessors`),
+  which `:set` lists as `cores K`, raising the runtime's
   capabilities to them unless `+RTS -N` chose; a library session starts
   at 1. Each batch is a whole evaluation in its own thread (`async`'s
   `forConcurrently`, now a dependency) with its own runtime and budget;
@@ -6219,13 +6256,14 @@ the same term runs under any backend that has the built-ins it uses.
     parallel; `T` does. K is at most N/2, so a batch always has the two
     copies a spread needs.
   - *Steps.* Every batch takes the same steps, since the same IEEE
-    values decide every branch, so each batch stops once K times its own
-    count passes the limit: a shared count with no counter shared between
-    threads. A batch that reaches it fails the input with the user's
-    limit named. *Open, for the owner:* this makes "counts all batches
-    together" and "identical for every K" disagree near the limit: an
-    input of S steps with S < limit < K·S runs at K = 1 and is refused
-    at K. *Also open:* `exactly`, which asks whether a number's copies
+    values decide every branch, and each counts its own against the
+    whole limit, as one evaluation does (corrections above), so an input
+    is accepted or refused alike at every K: `go 1000 0`, between 5000
+    and 20000 steps, runs under `steps 20000` at K = 1 and at K = 4. A
+    batch that reaches the limit fails the input with the user's limit
+    named. (Until the corrections, a batch stopped once K times its own
+    count passed the limit, which refused that input at K = 4.) *Open:*
+    `exactly`, which asks whether a number's copies
     spread at all (an index position must be exact), sees only its
     batch's; a small batch can agree by chance where all N would not, so
     an index could be accepted batched and refused at K = 1. Rare, and
@@ -6400,7 +6438,10 @@ rounded up for a bound, and once after the value `(bound)` or
 `(estimate, 3 samples)`; an exact value prints alone. A display unit
 divides the value and scales the estimate exactly, so `2 m * 3` prints `6
 m`. A NaN or an infinity prints with its origin: `NaN (the first NaN came
-from sqrt (-2))`.
+from sqrt (-2))`. A value whose copies carry draws of a declared σ prints
+its IEEE value with the sample beside it instead, `0 (Monte Carlo: mean
+1.015, sd 1.441, 10000 samples)` (the corrections under "Declared σ is
+sampled").
 
 *Its built-ins*, the same under either setting: `errorOf x` (the
 estimate, elementwise, in `x`'s dimension), `digitsOf x` (`−log₁₀(e/|x|)`,

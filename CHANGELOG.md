@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Monte Carlo under double, corrected (design §8.2, corrections after
+  building). A value whose copies carry draws of a declared σ prints its
+  nominal IEEE value with the sample beside it, `0 (Monte Carlo: mean
+  1.015, sd 1.441, 10000 samples)` for `n * n` with `n = 0 ±σ 1`, units
+  kept (`5828.501263698674 s (Monte Carlo: mean 5828.5079 s, sd 0.3027 s,
+  10000 samples)`), instead of `±` the standard error of the copies'
+  mean. Mean and sd are each written to the second significant digit of
+  their own standard error. A tensor prints each component's mean and sd
+  in its shape; a record or tuple prints each field so. Whether a value
+  carries draws follows it through arithmetic. `errorOf` and `digitsOf`,
+  which measure rounding, refuse such a value ("its copies carry declared
+  σ; read `sd`"); with rounding alone, printing, `errorOf` and `digitsOf`
+  are as before, except that copies that agree no longer show a spread
+  from summing them (`errorOf (0.1 + 0.2)` at 10⁴ copies rounded to
+  nearest is `0`, not `7.0e-16`). `noise` is refused under double at
+  every setting, as `±` is: it makes a bound unknown, which has no
+  distribution to draw. `gauss` is still drawn. The `steps` limit applies
+  to each batch, as to one evaluation, so an input is accepted or refused
+  alike at every `:set cores`. `cores` starts at the machine's logical
+  core count.
 - Declared σ is sampled under double (design §8.2, Monte Carlo, as
   built). With `:set samples N`, `x ±σ e` is `x + |e|·z` in each copy, `z`
   a standard normal (Box–Muller on two uniforms hashed from the nudge's
