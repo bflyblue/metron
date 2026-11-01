@@ -114,6 +114,7 @@ primArity = \case
   "spinOf" -> Just 1
   "originVelocityOf" -> Just 1
   "originOf" -> Just 1
+  "seq" -> Just 2
   _ -> Nothing
 
 -- | The base unit a primitive stands for, if it is one (design §3.2.11).

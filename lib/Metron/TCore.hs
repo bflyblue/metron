@@ -11,7 +11,8 @@ inference) that validates an elaborated term. Elaboration bugs surface
 there, not in the evaluator.
 -}
 module Metron.TCore (
-  TTerm (..),
+  TTerm (TLam, TVr, TRef, TPrimApp, TLit, TLamWith, TApp, TLet, TCon, TCase, TPow, TNoise, TUncertain, TPack, TProj, TTyLam, TTyApp, TCycle),
+  freeIndices,
   lintClosed,
   renderTTerm,
   patternText,
@@ -20,10 +21,13 @@ module Metron.TCore (
 
 import Control.Monad ( forM_ )
 import Data.Maybe ( fromMaybe )
+import Data.IntSet ( IntSet )
 import Data.Text ( Text )
 import Metron.Builtin ( pattern BoolT, pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, pattern TupleC )
 import Metron.Core
-    ( renderLabel,
+    ( finToInt,
+      renderLabel,
+      vecLength,
       vecAppend,
       vecMap,
       vecToList,
@@ -71,6 +75,7 @@ import Metron.Type
       renderType,
       renderTypeIds )
 import Metron.Type.Match ( isInstanceOf )
+import Data.IntSet qualified as IntSet ( empty, fromDistinctAscList, singleton, toAscList )
 import Data.Map.Strict qualified as Map
     ( findWithDefault, fromList, insert )
 import Data.Text qualified as T
@@ -89,7 +94,12 @@ data TTerm (n :: Nat) where
   it.
   -}
   TLit :: Lit -> [Axis] -> TTerm n
-  TLam :: Hint -> Type -> TTerm (S n) -> TTerm n
+  {- | A function of one argument. The last field is the set of variables
+  free in the body, by de Bruijn index: computed once, when first asked
+  for, and shared by every evaluation of the term, so that a closure keeps
+  only the variables it uses (design §8). Built and matched as 'TLam'.
+  -}
+  TLamWith :: Hint -> Type -> TTerm (S n) -> IntSet -> TTerm n
   TApp :: TTerm n -> TTerm n -> TTerm n
   -- | The bound term has the scheme; its abstractions are explicit in it.
   TLet :: Hint -> Scheme -> TTerm n -> TTerm (S n) -> TTerm n
@@ -123,6 +133,39 @@ instance Show (TAlt n) where
   show (TAlt c bs b) = "TAlt " ++ show c ++ " " ++ show (vecToList bs) ++ " (" ++ show b ++ ")"
 
 deriving stock instance Show (TTerm n)
+
+-- | A function of one argument, its free variables found when first needed.
+pattern TLam :: Hint -> Type -> TTerm (S n) -> TTerm n
+pattern TLam h ty body <- TLamWith h ty body _
+  where
+    TLam h ty body = TLamWith h ty body (freeIndices body)
+
+{-# COMPLETE TVr, TRef, TPrimApp, TLit, TLam, TApp, TLet, TCon, TCase, TPow, TNoise, TUncertain, TPack, TProj, TTyLam, TTyApp, TCycle #-}
+
+-- | The variables free in a term, by their de Bruijn index in its scope.
+freeIndices :: TTerm n -> IntSet
+freeIndices = go 0
+ where
+  go :: Int -> TTerm m -> IntSet
+  go d = \case
+    TVr i -> let j = finToInt i in if j >= d then IntSet.singleton (j - d) else IntSet.empty
+    TRef{} -> IntSet.empty
+    TPrimApp _ _ args -> foldMap (go d) args
+    TLit{} -> IntSet.empty
+    -- A nested function's set is shifted out of its binder, and shared.
+    TLamWith _ _ _ inner -> IntSet.fromDistinctAscList [j - d - 1 | j <- IntSet.toAscList inner, j > d]
+    TApp f a -> go d f <> go d a
+    TLet _ _ e b -> go d e <> go (d + 1) b
+    TCon _ _ args -> foldMap (go d) args
+    TCase s _ alts -> go d s <> foldMap (\(TAlt _ bs b) -> go (d + vecLength bs) b) alts
+    TPow t _ -> go d t
+    TNoise{} -> IntSet.empty
+    TUncertain _ _ a b -> go d a <> go d b
+    TPack _ _ ts -> foldMap (go d) ts
+    TProj t _ -> go d t
+    TTyLam _ _ b -> go d b
+    TTyApp b _ -> go d b
+    TCycle _ bs bodies -> foldMap (go (d + vecLength bs)) (vecToList bodies)
 
 -- Primitive signatures ------------------------------------------------------------
 

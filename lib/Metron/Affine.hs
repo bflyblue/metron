@@ -150,13 +150,13 @@ data Nudge = Nudge {kind :: NudgeKind, origin :: Origin}
   deriving stock (Eq, Ord, Show)
 
 data Magnitude
-  = Exact Rational
+  = Exact !Rational
   | Affine
-      { mid :: Rational
-      , terms :: Map NudgeId (Rational, Nudge)
-      , slack :: Rational
+      { mid :: !Rational
+      , terms :: !(Map NudgeId (Rational, Nudge))
+      , slack :: !Rational
       -- ^ anonymous worst-case radius: rounding and compaction leftovers
-      , skew :: Maybe Skew
+      , skew :: !(Maybe Skew)
       -- ^ the most non-linear operation the statistical part went through
       }
   deriving stock (Eq, Show)
@@ -327,7 +327,7 @@ addM x y =
         (skews [skewOf x, skewOf y])
 
 addCoeff :: (Rational, Nudge) -> (Rational, Nudge) -> (Rational, Nudge)
-addCoeff (c, n) (d, _) = (c + d, n)
+addCoeff (c, n) (d, _) = let !s = c + d in (s, n)
 
 negM :: Magnitude -> Magnitude
 negM = scaleM (-1)

@@ -31,13 +31,13 @@ import Metron.Type (
   Axis (AAnon, ANamed, AVar),
   Frame (..),
   FrameSlot (FrNamed, FrVar),
-  Kind (KAxis, KDim, KFrame, KLen, KShape, KSpace),
+  Kind (KAxis, KDim, KFrame, KLen, KShape, KSpace, KType),
   Len (..),
   Scheme (..),
   Shape (SCons, SNil, SVar),
   Space (Space, base, dim, shape),
   SpaceSlot (SpVar),
-  Type (TChart, TData, TFun, TOver, TPoint, TTensor, TUnit),
+  Type (TChart, TData, TFun, TOver, TPoint, TTensor, TUnit, TVar),
   TypeDef,
   VarId,
   appendShape,
@@ -313,6 +313,10 @@ primScheme name = case name of
                   (TFun (vecA (spaceLen f) AAnon d2) (vecA (spaceLen f) f.axes d2))
               )
           )
+  -- Evaluate the first, then give the second (design §7.7): what makes a
+  -- left fold strict.
+  "seq" ->
+    Just (Forall [(40, KType), (41, KType)] (TFun (TVar 40) (TFun (TVar 41) (TVar 41))))
   -- A base unit is a unit (design §3.10, U1).
   _ -> case baseUnit name of
     Just b -> mono (TUnit (dimBase b))

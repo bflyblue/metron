@@ -131,7 +131,7 @@ import Metron.Dimension
 import Metron.Numerical.Linear
     ( choleskyRows, determinant, invert, matrixExp )
 import Metron.Primitive ( baseUnit, primArity, typedPrims )
-import Metron.TCore ( TAlt(TAlt), TTerm(..) )
+import Metron.TCore ( TAlt(TAlt), TTerm(..), pattern TLam )
 import Metron.Type
     ( Arg(..),
       Kind(..),
@@ -166,6 +166,7 @@ import Metron.UnitHint
       UnitAtom(..),
       UnitFactor(..),
       UnitHint(..) )
+import Data.IntSet qualified as IntSet ( IntSet, member )
 import Data.Map.Strict qualified as Map ( null, empty, insert )
 import Data.Text qualified as T ( intercalate, pack )
 import Data.Vector qualified as V
@@ -174,6 +175,7 @@ import Data.Vector qualified as V
       concat,
       concatMap,
       empty,
+      foldl',
       fromList,
       generate,
       head,
@@ -389,7 +391,7 @@ asBool = \case
 {- | A function value: a body under one binder, closed over its environment
 and its site.
 -}
-data Closure = forall n. Closure TyEnv Site (Env n) (TTerm (S n))
+data Closure = forall n. Closure TyEnv Site !(Env n) (TTerm (S n))
 
 {- | The type-level arguments in force at a point of a term, by the
 variables of that term's abstractions (design §8). Types are erased except
@@ -445,6 +447,11 @@ eval cfg rt = go
           (Just u, _) -> asUnit (UnitNamed u) v
           (_, Just s) -> asChart (UnitNamed s) v
           _ -> Right v
+    -- The first evaluated, the second in tail position, so that a strict
+    -- left fold runs in constant stack (design §7.7).
+    TPrimApp "seq" _ [a, b] -> do
+      v <- go tenv (child 0) env a
+      forceValue v `seq` go tenv (child 1) env b
     TPrimApp prim ty args ->
       runPrim
         cfg
@@ -463,7 +470,7 @@ eval cfg rt = go
             (i, TAlt _ bs body) : _ -> go tenv (child i) (vecAppend (attach bs fields) env) body
             [] -> Left (Internal ("case: no alternative for " <> conText c))
         _ -> Left (Internal "case: the scrutinee is not data")
-    TLam _ _ body -> Right (VClosure (Closure tenv (child 0) env body))
+    TLamWith _ _ body free -> Right (VClosure (Closure tenv (child 0) (keepFree free env) body))
     TApp f a -> do
       fv <- go tenv (child 0) env f
       -- A moving chart applied is an instant of it (design §3.8), named
@@ -680,6 +687,24 @@ lookupThunk i env = case (i, env) of
   (FZ, VCons x _) -> (# x #)
   (FS j, VCons _ xs) -> lookupThunk j xs
 
+{- | The environment a closure keeps: the variables its body uses, every
+other place emptied. A closure over the whole environment would keep
+alive whatever it holds, so @\\n _ -> n + 1@ written inside @length xs@
+kept the head of @xs@, and with it the whole list, for the whole fold.
+The set is the body's free variables, the function's own argument at 0.
+-}
+keepFree :: IntSet.IntSet -> Env n -> Env n
+keepFree used = go 1
+ where
+  go :: Int -> Env k -> Env k
+  go i = \case
+    VNil -> VNil
+    VCons x xs ->
+      -- The choice is made now: a thunk choosing later would keep x.
+      let !rest = go (i + 1) xs
+       in if IntSet.member i used then VCons x rest else VCons unused rest
+  unused = Left (Internal "a variable the closure does not use")
+
 -- Types at run time ---------------------------------------------------------------
 
 {- | Whether a term's run time needs the argument of a type-level variable
@@ -796,6 +821,20 @@ scalarFull = \case
   VTensor [] d hint buf | V.length buf == 1 -> (,d,hint) <$> V.head buf
   VUnit v -> scalarFull v
   _ -> Left (Internal "expected a number")
+
+{- | What @seq@ evaluates (design §7.7): every component of a number, a
+tensor or a point, so that an accumulator holds no chain of pending
+arithmetic; of data, its constructor only. A component that fails keeps
+its error to itself, as it would unforced.
+-}
+forceValue :: Value -> ()
+forceValue = \case
+  VTensor _ _ _ buf -> components buf
+  VPoint _ _ _ buf -> components buf
+  VUnit v -> forceValue v
+  _ -> ()
+ where
+  components = V.foldl' (\() e -> either (const ()) (`seq` ()) e) ()
 
 bool :: Value -> Either EvalError Bool
 bool = \case

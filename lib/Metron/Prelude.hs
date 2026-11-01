@@ -197,8 +197,10 @@ structural =
     )
   , ("foldr", "\\f z xs -> case xs of {} -> z; x : rest -> f x (foldr f z rest)")
   , ("foldl", "\\f z xs -> case xs of {} -> z; x : rest -> foldl f (f z x) rest")
-  , ("length", "\\xs -> foldl (\\n _ -> n + 1) 0 xs")
-  , ("reverse", "\\xs -> foldl (\\acc x -> x : acc) {} xs")
+  , -- Strict in the accumulator (design §7.7): each step's is evaluated first.
+    ("foldl'", "\\f z xs -> case xs of {} -> z; x : rest -> let z_ = f z x in seq z_ (foldl' f z_ rest)")
+  , ("length", "\\xs -> foldl' (\\n _ -> n + 1) 0 xs")
+  , ("reverse", "\\xs -> foldl' (\\acc x -> x : acc) {} xs")
   ,
     ( "zip"
     , "\\xs ys -> case xs of {} -> {}; x : xr -> case ys of {} -> {}; y : yr -> (x, y) : zip xr yr"
