@@ -20,13 +20,18 @@ module Metron.UnitHint (
   hintProduct,
 ) where
 
-import Control.Monad ( foldM )
-import Data.List ( nub )
-import Data.Map.Strict ( Map )
-import Data.Text ( Text )
-import Metron.Affine
-    ( Precision, midpoint, mulM, powM, Magnitude(Exact) )
-import Metron.Dimension ( dimMul, dimOne, dimPow, Dim )
+import Control.Monad (foldM)
+import Data.List (nub)
+import Data.Map.Strict (Map)
+import Data.Text (Text)
+import Metron.Affine (
+  Magnitude (Exact),
+  Precision,
+  midpoint,
+  mulM,
+  powM,
+ )
+import Metron.Dimension (Dim, dimMul, dimOne, dimPow)
 
 -- | A factor of a display unit: a declared unit by reference, or a base unit.
 data UnitAtom
@@ -70,7 +75,10 @@ until a quantity of it is taken.
 -}
 mkHintAs :: HintMode -> Precision -> [UnitFactor] -> Maybe UnitHint
 mkHintAs cancelling p factors = do
-  let kept = filter ((/= 0) . (.power)) (if cancelling == CancelDimensions then cancel factors else factors)
+  let kept =
+        filter
+          ((/= 0) . (.power))
+          (if cancelling == CancelDimensions then cancel factors else factors)
   total <-
     foldM
       ( \acc u ->
@@ -144,9 +152,11 @@ unitHint p written
 
 {- | The unit a sum prints in: the smaller of its operands', so that a + b and
 b + a print alike (design §3.2.12); the left one when they are equal.
+The choice is made when the result is: a choice left in a thunk would keep
+both hints, and a sum in a loop every hint before it.
 -}
 smallerUnit :: UnitHint -> UnitHint -> Maybe UnitHint
-smallerUnit a b = Just (if midpoint b.factor < midpoint a.factor then b else a)
+smallerUnit a b = if midpoint b.factor < midpoint a.factor then Just b else Just a
 
 {- | Display preferences (design §3.2.12): a unit per exact dimension, used
 for a value whose own unit was not chosen with @to@.

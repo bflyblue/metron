@@ -906,18 +906,26 @@ arithmetic; of data, its constructor only. A component that fails keeps
 its error to itself, as it would unforced.
 -}
 
-{- | A thunk evaluated before its call: to a value and, for a number, its
-one component (a tensor's stay lazy, each failing only where used).
+{- | A thunk evaluated before its call: to a value and, for a number or a
+small tensor or point (a state vector, a small matrix), its components,
+so that an accumulator holds no chain of pending sums; a component that
+fails still fails only where used. A large tensor's stay lazy, so a
+function strict in it computes only the components it reads.
 -}
 evaluated :: Thunk -> Thunk
 evaluated = \case
-  r@(Right v) -> number v `seq` r
+  r@(Right v) -> small v `seq` r
   r -> r
  where
-  number = \case
-    t@(VTensor [] _ _ _) -> forceValue t
-    VUnit u -> number u
+  small = \case
+    t@(VTensor _ _ _ buf) | V.length buf <= smallTensor -> forceValue t
+    t@(VPoint _ _ _ buf) | V.length buf <= smallTensor -> forceValue t
+    VUnit u -> small u
     _ -> ()
+
+-- | The most components a tensor evaluated before its call may have.
+smallTensor :: Int
+smallTensor = 64
 
 forceValue :: Value -> ()
 forceValue = \case

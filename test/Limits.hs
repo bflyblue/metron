@@ -286,6 +286,26 @@ leakPrograms =
         Left err -> T.isInfixOf "(`:set steps`)" err @? T.unpack err
         Right out -> assertFailure (show out)
     )
+  ,
+    ( "a state vector carried through a loop"
+    ,
+      [ "let go v k = if k == 0 then v else go (v + [1, 1, 1, 1, 1, 1]) (k - 1)"
+      , "go [0, 0, 0, 0, 0, 0] 1000000"
+      ]
+    , (@?= Right ["[1000000, 1000000, 1000000, 1000000, 1000000, 1000000]"])
+    )
+  ,
+    ( "a quantity with a unit carried through a loop"
+    , ["let go v k = if k == 0 then v else go (v + 1 m) (k - 1)", "go (0 m) 1000000"]
+    , (@?= Right ["1000000 m"])
+    )
+  ,
+    ( "the margin is tight enough to see growth: a list kept whole overflows it"
+    , ["length (reverse (range 0 1e6))"]
+    , \case
+        Left err -> T.isInfixOf "(`:set memory`)" err @? T.unpack err
+        Right out -> assertFailure (show out)
+    )
   ]
 
 leakTests :: Measured -> TestTree
@@ -300,9 +320,10 @@ leakTests m =
                "division by zero"
                ["foldl' (\\acc x -> if acc > 0 then x else x) (1/0) (range 0 3)"]
          , testCase
-             "seq evaluates to a value and every component; a failing component fails only where used" $ do
-             run ["seq (1 + 1) 5"] @?= Right ["5"]
-             run ["seq (1/0) 5"] @?= Right ["5"]
-             refused "division by zero" ["seq (if 1/0 > 0 then 1 else 2) 5"]
-             run ["seq [1/0, 2] 5"] @?= Right ["5"]
+             "seq evaluates to a value and every component; a failing component fails only where used"
+             $ do
+               run ["seq (1 + 1) 5"] @?= Right ["5"]
+               run ["seq (1/0) 5"] @?= Right ["5"]
+               refused "division by zero" ["seq (if 1/0 > 0 then 1 else 2) 5"]
+               run ["seq [1/0, 2] 5"] @?= Right ["5"]
          ]
