@@ -12,7 +12,6 @@ module Metron.Pretty (
   displayParts,
   renderExact,
   renderBudget,
-  renderNested,
   renderTerm,
   renderTermIn,
   renderTermUnits,

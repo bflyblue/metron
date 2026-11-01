@@ -10,8 +10,6 @@ module Metron.Repl (
   complete,
   completions,
   loadsFile,
-  commands,
-  keywords,
 
   -- * Colour
   Names (..),

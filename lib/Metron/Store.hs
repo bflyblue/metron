@@ -33,7 +33,6 @@ module Metron.Store (
   loadStore,
   sync,
   MergeReport (..),
-  mergeStore,
   mergeStores,
 ) where
 

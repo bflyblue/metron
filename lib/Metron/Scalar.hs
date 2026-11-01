@@ -40,7 +40,6 @@ module Metron.Scalar (
   memberAt,
   globalOf,
   memberVector,
-  wholeBatch,
   roundingName,
   roundingNamed,
   settingsAt,
@@ -206,10 +205,6 @@ result does not depend on how the copies are batched.
 -}
 data Batch = Batch {first :: Int, count :: Int, batches :: Int}
   deriving stock (Eq, Show)
-
--- | All the copies in one evaluation.
-wholeBatch :: Int -> Batch
-wholeBatch n = Batch{first = 0, count = n, batches = 1}
 
 {- | The copies an evaluation carries, by their global numbers, ascending
 (design §8.2): a batch's run of them, or the group of them a branch

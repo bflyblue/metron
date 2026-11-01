@@ -31,7 +31,6 @@ module Metron.TCore (
     TTyApp,
     TCycle
   ),
-  freeIndices,
   lintClosed,
   renderTTerm,
   patternText,

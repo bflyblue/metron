@@ -52,20 +52,14 @@ module Metron.Double (
   Estimate (..),
   Spread (..),
   carriesDraws,
-  exactDbl,
   estimateOf,
   digitsOfDbl,
-  maxDigits,
   showDouble,
   showEstimate,
   originNote,
   sampleNote,
   clusterNote,
   showSampled,
-  nextUpDouble,
-  nextDownDouble,
-  libmUlps,
-  studentT,
 ) where
 
 import Data.Bits (shiftR, testBit, xor)

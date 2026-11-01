@@ -8,8 +8,6 @@ module Metron.Hash (
   encodeTerm,
   hashTerm,
   placeholderHash,
-  showHash,
-  hashHasPrefix,
 
   -- * Storage
   encodeStored,
@@ -33,8 +31,6 @@ import Data.Text ( Text )
 import Metron.Core
     ( primArity,
       finToInt,
-      hashHasPrefix,
-      showHash,
       vecFromList,
       vecLength,
       vecToList,

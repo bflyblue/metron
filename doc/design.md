@@ -5301,7 +5301,7 @@ and a hash has no signature, so `f` can be signed while its alias `g` is
 not. Rebinding a signed name to a new version keeps the signature only if
 the signature holds of the new definition (§4.8).
 
-**Implemented in:** `Metron.Codebase` (`bindName`, `historyOf`, `findByPrefix`, `showReference`, `dependents`), `Metron.Update` (`propagate`, `restamp`, `staleReferences`), `Metron.Session.Names` (`relabel`, `removeLabel`), `Metron.Source` (`viewReference`).
+**Implemented in:** `Metron.Codebase` (`bindName`, `historyOf`, `findByPrefix`, `showReference`, `dependents`), `Metron.Update` (`propagateNamed`, `propagateScoped`, `restamp`, `staleReferences`), `Metron.Session.Names` (`relabel`, `removeLabel`), `Metron.Source` (`viewReference`).
 **Tested by:** "codebase" › ":update --no-upgrade leaves dependents on the old version", ":upgrade moves stale dependents to the current version", "hash references validate missing, malformed and ambiguous prefixes", "historical names respect namespace lookup and explicit absolute paths"; "namespaces".
 
 ### 7.3 REPL commands
@@ -5954,7 +5954,7 @@ ways a label moves to new content. History records every binding, `:view`
 shows exactly which version a definition uses, and the propagation report
 says what moved, what did not, and why.
 
-**Implemented in:** `Metron.Driver` (`feed`, `add`, `update`, `upgrade`, `todo`, `forget`), `Metron.Update` (`propagate`, `propagateWith`, `staleReferences`), `Metron.Resolve` (`processGroup`).
+**Implemented in:** `Metron.Driver` (`feed`, `add`, `update`, `upgrade`, `todo`, `forget`), `Metron.Update` (`propagateNamed`, `propagateScoped`, `staleReferences`), `Metron.Resolve` (`processGroup`).
 **Tested by:** "codebase" › "redefining a pending name replaces it with a notice", ":update rebinds and upgrades dependents (design §7.5)", "upgrading propagates transitively and through cycles"; "it, the last result" › "it is never stored or listed"; "type annotations" › "the scratch lists a signature; :add stores it; :forget drops it".
 
 ### 7.6 Namespaces
@@ -6536,7 +6536,7 @@ internal errors.
 **Open.** A compiler from Typed Core, with explicit dimension and length
 arguments telling it static shapes (§10).
 
-**Implemented in:** `Metron.Eval` (`evalClosed`, `evalAt`, `evalDefinition`, `apply`, `evaluated`, `neededAtRuntime`), `Metron.Strictness` (`strictify`, `signatures`), `Metron.TCore` (`TLamWith`, `freeIndices`), `Metron.Compile` (`runtimeOf`, `runtimeWith`).
+**Implemented in:** `Metron.Eval` (`evalClosed`, `evalAt`, `evalDefinition`, `apply`, `evaluated`, `neededAtRuntime`), `Metron.Strictness` (`strictify`, `signatures`), `Metron.TCore` (`TLamWith`, `freeIndices`), `Metron.Compile` (`runtimeWith`).
 **Tested by:** "metron" › "metron" (the evaluation group, for example "if is lazy in the untaken branch", "projection is lazy in the other components", "mutual recursion through a cycle: even and odd"); "limits (design §8.1)" › "constant memory"; "end to end" › "an empty tensor takes its element type from context".
 
 ### 8.1 Resource limits
@@ -7680,5 +7680,5 @@ stored use astro
 
 At that epoch the station is at right ascension 100.66° in eci, 3972.5 km from the axis. `stateFrom` gives it `ω × r`, 289.68 m/s eastward (`7.2921158553e-5 s⁻¹ × 3972.5 km`), and no velocity of its own. Read back on its own chart, it is at rest. A body at rest in eci that passes the station moves west on the station's chart at the same speed: the transport terms, `−v_o − ω × (p − o)` turned onto the chart's axes, are all of its velocity there.
 
-**Implemented in:** the whole pipeline. The sessions exercise `Metron.Affine` (§3.2), `Metron.Prelude` (`stdlibSource`) for the library's astro and linalg namespaces (§7.7), `Metron.Update` (`propagate`, §7.5) and `Metron.Eval` (charts, §3.8).
+**Implemented in:** the whole pipeline. The sessions exercise `Metron.Affine` (§3.2), `Metron.Prelude` (`stdlibSource`) for the library's astro and linalg namespaces (§7.7), `Metron.Update` (`propagateNamed`, §7.5) and `Metron.Eval` (charts, §3.8).
 **Tested by:** "affine" › "design §12: a filter step in blocks"; "turnedCharts" › "design §12: a perifocal chart"; "movingCharts" › "design §12: a spinning Earth, for illustration". §12.1 and §12.2 are checked by hand against a run.

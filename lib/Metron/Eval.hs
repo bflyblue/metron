@@ -28,7 +28,6 @@ module Metron.Eval (
   Choice (..),
   Value,
   pattern VBool,
-  conIndex,
   ClosureOf (..),
   Closure,
   ElemOf,
@@ -49,8 +48,6 @@ module Metron.Eval (
   Applied (..),
   coordinatesOn,
   Preferences,
-  hintPow,
-  hintProduct,
   covarianceMatrix,
   Site (..),
   evalClosed,
@@ -58,8 +55,6 @@ module Metron.Eval (
   evalDefinition,
   neededAtRuntime,
   TyEnv,
-  apply,
-  scalar,
 ) where
 
 import Control.Monad (foldM, when)

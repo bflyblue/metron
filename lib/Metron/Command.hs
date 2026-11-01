@@ -1,7 +1,5 @@
 -- | Command names and usage shared by completion and help; execution belongs to the driver and terminal.
 module Metron.Command (
-  Command (..),
-  commandDescriptions,
   commands,
   commandHelp,
 ) where

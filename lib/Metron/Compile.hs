@@ -8,9 +8,6 @@ module Metron.Compile (
   evalValue,
   evalValueAs,
   evalBatchedAs,
-  evalChecked,
-  openInValue,
-  runtimeOf,
   renderResolveErrorWith,
   renderEvalError,
 ) where
@@ -373,15 +370,10 @@ openInValue (Forall vs t) typed =
 value is shared by all the references to it in that evaluation: a lazy
 table over the codebase, each entry evaluated when first used, so that a
 turned chart's rotation (design §3.8) is computed once and not once per
-mention of the chart.
--}
-runtimeOf :: (Scalar s) => Config -> Codebase -> RuntimeOf s
-runtimeOf cfg cb = fst (runtimeWith cfg cb)
-
-{- | 'runtimeOf', and how a term to evaluate against it is prepared: every
-definition's Typed Core, and the expression's, with the arguments its
-calls certainly evaluate marked ("Metron.Strictness"), each definition
-analysed once per evaluation, when first used.
+mention of the chart. With it, how a term to evaluate against it is
+prepared: every definition's Typed Core, and the expression's, with the
+arguments its calls certainly evaluate marked ("Metron.Strictness"), each
+definition analysed once per evaluation, when first used.
 -}
 runtimeWith ::
   (Scalar s) => Config -> Codebase -> (RuntimeOf s, TTerm Z -> TTerm Z)

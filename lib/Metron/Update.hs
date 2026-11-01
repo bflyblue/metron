@@ -10,8 +10,6 @@ module Metron.Update (
   RefMap,
   ConMap,
   Propagation (..),
-  propagate,
-  propagateWith,
   propagateScoped,
   propagateNamed,
   Written,
@@ -21,7 +19,6 @@ module Metron.Update (
   restamp,
   restampTerm,
   retypeScheme,
-  conTypes,
 ) where
 
 import Data.Bifunctor (first)
@@ -121,15 +118,6 @@ data Propagation = Propagation
 -- | Constructors of replaced declared types: the old type and position to the new.
 type ConMap = Map (Hash, Int) (Hash, Int)
 
-propagate :: RefMap -> Codebase -> Propagation
-propagate = propagateWith Map.empty
-
-{- | 'propagate', also moving every current definition that builds or
-matches a constructor of a replaced type to the new type's constructor
-(design §7.3, @:edit@ of a type). One that no longer checks, as when the
-constructor gained a field, is left on its version and reported.
--}
-
 {- | The names each old reference is being rebound under: a dependent follows
 the rebinding only through a reference written under one of them (design
 §7.5). A reference written under no name (a format-1 term) always follows.
@@ -151,10 +139,12 @@ propagateNamed written refmap cb =
     refmap
     cb
 
--- | By hash alone, every written name included: for re-stamping.
-propagateWith :: ConMap -> RefMap -> Codebase -> Propagation
-propagateWith = propagateScoped (\_ _ -> True)
-
+{- | Propagation to every dependent through the references the predicate
+accepts, also moving every current definition that builds or matches a
+constructor of a replaced type to the new type's constructor (design §7.3,
+@:edit@ of a type). One that no longer checks, as when the constructor
+gained a field, is left on its version and reported.
+-}
 propagateScoped ::
   (Reference -> Text -> Bool) -> ConMap -> RefMap -> Codebase -> Propagation
 propagateScoped = propagateKeeping Set.empty
