@@ -97,6 +97,7 @@ Every module under `lib/Metron`, with its job and the design section that govern
 | `Metron.Lexer` | Tokens, unicode mapping, NFC and confusables, the layout pass | §2.1, §2.8 |
 | `Metron.Unicode` | Unicode entry by name in the REPL (`\mu` TAB) | §2.8, §7.3 |
 | `Metron.Syntax` | The surface AST with source spans, paths and scopes | §2 |
+| `Metron.Fixity` | The binary primitive operators: tokens, primitive, printed symbol, level and associativity, read by the parser, the desugarer and the printer | §2.5 |
 | `Metron.Parser` | Megaparsec parser for programs, expressions and types | §2.5 to §2.7 |
 | `Metron.Desugar` | Surface AST to Core, the quantity rule, provenance, ascription markers | §2.9, §4.7, §4.8 |
 | `Metron.NameResolution` | Names through scopes and namespaces, shortest spellings for printing | §7.6 |

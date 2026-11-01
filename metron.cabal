@@ -57,6 +57,7 @@ library
     , Metron.Codebase
     , Metron.Core
     , Metron.Desugar
+    , Metron.Fixity
     , Metron.Dimension
     , Metron.Double
     , Metron.Encode
@@ -125,6 +126,7 @@ test-suite metron-test
     , Astro
     , Gen
     , Limits
+    , Operators
     , Precision
     , Support.ExactApprox
     , Support.References

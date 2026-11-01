@@ -32,6 +32,12 @@ import Data.Text qualified as T (
  )
 import Data.Void (Void)
 import Metron.Core (NudgeKind)
+import Metron.Fixity (
+  Assoc (L, N, R),
+  Fixity (..),
+  binaryOperators,
+  operatorsAt,
+ )
 import Metron.Lexer (
   Keyword (..),
   Located (..),
@@ -757,35 +763,24 @@ opExpr = do
   table =
     [ [InfixR (binop Compose <$ opTok "."), InfixL backtick]
     , [Prefix (foldr1 (.) <$> P.some (negP P.<|> sqrtP))]
-    ,
-      [ InfixL (binop Outer <$ opTok "*")
-      , InfixL (binop Dot <$ (opTok "@" P.<|> opTok "·"))
-      , InfixN (binop Cross <$ opTok "×")
-      , InfixL (binop Wedge <$ opTok "/\\")
-      , InfixL (binop EMul <$ opTok ".*")
-      , InfixL (binop EDiv <$ opTok "./")
-      , InfixL (binop Div <$ opTok "/")
-      ]
-    ,
-      [ InfixL (binop Add <$ opTok "+")
-      , InfixL (binop Sub <$ opTok "-")
-      , InfixL (binop PAdd <$ opTok ".+")
-      , InfixL (binop PSub <$ opTok ".-")
-      ]
+    , InfixN (binop Cross <$ opTok "×") : fixities 7
+    , fixities 6
     , [InfixN plusMinus]
     , [Postfix labelP]
     , [InfixR (binop Cons <$ opTok ":")]
-    ,
-      [ InfixN (binop Eq <$ opTok "==")
-      , InfixN (binop Ne <$ opTok "/=")
-      , InfixN (binop Le <$ opTok "<=")
-      , InfixN (binop Ge <$ opTok ">=")
-      , InfixN (binop Lt <$ opTok "<")
-      , InfixN (binop Gt <$ opTok ">")
-      ]
-    , [InfixR (binop And <$ opTok "&&")]
-    , [InfixR (binop Or <$ opTok "||")]
+    , fixities 4
+    , fixities 3
+    , fixities 2
     ]
+  -- The primitive operators of a level, as "Metron.Fixity" has them.
+  fixities l =
+    [ grouping f.assoc (binop f.op <$ P.choice (map opTok f.tokens))
+    | f <- operatorsAt l
+    ]
+  grouping = \case
+    L -> InfixL
+    R -> InfixR
+    N -> InfixN
   negP = do
     s <- tok (TOp "-")
     pure (\e -> Expr (spanUnion s e.span) (Neg e))
@@ -1052,30 +1047,18 @@ patternP =
 sectionOp :: Bool -> Parser Op
 sectionOp allowMinus =
   P.choice
-    $ [ Outer <$ tok (TOp "*")
-      , Dot <$ (tok (TOp "@") P.<|> tok (TOp "·"))
-      , Cross <$ tok (TOp "×")
-      , Wedge <$ tok (TOp "/\\")
-      , EMul <$ tok (TOp ".*")
-      , EDiv <$ tok (TOp "./")
-      , Div <$ tok (TOp "/")
-      , Add <$ tok (TOp "+")
-      , Eq <$ tok (TOp "==")
-      , Ne <$ tok (TOp "/=")
-      , Le <$ tok (TOp "<=")
-      , Ge <$ tok (TOp ">=")
-      , Lt <$ tok (TOp "<")
-      , Gt <$ tok (TOp ">")
-      , And <$ tok (TOp "&&")
-      , Or <$ tok (TOp "||")
-      , Compose <$ tok (TOp ".")
-      , PAdd <$ tok (TOp ".+")
-      , PSub <$ tok (TOp ".-")
-      , Cons <$ tok (TOp ":")
-      , To <$ kw KTo
-      , PlusMinus <$> plusMinusKind
-      , Infix . (.text) <$> (tok TBacktick *> name <* tok TBacktick)
+    $ [ f.op <$ P.choice (map (tok . TOp) f.tokens)
+      | f <- binaryOperators
+      , f.op /= Sub
+      , not (null f.tokens)
       ]
+      ++ [ Cross <$ tok (TOp "×")
+         , Compose <$ tok (TOp ".")
+         , Cons <$ tok (TOp ":")
+         , To <$ kw KTo
+         , PlusMinus <$> plusMinusKind
+         , Infix . (.text) <$> (tok TBacktick *> name <* tok TBacktick)
+         ]
       ++ [Sub <$ tok (TOp "-") | allowMinus]
  where
   plusMinusKind :: Parser NudgeKind

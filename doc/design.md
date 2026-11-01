@@ -502,8 +502,8 @@ Everything else that works on vectors or matrices is a named function:
 is the postfix projection `v.0`, `m.1.2` (§2.10), never a function that takes
 a computed index.
 
-**Implemented in:** `Metron.Parser` (`opExpr`, `binop`, `term`, `withPower`, `sectionOp`).
-**Tested by:** "parser"; "products".
+**Implemented in:** `Metron.Fixity` (`binaryOperators`, the one table of the binary primitives the parser, the desugarer and the printer read), `Metron.Parser` (`opExpr`, `binop`, `term`, `withPower`, `sectionOp`), `Metron.Desugar` (`opPrim`), `Metron.Pretty` (`renderTermUnits`).
+**Tested by:** "parser"; "products"; "fixity".
 
 ### 2.6 The quantity rule
 

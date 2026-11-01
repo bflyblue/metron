@@ -119,6 +119,7 @@ import Metron.Core (
   vecMap,
   weakenBy,
  )
+import Metron.Fixity (Fixity (..), fixityOfOp)
 import Metron.Primitive (baseUnit)
 import Metron.Syntax qualified as S (
   ChartClauses (
@@ -673,10 +674,14 @@ desugar path ctx e = do
                   else readingMarker "quantity" >>= \m -> prim m [lit, unitE]
           -- Bare unit expressions are shorthand for one of that unit only
           -- at the operands of multiplication and division.
-          _ | op `elem` [S.Outer, S.Div] -> do
-            PrimApp (opPrim op)
-              <$> sequence [desugarFactor (0 : path) ctx a, desugarFactor (1 : path) ctx b]
-          _ -> prim (opPrim op) [a, b]
+          _
+            | Just p <- opPrim op ->
+                if op `elem` [S.Outer, S.Div]
+                  then
+                    PrimApp p
+                      <$> sequence [desugarFactor (0 : path) ctx a, desugarFactor (1 : path) ctx b]
+                  else prim p [a, b]
+          _ -> failWith (BadSpecialForm e.span "this operator has no meaning here")
     -- Negating a constant is a negative constant, so that `-3` and a literal
     -- negative three are one term with one hash (core.md §6: constants are
     -- canonical); so is a quantity of a constant, `-3 K` being `scale (-3)
@@ -1123,34 +1128,12 @@ lams path ctx sp names body = case names of
     record path sp
     Lam (Hint n.text) <$> lams (0 : path) (VCons n.text ctx) sp ns body
 
-opPrim :: S.Op -> Text
-opPrim = \case
-  S.Add -> "add"
-  S.Sub -> "sub"
-  S.Outer -> "outer"
-  S.Scale -> "outer"
-  S.Dot -> "dot"
-  S.Cross -> "cross"
-  S.Wedge -> "wedge"
-  S.EMul -> "emul"
-  S.EDiv -> "ediv"
-  S.Div -> "div"
-  S.Eq -> "eq"
-  S.Ne -> "ne"
-  S.Lt -> "lt"
-  S.Le -> "le"
-  S.Gt -> "gt"
-  S.Ge -> "ge"
-  S.And -> "and"
-  S.Or -> "or"
-  S.To -> "to"
-  S.On -> "on"
-  S.PAdd -> "pointAdd"
-  S.PSub -> "pointSub"
-  S.Cons -> "cons"
-  S.PlusMinus _ -> "uncertain"
-  S.Compose -> "compose"
-  S.Infix n -> n
+{- | The primitive a binary operator means, if it is one ("Metron.Fixity").
+The others, `±`, `:`, `×`, composition and the rest, have forms of their
+own.
+-}
+opPrim :: S.Op -> Maybe Text
+opPrim op = (.primitive) <$> fixityOfOp op
 
 {- | Whether an expression is one of the forms that declare an uncertainty
 and so can take a @#label@.
@@ -1243,10 +1226,12 @@ desugarUnit path ctx e = do
             "expected unit syntax, such as km or km/s; a unit cannot be passed as a value"
         )
     else case e.node of
-      S.BinOp op a b | op `elem` [S.Outer, S.Div] -> do
-        a' <- unitAmount (0 : 0 : path) ctx a
-        b' <- unitAmount (1 : 0 : path) ctx b
-        pure (PrimApp "unit" [PrimApp (opPrim op) [a', b']])
+      S.BinOp op a b
+        | op `elem` [S.Outer, S.Div]
+        , Just p <- opPrim op -> do
+            a' <- unitAmount (0 : 0 : path) ctx a
+            b' <- unitAmount (1 : 0 : path) ctx b
+            pure (PrimApp "unit" [PrimApp p [a', b']])
       S.Pow a n -> do
         a' <- unitAmount (0 : 0 : path) ctx a
         pure (PrimApp "unit" [Pow a' n])

@@ -9,6 +9,13 @@
   branch point's children) say only what is particular to them. A new
   constructor is added in one place. A generator of well-scoped Core terms
   of every shape checks the walks' laws.
+- Internal, no change to behaviour or hashes: one fixity table
+  (`Metron.Fixity`). The parser's operator rows and sections, the
+  desugarer's operator-to-primitive mapping and the printer's symbols,
+  levels and associativities all read it, so printed source cannot drift
+  from what parses. A test prints every pair of operators nested either
+  way, and random operator trees, in both spellings, and parses them back
+  to the same Core.
 - A branch point that splits the samples, in tail position, is a tail
   call (design §8.2). Under Monte Carlo a loop whose condition carries
   draws, each sample stopping at its own step, runs group after group in

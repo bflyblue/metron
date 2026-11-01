@@ -78,6 +78,7 @@ import Metron.Type
 import Metron.Type.Match
 import Metron.Type.Syntax (queryScheme)
 import Metron.Unicode qualified as U
+import Operators (operatorTests)
 import Precision (precisionTests)
 import System.Directory (
   createDirectoryIfMissing,
@@ -115,6 +116,7 @@ main = do
       , desugarTests
       , hashTests
       , prettyTests
+      , operatorTests
       , endToEndTests
       , codebaseTests
       , typeTests

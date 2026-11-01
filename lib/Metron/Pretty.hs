@@ -143,6 +143,7 @@ import Metron.Eval (
   placesWithin,
   pattern VBool,
  )
+import Metron.Fixity (Assoc (..), Fixity (..), fixityOfPrim)
 import Metron.Lexer qualified as L (
   Keyword (KFalse, KTrue),
   Located (span, value),
@@ -1155,7 +1156,7 @@ renderTermUnits spelling namer isUnitRef = go 0
     PrimApp p args -> prim prec ctx p args
 
   prim :: Int -> Vec m Text -> Text -> [Term m] -> Text
-  prim prec ctx p args = case (binary p, args) of
+  prim prec ctx p args = case (fixityOfPrim p, args) of
     -- A quantity reads back as one (design §3.10, U4, U5): its unit written
     -- after the literal, bare when it is one unit or a chain of declared
     -- units that the quantity takes in (`9.81 m / s^2`), in parentheses
@@ -1199,12 +1200,16 @@ renderTermUnits spelling namer isUnitRef = go 0
           paren
             (prec > 1)
             (go 2 ctx a <> " from " <> go 2 ctx b <> " to " <> go 2 ctx c)
-    (Just (sym, lvl, assoc), [a, b]) ->
-      let (lp, rp) = case assoc of
+    -- A binary operator as the parser reads it ("Metron.Fixity"). `*`
+    -- keeps its spelling in unicode, since `×` is the cross product.
+    (Just f, [a, b]) ->
+      let lvl = f.level
+          (lp, rp) = case f.assoc of
             L -> (lvl, lvl + 1)
             R -> (lvl + 1, lvl)
             N -> (lvl + 1, lvl + 1)
-       in paren (prec > lvl) (go lp ctx a <> " " <> spellOp sym <> " " <> go rp ctx b)
+          sym = if spelling == Unicode then f.unicode else f.ascii
+       in paren (prec > lvl) (go lp ctx a <> " " <> sym <> " " <> go rp ctx b)
     _ -> case (p, args) of
       -- `-3` reads back as the constant minus three (core.md §6), so the
       -- primitive applied to a constant keeps its name.
@@ -1304,17 +1309,6 @@ renderTermUnits spelling namer isUnitRef = go 0
     Ref h idx (Hint w) -> isUnitRef h idx w
     _ -> False
 
-  -- The operators with a unicode spelling the printer does not already use
-  -- (§2.8); `*` stays, since `×` is the cross product.
-  spellOp sym = case spelling of
-    Ascii -> sym
-    Unicode -> case sym of
-      "<=" -> "≤"
-      ">=" -> "≥"
-      "/=" -> "≠"
-      "||" -> "∨"
-      _ -> sym
-
   -- A hint that is already in scope would capture an outer variable the
   -- body may still refer to, so the printed binder gets a prime (or a
   -- name if the hint is blank, or one the desugarer made up for a section
@@ -1339,40 +1333,6 @@ renderTermUnits spelling namer isUnitRef = go 0
   lookupVar i ctx = case (i, ctx) of
     (FZ, VCons x _) -> x
     (FS j, VCons _ xs) -> lookupVar j xs
-
-data Assoc = L | R | N
-
-{- | Operator symbol, precedence level (as in design §2.5) and associativity
-for the binary primitives.
--}
-binary :: Text -> Maybe (Text, Int, Assoc)
-binary = \case
-  "outer" -> Just ("*", 7, L)
-  "dot" -> Just ("·", 7, L)
-  "wedge" -> Just ("∧", 7, L)
-  "emul" -> Just ("⊙", 7, L)
-  "ediv" -> Just ("⊘", 7, L)
-  "div" -> Just ("/", 7, L)
-  "add" -> Just ("+", 6, L)
-  "sub" -> Just ("-", 6, L)
-  -- A point and an amount (design §3.6): `.+` and `.-` are the primitives
-  -- always, so they read back as they are written.
-  "pointAdd" -> Just (".+", 6, L)
-  "pointSub" -> Just (".-", 6, L)
-  "eq" -> Just ("==", 4, N)
-  "ne" -> Just ("/=", 4, N)
-  "lt" -> Just ("<", 4, N)
-  "le" -> Just ("<=", 4, N)
-  "gt" -> Just (">", 4, N)
-  "ge" -> Just (">=", 4, N)
-  "and" -> Just ("&&", 3, R)
-  "or" -> Just ("||", 2, R)
-  "to" -> Just ("to", 1, L)
-  -- A point or an amount to a chart (design §3.10, F5, F10). Conversions
-  -- chain from the left (design §2.5): `x to a to b` is `(x to a) to b`.
-  "toChart" -> Just ("to", 1, L)
-  "toAxes" -> Just ("to", 1, L)
-  _ -> Nothing
 
 -- | A magnitude to two significant digits, for radii and bias boxes.
 renderRough :: Magnitude -> Text
