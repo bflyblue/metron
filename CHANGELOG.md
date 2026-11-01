@@ -2,8 +2,7 @@
 
 ## Unreleased
 
-- Branches under copies (design §8.2). The per-comparison warning is
-  gone. Under `:set samples N`, an `if` or `case` whose copies' own
+- Branches under copies (design §8.2). Under `:set samples N`, an `if` or `case` whose copies' own
   scrutinees would choose different alternatives prints a table after
   the value, one row per alternative, the nominal branch marked:
 
@@ -37,16 +36,14 @@
   nominal IEEE value with the sample beside it, `0 (Monte Carlo: mean
   1.015, sd 1.441, 10000 samples)` for `n * n` with `n = 0 ±σ 1`, units
   kept (`5828.501263698674 s (Monte Carlo: mean 5828.5079 s, sd 0.3027 s,
-  10000 samples)`), instead of `±` the standard error of the copies'
-  mean. Mean and sd are each written to the second significant digit of
-  their own standard error. A tensor prints each component's mean and sd
-  in its shape; a record or tuple prints each field so. Whether a value
+  10000 samples)`). Mean and sd are each written to the second
+  significant digit of their own standard error. A tensor prints each
+  component's mean and sd in its shape; a record or tuple prints each field so. Whether a value
   carries draws follows it through arithmetic. `errorOf` and `digitsOf`,
   which measure rounding, refuse such a value ("its copies carry declared
-  σ; read `sd`"); with rounding alone, printing, `errorOf` and `digitsOf`
-  are as before, except that copies that agree no longer show a spread
-  from summing them (`errorOf (0.1 + 0.2)` at 10⁴ copies rounded to
-  nearest is `0`, not `7.0e-16`). `noise` is refused under double at
+  σ; read `sd`"); with rounding alone they measure the copies' spread,
+  and copies that agree have none (`errorOf (0.1 + 0.2)` at 10⁴ copies
+  rounded to nearest is `0`). `noise` is refused under double at
   every setting, as `±` is: it makes a bound unknown, which has no
   distribution to draw. `gauss` is still drawn. The `steps` limit applies
   to each batch, as to one evaluation, so an input is accepted or refused
@@ -106,7 +103,8 @@
   0.2` prints `0.30000000000000004 ± 5.0e-17 (bound)`), or with `:set
   samples 3` three copies under random rounding (`(1 + 1e-15) - 1` prints
   `1.1102230246251565e-15 ± 3.2e-16 (estimate, 3 samples)`), seeded by
-  `:set seed`; a branch the copies disagree on is a warning. New built-ins
+  `:set seed`; a branch the copies disagree on prints a table (branches
+  under copies, above). New built-ins
   `errorOf`, `digitsOf`, `ulps`, `eps`, `nextUp`, `fma`, `isNaN` and
   `isInfinite` are the double backend's; `±`, `±σ`, `noise`, `gauss`,
   `mid`, `sd`, `bound`, `covariance`, `crossCovariance`, `:exact`,

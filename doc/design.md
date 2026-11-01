@@ -868,11 +868,11 @@ apart (decided by the owner).
   its midpoint to either `m − σ` or `m + σ`, against `|f'(m)|`, unbounded when
   either point leaves the domain (`recip`, `sqrt`, `log`) or when `f'(m) =
   0` (`cos` at 0). `abs` is linear unless its kink lies within σ of the bound
-  enclosure, then unbounded. ~~The measure is kept squared and exact,
-  rounded up to three digits, and a value keeps the largest measure, with
-  its operation, of everything it was computed from (`Skew`).~~ Each term
+  enclosure, then unbounded. Each term
   is carried as an absolute size and re-judged against the value's own σ
-  where it is used (the mark is re-judged, as built, above). Functions with a
+  where it is used (the mark is re-judged, as built, above); the judgement
+  (`Skew`) is the ratio squared and exact, rounded up to three digits, with
+  the operation whose term is largest. Functions with a
   second-derivative bound (`sin`, `cos`, `tan`, `atan`, `tanh`) also use
   that bound across σ, so equal endpoint derivatives cannot hide
   oscillation: the largest `|f''|` over the bound enclosure widened by σ on
@@ -1251,7 +1251,7 @@ operands (in order for a sum or a product, so `a + b` and `b + a` are one
 unknown) and the precision. An integer power squares through `mul`, so
 `(2/3)^1000` is exact until a square passes the limit and at working
 precision after. `addM`, `subM`, `scaleM` and `sumM` take the precision.
-Linear operations on forms ~~never round~~ round only past the same limit,
+Linear operations on forms round only past the same limit,
 after equal terms cancel (linear results held, as built, above): `x - x`
 is `0` and `(x + 1/3) - x` is `1/3`. A comparison takes the exact difference of its operands, never
 rounded. What changes: a long exact value is now an enclosure, so
@@ -5857,9 +5857,9 @@ session never reaches.
 | `:set memory` | the heap, in GB (the GHC runtime's maximum heap) | the runtime: a heap overflow becomes the error "the expression needed more than N GB (`:set memory`)", the session survives |
 | `:set steps` | evaluation steps per expression (fuel) | the evaluator, counted per reduction |
 | `:set depth` | nesting of calls | the evaluator |
-| `:set digits` | ~~the size of an exact integer or rational, in decimal digits~~ a number's magnitude, its decimal exponent either way (as built, by the owner's decision in §3.2.8: an exact result's length is the precision's) | arithmetic, *before* computing where the size can be predicted (a power's result from its exponent, a literal's exponent, an exponential), after otherwise |
-| `:set components` | a tensor's ~~or a list's~~ elements (as built: a list's length is not known until it is walked, so `steps` and `memory` bound it) | construction (formerly the fixed `componentLimit`, 10⁷) |
-| `:set time` | wall-clock seconds per ~~expression~~ input (as built: a line at the prompt, a `-f` file, a `:load`) | the REPL, by a timeout; off by default |
+| `:set digits` | a number's magnitude, its decimal exponent either way (by the owner's decision in §3.2.8: an exact result's length is the precision's) | arithmetic, *before* computing where the size can be predicted (a power's result from its exponent, a literal's exponent, an exponential), after otherwise |
+| `:set components` | a tensor's elements (a list's length is not known until it is walked, so `steps` and `memory` bound it) | construction (formerly the fixed `componentLimit`, 10⁷) |
+| `:set time` | wall-clock seconds per input (a line at the prompt, a `-f` file, a `:load`) | the REPL, by a timeout; off by default |
 
 The defaults are chosen by measurement, so that the test suite, the library
 and the tutorial run well inside them while a runaway stops within seconds:
@@ -5987,16 +5987,15 @@ stays at 10⁷: the suite builds a 3000 × 3000 outer product, which needs
 
 **What the limits do not stop.**
 
-- *Exact rationals that grow without growing in size* ~~only `:set time`
-  stops~~: as built, an exact result past a size tied to the precision is
+- *Exact rationals that grow without growing in size* are no longer
+  among them: an exact result past a size tied to the precision is
   rounded (§3.2.8, exact while small, as built). `iter (1/3) 20`, the
   exact logistic map, took 13 s and takes 0.10 s; `log 1e-99999` took
   28 s and 0.97 GB and takes 0.10 s and 19 MB, its series in fixed point
-  and its operand's encoding linear. ~~What remains is a *linear* loop on a
-  value that is already an enclosure, `x + 1/k` collecting the
-  denominators of its exact terms (§3.2.8, as built, left open): `H₃₀₀₀₀`
-  takes 13 s.~~ A linear loop on an enclosure is held to the same length
-  (§3.2.8, linear results held, as built): `H₃₀₀₀₀` takes 0.20 s, and a
+  and its operand's encoding linear. A linear loop on an enclosure, `x +
+  1/k` collecting the denominators of its exact terms, is held to the
+  same length (§3.2.8, linear results held, as built): `H₃₀₀₀₀` took
+  13 s and takes 0.20 s, and a
   series of exact terms `Σ xᵏ/k` to 30000 terms 0.80 s, where it ran past
   300 s. What remains is an exact value's *size*: `Σ xᵏ/k!` with exact
   terms pays each step for the `k log k` digits of `k!`, which `digits`
@@ -6011,10 +6010,8 @@ stays at 10⁷: the suite builds a 3000 × 3000 outer product, which needs
 - *A list's length*: `components` counts tensors only; `steps` and
   `memory` bound a list.
 
-**Where the build differs from the plan above**, besides the struck-out
-words in the table: `steps` defaults to 10⁸, not 10⁹ (above); `time` is
-per input, and an input that is a file is one; `digits` bounds magnitude;
-`components` does not count a list; a literal is checked against the
+**Where the build differs from the plan above**: `steps` defaults to
+10⁸, not 10⁹ (above); a literal is checked against the
 session's `digits` at the prompt, in files and in `:type`, `:exact` and
 the other commands that evaluate, but `:edit` and `:prefer` parse with the
 default; and `--set memory` supersedes `+RTS -M`. The test suite measures
@@ -6428,10 +6425,7 @@ the same term runs under any backend that has the built-ins it uses.
     IEEE value is computed in every batch, alike, and taken from the
     first. Each batch forces its value as the printer does, in order and
     up to the first error, so it makes the reductions one evaluation's
-    printing makes and no others. ~~A warning records the step it was made
-    at, the same in every batch, and the batches' warnings print in the
-    order of the first step any made each at, which is one evaluation's
-    order; they say the total N.~~ The branch points' records merge by
+    printing makes and no others. The branch points' records merge by
     sum (see "Branches under copies", as built).
   - *One evaluation instead* when the input reaches `mid`, `sd`,
     `errorOf` or `digitsOf` (they read across a number's copies and
@@ -6610,43 +6604,11 @@ Few copies can all agree by chance, and the value then prints as exact:
 at seed 1 and `0` at seed 3, the method's known weakness at small N.
 
 *Comparisons.* The IEEE result decides (`NaN` compares false, `/=` true).
-The rest of this paragraph and the next are superseded: the
-per-comparison warning is gone, and a branch point reports a table
-(see "Branches under copies", as built). ~~Under samples, a comparison any of whose copies disagrees with the IEEE
-result is noted on the evaluation's budget (`Metron.Limits.remark`, kept
-in place for the reason the step counter is) and printed after the value:
-`warning: the comparison 1 > 1 goes both ways (true in 1 of 3 samples):
-the condition is lost in rounding`. When the copies carry draws of a
-declared σ (a Monte Carlo sample), the disagreement is the input
-uncertainty, not rounding, and the warning says so: `…: the condition
-depends on the declared uncertainty`; an `if` and a `case` on the
-comparison are flagged alike. The design's wording names the `if`'s
-source; the comparison and its operands are what the evaluator has.~~
-
-~~*As built (2026-11-01): the count over all the copies.* A note is data
-until the value is shown (`Metron.Remark`): the comparison's site, the
-same `Site` (definition and path) that names a nudge, threaded into
-`runPrim` from the primitive's node; its relation and operands' IEEE
-values; the cause, draws or rounding; and how many of this evaluation's
-copies the condition held for, of how many. A note is kept by site,
-relation and operand bits, so a comparison in a loop is a warning for
-each set of operands, and two comparisons with the same operands are two
-(`[if x > 0.9 then 1 else 2, if x > 0.9 then 3 else 4]` prints the line
-twice). A batch whose copies all agree with the IEEE result notes
-nothing, so the batches' counts alone would drop its copies, and K would
-change the count. So every comparison with copies takes a number, in the
-order the evaluation makes them, which every batch makes alike as it
-takes the same steps; a note keeps the numbers it disagreed at and how
-many copies disagreed. Notes combine by key, the numbers by union and
-the disagreeing copies by sum, across batches after they merge and within
-one evaluation; at each number a batch did not note, its copies held what
-the IEEE result says. So a comparison noted at `t` numbers over `N`
-samples counts `t·N` copies, and `true in X of t·N` is the same, copy for
-copy, at every K (tested at 1, 2 and 4, with batches that note nothing).
-A comparison made again with the same operands adds its copies: `f x + f
-x`, with `f z = if z > 0.9 then 1 else 0`, says `of 2000 samples` at
-1000. The text, `true in X of N samples` and the cause, is written last,
-in the order of each note's first number.~~
+Under samples, a `case` on a comparison whose copies would choose
+differently is a branch point: it reports a table after the value, whose
+cause is rounding or the declared uncertainty, its records kept in place
+on the evaluation's budget as the step counter is (see "Branches under
+copies", as built).
 
 *Printing.* The shortest digits that read back, written as Metron writes
 numbers (scientific outside `[10⁻⁴, 10¹⁵)`), then `± e` to two digits,
