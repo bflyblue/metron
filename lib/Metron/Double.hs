@@ -40,6 +40,9 @@ With copies, a declared standard uncertainty is drawn (Monte Carlo, the
 GUM's Supplement 1): @x ±σ e@ is @x + |e|·z@ in each copy, @z@ a standard
 normal keyed by the nudge's identity, the copy and the seed, and @gauss@
 is drawn likewise; @mid@ and @sd@ read the copies' mean and deviation.
+A number whose copies carry draws ('Spread') prints its IEEE value with
+the sample beside it, and @errorOf@ and @digitsOf@, which measure
+rounding, refuse it.
 Without copies they are refused. @±@ and @noise@, which make a bound
 unknown, are refused at every setting: a bound has no distribution to
 draw.
@@ -47,6 +50,8 @@ draw.
 module Metron.Double (
   Dbl (..),
   Estimate (..),
+  Spread (..),
+  carriesDraws,
   exactDbl,
   estimateOf,
   digitsOfDbl,
@@ -54,6 +59,8 @@ module Metron.Double (
   showDouble,
   showEstimate,
   originNote,
+  sampleNote,
+  showSampled,
   nextUpDouble,
   nextDownDouble,
   libmUlps,
@@ -99,9 +106,34 @@ import Metron.Scalar (
 data Estimate
   = -- | a running bound on the error (@samples 0@)
     ErrorBound !Double
-  | -- | the copies under random rounding (@samples N@)
-    Copies !(VU.Vector Double)
+  | -- | the copies (@samples N@), and what their spread comes from
+    Copies !Spread !(VU.Vector Double)
   deriving stock (Eq, Show)
+
+{- | What a number's copies spread by (design §8.2): rounding alone, which
+@errorOf@, @digitsOf@ and the printed @± e@ measure, or draws of a
+declared σ as well, a Monte Carlo sample, which prints as one and is read
+with @mid@ and @sd@. A result carries draws when any operand does:
+@<>@ is 'max', 'RoundingOnly' its unit.
+-}
+data Spread = RoundingOnly | Drawn
+  deriving stock (Eq, Ord, Show)
+
+instance Semigroup Spread where
+  (<>) = max
+
+instance Monoid Spread where
+  mempty = RoundingOnly
+
+-- | What a number's copies spread by; a number with a bound has no draws.
+spreadOf :: Dbl -> Spread
+spreadOf x = case x.estimate of
+  Copies sp _ -> sp
+  ErrorBound _ -> RoundingOnly
+
+-- | Whether a number's copies carry draws of a declared σ.
+carriesDraws :: Dbl -> Bool
+carriesDraws = (== Drawn) . spreadOf
 
 {- | A double: the round-to-nearest IEEE result, its error estimate, and,
 once it is not finite, the operation that first made a NaN or an
@@ -255,7 +287,7 @@ sqrtSide a =
 -- | The copies of a number, @n@ of them; a number with a bound is its value @n@ times.
 copiesOf :: Int -> Dbl -> VU.Vector Double
 copiesOf n x = case x.estimate of
-  Copies cs -> cs
+  Copies _ cs -> cs
   ErrorBound _ -> VU.replicate n x.value
 
 -- | How many copies the operands carry, if any does.
@@ -263,7 +295,7 @@ copyCount :: [Dbl] -> Maybe Int
 copyCount =
   listToMaybe
     . mapMaybe
-      (\x -> case x.estimate of Copies cs -> Just (VU.length cs); _ -> Nothing)
+      (\x -> case x.estimate of Copies _ cs -> Just (VU.length cs); _ -> Nothing)
 
 -- Operations -------------------------------------------------------------------------
 
@@ -304,7 +336,7 @@ operation s op say fv fb fc xs =
                  in case s.rounding of
                       RoundNearest -> fv ys
                       RoundRandom -> fc (coin s (s.batch.first + i) op ys) ys
-           in Copies (VU.generate n copy)
+           in Copies (foldMap spreadOf xs) (VU.generate n copy)
       -- Nothing to add is an exact result, which stays exact.
       boundOf bs
         | not (finite z) = 0 / 0
@@ -400,7 +432,7 @@ exactly1 f x =
     (f x.value)
     ( case x.estimate of
         ErrorBound e -> ErrorBound e
-        Copies cs -> Copies (VU.map f cs)
+        Copies sp cs -> Copies sp (VU.map f cs)
     )
     x.origin
 
@@ -634,7 +666,7 @@ literalD s r =
   side = if finite v then compare r (toRational v) else EQ
   est
     | s.samples > 0 =
-        Copies (constantCopies s 0 [v] v side)
+        Copies RoundingOnly (constantCopies s 0 [v] v side)
     | side == EQ || not (finite v) = ErrorBound 0
     | otherwise = ErrorBound (roundedUp (abs (r - toRational v)))
   roundedUp q = let d = fromRational q in if toRational d < q then nextUpDouble d else d
@@ -645,7 +677,7 @@ piD s
   | s.samples > 0 =
       Dbl
         pi
-        (Copies (constantCopies s 19 [] pi GT))
+        (Copies RoundingOnly (constantCopies s 19 [] pi GT))
         Nothing
   | otherwise = Dbl pi (ErrorBound 1.2246467991473533e-16) Nothing
 
@@ -683,7 +715,10 @@ drawn s k o m =
   let key = drawKey k o m
    in Dbl
         0
-        (Copies (VU.generate s.batch.count (standardNormal s key . (s.batch.first +))))
+        ( Copies
+            Drawn
+            (VU.generate s.batch.count (standardNormal s key . (s.batch.first +)))
+        )
         Nothing
 
 {- | @gauss n@, one component: drawn in each copy, with copies; refused
@@ -721,13 +756,23 @@ as a number known exactly; refused without copies.
 copyStatistic ::
   Text -> (VU.Vector Double -> Double) -> Settings -> Dbl -> Either ArithError Dbl
 copyStatistic name f s x = case x.estimate of
-  Copies cs -> Right (exactDbl (f cs))
+  Copies _ cs -> Right (exactDbl (f cs))
   ErrorBound _
     | s.samples > 0 -> Right (exactDbl (f (VU.singleton x.value)))
     | otherwise -> Left (Domain (needsSamples name))
 
+{- | The copies' mean, taken about the first copy, @c₀ + Σ(cᵢ − c₀)/N@:
+copies that agree have their common value as their mean, exactly, where
+a plain sum of 10⁴ of them rounds in its last digits and makes a spread
+of its own.
+-}
 meanOf :: VU.Vector Double -> Double
-meanOf cs = VU.sum cs / fromIntegral (VU.length cs)
+meanOf cs = case VU.uncons cs of
+  Just (c0, _)
+    | finite c0 -> c0 + VU.sum (VU.map (subtract c0) cs) / n
+  _ -> VU.sum cs / n
+ where
+  n = fromIntegral (VU.length cs)
 
 deviationOf :: VU.Vector Double -> Double
 deviationOf cs
@@ -828,13 +873,13 @@ Student's t, @τ·s/√N@.
 estimateOf :: Dbl -> Double
 estimateOf x = case x.estimate of
   ErrorBound e -> e
-  Copies cs
+  Copies _ cs
     | n < 2 -> 0
     | otherwise ->
         studentT (n - 1) * sqrt (var / fromIntegral (n - 1)) / sqrt (fromIntegral n)
    where
     n = VU.length cs
-    m = VU.sum cs / fromIntegral n
+    m = meanOf cs
     var = VU.sum (VU.map (\c -> (c - m) * (c - m)) cs)
 
 -- | The most significant decimal digits a double has, @log₁₀ 2⁵³@.
@@ -927,7 +972,83 @@ originNote xs = case [(x.value, o) | x <- xs, not (finite x.value), Just o <- [x
       )
   [] -> Nothing
 
--- Linear algebra -------------------------------------------------------------------------
+{- | A Monte Carlo sample beside some numbers (design §8.2), when any of
+their copies carry draws: each one's mean and deviation, laid out as the
+numbers are by @layout@ (their shape and unit), and the sample's size:
+@Monte Carlo: mean 1.015, sd 1.441, 10000 samples@. Each statistic is
+written to the place of the second significant digit of its own standard
+error, @s/√N@ for the mean and @s/√(2(N − 1))@ for the deviation, so the
+digits shown are those the sample resolves.
+-}
+sampleNote :: ([Text] -> Text) -> [Dbl] -> Maybe Text
+sampleNote layout xs = case [VU.length cs | x <- xs, Copies Drawn cs <- [x.estimate]] of
+  n : _ ->
+    Just
+      ( "Monte Carlo: mean "
+          <> layout means
+          <> ", sd "
+          <> layout deviations
+          <> ", "
+          <> T.pack (show n)
+          <> " samples"
+      )
+  [] -> Nothing
+ where
+  (means, deviations) = unzip (map statistics xs)
+  statistics x =
+    let cs = case x.estimate of
+          Copies _ v -> v
+          ErrorBound _ -> VU.singleton x.value
+        k = fromIntegral (VU.length cs)
+        m = meanOf cs
+        s = deviationOf cs
+     in ( showSampled (s / sqrt k) m
+        , showSampled (if k < 2 then 0 else s / sqrt (2 * (k - 1))) s
+        )
+
+{- | A statistic with standard error @se@: rounded to the place of the
+second significant digit of @se@, its trailing zeros kept, written as
+'showDouble' writes numbers (scientific outside @[10⁻⁴, 10¹⁵)@). As
+'showDouble' when the error is zero or not finite, or when that place
+would show more digits than a double holds.
+-}
+showSampled :: Double -> Double -> Text
+showSampled se x
+  | not (finite x && finite se) || se <= 0 = showDouble x
+  | q == 0 = if place >= -4 then fixed else "0"
+  | lead - place + 1 > 17 = showDouble x
+  | lead < -4 || lead >= 15 = scientific
+  | otherwise = fixed
+ where
+  place = decade se - 1
+  q = round (toRational x / 10 ^^ place) :: Integer
+  ds = T.pack (show (abs q))
+  lead = T.length ds - 1 + place
+  sign = if q < 0 then "-" else ""
+  fixed
+    | place >= 0 = sign <> ds <> T.replicate place "0"
+    | otherwise =
+        let padded = T.justifyRight (1 - place) '0' ds
+            (whole, fraction) = T.splitAt (T.length padded + place) padded
+         in sign <> whole <> "." <> fraction
+  scientific =
+    sign
+      <> T.take 1 ds
+      <> (if T.length ds > 1 then "." <> T.drop 1 ds else "")
+      <> "e"
+      <> T.pack (show lead)
+
+{- | The power of ten of a positive number's leading digit, exactly:
+@logBase 10@ alone puts @1e18@ at @17.999…@.
+-}
+decade :: Double -> Int
+decade x
+  | exact < 10 ^^ k = k - 1
+  | exact >= 10 ^^ (k + 1) = k + 1
+  | otherwise = k
+ where
+  k = floor (logBase 10 x)
+  exact = toRational x -------------------------------------------------------------------------
 
 {- | The determinant by Gaussian elimination with partial pivoting on the
 values; a zero pivot makes it zero.
@@ -1071,6 +1192,19 @@ choleskyD s what a
 refused :: Text -> Either ArithError a
 refused what = Left (Domain (lacks DoubleBackend what))
 
+{- | A measure of rounding, @errorOf@ or @digitsOf@, as a number known
+exactly; refused for a number whose copies carry declared σ, whose
+spread is not rounding (design §8.2).
+-}
+roundingOnly :: Text -> (Dbl -> Double) -> Dbl -> Either ArithError Dbl
+roundingOnly name f x
+  | carriesDraws x =
+      Left
+        ( Domain
+            ("`" <> name <> "` measures rounding: its copies carry declared σ; read `sd`")
+        )
+  | otherwise = Right (exactDbl (f x))
+
 instance Scalar Dbl where
   backendOf = DoubleBackend
   literal = literalD
@@ -1118,9 +1252,10 @@ instance Scalar Dbl where
   matrixExpM s n rows = Right (matrixExpD s n rows)
   choleskyM = choleskyD
   own = \case
-    -- The error estimate itself, as a number known exactly.
-    "errorOf" -> Just (Each Keep False (\_ x -> Right (exactDbl (estimateOf x))))
-    "digitsOf" -> Just (Each Bare False (\_ x -> Right (exactDbl (digitsOfDbl x))))
+    -- The error estimate itself, as a number known exactly. It measures
+    -- rounding, so a number whose copies carry draws is refused.
+    "errorOf" -> Just (Each Keep False (\_ -> roundingOnly "errorOf" estimateOf))
+    "digitsOf" -> Just (Each Bare False (\_ -> roundingOnly "digitsOf" digitsOfDbl))
     -- The next double up, of the value and of every copy: a function of the
     -- double, so its error is the operand's.
     "nextUp" ->
@@ -1134,7 +1269,7 @@ instance Scalar Dbl where
                       (nextUpDouble x.value)
                       ( case x.estimate of
                           ErrorBound e -> ErrorBound e
-                          Copies cs -> Copies (VU.map nextUpDouble cs)
+                          Copies sp cs -> Copies sp (VU.map nextUpDouble cs)
                       )
                       x.origin
                   )

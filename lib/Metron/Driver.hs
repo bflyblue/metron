@@ -594,7 +594,7 @@ command session src = \case
             (inputPrinter h)
             cfg.precision
             session.preferred
-            (renderExact (inputNamer h) cfg.precision)
+            (map (renderExact (inputNamer h) cfg.precision))
             v
         )
   -- The error budget (design §3.2.6) of a scalar, or of the sum of a
@@ -624,7 +624,11 @@ command session src = \case
             . renderValue (inputPrinter h) cfg.precision session.preferred
         rough =
           either (Left . renderEvalError) Right
-            . renderValueWith (inputPrinter h) cfg.precision session.preferred renderRough
+            . renderValueWith
+              (inputPrinter h)
+              cfg.precision
+              session.preferred
+              (map renderRough)
         components buf = either (Left . renderEvalError) Right (sequence (V.toList buf))
         unpinned = fmap (\hh -> hh{pinned = False})
         -- One vector's bound radii, in its own shape and unit.

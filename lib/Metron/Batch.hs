@@ -156,8 +156,8 @@ element es = case sequence es of
   Left _ -> Left <$> failure es
 
 {- | One number across the batches: the same IEEE value in each, bit for
-bit, and its copies concatenated; a number without copies (known
-exactly) is the same in each.
+bit, and its copies concatenated, carrying draws if any batch's do; a
+number without copies (known exactly) is the same in each.
 -}
 number :: [Dbl] -> Maybe Dbl
 number = \case
@@ -165,12 +165,12 @@ number = \case
   xs@(x0 : _)
     | any ((/= bits x0.value) . bits . (.value)) xs -> Nothing
     | otherwise -> case traverse copies xs of
-        Just css -> Just x0{estimate = Copies (VU.concat css)}
+        Just css -> Just x0{estimate = Copies (foldMap fst css) (VU.concat (map snd css))}
         Nothing
           | all ((== x0.estimate) . (.estimate)) xs -> Just x0
           | otherwise -> Nothing
  where
   bits = castDoubleToWord64
   copies x = case x.estimate of
-    Copies cs -> Just cs
+    Copies sp cs -> Just (sp, cs)
     ErrorBound _ -> Nothing

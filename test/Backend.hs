@@ -17,7 +17,14 @@ import Metron.Affine (Magnitude, midpoint, radius)
 import Metron.Batch (batchesOf)
 import Metron.Codebase (Codebase (..), Reference (..), emptyCodebase)
 import Metron.Compile (evalBatchedAs, evalValueAs)
-import Metron.Double (Dbl (..), Estimate (..), digitsOfDbl, estimateOf)
+import Metron.Double (
+  Dbl (..),
+  Estimate (..),
+  Spread (..),
+  digitsOfDbl,
+  estimateOf,
+  showSampled,
+ )
 import Metron.Driver (feed, seededSession, startBackend, startSettings)
 import Metron.Eval (Config (..), ValueOf (..), defaultConfig)
 import Metron.Limits (Limits (..))
@@ -44,6 +51,7 @@ backendTests =
     , checkTests
     , settingTests
     , monteCarloTests
+    , monteCarloPrintingTests
     , coresTests
     ]
 
@@ -592,7 +600,7 @@ settingTests =
         $ case doubleOf doubleConfig{samples = 10, rounding = RoundNearest} "0.1 + 0.2 * 3" of
           Left err -> assertFailure (T.unpack err)
           Right x -> do
-            x.estimate @?= Copies (VU.replicate 10 x.value)
+            x.estimate @?= Copies RoundingOnly (VU.replicate 10 x.value)
             estimateOf x @?= 0
     , testCase "rounding random: the same copies do differ"
         $ case doubleOf doubleConfig{samples = 10} "0.1 + 0.2 * 3" of
@@ -661,7 +669,7 @@ monteCarloTests =
           @?= Right (0.5 * 0.5 + 0.1)
     , testCase "x - x is exactly 0 in every copy, under either rounding" $ do
         let zeroCopies cfg = case doubleOf cfg "let x = 1 ±σ 0.1 in (x * 3 + 1) - (x * 3 + 1)" of
-              Right x -> x.estimate @?= Copies (VU.replicate cfg.samples 0)
+              Right x -> x.estimate @?= Copies Drawn (VU.replicate cfg.samples 0)
               Left err -> assertFailure (T.unpack err)
         zeroCopies monteCarlo
         zeroCopies monteCarlo{rounding = RoundRandom}
@@ -716,7 +724,7 @@ monteCarloTests =
           let at r = (.estimate) <$> doubleOf monteCarlo{rounding = r} "let x = 1 ±σ 0.1 in x / 3"
           (at RoundNearest /= at RoundRandom) @? "the roundings agree"
           case (at RoundNearest, at RoundRandom) of
-            (Right (Copies ns), Right (Copies rs)) ->
+            (Right (Copies _ ns), Right (Copies _ rs)) ->
               VU.all (<= 2.3e-16) (VU.zipWith (\n r -> abs (n - r)) ns rs)
                 @? "a copy moved more than a rounding"
             other -> assertFailure (show other)
@@ -754,6 +762,125 @@ monteCarloTests =
      in cov
           / sqrt (VU.sum (VU.map (\a -> (a - ma) ^ (2 :: Int)) as))
           / sqrt (VU.sum (VU.map (\b -> (b - mb) ^ (2 :: Int)) bs))
+
+{- | Printing under Monte Carlo (design §8.2, corrections after building):
+a value whose copies carry draws prints its nominal IEEE value with the
+sample beside it, never @±@ the standard error of the copies' mean, and
+@errorOf@ and @digitsOf@, which measure rounding, refuse it. Whether the
+copies carry draws propagates through arithmetic.
+-}
+monteCarloPrintingTests :: TestTree
+monteCarloPrintingTests =
+  testGroup
+    "printing under Monte Carlo: the sample beside the nominal value"
+    [ testCase
+        "n·n prints 0, its nominal value, with mean and sd, not ± a standard error"
+        $ runWith monteCarlo ["let n = 0 ±σ 1", "n * n"]
+          @?= Right ["0 (Monte Carlo: mean 1.015, sd 1.441, 10000 samples)"]
+    , testCase "units are kept, in the sample too"
+        $ do
+          runWith monteCarlo ["let n = 0 ±σ 1", "n * 1 m"]
+            @?= Right ["0 m (Monte Carlo: mean -0.016 m, sd 1.0073 m, 10000 samples)"]
+          seededLines
+            [ ":set samples 10000"
+            , ":set rounding nearest"
+            , ":backend double"
+            , "let M = 5.9722e24 kg ±σ 6e20 kg"
+            , "2 * pi * sqrt ((7000 km)^3 / (astro.G * M))"
+            ]
+            @?= Right
+              [ "5828.501263698674 s (Monte Carlo: mean 5828.5079 s, sd 0.3027 s, 10000 samples)"
+              ]
+    , testCase "under random rounding too, and never with ±" $ do
+        let outs = runWith monteCarlo{rounding = RoundRandom} ["let x = 1 ±σ 0.1", "x / 3"]
+        case outs of
+          Right [out] -> do
+            ("0.3333333333333333 (Monte Carlo: mean " `T.isPrefixOf` out) @? T.unpack out
+            not ("±" `T.isInfixOf` out) @? T.unpack out
+          other -> assertFailure (show other)
+    , testCase "a tensor prints each component's mean and sd in its shape and unit"
+        $ runWith monteCarlo ["let n = 0 ±σ 1", "[n, n * n, 2] * 1 m"]
+          @?= Right
+            [ "[0, 0, 2] m (Monte Carlo: mean [-0.016, 1.015, 2] m, sd [1.0073, 1.441, 0] m, 10000 samples)"
+            ]
+    , testCase "a record and a tuple print per component, each with its own sample"
+        $ do
+          runWith
+            monteCarlo
+            [ "data Body = Body {mass :: Num kg, vel :: Vec 2 (m/s)}"
+            , "let n = 0 ±σ 1"
+            , "Body {mass = 5 kg, vel = [1, 2 + n] * 1 m/s}"
+            ]
+            @?= Right
+              [ "Body {mass = 5 kg, vel = [1, 2] m s^-1 (Monte Carlo: mean [1, 1.984] m s^-1, sd [0, 1.0073] m s^-1, 10000 samples)}"
+              ]
+          runWith monteCarlo ["let n = 0 ±σ 1", "(n, 0.5)"]
+            @?= Right ["(0 (Monte Carlo: mean -0.016, sd 1.0073, 10000 samples), 0.5)"]
+    , testCase "with rounding alone, printing, errorOf and digitsOf are as before" $ do
+        let random = monteCarlo{rounding = RoundRandom}
+        case runWith random ["0.1 + 0.2", "errorOf (0.1 + 0.2) > 0", "digitsOf 0.5"] of
+          Right [sum', positive, digits] -> do
+            ( "0.30000000000000004 ± " `T.isPrefixOf` sum'
+                && " (estimate, 10000 samples)" `T.isSuffixOf` sum'
+              )
+              @? T.unpack sum'
+            positive @?= "true"
+            digits @?= "15.954589770191003"
+          other -> assertFailure (show other)
+        -- Copies that agree, rounded to nearest, have no spread to show.
+        runWith monteCarlo ["0.1 + 0.2", "errorOf (0.1 + 0.2)"]
+          @?= Right ["0.30000000000000004", "0"]
+    , testCase "errorOf and digitsOf refuse a value whose copies carry declared σ" $ do
+        let refusal = "its copies carry declared σ; read `sd`"
+        expectLeft refusal (runWith monteCarlo ["let x = 1 ±σ 0.1", "errorOf x"])
+        expectLeft
+          ("`digitsOf` measures rounding: " <> refusal)
+          (runWith monteCarlo ["let x = 1 ±σ 0.1", "digitsOf (x * 2 + 1)"])
+        expectLeft refusal (runWith monteCarlo ["errorOf (gauss 2)"])
+        expectLeft
+          refusal
+          ( runWith
+              monteCarlo{rounding = RoundRandom}
+              ["let x = 1 ±σ 0.1", "errorOf (sin (x * 1 rad))"]
+          )
+    , testCase "carrying draws propagates through arithmetic, and a mix carries them" $ do
+        let spread src =
+              (\x -> case x.estimate of Copies sp _ -> Just sp; _ -> Nothing)
+                <$> doubleOf monteCarlo{rounding = RoundRandom} src
+        spread "let x = 1 ±σ 0.1 in x" @?= Right (Just Drawn)
+        spread "let x = 1 ±σ 0.1 in sqrt (x * 3 + 1) / 2" @?= Right (Just Drawn)
+        -- one operand drawn and the other rounded only
+        spread "let x = 1 ±σ 0.1 in x + (0.1 + 0.2)" @?= Right (Just Drawn)
+        spread "let x = 1 ±σ 0.1 in atan2 (0.3 * 1) x" @?= Right (Just Drawn)
+        spread "0.1 + 0.2" @?= Right (Just RoundingOnly)
+        -- the same unknown cancelled still carries its draws, all zero
+        spread "let x = 1 ±σ 0.1 in x - x" @?= Right (Just Drawn)
+        runWith monteCarlo ["let x = 1 ±σ 0.1", "x - x"]
+          @?= Right ["0 (Monte Carlo: mean 0, sd 0, 10000 samples)"]
+        -- the sample's statistics are numbers known exactly: no draws pass
+        spread "let x = 1 ±σ 0.1 in sd x + 0.5" @?= Right (Just RoundingOnly)
+        runWith monteCarlo ["let x = 1 ±σ 0.1", "errorOf (sd x)"] @?= Right ["0"]
+    , testCase "batches print what one evaluation prints" $ do
+        let ls = ["let x = 1 ±σ 0.1", "let y = 2 ±σ 0.3", "[x * y, 0.5] * 1 s"]
+        runWith batchedConfig{cores = 4} ls @?= runWith batchedConfig{cores = 1} ls
+        (all (T.isInfixOf "Monte Carlo") <$> runWith batchedConfig{cores = 4} ls)
+          @?= Right True
+    , testCase "a statistic's digits come from its standard error" $ do
+        -- two significant digits of the error: 0.0144 sets the place 10⁻³
+        showSampled 0.0144 1.0153 @?= "1.015"
+        showSampled 0.0102 1.4407 @?= "1.441"
+        -- trailing zeros are digits the sample resolves
+        showSampled 0.0065 5828.5 @?= "5828.5000"
+        showSampled 30 12345.6 @?= "12346"
+        showSampled 300 12345.6 @?= "12350"
+        showSampled 0.0144 (-0.0001) @?= "0.000"
+        showSampled 1.0e18 (-1.6e18) @?= "-1.6e18"
+        showSampled 1.0e17 (-1.6e18) @?= "-1.60e18"
+        showSampled 7.1e-12 1.0073e-9 @?= "1.0073e-9"
+        -- no error, or more digits than a double holds: the shortest digits
+        showSampled 0 0.30000000000000004 @?= "0.30000000000000004"
+        showSampled 1.0e-30 0.30000000000000004 @?= "0.30000000000000004"
+    ]
 
 -- | Pure Monte Carlo: 10⁴ copies rounded to nearest.
 monteCarlo :: Config
@@ -808,7 +935,7 @@ vectorCopies src = \case
   VTensor [_] _ _ buf ->
     traverse
       ( \case
-          Right x | Copies cs <- x.estimate -> Right cs
+          Right x | Copies _ cs <- x.estimate -> Right cs
           other -> Left (T.pack (show other))
       )
       (V.toList buf)
@@ -850,7 +977,8 @@ coresTests =
           four @?= one
           map stats four @?= map stats one
           -- and the same as the evaluation that never batches
-          (map (.estimate) <$> numbersIn batchedConfig src) @?= Right (map Copies one)
+          (map (.estimate) <$> numbersIn batchedConfig src)
+            @?= Right (map (Copies Drawn) one)
     , testCase "under random rounding too, with no declared σ" $ do
         let src = "[0.1 + 0.2 * 3, sqrt 2 / 3, exp 0.3]"
             at k = copiesBatched batchedConfig{cores = k, rounding = RoundRandom} src
@@ -859,8 +987,9 @@ coresTests =
     , testCase
         "an input that reads across the copies runs as one, with the same result"
         $ do
-          let ls = ["let x = 1 ±σ 0.1", "[mid (x * x), sd (x * x), errorOf x]"]
+          let ls = ["let x = 1 ±σ 0.1", "[mid (x * x), sd (x * x), errorOf (0.1 + 0.2)]"]
           runWith batchedConfig{cores = 4} ls @?= runWith batchedConfig{cores = 1} ls
+          (length <$> runWith batchedConfig{cores = 4} ls) @?= Right 1
     , testCase "the batches' warnings come together" $ do
         let ls = ["if 1 + 1e-16 > 1 then 1 else 2"]
             outs k = runWith doubleConfig{samples = 10, cores = k} ls

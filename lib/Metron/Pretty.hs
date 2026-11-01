@@ -110,8 +110,10 @@ import Metron.Dimension (
 import Metron.Double (
   Dbl (..),
   Estimate (..),
+  carriesDraws,
   estimateOf,
   originNote,
+  sampleNote,
   showDouble,
   showEstimate,
  )
@@ -350,37 +352,50 @@ nonLinearNote threshold ms = case mapMaybe (nonLinearAt threshold) ms of
 shape, units, charts and data, prints the same under every backend.
 -}
 class (Scalar s) => Display s where
-  -- | A number at a scale, in significant digits.
-  renderNumber :: Int -> s -> Text
+  {- | The numbers of one value, a tensor's components in order, at a
+  scale, in significant digits: together, since a backend may print all
+  of a value's numbers alike when one of them asks it to.
+  -}
+  renderNumbers :: Int -> [s] -> [Text]
 
   -- | A number in a display unit: divided by the unit's factor, at a working precision.
   inUnit :: Precision -> Magnitude -> s -> Maybe s
 
-  {- | What a value adds after its numbers: a mark of non-linearity over
-  the threshold, the kind of an error estimate.
+  {- | What a value adds after its numbers and its unit: a mark of
+  non-linearity over the threshold, the kind of an error estimate, a
+  sample. The function lays out one text per number as the value's
+  numbers are laid out, in its shape and with its unit.
   -}
-  numbersNote :: Rational -> [s] -> Text
+  numbersNote :: Rational -> ([Text] -> Text) -> [s] -> Text
 
 instance Display Magnitude where
-  renderNumber = renderMagnitude
+  renderNumbers scale = map (renderMagnitude scale)
   inUnit p f r = either (const Nothing) Just (divM p r f)
-  numbersNote = nonLinearNote
+  numbersNote threshold _ = nonLinearNote threshold
 
 {- | A double prints as the shortest digits that read back to it, then its
 error estimate, when it has one, to two digits: @0.30000000000000004 ±
 5.6e-17@. After the value, what kind of estimate it is, @(bound)@ or
 @(estimate, 3 samples)@, and where the first NaN or infinity came from
-(design §8.2).
+(design §8.2). A value any of whose numbers' copies carry draws of a
+declared σ prints its IEEE values alone, with the sample beside them,
+each number's mean and deviation in the value's shape and unit: @0
+(Monte Carlo: mean 1.015, sd 1.441, 10000 samples)@. Its spread is not
+rounding, so no @± e@ prints.
 -}
 instance Display Dbl where
-  renderNumber _ x =
-    let e = estimateOf x
-        isBound = case x.estimate of
-          ErrorBound _ -> True
-          Copies _ -> False
-     in if e == 0 || isNaN x.value || isInfinite x.value
-          then showDouble x.value
-          else showDouble x.value <> " ± " <> showEstimate isBound e
+  renderNumbers _ xs
+    | any carriesDraws xs = map (showDouble . (.value)) xs
+    | otherwise = map withEstimate xs
+   where
+    withEstimate x =
+      let e = estimateOf x
+          isBound = case x.estimate of
+            ErrorBound _ -> True
+            Copies _ _ -> False
+       in if e == 0 || isNaN x.value || isInfinite x.value
+            then showDouble x.value
+            else showDouble x.value <> " ± " <> showEstimate isBound e
 
   -- Divided by the unit's factor, the estimate scaled with it: a quantity
   -- known exactly stays exact in any unit it prints in.
@@ -392,16 +407,17 @@ instance Display Dbl where
             { value = x.value / fd
             , estimate = case x.estimate of
                 ErrorBound e -> ErrorBound (if e == 0 then 0 else e / abs fd * (1 + 1.0e-15))
-                Copies cs -> Copies (VU.map (/ fd) cs)
+                Copies sp cs -> Copies sp (VU.map (/ fd) cs)
             }
    where
     fd = fromRational (midpoint f) :: Double
-  numbersNote _ xs =
+  numbersNote _ layout xs =
     let estimated = [x | x <- xs, estimateOf x > 0, not (isNaN x.value || isInfinite x.value)]
-        kind = case [x.estimate | x <- estimated] of
-          [] -> []
-          ErrorBound _ : _ -> ["bound"]
-          Copies cs : _ -> ["estimate, " <> tshow (VU.length cs) <> " samples"]
+        kind = case (sampleNote layout xs, [x.estimate | x <- estimated]) of
+          (Just sample, _) -> [sample]
+          (Nothing, []) -> []
+          (Nothing, ErrorBound _ : _) -> ["bound"]
+          (Nothing, Copies _ cs : _) -> ["estimate, " <> tshow (VU.length cs) <> " samples"]
      in T.concat [" (" <> t <> ")" | t <- kind ++ maybe [] pure (originNote xs)]
 
 {- | Print a value. A tensor with a display unit whose dimension matches
@@ -412,18 +428,20 @@ its current name.
 renderValue ::
   (Display s) =>
   Printer -> Int -> Preferences -> ValueOf s -> Either EvalError Text
-renderValue printer scale prefs = renderValueWith printer scale prefs (renderNumber scale)
+renderValue printer scale prefs = renderValueWith printer scale prefs (renderNumbers scale)
 
--- | 'renderValue' with a chosen rendering for each magnitude.
+{- | 'renderValue' with a chosen rendering for the magnitudes of one value,
+a tensor's components in order.
+-}
 renderValueWith ::
   (Display s) =>
   Printer ->
   Int ->
   Preferences ->
-  (s -> Text) ->
+  ([s] -> [Text]) ->
   ValueOf s ->
   Either EvalError Text
-renderValueWith printer scale prefs showMagnitude = \case
+renderValueWith printer scale prefs showMagnitudes = \case
   VBool True -> Right "true"
   VBool False -> Right "false"
   VClosure _ -> Right "<function>"
@@ -459,23 +477,19 @@ renderValueWith printer scale prefs showMagnitude = \case
     xs <- sequence (V.toList buf)
     pure $ case (chartName s, coordinatesOn (settingsAt (scale + 4)) s xs) of
       (Just named, Right steps) ->
-        renderNested showMagnitude dims steps
-          <> " "
-          <> named
-          <> numbersNote printer.nonlinear steps
+        let laid ts = renderNested id dims ts <> " " <> named
+         in laid (showMagnitudes steps) <> numbersNote printer.nonlinear laid steps
       _ ->
-        renderNested showMagnitude dims xs
-          <> unitSuffix d
-          <> " (point)"
-          <> numbersNote printer.nonlinear xs
+        let laid ts = renderNested id dims ts <> unitSuffix d
+         in laid (showMagnitudes xs) <> " (point)" <> numbersNote printer.nonlinear laid xs
   VChart s ->
     Right $ case chartName s of
       Just named -> "chart " <> named
       Nothing ->
         "chart: step "
-          <> showMagnitude s.step
+          <> T.concat (showMagnitudes [s.step])
           <> " at "
-          <> renderNested showMagnitude s.dims (V.toList s.origin)
+          <> renderNested id s.dims (showMagnitudes (V.toList s.origin))
           <> unitSuffix s.dim
   -- A unit prints as its unit expression, written as a type's dimension is
   -- (design §3.10, U8), so that it reads back as unit arithmetic: `km`,
@@ -492,13 +506,10 @@ renderValueWith printer scale prefs showMagnitude = \case
     _ -> (<> " (a unit)") <$> recur v
   v -> do
     (dims, scaled, units) <- displayParts printer scale prefs v
-    pure
-      ( renderNested showMagnitude dims scaled
-          <> (if T.null units then "" else " " <> units)
-          <> numbersNote printer.nonlinear scaled
-      )
+    let laid ts = renderNested id dims ts <> (if T.null units then "" else " " <> units)
+    pure (laid (showMagnitudes scaled) <> numbersNote printer.nonlinear laid scaled)
  where
-  recur = renderValueWith printer scale prefs showMagnitude
+  recur = renderValueWith printer scale prefs showMagnitudes
   -- A chart's name; an instant of a moving chart is the chart applied, as
   -- it is written, @(ecef (100 unix))@ (design §3.8).
   chartName s = case (s.name, s.applied) of
