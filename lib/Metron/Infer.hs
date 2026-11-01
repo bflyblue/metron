@@ -23,6 +23,7 @@ module Metron.Infer (
   TypeLookup,
   elaborateClosed,
   elaborateClosedWith,
+  unifyDimensions,
   readingsOf,
   rewriteReadings,
   hasReadingMarkers,
@@ -264,6 +265,20 @@ and the Typed Core term with all metavariables resolved.
 -}
 elaborateClosed :: TypeLookup -> Term Z -> Either TypeError ([Scheme], TTerm Z)
 elaborateClosed = elaborateClosedWith noAnnotations
+
+{- | Unify two dimensions on their own (design §4.4), the unifier's fresh
+variables numbered above both's: the solution's substitution, applied to
+a dimension, or why there is none. What the unifier's properties are
+stated over.
+-}
+unifyDimensions :: Dim -> Dim -> Either TypeError (Dim -> Dim)
+unifyDimensions d1 d2 = do
+  let start = 1 + maximum (0 : dimVars d1 ++ dimVars d2)
+  ((), st) <-
+    runStateT
+      (unifyDim [] d1 d2)
+      (St emptySubst start axisBase [] (const Nothing) noAnnotations Map.empty)
+  pure (applyDim st.subst)
 
 -- | 'elaborateClosed' with the annotations of the input being checked.
 elaborateClosedWith ::

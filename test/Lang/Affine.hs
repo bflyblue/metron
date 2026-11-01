@@ -35,7 +35,7 @@ import Lang.Common (
  )
 import Metron.Affine (
   Magnitude (Affine, Exact),
-  Nudge (origin),
+  Nudge (kind, origin),
   Origin (Declared, Tagged),
   addM,
   cosM,
@@ -184,6 +184,35 @@ affineTests =
           Right q -> radius q > 0 @? show q
           Left err -> assertFailure (show err)
         divM 24 (scaleM 24 3 named) named @?= Right (Exact 3)
+    , localOption (mkTimeout 10_000_000) $ testCase
+        "past 64 nudges, the bound ones beyond the 32 largest fold into slack (design §3.2.7)" $ do
+        -- 100 plus n bound nudges, b1 .. bn of coefficient i/1000, and m
+        -- statistical ones; sqrt adds its own remainder, a nudge smaller
+        -- than any of them, and scales the others alike (by 1/20).
+        let p = 24
+            term k tag i = uncertain k (Tagged tag i) (Exact 0) (Exact (fromIntegral i / 1000))
+            form n m =
+              foldl
+                (addM p)
+                (Exact 100)
+                ([term Bound "b" i | i <- [1 .. n]] ++ [term Stat "s" i | i <- [1 .. m]])
+            rooted n m = either (error . show) id (sqrtM p (form n m))
+            slackOf x = radius x - sum (map (abs . fst) (nudges x))
+            kept k x = [i | (_, nu) <- nudges x, nu.kind == k, Tagged _ i <- [nu.origin]]
+        -- 64 nudges: nothing folds.
+        let at64 = rooted 63 0
+        length (nudges at64) @?= 64
+        slackOf at64 @?= 0
+        -- 65: the 32 largest bound nudges stay, the rest are slack.
+        let at65 = rooted 64 0
+        length (nudges at65) @?= 32
+        kept Bound at65 @?= [64, 63 .. 33]
+        slackOf at65 >= sum [fromIntegral i / 20000 | i <- [1 .. 32 :: Int]]
+          @? show (slackOf at65)
+        -- A statistical nudge never folds, however small.
+        let mixed = rooted 40 40
+        length (kept Stat mixed) @?= 40
+        kept Bound mixed @?= [40, 39 .. 9]
     , testCase "remainders of different operand lists never share a nudge" $ do
         -- [1, 12] and [1/11, 2] once ran together as the same bytes
         let remainder operands = enclose "op" 24 operands 1 (Exact 0)

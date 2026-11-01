@@ -1220,7 +1220,7 @@ settingTests =
         expectLeft
           "rounding is nearest or random"
           (runWith defaultConfig [":set rounding up"])
-    , testCase "the backend's defaults are the session's: seed 1, as :set shows" $ do
+    , localOption (mkTimeout 10_000_000) $ testCase "the backend's defaults are the session's: seed 1, as :set shows" $ do
         -- The printer's settings once had seed 0 while :set showed 1.
         let backend = settingsAt (precisionOf defaultConfig)
         backend.seed @?= 1

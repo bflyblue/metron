@@ -25,10 +25,14 @@ import Metron.Desugar (
   renderDesugarError,
  )
 import Metron.Dimension (
-  DimAtom (Base),
+  Dim,
+  DimAtom (Base, DVar),
   Spelling (Unicode),
   dimAtoms,
+  dimDiv,
+  dimFromAtoms,
   isDimOne,
+  renderDim,
  )
 import Metron.Eval (
   EvalError (
@@ -43,7 +47,7 @@ import Metron.Eval (
   evalClosed,
  )
 import Metron.Hash (hashTerm)
-import Metron.Infer (TypeError (..), elaborateClosed)
+import Metron.Infer (TypeError (..), elaborateClosed, unifyDimensions)
 import Metron.Limits (defaultLimits, newBudget, rootContext)
 import Metron.Parser (parseExpr)
 import Metron.Pretty (renderTerm, renderTermIn)
@@ -122,7 +126,7 @@ import Metron.Type (
   renderType,
  )
 import Support.Render (render)
-import Test.Tasty (TestName, TestTree, localOption, testGroup)
+import Test.Tasty (TestName, TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase)
 import Test.Tasty.Options (IsOption (parseValue))
 import Test.Tasty.QuickCheck (
@@ -135,13 +139,18 @@ import Test.Tasty.QuickCheck (
   choose,
   classify,
   counterexample,
+  cover,
   discard,
   elements,
+  forAllShow,
   frequency,
   label,
+  listOf,
+  oneof,
   tabulate,
   testProperty,
   vectorOf,
+  (.&&.),
   (===),
  )
 import Traversal (blankHints)
@@ -361,6 +370,10 @@ propertyTests =
             generatorProperty
             : pipelineProperties typedSource
         )
+    , localOption (mkTimeout 60_000_000)
+        $ testProperty
+          "the dimension unifier: a solution solves, a refusal has none (design §4.4)"
+          dimensionUnifierProperty
     , -- Seeds that once failed, kept so that they cannot fail again unseen
       -- once the random runs have moved on.
       testGroup
@@ -373,6 +386,39 @@ propertyTests =
             (lintAgreesProperty typedSource)
         ]
     ]
+
+{- | Kennedy's unifier (design §4.4) on random equations @d1 = d2@ of the
+free abelian group: when it succeeds its substitution makes the two sides
+equal, and when it refuses there is no integer solution. Write @d1 / d2@
+as variables to exponents @xᵢ@ and base dimensions to exponents @yⱼ@: a
+solution exists exactly when the @yⱼ@ are all 0 if there are no
+variables, and otherwise when the gcd of the @xᵢ@ divides every @yⱼ@.
+-}
+dimensionUnifierProperty :: Property
+dimensionUnifierProperty =
+  forAllShow ((,) <$> genDim <*> genDim) showEquation $ \(d1, d2) ->
+    let delta = dimDiv d1 d2
+        xs = [k | (DVar _, k) <- dimAtoms delta]
+        ys = [k | (Base _, k) <- dimAtoms delta]
+        solvable = case xs of
+          [] -> null ys
+          _ -> all (\y -> y `mod` foldr1 gcd xs == 0) ys
+     in cover 10 solvable "solvable"
+          . cover 10 (not solvable) "no solution"
+          $ case unifyDimensions d1 d2 of
+            Right s ->
+              counterexample "the solution does not solve it" (s d1 === s d2)
+                .&&. counterexample "a solution where none exists" solvable
+            Left err ->
+              counterexample
+                ("refused one that has a solution: " <> T.unpack err.message)
+                (not solvable)
+ where
+  -- Up to three variables and the base dimensions, small exponents.
+  genDim :: Gen Dim
+  genDim = dimFromAtoms <$> listOf ((,) <$> atom <*> choose (-6, 6))
+  atom = oneof [Base <$> elements [minBound .. maxBound], DVar <$> choose (0, 2)]
+  showEquation (d1, d2) = T.unpack (renderDim d1 <> " = " <> renderDim d2)
 
 {- | A property run once, at a seed given as @--quickcheck-replay@ takes
 it. A seed that does not parse fails the test rather than running at a

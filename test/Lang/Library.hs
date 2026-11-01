@@ -72,7 +72,7 @@ import Metron.Prelude (
   stdlibNames,
  )
 import Metron.Syntax qualified as S (lastSegment, rootScope)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?), (@?=))
 
 preludeTests :: TestTree
@@ -341,8 +341,9 @@ stdlibTests =
           -- Transfer) list two lines for one label, and their 21 fields none
           length outs @?= length stdlibNames + 6 - 21
         runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
-    , testCase
-        ":ls lists a unit with a type that reads back: one of it (design §3.10, U9)"
+    , localOption (mkTimeout 10_000_000)
+        $ testCase
+          ":ls lists a unit with a type that reads back: one of it (design §3.10, U9)"
         $ do
           -- It listed `unit kPa : Unit (kg/(m*s^2))`, and `Unit` is refused
           -- in a written type.

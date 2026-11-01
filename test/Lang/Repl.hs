@@ -73,7 +73,7 @@ import Metron.Unicode qualified as U (
   lookupName,
   matching,
  )
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?), (@?=))
 
 {- | The ASCII spellings of design §2.8, keyed by their unicode form, for the
@@ -128,7 +128,7 @@ replTests =
         -- :help and :edit --file are commands too, and :edit completes once.
         replacements seeded ":he" @?= [":help"]
         replacements seeded ":ed" @?= [":edit"]
-    , testCase ":help lists every command, :edit --file among them" $ do
+    , localOption (mkTimeout 10_000_000) $ testCase ":help lists every command, :edit --file among them" $ do
         expecting (runLinesP [":help"]) $ \case
           [help] -> do
             T.isInfixOf "\n  :edit --file path [name|namespace]\n" help @? T.unpack help

@@ -1329,7 +1329,7 @@ under any operation.
 it (§11).
 
 **Implemented in:** `Metron.Affine` (`finish`, `nudgeLimit`).
-**Tested by:** "affine" › "equal slack is not a shared unknown, so it does not cancel". The fold at 64 nudges: none found.
+**Tested by:** "affine" › "equal slack is not a shared unknown, so it does not cancel", "past 64 nudges, the bound ones beyond the 32 largest fold into slack (design §3.2.7)".
 
 #### 3.2.8 Working precision
 
@@ -4410,8 +4410,8 @@ dimensions differ by m/s". A dimension equation with no integer solution, such
 as `sqrt` of a dimension that is not a square, is a type error and never a
 loop.
 
-**Implemented in:** `Metron.Infer` (`unifyDim`, `bindVar`), `Metron.Dimension` (`dimDiv`, `dimInv`, `dimAtoms`, `dimFromAtoms`).
-**Tested by:** "units"; "types".
+**Implemented in:** `Metron.Infer` (`unifyDim`, `bindVar`, `unifyDimensions`), `Metron.Dimension` (`dimDiv`, `dimInv`, `dimAtoms`, `dimFromAtoms`).
+**Tested by:** "units"; "types"; "properties" › "the dimension unifier: a solution solves, a refusal has none (design §4.4)".
 
 ### 4.5 Inference
 
@@ -5899,7 +5899,7 @@ and a store of an older format is recreated, from its export where the
 user has one.
 
 **Implemented in:** `Metron.Store` (`formatVersion`, `locateStore`, `openStore`, `seedStore`, `loadStore`, `sync`, `mergeStore`, `mergeStores`, `stdlibSeed`), `Metron.Hash` (`encodeStored`, `decodeStored`), `Metron.Source` (`exportSource`, `exportRequest`), `Metron.Driver` (`seededSession`). The command line is `src/Main.hs`.
-**Tested by:** "store" › "definitions, history, units, labels and cycles survive a reload", "a store of another format is refused with one line and left as it is", "merging two stores: both sides' definitions, one file per shared term", "merging two seeded stores brings nothing across for the library", "a corrupt term file and a dangling name are reported, the rest loads"; "namespaces" › ":export reads back to the same labels and hashes", ":export refuses a definition on a version no name points at"; "type annotations".
+**Tested by:** "store" › "definitions, history, units, labels and cycles survive a reload", "a store of another format is refused with one line and left as it is", "merging two stores: both sides' definitions, one file per shared term", "metron --merge says what came across, and refuses with one line and a failure", "merging two seeded stores brings nothing across for the library", "a corrupt term file and a dangling name are reported, the rest loads"; "namespaces" › ":export reads back to the same labels and hashes", ":export refuses a definition on a version no name points at"; "type annotations".
 
 ### 7.5 Scratch, add, update, upgrade
 

@@ -83,7 +83,7 @@ import Metron.Type (
   numT,
   vecT,
  )
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (
   assertBool,
   assertFailure,
@@ -283,7 +283,7 @@ tcoreTests =
           @?= Right "Λn1. Λs2. Λd3. \\(v : Tensor (n1 + 1 : s2) d3) -> v.0"
     , testCase "primitives record the type they are used at"
         $ showCore <$> elabText "1 == 2" @?= Right "eq 1 2"
-    , testCase "a slice's positions print as whole numbers, a fraction as a decimal" $ do
+    , localOption (mkTimeout 10_000_000) $ testCase "a slice's positions print as whole numbers, a fraction as a decimal" $ do
         -- They printed as `slice 1.0 0.0 t`.
         T.isInfixOf "-> slice 1 0 t" . showCore <$> elabText "\\t -> slice 1 0 t"
           @?= Right True

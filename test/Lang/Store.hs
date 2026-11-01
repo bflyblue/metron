@@ -7,7 +7,7 @@ module Lang.Store (
 import Control.Monad (forM_)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS (readFile, writeFile)
-import Data.List (sort)
+import Data.List (isInfixOf, sort)
 import Data.Map.Strict qualified as Map (
   Map,
   adjust,
@@ -114,12 +114,15 @@ import System.Directory (
   createDirectoryIfMissing,
   doesDirectoryExist,
   doesFileExist,
+  findExecutable,
   getTemporaryDirectory,
   listDirectory,
   removePathForcibly,
  )
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((</>))
-import Test.Tasty (TestTree, testGroup)
+import System.Process (readProcessWithExitCode)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (
   Assertion,
   assertFailure,
@@ -547,6 +550,42 @@ storeTests =
           take 1 (dropWhile ("0 " `T.isPrefixOf`) ls) @?= ["garbage line"]
           (loaded, _) <- reload a
           linesIn loaded ["x + y"] @?= Right ["3"]
+    , localOption (mkTimeout 60_000_000)
+        $ testCase
+          "metron --merge says what came across, and refuses with one line and a failure"
+        -- The command line (design §7.4), run as the built metron: the
+        -- summary, then the merged store in use; a refusal on stderr.
+        $ withTempStore
+        $ \root -> do
+          let a = root </> "a"
+              b = root </> "b"
+              plain = root </> "plain"
+          _ <- persistLines a ["let x = 1", ":add"]
+          _ <- persistLines b ["let y = 2", ":add"]
+          createDirectoryIfMissing True plain
+          metron <-
+            findExecutable "metron"
+              >>= maybe
+                ( assertFailure
+                    "metron is not on the PATH: run the suite with cabal test, which puts it there"
+                )
+                pure
+          (code, out, err) <-
+            readProcessWithExitCode metron ["--codebase", a, "--merge", b] ""
+          (code, err) @?= (ExitSuccess, "")
+          lines out
+            @?= [ "merged " <> b <> " into " <> a
+                , "terms copied: 1"
+                , "types copied: 0"
+                , "log lines added: 1"
+                ]
+          readProcessWithExitCode metron ["--codebase", a, "x + y"] ""
+            >>= (@?= (ExitSuccess, "3\n", ""))
+          (code', out', err') <-
+            readProcessWithExitCode metron ["--codebase", a, "--merge", plain] ""
+          (code', out') @?= (ExitFailure 1, "")
+          ("is not a metron codebase" `isInfixOf` err') @? err'
+          length (lines err') @?= 1
     , testCase
         "merging from what is not a store, or from a store of another format, is refused and touches nothing"
         $ withTempStore

@@ -118,7 +118,7 @@ readingTests =
     , testCase "internal unit types still encode and decode" $ do
         let def = TypeDef [(0, KDim)] [[TUnit (Dimension.dimVar 0)]] structuralLabel
         decodeTypeDef (encodeTypeDef def) @?= Right def
-    , testCase "a role is neither a kind nor a type: their encodings are refused" $ do
+    , localOption (mkTimeout 10_000_000) $ testCase "a role is neither a kind nor a type: their encodings are refused" $ do
         -- Roles were a kind (byte 7) and a quantity of a role variable a
         -- type (tag 0x2E). Nothing written could make either, so both are
         -- gone, and no stored type held them (design §3.10, U9).

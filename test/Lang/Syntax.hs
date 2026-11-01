@@ -84,7 +84,7 @@ import Metron.Syntax qualified as S (
   Span (Span),
   Statement (SExpr, SLet),
  )
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (
   Assertion,
   assertBool,
@@ -104,7 +104,7 @@ lexerTests =
     , testCase "keywords and identifiers"
         $ toks "let x' = true in x'"
           @?= Right [TKw KLet, TIdent "x'", TEquals, TKw KTrue, TKw KIn, TIdent "x'"]
-    , testCase "an ASCII subscript is the unicode one (design §2.8)" $ do
+    , localOption (mkTimeout 10_000_000) $ testCase "an ASCII subscript is the unicode one (design §2.8)" $ do
         toks "v_0 x_12 a_1b _0 x_ x__1 e₁"
           @?= Right
             [ TIdent "v₀"
@@ -434,8 +434,9 @@ prettyTests =
         $ renderRational 5 (1 / 3) @?= "0.33333…"
     , testCase "negative" $ renderRational 20 (-(1 / 4)) @?= "-0.25"
     , testCase "scale zero" $ renderRational 0 (1 / 3) @?= "0…"
-    , testCase
-        "a primitive used as a value prints eta-reduced and reads back (design §2.9)"
+    , localOption (mkTimeout 10_000_000)
+        $ testCase
+          "a primitive used as a value prints eta-reduced and reads back (design §2.9)"
         -- `vmap sqrt` printed as `\x -> vmap (\x' -> sqrt x') x`.
         $ forM_
           [ ("vmap sqrt", "vmap sqrt")
