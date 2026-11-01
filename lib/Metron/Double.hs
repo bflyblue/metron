@@ -800,7 +800,10 @@ relText = \case
   Ge -> ">="
 
 {- | The IEEE result decides; with copies, a comparison they disagree about
-is lost in rounding.
+is flagged: lost in rounding when the copies differ only by rounding, and
+dependent on the declared uncertainty when they carry draws (a Monte Carlo
+sample, design §8.2). The message is the same in every batch, so the
+batches give one warning, as a single evaluation does.
 -}
 decide ::
   Settings -> Text -> (Double -> Double -> Bool) -> Dbl -> Dbl -> Decision
@@ -808,8 +811,8 @@ decide s what holds x y =
   let result = holds x.value y.value
       lost = case copyCount [x, y] of
         Nothing -> Nothing
-        Just n
-          | VU.any (/= result) (VU.zipWith holds (copiesOf n x) (copiesOf n y)) ->
+        Just _
+          | VU.any (/= result) outcomes ->
               Just
                 ( "the comparison "
                     <> showDouble x.value
@@ -819,10 +822,19 @@ decide s what holds x y =
                     <> showDouble y.value
                     <> " goes both ways across the "
                     <> T.pack (show s.samples)
-                    <> " samples: the condition is lost in rounding"
+                    <> " samples"
+                    <> reason
                 )
           | otherwise -> Nothing
    in Decision{holds = result, lost}
+ where
+  outcomes = case copyCount [x, y] of
+    Nothing -> VU.empty
+    Just n -> VU.zipWith holds (copiesOf n x) (copiesOf n y)
+  reason
+    | carriesDraws x || carriesDraws y =
+        ": the condition depends on the declared uncertainty"
+    | otherwise = ": the condition is lost in rounding"
 
 -- Estimates ----------------------------------------------------------------------------
 

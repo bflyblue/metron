@@ -6429,8 +6429,13 @@ Under samples, a comparison whose copies disagree is noted on the
 evaluation's budget (`Metron.Limits.remark`, kept in place for the reason
 the step counter is) and printed after the value: `warning: the
 comparison 1 > 1 goes both ways across the 3 samples: the condition is
-lost in rounding`. The design's wording names the `if`'s source; the
-comparison and its operands are what the evaluator has.
+lost in rounding`. When the copies carry draws of a declared σ (a Monte
+Carlo sample), the disagreement is the input uncertainty, not rounding, and
+the warning says so: `…: the condition depends on the declared
+uncertainty`; an `if` and a `case` on the comparison are flagged alike.
+The text is the same in every batch, so the batches give one warning. The
+design's wording names the `if`'s source; the comparison and its operands
+are what the evaluator has.
 
 *Printing.* The shortest digits that read back, written as Metron writes
 numbers (scientific outside `[10⁻⁴, 10¹⁵)`), then `± e` to two digits,

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- An `if` or `case` whose comparison the copies disagree on because of
+  draws of a declared σ (Monte Carlo under double) is flagged as depending
+  on the declared uncertainty, not as "lost in rounding", which stays the
+  message when the copies differ by rounding alone.
 - Monte Carlo under double, corrected (design §8.2, corrections after
   building). A value whose copies carry draws of a declared σ prints its
   nominal IEEE value with the sample beside it, `0 (Monte Carlo: mean

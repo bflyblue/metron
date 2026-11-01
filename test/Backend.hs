@@ -571,6 +571,29 @@ samplesTests =
           @?= Right ["1"]
     , testCase "under the running bound nothing is flagged"
         $ runDouble ["if 1 + 1e-16 > 1 then 1 else 2"] @?= Right ["2"]
+    , testCase
+        "a branch the draws disagree on names the declared uncertainty, not rounding"
+        $ case runWith
+          doubleConfig{samples = 1000}
+          [":set rounding nearest", "let x = 1 ±σ 0.1", "if x > 0.9 then 1 else 2"] of
+          Right [out] -> do
+            ("1\nwarning: the comparison 1 > 0.9 goes both ways" `T.isPrefixOf` out)
+              @? T.unpack out
+            ("the condition depends on the declared uncertainty" `T.isInfixOf` out)
+              @? T.unpack out
+            not ("lost in rounding" `T.isInfixOf` out) @? T.unpack out
+          other -> assertFailure (show other)
+    , testCase "a case that compares with draws names them too"
+        $ case runWith
+          doubleConfig{samples = 1000}
+          [ ":set rounding nearest"
+          , "let x = 1 ±σ 0.1"
+          , "case x > 0.9 of true -> 1; false -> 2"
+          ] of
+          Right [out] ->
+            ("the condition depends on the declared uncertainty" `T.isInfixOf` out)
+              @? T.unpack out
+          other -> assertFailure (show other)
     ]
 
 -- The settings of the copies --------------------------------------------------------------
