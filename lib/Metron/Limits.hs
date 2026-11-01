@@ -103,7 +103,7 @@ data Limits = Limits
 data Limit = Memory | Steps | Depth | Digits | Components | OutcomeCount | Time
   deriving stock (Eq, Show, Enum, Bounded)
 
-{- | The defaults, chosen by measurement (design §8.1, as built): the test
+{- | The defaults, chosen by measurement (design §8.1): the test
 suite, the library and the tutorial use a small fraction of each, and a
 runaway meets one within seconds.
 -}

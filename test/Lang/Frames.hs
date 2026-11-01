@@ -1024,7 +1024,7 @@ partFTests =
           runLinesP ["let pt c = 3 c", "pt degC"] @?= Right ["3 degC"]
           -- Written as F8 has it, over every space: a number is the coordinate
           -- of a point on a space of numbers only, so the definition is not as
-          -- general as its signature (design §3.10, part F, as built).
+          -- general as its signature (design §3.10, F8).
           expectError
             (runLinesP [multiline ["pt :: forall c. Chart c -> Point c", "let pt c = 3 c"]])
             "not as general as its signature"

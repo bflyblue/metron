@@ -3,7 +3,7 @@
 A store is a directory:
 
 @
-format          "metron codebase 11"
+format          "metron codebase 12", the 'formatVersion'
 terms\/\<hex\>    one term per file, in the storage encoding ("Metron.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
 names.log       append-only: time, then  bind name ref | unname name | unit name | chart name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias] | sig name type | unsig name

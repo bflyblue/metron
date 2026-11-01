@@ -1,4 +1,4 @@
-{- | Working precision (design §3.2.8, "exact while small, as built"):
+{- | Working precision (design §3.2.8):
 every built-in's result is at working precision, every rounding goes
 into its bound, and its series run in fixed point rather than in long
 exact rationals.
@@ -562,7 +562,7 @@ refValue = \case
       )
 
 {- | Each built-in at precisions 20, 50 and 200, against bc's value to 260
-digits (design §3.2.8, as built): every printed digit within one unit
+digits (design §3.2.8, "The built-ins"): every printed digit within one unit
 of the last place, as many significant digits as the precision (so the
 enclosure is narrower than the last digit, and the value is at working
 precision), and an exact result printed in full only when it is exact.
@@ -802,7 +802,7 @@ sizeTests =
   matrices =
     [ ("det", \p m -> (\d -> [[d]]) <$> shown (determinant p 3 m))
     , ("inverse", \p m -> shown (invert p 3 m))
-    , -- two by two: at p = 204 the 3 × 3 series takes seconds (design §3.2.8, as built)
+    , -- two by two: at p = 204 the 3 × 3 series takes seconds (design §3.2.8)
       ("expm", \p m -> shown (matrixExp p 2 (map (take 2) (take 2 m))))
     ,
       ( "cholesky"

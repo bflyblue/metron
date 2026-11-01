@@ -1,4 +1,4 @@
-{- | Which arguments a call certainly evaluates (design §8.1, as built), so
+{- | Which arguments a call certainly evaluates (design §8), so
 that the evaluator can evaluate them before the call instead of passing a
 thunk.
 

@@ -876,7 +876,7 @@ differ from the others only in having syntax of their own. At run time a
 boolean is a constructor with no fields, like any other.
 
 **Implemented in:** `Metron.Eval` (`ValueOf`, `evalClosed`), `Metron.Builtin` (`boolDef`, `pairDef`, `listDef`, `tupleDef`).
-**Tested by:** "metron" › "metron"; "data".
+**Tested by:** "evaluation"; "data".
 
 ### 3.2 Magnitudes: exact rationals and affine forms
 
@@ -5138,7 +5138,7 @@ component, the same sort, the same `Cycle` term and the same `H`. The
 namespace maps `odd ↦ Ref H 0` and `even ↦ Ref H 1`.
 
 **Implemented in:** `Metron.Resolve` (`enterCycle`, `enterComponent`), `Metron.Hash` (`placeholderHash`, `hashTerm`).
-**Tested by:** "hash"; "codebase"; "metron" (the evaluation group) › "mutual recursion through a cycle: even and odd".
+**Tested by:** "hash"; "codebase"; "evaluation" › "mutual recursion through a cycle: even and odd".
 
 ### 6.3 Dependency analysis
 
@@ -6543,7 +6543,7 @@ internal errors.
 arguments telling it static shapes (§10).
 
 **Implemented in:** `Metron.Eval` (`evalClosed`, `evalAt`, `evalDefinition`, `apply`, `evaluated`, `neededAtRuntime`), `Metron.Strictness` (`strictify`, `signatures`), `Metron.TCore` (`TLamWith`, `freeIndices`), `Metron.Compile` (`runtimeWith`).
-**Tested by:** "metron" › "metron" (the evaluation group, for example "if is lazy in the untaken branch", "projection is lazy in the other components", "mutual recursion through a cycle: even and odd"); "limits (design §8.1)" › "constant memory"; "end to end" › "an empty tensor takes its element type from context".
+**Tested by:** "evaluation" (for example "if is lazy in the untaken branch", "projection is lazy in the other components", "mutual recursion through a cycle: even and odd"); "limits (design §8.1)" › "constant memory"; "end to end" › "an empty tensor takes its element type from context".
 
 ### 8.1 Resource limits
 

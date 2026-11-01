@@ -138,7 +138,7 @@ coreTests =
 evalTests :: TestTree
 evalTests =
   testGroup
-    "metron"
+    "evaluation"
     [ testCase "arithmetic is exact"
         $ runClosed ((num 1 /. num 3) *. num 3) @?= Right "1"
     , testCase "rationals render as fractions"

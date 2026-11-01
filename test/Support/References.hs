@@ -1,5 +1,5 @@
-{- | Reference values for the built-ins (design §3.2.8, "exact while small,
-as built"), computed with bc at a scale of 300 decimals and kept to 260:
+{- | Reference values for the built-ins (design §3.2.8, "The built-ins"),
+computed with bc at a scale of 300 decimals and kept to 260:
 @bc -l@ with @s@, @c@, @a@, @l@, @e@ and @sqrt@, the inverse sine as
 @a(x / sqrt(1 - x^2))@, the hyperbolic functions from @e@, and @expm@ of
 a 2 × 2 matrix in closed form. Each is named by its number in the

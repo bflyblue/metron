@@ -119,7 +119,7 @@ primArity = \case
   "withAxes" -> Just 2
   -- A chart's kinematics (design §3.8): its absolute angular velocity and
   -- the velocity of its origin, both along the base axes, and its origin
-  -- from the space's base origin (design §3.10, part F, as built).
+  -- from the space's base origin (design §3.10, F5).
   "spinOf" -> Just 1
   "originVelocityOf" -> Just 1
   "originOf" -> Just 1

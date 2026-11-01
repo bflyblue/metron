@@ -2231,7 +2231,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
     vs <- fromMaybe (Right (V.replicate n (literal p 0))) sc.originVelocity
     Right (VTensor [n] (dimDiv sc.dim (dimBase T)) Nothing (V.map Right vs))
   -- Its origin, an amount from the space's base origin along the base
-  -- axes (design §3.10, part F, as built).
+  -- axes (design §3.10, F5).
   ("originOf", [s]) -> do
     sc <- chartOf =<< s
     Right (VTensor [V.length sc.origin] sc.dim Nothing (V.map Right sc.origin))
