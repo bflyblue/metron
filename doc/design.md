@@ -6105,7 +6105,9 @@ the same term runs under any backend that has the built-ins it uses.
     evaluation order, a result is identical for every K. The nominal IEEE
     value is computed once. Batches combine exactly: means and variances
     by the parallel update (Chan et al.), samples concatenated for
-    quantiles, unstable-branch flags by union. The `steps` limit counts all
+    quantiles, an unstable branch's count of copies by sum (this replaces
+    "flags by union": the warning counts all the copies, as built under
+    *Comparisons* below). The `steps` limit counts all
     batches together; the `memory` limit is the process's and covers them.
     `affine` and `samples 0` are unaffected.
   - **Corrections after building** (decided by the owner, 2026-11-01):
