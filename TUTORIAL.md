@@ -280,7 +280,7 @@ let a = [2, 0; 0, 4]
 inverse a @ [6, 8]
 ```
 
-The result is `[3, 2]`. This solves `a @ x = [6, 8]` for `x`. An inverse requires a suitable square matrix and can fail for a singular matrix.
+Because `a` was defined earlier in the session, the new definition first prints ``replaced pending definition of `a` ``. The result is `[3, 2]`. This solves `a @ x = [6, 8]` for `x`. An inverse requires a suitable square matrix and can fail for a singular matrix.
 
 Tensors extend vectors and matrices to more axes. Metron tracks their shapes and dimensions. Shape mistakes, such as incompatible matrix sizes, are errors rather than implicit resizing.
 
@@ -355,7 +355,7 @@ let turnDelta = [1, 0, 0] turned .- [0, 0, 0] turned
 turnDelta from turned to room
 ```
 
-The type is `Vec turned m`. The converted result is approximately `[0, 1, 0] m`. Its type retains the source axes even though its ordinary display shows only meters.
+The type of `turnDelta` is `Vec turned m`. The converted result is approximately `[0, 1, 0] m`, and its type is `Vec Workshop m`: it now lies along the target's axes, although both display only meters.
 
 Use `point to chart` for point conversion. Use `delta from source to target` when explicitly converting a displacement between charts. Convert differently oriented displacements to matching axes before adding them.
 
@@ -431,7 +431,7 @@ cycling.travelTime (18 km) (24 km/h) to min
 
 The result is `45 min`. Commands such as `:ls cycling` and `:view cycling.travelTime` help you inspect the group.
 
-You can use `:use cycling` to make its names available without the prefix. Existing local names can affect lookup, so full names remain useful when names overlap.
+You can use `:use cycling` to make its names available without the prefix; Metron confirms with `stored use cycling`. Existing local names can affect lookup, so full names remain useful when names overlap.
 
 ## 8. Start a saved database
 
@@ -585,7 +585,7 @@ A bare hash searches the stored definitions without requiring a name:
 #ma5cf (12 km) (24 km/h) to min
 ```
 
-This also gives `30 min`. A prefix must identify one definition, or Metron reports the ambiguity and shows the full matching hashes. A reference to a recursive function group can include a member suffix such as `.0`.
+This also gives `30 min`. A prefix must identify one definition, or Metron reports the ambiguity and shows the full matching hashes. A bare hash that refers to a recursive function group needs a member suffix, such as `#dlcnc.0`, because the hash names the whole group; `:hash` prints it with the suffix. A named reference such as `fact#dlcnc` needs no suffix.
 
 When passing a bare hash as a function argument, put it in parentheses, as in `f (#hash)`. This distinguishes the reference from a trailing measurement label such as `5 ± 1 #sensor`. A glued `name#hash` is always a version reference, so separate measurement labels from preceding names with whitespace.
 
