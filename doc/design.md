@@ -483,6 +483,13 @@ From tightest to loosest:
 | 2 | `\|\|` | right | |
 | 1 | `to`, `from … to`, `on` | left, through `to` | conversion and subtraction in a frame (below) |
 
+**Levels in the code.** This table is the parser's ladder. `Metron.Fixity`
+numbers the binary primitives on the printer's own scale (`Metron.Pretty`),
+which leaves out the forms that desugar away: there an argument is 11, an
+application 10, `^` 9, unary `-` 8, the products 7, the sums 6, `±` 5, and
+`:` and the comparisons 4. So levels 9 and 8 here are 7 and 6 there, and
+levels 4 to 1 are the same in both.
+
 `#label` is a postfix on a whole `±` expression, below `±` and above the
 comparisons. So `x == 5 ± 0.1 #s7` labels the `±`, not the comparison. A
 label anywhere else is refused: "a #label must follow ±, ±σ, noise or gauss;

@@ -311,10 +311,10 @@ The policy, now that stores exist (design §7.4):
   stored `±` definition keeps its hash, and the same text entered again, or
   under a namespace, gets the new one.
 - **Encoding and Core changes are versioned.** The store carries a format
-  number (`format`, currently 11; design §7.4). Any change to the canonical
+  number (`format`, currently 12; design §7.4). Any change to the canonical
   encoding or to a Core constructor bumps it, and the loader refuses a store
   of any other format with one line, "<path>: this codebase is format N;
-  this metron opens format 11". The format number is not the storage
+  this metron opens format 12". The format number is not the storage
   encoding's version (`storageVersion`, now 5): a format also changes when
   what a store holds changes, its log lines or its seeded library.
 - **No migrations.** metron is a proof of concept: a store of another format is
@@ -457,9 +457,9 @@ Applying the test to the roadmap, in order:
   stamp or `#tag`, design §3.2.4) on both nodes, because measurement identity
   is part of a term's meaning and so must be in the hash. It is the one place
   a definition's hash depends on its name.
-- **Persistence.** The encoding is the on-disk format already. The decoder
-  must reconstruct a well-scoped term from bytes, which is a scope check, not
-  a Core change.
+- **Persistence (design §7.4).** Done: the encoding is the on-disk format,
+  and the decoder (`Metron.Hash.decodeStored`) reconstructs a well-scoped
+  term from bytes, which is a scope check, not a Core change.
 - **A compiler.** Reads Typed Core. No Core change; possibly a later, lower
   representation of its own.
 
@@ -479,9 +479,9 @@ Core is small so that it can be made correct, and these are the means:
   storage or evaluation. The two are written separately and must agree.
 - **Property tests** over randomly generated programs: whatever inference
   accepts, lint accepts; `renderTerm` output re-parses and desugars to an
-  alpha-equivalent term; hashing is stable across that round trip; encoding
-  decodes (once the decoder exists) to an alpha-equivalent term; cycle hashes
-  are independent of entry order; alpha-equivalent terms hash equal.
+  alpha-equivalent term; hashing is stable across that round trip; the
+  storage encoding decodes to an alpha-equivalent term; cycle hashes are
+  independent of entry order; alpha-equivalent terms hash equal.
   The properties run over two generators. The blind one builds programs
   without regard to types, so about seven in ten are ill-typed and
   discarded; it stays because it reaches shapes no typing rule suggests. The
@@ -497,8 +497,8 @@ Core is small so that it can be made correct, and these are the means:
   in inference and the printer (see the changelog). *Known gaps:* no recursion (`Cycle`) and
   no codebase references are generated, and affine arithmetic is only typed,
   never evaluated.
-- **Unit tests pin the special forms**: laziness of `If` and of `and`/`or`,
-  saturation, projection bounds, cycle knot-tying.
+- **Unit tests pin the special forms**: laziness of `case` (and so of `if`)
+  and of `&&` and `||`, saturation, projection bounds, cycle knot-tying.
 - **One place per concern.** Each constructor appears in exactly one `case` in
   each of: `alphaEq`, `refs`, `rewriteRefs`, the encoder, inference, lint, the
   evaluator, the pretty-printer. GHC's `-Wincomplete-patterns` is on, so adding
@@ -523,7 +523,7 @@ Core is small so that it can be made correct, and these are the means:
 | Data | `case` over constructors; `Bool` is data | `case` over constructors; `Bool`, tuples and lists are declared data; vectors and matrices built in |
 | Recursion | `let rec`, local | top-level `Cycle` only |
 | Coercions | `Cast` with proofs | none needed |
-| Kinds | full kind system | fixed kinds: type, length, shape, dimension, axis |
+| Kinds | full kind system | fixed kinds: type, length, shape, dimension, axis, frame, space |
 | Identity | none | content hash of untyped Core |
 
 Structurally we are GHC's Core as it stood before coercions, with tensors
@@ -537,25 +537,52 @@ operations separate. These are the starting points for changes:
 
 | Responsibility | Module |
 |---|---|
+| Tokens, unicode spellings, the layout pass | `Metron.Lexer` |
+| Unicode entry by name in the REPL | `Metron.Unicode` |
+| The surface AST with source spans | `Metron.Syntax` |
+| The binary operators: tokens, primitive, symbol, level, associativity | `Metron.Fixity` |
+| Parsing programs, expressions and types | `Metron.Parser` |
+| Surface to Core, the quantity rule, provenance | `Metron.Desugar` |
 | Untyped terms and scope-safe vectors | `Metron.Core` |
 | Typed terms and independent lint | `Metron.TCore` |
 | Primitive arities, base units, runtime type requirements | `Metron.Primitive` |
 | Primitive schemes and static-argument specialization | `Metron.Primitive.Types` |
+| `Bool`, tuples, lists and minted types, by hash | `Metron.Builtin` |
 | Type and shape representation | `Metron.Type.Base` |
+| Kinds, types, schemes and their rendering | `Metron.Type` |
 | Scheme matching and signature checks | `Metron.Type.Match` |
 | Surface type syntax and declaration kind checking | `Metron.Type.Syntax` |
+| Dimensions and Kennedy's unifier | `Metron.Dimension` |
+| Inference and elaboration to Typed Core | `Metron.Infer` |
 | Names and namespaces | `Metron.NameResolution` |
-| Binding-group compilation and storage entry | `Metron.Resolve` |
+| Binding-group compilation and storage entry | `Metron.Resolve`, `Metron.Resolve.Error` |
 | Run elaboration, then independent lint | `Metron.Check` |
+| Encoding pieces and the encoding of declared types | `Metron.Encode` |
+| The canonical encoding of terms, hashing, the storage encoding | `Metron.Hash` |
+| Terms, names, history and types by hash | `Metron.Codebase` |
+| Propagation to dependents and re-stamping | `Metron.Update` |
+| The store on disk: format, seeding, loading, merge | `Metron.Store` |
+| The standard library as source | `Metron.Prelude` |
 | Expression compilation, diagnostics, and evaluation | `Metron.Compile` |
+| The evaluator: values, closures, charts, mixtures, splits | `Metron.Eval` |
+| Which arguments a call certainly evaluates | `Metron.Strictness` |
+| Resource limits, the step and depth budget | `Metron.Limits` |
+| The scalar class a backend implements, its settings and built-ins | `Metron.Scalar` |
 | Rational approximations and matrix algorithms | `Metron.Numerical.Approx`, `Metron.Numerical.Linear` |
-| Affine uncertainty propagation | `Metron.Affine` |
+| Affine uncertainty propagation (the affine backend) | `Metron.Affine` |
+| IEEE doubles, the running bound, copies and draws (the double backend) | `Metron.Double` |
+| The copies in parallel batches | `Metron.Batch` |
+| Records of the copies at each branch point | `Metron.Remark` |
+| The branch table as text | `Metron.Branch` |
+| The check before running: built-ins a backend lacks | `Metron.Needs` |
 | Display-unit algebra and cancellation modes | `Metron.UnitHint` |
+| Printing values, budgets and Core as source | `Metron.Pretty` |
 | Source views and dependency-ordered export | `Metron.Source` |
 | Edit planning and reconciliation | `Metron.Edit` |
 | Shared session state, naming, and preferences | `Metron.Session.*` |
 | Command descriptions for help and completion | `Metron.Command` |
 | Input and command orchestration | `Metron.Driver` |
+| The REPL's pure parts: completion, colour, continuation lines | `Metron.Repl` |
 
 `Metron.Check` preserves inferred schemes and linted schemes separately. It
 does not merge inference with lint or make either checker call the other.

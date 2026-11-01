@@ -90,7 +90,7 @@ Beside the pipeline sits **the codebase** (`Metron.Codebase`): terms by hash, na
 
 ## 5. Module map
 
-Every module under `lib/Metron`, with its job and the design section that governs it. The executable's entry point is `src/Main.hs` (command-line flags, design §7.4). Another branch is reorganising some modules and test files. After it merges, check this table against `ls lib/Metron`.
+Every module under `lib/Metron`, with its job and the design section that governs it. The executable's entry point is `src/Main.hs` (command-line flags, design §7.4).
 
 | Module | Responsibility | Design |
 |---|---|---|
@@ -141,7 +141,7 @@ Every module under `lib/Metron`, with its job and the design section that govern
 | `Metron.UnitHint` | Display-unit algebra and cancellation | §3.2.12 |
 | `Metron.Pretty` | Printing values, budgets and Core as source | §3.2.10, §7.2 |
 
-The test suite is in `test/`. `test/Main.hs` lists the groups; each lives in a module by topic: `test/Lang/*.hs` (Core, syntax, types, charts, units, the codebase and the rest, with shared helpers and fixtures in `Lang.Common`), and `Astro`, `Backend`, `Limits`, `Precision`, `Traversal` and `Operators` beside them. Its groups follow the design's sections, and each design subsection names the groups that test it under **Tested by:**.
+The test suite is in `test/`. `test/Main.hs` lists the groups; each lives in a module by topic: `test/Lang/*.hs` (Core, syntax, types, charts, units, the codebase and the rest, with shared helpers and fixtures in `Lang.Common`), and `Astro`, `Backend`, `Limits`, `Precision`, `Traversal` and `Operators` beside them. `Gen` is the type-directed program generator of the property tests, and `test/Support/*.hs` holds test oracles: exact-rational series (`ExactApprox`), bc reference values (`References`) and a plain value renderer (`Render`). The suite runs the built `metron` too, which `cabal test` builds first (AGENTS.md). Its groups follow the design's sections, and each design subsection names the groups that test it under **Tested by:**.
 
 ## 6. Feature map
 

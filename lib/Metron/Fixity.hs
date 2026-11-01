@@ -30,8 +30,8 @@ data Assoc = L | R | N
 {- | A binary operator: the surface operator, the primitive it means, the
 tokens the parser takes for it (after the lexer has folded unicode
 spellings into ASCII ones), the symbol the printer writes in each
-spelling, its precedence level (higher binds tighter) and its
-associativity.
+spelling, its precedence level on the printer's scale (higher binds
+tighter; design §2.5 maps it to the parser's ladder) and its associativity.
 -}
 data Fixity = Fixity
   { op :: Op

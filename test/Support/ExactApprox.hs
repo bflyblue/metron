@@ -1,6 +1,6 @@
 {- | The elementary-function approximations as they were before working
-precision reached their series (design §3.2.8, "exact while small, as
-built"): every series summed in exact rationals. Slow but rigorous, so a
+precision reached their series (design §3.2.8, "Series run in fixed
+point"): every series summed in exact rationals. Slow but rigorous, so a
 test oracle: a fixed-point result and this one must lie within their two
 error bounds of each other.
 -}

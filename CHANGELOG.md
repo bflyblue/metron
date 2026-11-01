@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- Fixes from a design review; no hash moves and the store format stays 12.
+  - The ASCII subscript is the unicode one (design §2.8): `v_0` is the
+    identifier `v₀`, `x_12` is `x₁₂`, so after `let v₀ = 1`, `v_0`
+    resolves; names given to commands fold the same way.
+  - The printer eta-reduces a primitive used as a value (design §2.9):
+    `let h = vmap sqrt` views as `h = vmap sqrt`, not `\x -> vmap (\x' ->
+    sqrt x') x`, and reads back to the same hash. The desugarer's
+    eta-expansion marks its binders with a hint no identifier spells, so a
+    lambda the user wrote stays one. Hints are not hashed.
+  - The role machinery is gone (design §3.10, U9): `Role`, role variables,
+    the role kind, the generic quantity type and their encodings (type tag
+    0x2E, kind byte 7). Nothing written could make them, so no store held
+    them. Units keep their own internal type, `Unit δ`.
+  - `c :: Amount` suggests `Num d` or `Tensor s d`, types that are
+    accepted, instead of the refused `Quantity Amount d`.
+  - `:ls` lists a unit with the type of one of it, `unit kPa : Num
+    (kg/(m*s^2))`, which reads back, and a type query matches it so; it
+    printed `Unit (…)`, which is refused in a written type.
+  - Completion after `:set` offers every setting, from the one list `:set`
+    prints; `:help` and `:edit --file` are in the command list, so they
+    complete, and `:help` prints it.
+  - The seed default is 1 everywhere, from one definition
+    (`Scalar.settingsAt`); the printer's settings had 0.
+  - `:core` prints whole literals as integers: `slice 1 0 t`, not `slice
+    1.0 0.0 t`.
+  - Tests: compaction at 64 nudges; Kennedy's unifier on random equations
+    (a solution solves, a refusal has none); `metron --merge` as a
+    command; and a split in tail position under a 128 kB stack, which
+    fails when a case puts its own split together. The evaluation group is
+    named "evaluation", no longer "metron" like the root. 1019 tests.
+  - Docs: stale headings in comments, the store format in `Metron.Store`'s
+    haddock and core.md, core.md's module table and kinds, the mapping
+    from design §2.5's levels to `Metron.Fixity`'s, the overview's module
+    and test notes, and AGENTS.md on `cabal test`, which builds the
+    executable first.
 - Internal, no change to behaviour or hashes: one traversal for Core
   (core.md §7, "Walks over Core"). `traverseChildren` is the one place that
   knows each constructor's subterms and binders, and the walks over Core

@@ -29,7 +29,7 @@ nix develop path:$PWD -c cabal list-bin metron
 
 If direnv loaded the shell, `cabal` works directly. After a dependency change, direnv can hold a stale shell. Use `nix develop path:$PWD` explicitly in that case.
 
-`cabal test` does not rebuild the executable. Run `cabal build all` before you run the `metron` binary, or you test an old build.
+`cabal test` builds the `metron` executable before it runs the suite, because some tests run it (`build-tool-depends` in the cabal file). Before you run the binary by hand after a change, run `cabal build all` (or `cabal test`), or you run an old build.
 
 To run part of the suite, give tasty a pattern, for example `cabal test --test-options='-p "/affine/"'`. To run the QuickCheck properties at more cases, add `--quickcheck-tests 2000`.
 
