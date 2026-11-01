@@ -16,6 +16,7 @@ import Data.Text qualified as T (
   intercalate,
   isInfixOf,
   isPrefixOf,
+  isSuffixOf,
   takeWhile,
   unpack,
   unwords,
@@ -324,8 +325,8 @@ stdlibTests =
         runLinesP [":ls"] @?= Right libraryListing
         expecting (runLinesP [":ls si"]) $ \outs -> do
           length outs @?= librarySize "si"
-          ("unit km : Unit m" `elem` outs) @? "km"
-          ("unit newton : Unit (kg*m/s^2)" `elem` outs) @? "newton"
+          ("unit km : Num m" `elem` outs) @? "km"
+          ("unit newton : Num (kg*m/s^2)" `elem` outs) @? "newton"
           ("kilo : Num" `elem` outs) @? "kilo"
         expecting (runLinesP [":ls temperature"]) $ \outs ->
           ("chart degC : Chart degC" `elem` outs) @? "degC"
@@ -335,11 +336,23 @@ stdlibTests =
         expecting (runLinesP [":ls linalg"]) $ \outs ->
           length outs @?= librarySize "linalg" + 1 - 3
         expecting (runLinesP [":ls --all"]) $ \outs -> do
-          ("unit si.km : Unit m" `elem` outs) @? "full paths with --all"
+          ("unit si.km : Num m" `elem` outs) @? "full paths with --all"
           -- six records (Cov2, Pair, and astro's State, Body, Elements and
           -- Transfer) list two lines for one label, and their 21 fields none
           length outs @?= length stdlibNames + 6 - 21
         runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
+    , testCase
+        ":ls lists a unit with a type that reads back: one of it (design §3.10, U9)"
+        $ do
+          -- It listed `unit kPa : Unit (kg/(m*s^2))`, and `Unit` is refused
+          -- in a written type.
+          runLinesP [":ls si.kPa"] @?= Right ["unit kPa : Num (kg/(m*s^2))"]
+          runLinesP [multiline ["p :: Num (kg/(m*s^2))", "let p = 1 kPa"], "p"]
+            @?= Right ["1 kPa"]
+          -- A type query matches what is shown.
+          expecting (runLinesP [":ls --units si : Num m"]) $ \outs -> do
+            ("unit km : Num m" `elem` outs) @? show outs
+            all (" : Num m" `T.isSuffixOf`) outs @? show outs
     , testCase "a root name shadows the library's: c and physics.c" $ do
         runLinesP
           [":use physics", "let c = 3e8 m/s", "c", "physics.c", ":add", "c", "physics.c"]

@@ -3432,11 +3432,12 @@ written types:
 The type checker keeps a unit apart from an amount with a type of its own,
 `Unit δ` (U1), internal to elaboration: a unit is one number, and only unit
 syntax and a unit declaration have a unit's type. Arithmetic, equality and
-comparison take amounts. Applying a chart still constructs a point, and
-points do not enter ordinary arithmetic.
+comparison take amounts. `:ls` lists a unit with the type of one of it,
+`unit kPa : Num (kg/(m*s^2))`, which reads back (§7.3). Applying a chart
+still constructs a point, and points do not enter ordinary arithmetic.
 
 **Implemented in:** `Metron.Desugar` (`regroup`, `quantityOf`, `staticUnit`, `bareUnit`, `desugarFactor`, `unitAmount`, `desugarUnit`, `quantityHints`), `Metron.Infer` (`decide`, `readingsOf`, `rewriteReadings`, `settleReadings`), `Metron.Resolve` (`withReadings`), `Metron.Eval` (`runPrim`, `unitOp`, `asUnit`, `asChart`), `Metron.UnitHint` (`mkHintAs`), `Metron.Pretty` (`renderTermUnits`), `Metron.Type.Syntax` (`tyType`), `Metron.Type.Base` (`Type`), `Metron.Session.Preferences` (`preferenceHint`).
-**Tested by:** "units are syntax"; "internal units and public amount arithmetic"; "amount arithmetic"; "products" › "juxtaposition is for units and charts, by type"; "display units".
+**Tested by:** "units are syntax"; "internal units and public amount arithmetic"; "amount arithmetic"; "products" › "juxtaposition is for units and charts, by type"; "display units"; "standard library" › ":ls lists a unit with a type that reads back: one of it (design §3.10, U9)".
 
 #### Part F: spaces and frames
 
@@ -5339,7 +5340,8 @@ Inspection
                    pattern), matched by unification both ways. A signed name shows, and matches, its
                    signature (4.8). Types print headed by forall. --types lists a chart's minted frame
                    as `frame lvlh` and a space as `space GCRS = Vec 3 m`; minted axes go by their
-                   chart's name (3.9, 3.10)
+                   chart's name (3.9, 3.10). A unit shows, and matches, the type of one of it,
+                   `unit kPa : Num (kg/(m*s^2))`, so every type shown reads back (3.10, U9)
 :type expr         the inferred type scheme, headed by forall when it has variables (forall a. a -> a);
                    a signed name's signature, as its uses see it (4.8); the type of `it`, so a value
                    that is not a function has anonymous axes where nothing fixes them (3.9)

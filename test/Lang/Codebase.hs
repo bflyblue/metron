@@ -113,7 +113,7 @@ codebaseTests =
           ls ""
             @?= Right
               ( [ "area : Shape -> Num (m^2)"
-                , "unit furlong : Unit m"
+                , "unit furlong : Num m"
                 , "speed : Num (m/s)"
                 , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
                 , "Circle : Num m -> Shape"
@@ -123,12 +123,12 @@ codebaseTests =
               )
           ls "k*m"
             @?= Right
-              [ "unit kilogram : Unit kg"
-              , "unit klm : Unit (cd*rad^2)"
-              , "unit km : Unit m"
-              , "unit kohm : Unit (kg*m^2/(s^3*A^2))"
+              [ "unit kilogram : Num kg"
+              , "unit klm : Num (cd*rad^2)"
+              , "unit km : Num m"
+              , "unit kohm : Num (kg*m^2/(s^3*A^2))"
               ]
-          ls "--units furl" @?= Right ["unit furlong : Unit m"]
+          ls "--units furl" @?= Right ["unit furlong : Num m"]
           ls "--charts degC" @?= Right ["chart degC : Chart degC"]
           ls "--types"
             @?= Right
@@ -884,7 +884,7 @@ namespaceTests =
           )
           $ \outs ->
             lastN 4 outs
-              @?= [ "unit au : Unit m"
+              @?= [ "unit au : Num m"
                   , "mu : Num"
                   , "data Body = Body {mass :: Num kg}"
                   , "Body : Num kg -> Body"

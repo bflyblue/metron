@@ -255,10 +255,11 @@ import Metron.Syntax qualified as S (
 import Metron.TCore (lintClosed)
 import Metron.Type (
   Scheme (Forall),
-  Type (TData, TFun),
+  Type (TData, TFun, TUnit),
   TypeDef (constructors, params),
   dataConstructors,
   defaultAxes,
+  numD,
   renderForallIn,
   renderScheme,
   renderTypeDef,
@@ -1350,9 +1351,15 @@ listNames session args = do
         , kindOk n
         , nameOk n
         , -- A signed name shows, and matches, its signature (design §4.8).
-        Just sc <- [signatureOf n cb <|> (defaultAxes <$> typeOf r cb)]
+        Just written <- [signatureOf n cb <|> (defaultAxes <$> typeOf r cb)]
+        , let sc = oneOfUnit written
         , typeOk sc
         ]
+      -- A unit shows, and matches, the type of one of it (design §3.10,
+      -- U9): `unit kPa : Num (kg/(m*s^2))`, a type that can be written.
+      oneOfUnit = \case
+        Forall vs (TUnit d) -> Forall vs (numD d)
+        sc -> sc
       types =
         [ line
         | "--units" `notElem` flags

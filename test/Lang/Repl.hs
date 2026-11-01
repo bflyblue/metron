@@ -256,7 +256,7 @@ replTests =
           @?= [R.Note]
         map
           fst
-          (R.classify (Right ["area : Shape -> Num (m^2)", "unit furlong : Unit m"]))
+          (R.classify (Right ["area : Shape -> Num (m^2)", "unit furlong : Num m"]))
           @?= [R.Signature, R.Signature]
         map
           fst
@@ -415,8 +415,8 @@ replTests =
             <> " ("
             <> unit' "m"
             <> "^2)"
-        R.paint names R.Signature "unit furlong : Unit m"
-          @?= keyword' "unit" <> " furlong : " <> type' "Unit" <> " " <> unit' "m"
+        R.paint names R.Signature "unit furlong : Num m"
+          @?= keyword' "unit" <> " furlong : " <> type' "Num" <> " " <> unit' "m"
         -- A unit is cyan where a dimension goes: an argument, or in a product.
         R.paint names R.Signature "g : Num (kg·m/s²) -> Vec 3 (1/s)"
           @?= "g : "
