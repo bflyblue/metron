@@ -625,6 +625,8 @@ warningTests =
                   <> " then 1 else 2, if x > 0.9 then 1 else 2]"
               at k = runWith batchedConfig{cores = k} (defs <> [src])
           length (filter (VU.all (> m)) slices) @?= 3
+          -- and the batches do run, and merge
+          mergesAfter batchedConfig{cores = 4} defs src @?= Right True
           at 1
             @?= Right
               [ T.intercalate
@@ -726,6 +728,14 @@ copiesAfter cfg ls src = either (\e -> assertFailure (T.unpack e) >> pure VU.emp
       , Copies _ cs <- x.estimate ->
           Right cs
     _ -> Left ("no copies: " <> src)
+
+-- | Whether an input, after some lines, runs in batches that merge.
+mergesAfter :: Config -> [Text] -> Text -> Either Text Bool
+mergesAfter cfg ls src = do
+  s <- sessionAfter cfg ls
+  e <- parseExpr src
+  r <- evalBatchedAs s.config s.scope s.staging src e
+  Right (case r of Just (Right _) -> True; _ -> False)
 
 -- The settings of the copies --------------------------------------------------------------
 
