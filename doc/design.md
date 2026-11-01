@@ -5679,6 +5679,62 @@ memory on its main thread before the tests start (`Limits.measure`), since
 the runtime throws a heap overflow to the main thread and tasty runs a
 test on another.
 
+### 8.2 Backends (design; decided by the owner, 2026-11-01)
+
+One Typed Core, several evaluators of its scalars. A **backend** is the
+scalar arithmetic and the built-ins that belong to it; everything else is
+shared: tensors, units and dimensions (checked statically anyway), charts,
+data types, the store and hashes. A stored definition names no backend, and
+the same term runs under any backend that has the built-ins it uses.
+
+- **`:backend affine`** (the default) is the evaluator of §3.2: rationals
+  with affine error forms, rigorous bounds and σ. Its own built-ins are the
+  ones that read or make uncertainty: `±`, `±σ`, `noise`, `gauss`, `mid`,
+  `sd`, `bound`, and the commands `:budget`, `:covariance` and `:exact`.
+- **`:backend double`** evaluates scalars in Haskell `Double`, in the
+  operation order of the formula as it would be written in Haskell, so a
+  result here is the result a ported formula gives. A literal is parsed as
+  an exact rational, as always, and rounded to the nearest double at the
+  boundary. It follows IEEE 754 (decided by the owner, since the point is
+  to run as Haskell does): `1/0` is `Infinity`, `sqrt (-1)` is `NaN`, and
+  overflow is infinite, not an error. Printing says where the first NaN or
+  infinity appeared. It carries a running error bound (Wilkinson and
+  Higham's running error analysis: one extra double per value, bounding
+  the accumulated rounding under the standard model of floating point,
+  with a per-function figure for `sin`, `exp` and the other library
+  functions, which are not correctly rounded). Its own built-ins read that
+  and the floating-point structure: `roundingBound`, `ulps`, `eps`,
+  `nextUp`, `fma`, `isNaN`, `isInfinite`. `precision` does not apply.
+- **The command:** `:backend` names the current backend, `:backend
+  double` switches, and `--backend double` chooses one on the command
+  line, as `--set` does.
+- **Built-ins a backend lacks are refused before running.** When a
+  definition is entered, the walk of its Core that already finds its
+  dependencies also collects the backend-specific primitives it calls
+  directly. What a definition needs is its own set and its dependencies':
+  `needs(h) = direct(h) ∪ ⋃ needs(d)`, one union for a recursive group.
+  A hash names an immutable term, so `needs(h)` is memoised by hash forever
+  and never invalidated: `:update` makes new hashes. An input's check walks
+  its own Core and looks up `needs` of the hashes it refers to, so the
+  library is never walked again. The cache holds primitive names, not
+  backends, so a new backend, or a primitive added to one, changes nothing
+  cached. On failure only, a search of the dependency graph finds the path
+  for the message: "`orbitError` uses `sd` (through `budgetOf`), which the
+  double backend does not have". The check is sound, since every function
+  value, closure and record is built from Core in the closure, and
+  conservative, as a type check is: `if false then sd x else 0` is refused
+  under `double`.
+- **Building it.** First the evaluator becomes generic over its scalar
+  domain, a refactor with no visible change, after the precision audit
+  (§3.2.8), which changes the same code. Then the `double` backend and the
+  check.
+- **Open: `:trace`.** The porting tool would run an expression under
+  `double`, shadowed by `affine` (the method of Herbgrind), and report each
+  operation's local error in ulps and its amplification, naming the few
+  operations, by source span, that lose the most. How the shadow follows a
+  `double` run that has gone to `NaN` or infinity, or taken the other
+  branch of an `if` that the exact value would not take, is undecided.
+
 ## 9. Module layout and libraries
 
 Library code in `lib/`, executable in `src/`, as `doc/style.md` requires.
