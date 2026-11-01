@@ -129,6 +129,7 @@ test-suite metron-test
     , Support.ExactApprox
     , Support.References
     , Support.Render
+    , Traversal
   build-depends:
     , base ^>=4.21.0.0
     , bytestring

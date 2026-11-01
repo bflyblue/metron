@@ -20,6 +20,7 @@ module Metron.Update (
   Restamped (..),
   restamp,
   restampTerm,
+  restampTermNew,
   retypeScheme,
   conTypes,
 ) where
@@ -83,6 +84,7 @@ import Metron.Core (
   Label (Axes, FrameLabel, Owner, SpaceLabel),
   Term (..),
   conTypes,
+  mapChildren,
   refsWithIndex,
   refsWritten,
   rewriteRefs,
@@ -526,3 +528,14 @@ restampTerm lab con = go
     Pack ts -> Pack (map go ts)
     Proj t i -> Proj (go t) i
     Cycle hs bs -> Cycle hs (vecMap go bs)
+
+restampTermNew :: (Label -> Label) -> (ConRef -> ConRef) -> Term n -> Term n
+restampTermNew lab con = go
+ where
+  go :: Term m -> Term m
+  go t = case mapChildren go t of
+    Con c as -> Con (con c) as
+    Case s alts -> Case s (map (\(Alt c hs b) -> Alt (con c) hs b) alts)
+    Noise k l n -> Noise k (lab l) n
+    Uncertain k l x e -> Uncertain k (lab l) x e
+    t' -> t'

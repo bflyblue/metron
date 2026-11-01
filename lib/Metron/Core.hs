@@ -54,12 +54,35 @@ module Metron.Core (
   refsWritten,
   inlineRef,
   primArity,
+
+  -- * Traversal
+  traverseChildren,
+  mapChildren,
+  foldChildren,
+  foldTerm,
+  Child (..),
+  children,
+
+  -- * Walks on the traversal, checked against the hand-written ones
+  conTypesNew,
+  directUsesNew,
+  rewriteRefsNew,
+  rewriteRefsWrittenNew,
+  refsWrittenNew,
+  inlineRefNew,
+  renameTerm,
+  renameTermNew,
+  weakenByNew,
+  closedIn,
+  closedInNew,
   lengthLimit,
 ) where
 
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS (unpack)
+import Data.Functor.Const (Const (..))
+import Data.Functor.Identity (Identity (..))
 import Data.Kind (Type)
 import Data.Set (Set)
 import Data.Set qualified as Set (empty, map, singleton)
@@ -320,6 +343,68 @@ alphaEq = go
   goAlt :: Alt a -> Alt b -> Bool
   goAlt (Alt c hs b) (Alt c' hs' b') = c == c' && vecLength hs == vecLength hs' && go b b'
 
+-- Traversal -----------------------------------------------------------------
+
+{- | One layer of a term: the variable hook at a 'Var', and the child hook
+on each immediate subterm, left to right, with the binders it sits under
+(innermost first: a lambda's or a let's one hint, an alternative's fields,
+a cycle's members). Everything else is rebuilt as it is. This is the one
+place that knows where each constructor keeps its subterms and what each
+binds; every walk over Core is built on it, so a new constructor is added
+here and in the walks that give it a meaning of its own (core.md §7).
+-}
+traverseChildren ::
+  forall f n m.
+  (Applicative f) =>
+  (Fin n -> f (Term m)) ->
+  (forall k. Vec k Hint -> Term (Plus k n) -> f (Term (Plus k m))) ->
+  Term n ->
+  f (Term m)
+traverseChildren var child = \case
+  Var i -> var i
+  Ref h i hint -> pure (Ref h i hint)
+  PrimApp p as -> PrimApp p <$> traverse plain as
+  Lit l -> pure (Lit l)
+  Lam h b -> Lam h <$> child (VCons h VNil) b
+  App f a -> App <$> plain f <*> plain a
+  Let h e b -> Let h <$> plain e <*> child (VCons h VNil) b
+  Con c as -> Con c <$> traverse plain as
+  Case s alts ->
+    Case <$> plain s <*> traverse (\(Alt c hs b) -> Alt c hs <$> child hs b) alts
+  Pow t n -> (`Pow` n) <$> plain t
+  Noise k l n -> pure (Noise k l n)
+  Uncertain k l x e -> Uncertain k l <$> plain x <*> plain e
+  Pack ts -> Pack <$> traverse plain ts
+  Proj t i -> (`Proj` i) <$> plain t
+  Cycle hs bs -> Cycle hs <$> vecTraverse (child hs) bs
+ where
+  plain :: Term n -> f (Term m)
+  plain = child VNil
+{-# INLINE traverseChildren #-}
+
+-- | Rebuild a term with a function applied to each immediate subterm.
+mapChildren :: (forall m. Term m -> Term m) -> Term n -> Term n
+mapChildren f = runIdentity . traverseChildren (Identity . Var) (\_ -> Identity . f)
+
+-- | Combine what a function makes of each immediate subterm.
+foldChildren :: (Monoid r) => (forall m. Term m -> r) -> Term n -> r
+foldChildren f = getConst . traverseChildren @_ @_ @Z (\_ -> Const mempty) (\_ -> Const . f)
+
+{- | Combine what a function makes of every node of a term, the term itself
+first: a fold in which each node says only what it contributes itself.
+-}
+foldTerm :: (Monoid r) => (forall m. Term m -> r) -> Term n -> r
+foldTerm here t = here t <> foldChildren (foldTerm here) t
+
+-- | An immediate subterm with the binders it sits under, innermost first.
+data Child n = forall k. Child (Vec k Hint) (Term (Plus k n))
+
+-- | The immediate subterms of a term, in order ('traverseChildren').
+children :: forall n. Term n -> [Child n]
+children =
+  getConst
+    . traverseChildren @_ @n @n (\_ -> Const []) (\hs b -> Const [Child hs b])
+
 -- | The hashes a term refers to.
 refs :: Term n -> Set Hash
 refs = Set.map fst . refsWithIndex
@@ -564,3 +649,65 @@ rewriteRefsWritten f = go
     Pack ts -> Pack (map go ts)
     Proj t i -> Proj (go t) i
     Cycle hs bs -> Cycle hs (vecMap go bs)
+
+-- The walks on 'traverseChildren', checked against the hand-written ones -----
+
+conTypesNew :: Term n -> Set Hash
+conTypesNew = foldTerm $ \case
+  Con (UserCon h _) _ -> Set.singleton h
+  Case _ alts -> foldMap (\(Alt (UserCon h _) _ _) -> Set.singleton h) alts
+  _ -> Set.empty
+
+directUsesNew :: (Text -> Bool) -> Term n -> (Set (Hash, Maybe Int), Set Text)
+directUsesNew picked = foldTerm $ \case
+  Ref h i _ -> (Set.singleton (h, i), Set.empty)
+  PrimApp p _ -> named p
+  Noise k _ _ -> named (case k of Bound -> "noise"; Stat -> "gauss")
+  Uncertain k _ _ _ -> named (case k of Bound -> "±"; Stat -> "±σ")
+  _ -> mempty
+ where
+  named p = (Set.empty, if picked p then Set.singleton p else Set.empty)
+
+rewriteRefsNew ::
+  (Hash -> Maybe Int -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
+rewriteRefsNew f = rewriteRefsWrittenNew (\h i _ -> f h i)
+
+renameTermNew :: (Fin n -> Fin m) -> Term n -> Term m
+renameTermNew f =
+  runIdentity
+    . traverseChildren
+      (Identity . Var . f)
+      (\hs -> Identity . renameTermNew (liftFinBy hs f))
+
+weakenByNew :: Vec k a -> Term n -> Term (Plus k n)
+weakenByNew ks = renameTermNew (shiftFin ks)
+ where
+  shiftFin :: Vec j a -> Fin n -> Fin (Plus j n)
+  shiftFin js i = case js of
+    VNil -> i
+    VCons _ rest -> FS (shiftFin rest i)
+
+inlineRefNew :: Hash -> Term Z -> Term n -> Term n
+inlineRefNew target replacement = go
+ where
+  go :: Term m -> Term m
+  go = \case
+    Ref h Nothing _ | h == target -> closedInNew replacement
+    t -> mapChildren go t
+
+closedInNew :: Term Z -> Term n
+closedInNew = renameTermNew (\case {})
+
+refsWrittenNew :: Term n -> Set (Hash, Maybe Int, Text)
+refsWrittenNew = foldTerm $ \case
+  Ref h i (Hint w) -> Set.singleton (h, i, w)
+  _ -> Set.empty
+
+rewriteRefsWrittenNew ::
+  (Hash -> Maybe Int -> Text -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
+rewriteRefsWrittenNew f = go
+ where
+  go :: Term m -> Term m
+  go = \case
+    Ref h i hint@(Hint w) -> maybe (Ref h i hint) (\(h', i') -> Ref h' i' hint) (f h i w)
+    t -> mapChildren go t

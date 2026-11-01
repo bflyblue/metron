@@ -26,6 +26,8 @@ module Metron.Infer (
   readingsOf,
   rewriteReadings,
   hasReadingMarkers,
+  rewriteReadingsNew,
+  hasReadingMarkersNew,
   Annotations (..),
   noAnnotations,
   matchesQuery,
@@ -51,6 +53,7 @@ import Data.Map.Strict qualified as Map (
   lookup,
  )
 import Data.Maybe (fromMaybe)
+import Data.Monoid (Any (..))
 import Data.Ord (Down (..), comparing)
 import Data.Ratio (numerator)
 import Data.Text (Text)
@@ -82,7 +85,9 @@ import Metron.Core (
   NudgeKind (Stat),
   Term (..),
   Vec (..),
+  foldTerm,
   lengthLimit,
+  mapChildren,
   showHash,
   vecAppend,
   vecLength,
@@ -1826,6 +1831,29 @@ hasReadingMarkers = \case
   Pack ts -> any hasReadingMarkers ts
   Proj t _ -> hasReadingMarkers t
   Cycle _ bs -> any hasReadingMarkers (vecToList bs)
+
+rewriteReadingsNew :: Map.Map Text Text -> Term n -> Term n
+rewriteReadingsNew chosen = go
+ where
+  go :: Term m -> Term m
+  go = \case
+    PrimApp p [a, b]
+      | Just prim <- Map.lookup p chosen ->
+          if prim == "pointOn"
+            then PrimApp prim [go b, go a]
+            else PrimApp prim [go a, go b]
+    PrimApp p as
+      | Just prim <- Map.lookup p chosen -> PrimApp prim (map go as)
+    t -> mapChildren go t
+
+hasReadingMarkersNew :: Term n -> Bool
+hasReadingMarkersNew =
+  getAny
+    . foldTerm
+      ( \case
+          PrimApp p _ -> Any (isQuantityMarker p || isToMarker p || isFromMarker p)
+          _ -> mempty
+      )
 
 -- | The name a quantity's atom was written as, for a message.
 writtenName :: Term n -> Maybe Text

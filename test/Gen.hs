@@ -29,16 +29,41 @@ module Gen (
   genProgram,
   instanceOf,
   exprDepth,
+
+  -- * Core terms
+  Depth (..),
+  SomeTerm (..),
+  coreHashes,
+  genCoreTerm,
+  genSomeTerm,
+  scopeNames,
 ) where
 
 import Control.Monad (foldM)
 import Data.Bifunctor (second)
+import Data.ByteString qualified as BS
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import Metron.Builtin
-import Metron.Core (NudgeKind (..))
+import Metron.Core (
+  Alt (..),
+  ConRef (..),
+  Fin (..),
+  Hash (..),
+  Hint,
+  Label (..),
+  Lit (..),
+  Nat (..),
+  NudgeKind (..),
+  Plus,
+  SomeVec (..),
+  Term (..),
+  Vec (..),
+  vecFromList,
+  vecTraverse,
+ )
 import Metron.Dimension
 import Metron.Syntax qualified as S
 import Metron.Type
@@ -959,3 +984,134 @@ instanceOf (Forall vs pat) target = case matchType pat target (Map.empty, []) of
   subst m a k = case a of
     DVar v | Just (ADim d) <- Map.lookup v m -> dimPow k d
     _ -> dimFromAtoms [(a, k)]
+
+-- Core terms ------------------------------------------------------------------------
+
+{- | The number of variables in scope, as a singleton, so that a generator
+can build a well-scoped term in any scope.
+-}
+data Depth (n :: Nat) where
+  DZ :: Depth Z
+  DS :: Depth n -> Depth (S n)
+
+data SomeDepth = forall n. SomeDepth (Depth n)
+
+-- | A term in a scope of some size, with that size.
+data SomeTerm = forall n. SomeTerm (Depth n) (Term n)
+
+instance Show SomeTerm where
+  show (SomeTerm _ t) = show t
+
+depthOf :: Int -> SomeDepth
+depthOf k
+  | k <= 0 = SomeDepth DZ
+  | otherwise = case depthOf (k - 1) of SomeDepth d -> SomeDepth (DS d)
+
+depthPlus :: Vec k a -> Depth n -> Depth (Plus k n)
+depthPlus ks d = case ks of
+  VNil -> d
+  VCons _ rest -> DS (depthPlus rest d)
+
+-- | Every variable in scope.
+fins :: Depth n -> [Fin n]
+fins = \case
+  DZ -> []
+  DS d -> FZ : map FS (fins d)
+
+-- | A name for each variable in scope, repeating so that printing primes some.
+scopeNames :: Depth n -> Vec n Text
+scopeNames = \case
+  DZ -> VNil
+  DS d -> VCons "x" (scopeNames d)
+
+-- | Three hashes, so that references, rewrites and constructors collide.
+coreHashes :: [Hash]
+coreHashes = [Hash (BS.pack [i]) | i <- [0, 1, 2]]
+
+{- | Primitive names, the reading markers among them, at any arity: the
+traversal does not care whether a term would check.
+-}
+corePrims :: [Text]
+corePrims = ["add", "neg", "scale", "pointOn", "§quantity:0", "§to:1", "§from:0", "eq"]
+
+genHint :: Gen Hint
+genHint = elements ["x", "y", "", "§s0", "_"]
+
+genLabel :: Gen Label
+genLabel =
+  oneof
+    [ Owner <$> word
+    , Tag <$> word
+    , Axes <$> word
+    , SpaceLabel <$> word
+    , FrameLabel <$> word <*> arbitrary
+    ]
+ where
+  word = elements ["a", "b"]
+
+genConRef :: Gen ConRef
+genConRef = UserCon <$> elements coreHashes <*> choose (0, 2)
+
+genCoreRef :: Gen (Term n)
+genCoreRef =
+  Ref
+    <$> elements coreHashes
+    <*> elements [Nothing, Just 0, Just 1, Just 2]
+    <*> elements ["a", "b", "metre", ""]
+
+{- | A well-scoped Core term of any shape (core.md §9): every constructor,
+binders of every kind, references with and without cycle indices. Not
+typed; for the walks that do not look at types.
+-}
+genCoreTerm :: forall n. Depth n -> Int -> Gen (Term n)
+genCoreTerm d size
+  | size <= 1 = atomic
+  | otherwise = frequency [(1, atomic), (6, node)]
+ where
+  smaller = size * 2 `div` 3
+  sub = genCoreTerm d smaller
+  under :: Vec k Hint -> Gen (Term (Plus k n))
+  under hs = genCoreTerm (depthPlus hs d) smaller
+  some g = choose (0, 3) >>= (`vectorOf` g)
+  kind = elements [Bound, Stat]
+  atomic =
+    oneof
+      $ [Var <$> elements (fins d) | not (null (fins d))]
+        ++ [ genCoreRef
+           , (\r -> Lit (LTensor ([], [r]))) . fromInteger <$> choose (-3, 3)
+           , pure (Lit (LTensor ([2], [1, 2])))
+           , Noise <$> kind <*> genLabel <*> choose (1, 3)
+           , (`PrimApp` []) <$> elements corePrims
+           ]
+  node =
+    oneof
+      [ PrimApp <$> elements corePrims <*> some sub
+      , genHint >>= \h -> Lam h <$> under (VCons h VNil)
+      , App <$> sub <*> sub
+      , genHint >>= \h -> Let h <$> sub <*> under (VCons h VNil)
+      , Con <$> genConRef <*> some sub
+      , Case <$> sub <*> some alt
+      , Pow <$> sub <*> choose (-3, 3)
+      , Uncertain <$> kind <*> genLabel <*> sub <*> sub
+      , Pack <$> some sub
+      , Proj <$> sub <*> choose (0, 2)
+      , cycleOf
+      ]
+  alt = do
+    c <- genConRef
+    k <- choose (0, 2)
+    hs <- vectorOf k genHint
+    case vecFromList hs of
+      SomeVec v -> Alt c v <$> under v
+  cycleOf = do
+    k <- choose (1, 3)
+    hs <- vectorOf k genHint
+    case vecFromList hs of
+      SomeVec v -> Cycle v <$> vecTraverse (const (under v)) v
+
+-- | A Core term in a scope of zero to three variables.
+genSomeTerm :: Gen SomeTerm
+genSomeTerm = do
+  k <- choose (0, 3)
+  case depthOf k of
+    SomeDepth d -> SomeTerm d <$> sized (genCoreTerm d . min 40)

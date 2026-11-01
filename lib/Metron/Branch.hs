@@ -7,6 +7,9 @@ for each alternative counting the copies whose own scrutinee selects it.
 -}
 module Metron.Branch (
   tableLines,
+  Inside (..),
+  child,
+  childNew,
 ) where
 
 import Data.IntMap.Strict qualified as IntMap
@@ -16,11 +19,13 @@ import Metron.Builtin (pattern FalseC, pattern TrueC)
 import Metron.Codebase (Codebase, lookupTerm)
 import Metron.Core (
   Alt (..),
+  Child (..),
   Hash,
   Hint (..),
   Nat (Z),
   Term (..),
   Vec (..),
+  children,
   vecAppend,
   vecIndex,
   vecMap,
@@ -186,3 +191,10 @@ branchAt spelling namer named (Inside ctx t) = case t of
 
 tshow :: (Show a) => a -> Text
 tshow = T.pack . show
+
+childNew :: Inside -> Int -> Maybe Inside
+childNew (Inside ctx t) i = case drop i (children t) of
+  Child hs b : _ | i >= 0 -> Just (Inside (vecAppend (vecMap name hs) ctx) b)
+  _ -> Nothing
+ where
+  name (Hint h) = fresh h ctx

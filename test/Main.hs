@@ -92,6 +92,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.Options (IsOption (parseValue))
 import Test.Tasty.QuickCheck
+import Traversal (blankHints, traversalTests)
 
 {- | Every test has a five-minute limit as a backstop to 'caseLimit', which
 times each generated case but not the generator itself: the whole suite
@@ -106,6 +107,7 @@ main = do
     $ testGroup
       "metron"
       [ coreTests
+      , traversalTests
       , evalTests
       , tcoreTests
       , lexerTests
@@ -3053,28 +3055,6 @@ genExpr scope size
         , S.PlusMinus Bound
         ]
     mk <$> (S.BinOp op <$> sub <*> sub)
-
--- | Every hint replaced by a fixed one: alpha-equivalent to the input.
-blankHints :: Term n -> Term n
-blankHints = go
- where
-  go :: Term m -> Term m
-  go = \case
-    Var i -> Var i
-    Ref hh i hint -> Ref hh i hint
-    PrimApp p as -> PrimApp p (map go as)
-    Lit l -> Lit l
-    Lam _ b -> Lam "q" (go b)
-    App f a -> App (go f) (go a)
-    Let _ e b -> Let "q" (go e) (go b)
-    Con c as -> Con c (map go as)
-    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
-    Pow t n -> Pow (go t) n
-    Noise k l n -> Noise k l n
-    Uncertain k l x e -> Uncertain k l (go x) (go e)
-    Pack ts -> Pack (map go ts)
-    Proj t i -> Proj (go t) i
-    Cycle hs bs -> Cycle (vecMap (const "q") hs) (vecMap go bs)
 
 {- | Where property-test programs come from, and what to do with one that
 does not typecheck: the blind generator's are discarded, the typed
