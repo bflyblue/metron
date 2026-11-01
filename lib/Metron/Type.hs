@@ -68,106 +68,112 @@ module Metron.Type (
   renderArg,
 ) where
 
-import Control.Applicative ( (<|>) )
-import Data.List ( nubBy )
-import Data.Map.Strict ( Map )
-import Data.Maybe ( fromMaybe )
-import Data.Text ( Text )
-import Metron.Builtin
-    ( pattern BoolT,
-      pattern ListT,
-      pattern TupleT,
-      builtinConName,
-      builtinDefs,
-      frameDefMoving,
-      isAxesDef )
-import Metron.Core ( ConRef(..), Hash(..), Label(..), showHash )
-import Metron.Dimension
-    ( arrowText,
-      baseSymbol,
-      dimAtoms,
-      dimOne,
-      dimVars,
-      isDimOne,
-      renderDimArgIn,
-      DimAtom(Base, DVar),
-      Spelling(Ascii) )
-import Metron.Type.Base
-    ( appendShape,
-      applyArg,
-      applyAxis,
-      applyDim,
-      applyFrame,
-      applyLen,
-      applyRole,
-      applyScheme,
-      applyShape,
-      applyType,
-      closedLens,
-      emptySubst,
-      freeVars,
-      numD,
-      numT,
-      overType,
-      rankLen,
-      selfType,
-      shapeOfDims,
-      spaceLens,
-      structuralLabel,
-      substOnce,
-      varArg,
-      vecT,
-      Arg(..),
-      Axis(..),
-      Frame(..),
-      FrameSlot(..),
-      Kind(..),
-      Len(..),
-      Role(..),
-      Scheme(..),
-      Shape(..),
-      Space(..),
-      SpaceSlot(..),
-      Subst,
-      Type(..),
-      TypeDef(..),
-      TypeLookup(..),
-      VarId,
-      typeRefs )
-import Data.Map.Strict qualified as Map
-    ( insertWith,
-      elems,
-      empty,
-      keysSet,
-      lookup,
-      member,
-      notMember,
-      restrictKeys,
-      toList,
-      union,
-      withoutKeys,
-      findWithDefault,
-      fromList,
-      insert,
-      mapMaybe )
-import Data.Set qualified as Set
-    ( Set,
-      member,
-      notMember,
-      union,
-      empty,
-      fromList,
-      insert,
-      singleton,
-      size )
-import Data.Text qualified as T
-    ( intercalate,
-      isInfixOf,
-      isPrefixOf,
-      null,
-      unwords,
-      pack,
-      singleton )
+import Control.Applicative ((<|>))
+import Data.List (nubBy)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (
+  elems,
+  empty,
+  findWithDefault,
+  fromList,
+  insert,
+  insertWith,
+  keysSet,
+  lookup,
+  mapMaybe,
+  member,
+  notMember,
+  restrictKeys,
+  toList,
+  union,
+  withoutKeys,
+ )
+import Data.Maybe (fromMaybe)
+import Data.Set qualified as Set (
+  Set,
+  empty,
+  fromList,
+  insert,
+  member,
+  notMember,
+  singleton,
+  size,
+  union,
+ )
+import Data.Text (Text)
+import Data.Text qualified as T (
+  intercalate,
+  isInfixOf,
+  isPrefixOf,
+  null,
+  pack,
+  singleton,
+  unwords,
+ )
+import Metron.Builtin (
+  builtinConName,
+  builtinDefs,
+  frameDefMoving,
+  isAxesDef,
+  pattern BoolT,
+  pattern ListT,
+  pattern TupleT,
+ )
+import Metron.Core (ConRef (..), Hash (..), Label (..), showHash)
+import Metron.Dimension (
+  DimAtom (Base, DVar),
+  Spelling (Ascii),
+  arrowText,
+  baseSymbol,
+  dimAtoms,
+  dimOne,
+  dimVars,
+  isDimOne,
+  renderDimArgIn,
+ )
+import Metron.Type.Base (
+  Arg (..),
+  Axis (..),
+  Frame (..),
+  FrameSlot (..),
+  Kind (..),
+  Len (..),
+  Role (..),
+  Scheme (..),
+  Shape (..),
+  Space (..),
+  SpaceSlot (..),
+  Subst,
+  Type (..),
+  TypeDef (..),
+  TypeLookup (..),
+  VarId,
+  appendShape,
+  applyArg,
+  applyAxis,
+  applyDim,
+  applyFrame,
+  applyLen,
+  applyRole,
+  applyScheme,
+  applyShape,
+  applyType,
+  closedLens,
+  emptySubst,
+  freeVars,
+  numD,
+  numT,
+  overType,
+  rankLen,
+  selfType,
+  shapeOfDims,
+  spaceLens,
+  structuralLabel,
+  substOnce,
+  typeRefs,
+  varArg,
+  vecT,
+ )
 
 -- Rendering ---------------------------------------------------------------------
 

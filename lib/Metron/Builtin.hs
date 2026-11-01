@@ -69,26 +69,31 @@ module Metron.Builtin (
   builtinConName,
 ) where
 
-import Data.Map.Strict ( Map )
-import Data.Text ( Text )
-import Metron.Core ( ConRef(..), Hash, Label(..) )
-import Metron.Dimension ( Dim )
-import Metron.Encode ( hashTypeDef )
-import Metron.Type.Base
-    ( selfType,
-      structuralLabel,
-      Arg(AType),
-      Axis(AAnon, ANamed),
-      Kind(KType),
-      Len(LLit),
-      Shape(SCons, SNil),
-      Space(Space),
-      SpaceSlot(SpNamed),
-      Type(TData, TVar, TTensor),
-      TypeDef(constructors, TypeDef, label) )
-import Data.Map.Strict qualified as Map
-    ( lookup, toList, findWithDefault, fromList )
-import Data.Text qualified as T ( pack )
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (
+  findWithDefault,
+  fromList,
+  lookup,
+  toList,
+ )
+import Data.Text (Text)
+import Data.Text qualified as T (pack)
+import Metron.Core (ConRef (..), Hash, Label (..))
+import Metron.Dimension (Dim)
+import Metron.Encode (hashTypeDef)
+import Metron.Type.Base (
+  Arg (AType),
+  Axis (AAnon, ANamed),
+  Kind (KType),
+  Len (LLit),
+  Shape (SCons, SNil),
+  Space (Space),
+  SpaceSlot (SpNamed),
+  Type (TData, TTensor, TVar),
+  TypeDef (TypeDef, constructors, label),
+  selfType,
+  structuralLabel,
+ )
 
 -- The declarations ----------------------------------------------------------------
 

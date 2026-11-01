@@ -15,97 +15,113 @@ module Metron.Source (
   exportLabels,
 ) where
 
-import Data.Char ( isDigit )
-import Data.Graph ( flattenSCC, stronglyConnComp )
-import Data.List ( sortOn )
-import Data.Maybe ( fromMaybe, isJust, listToMaybe, mapMaybe )
-import Data.Text ( Text )
-import Metron.Builtin ( frameDefMoving, isAxesDef )
-import Metron.Codebase
-    ( conNameOf,
-      fieldNamesOf,
-      historicalNamesOf,
-      isChartName,
-      isUnitName,
-      lookupName,
-      lookupTerm,
-      lookupTypeDef,
-      lookupTypeName,
-      lookupTyped,
-      namesOf,
-      showReference,
-      signatureOf,
-      typeNameOf,
-      unitNameFor,
-      Codebase(uses, typeDefs, names, typeNames),
-      Reference(..) )
-import Metron.Core
-    ( refs,
-      refsWithIndex,
-      showHash,
-      vecAppend,
-      vecIndex,
-      vecMapIndexed,
-      Hint(Hint),
-      Term(Cycle),
-      Vec(VNil) )
-import Metron.Dimension ( Spelling(..) )
-import Metron.Eval ( Config(limits, nonlinear, samples, unicode) )
-import Metron.Limits ( Limits(outcomes) )
-import Metron.Prelude ( isLibraryPath )
-import Metron.Pretty
-    ( renderParamsUnits,
-      renderTermUnits,
-      Printer(..),
-      RefNamer,
-      UnitRef )
-import Metron.NameResolution ( shortestName, shortestNameOf, LabelKind(TypeLabel) )
-import Metron.Session.Names ( namespaceArg )
-import Metron.Session.Types ( Session(scratch, codebase) )
-import Metron.TCore ( renderTTerm, TTerm(TCycle) )
-import Metron.Type ( TypeDef(constructors), renderForallIn, renderTypeDef, typeRefs )
-import Metron.Update ( Propagation(skipped, upgraded) )
-import Data.Map.Strict qualified as Map
-    ( null,
-      keys,
-      keysSet,
-      lookup,
-      toList,
-      findWithDefault,
-      fromList,
-      fromListWith,
-      map )
-import Metron.Syntax qualified as S
-    ( lastSegment,
-      renderUse,
-      rootScope,
-      Name(text),
-      Scope(namespace, Scope) )
-import Data.Set qualified as Set
-    ( member,
-      delete,
-      empty,
-      findMin,
-      fromList,
-      insert,
-      isSubsetOf,
-      null,
-      size,
-      toList )
-import Data.Text qualified as T
-    ( any,
-      breakOn,
-      drop,
-      intercalate,
-      isPrefixOf,
-      null,
-      replicate,
-      span,
-      splitOn,
-      uncons,
-      unwords,
-      pack,
-      unpack )
+import Data.Char (isDigit)
+import Data.Graph (flattenSCC, stronglyConnComp)
+import Data.List (sortOn)
+import Data.Map.Strict qualified as Map (
+  findWithDefault,
+  fromList,
+  fromListWith,
+  keys,
+  keysSet,
+  lookup,
+  map,
+  null,
+  toList,
+ )
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Set qualified as Set (
+  delete,
+  empty,
+  findMin,
+  fromList,
+  insert,
+  isSubsetOf,
+  member,
+  null,
+  size,
+  toList,
+ )
+import Data.Text (Text)
+import Data.Text qualified as T (
+  any,
+  breakOn,
+  drop,
+  intercalate,
+  isPrefixOf,
+  null,
+  pack,
+  replicate,
+  span,
+  splitOn,
+  uncons,
+  unpack,
+  unwords,
+ )
+import Metron.Builtin (frameDefMoving, isAxesDef)
+import Metron.Codebase (
+  Codebase (names, typeDefs, typeNames, uses),
+  Reference (..),
+  conNameOf,
+  fieldNamesOf,
+  historicalNamesOf,
+  isChartName,
+  isUnitName,
+  lookupName,
+  lookupTerm,
+  lookupTypeDef,
+  lookupTypeName,
+  lookupTyped,
+  namesOf,
+  showReference,
+  signatureOf,
+  typeNameOf,
+  unitNameFor,
+ )
+import Metron.Core (
+  Hint (Hint),
+  Term (Cycle),
+  Vec (VNil),
+  refs,
+  refsWithIndex,
+  showHash,
+  vecAppend,
+  vecIndex,
+  vecMapIndexed,
+ )
+import Metron.Dimension (Spelling (..))
+import Metron.Eval (Config (limits, nonlinear, samples, unicode))
+import Metron.Limits (Limits (outcomes))
+import Metron.NameResolution (
+  LabelKind (TypeLabel),
+  shortestName,
+  shortestNameOf,
+ )
+import Metron.Prelude (isLibraryPath)
+import Metron.Pretty (
+  Printer (..),
+  RefNamer,
+  UnitRef,
+  renderParamsUnits,
+  renderTermUnits,
+ )
+import Metron.Session.Names (namespaceArg)
+import Metron.Session.Types (Session (codebase, scratch))
+import Metron.Syntax qualified as S (
+  Name (text),
+  Scope (Scope, namespace),
+  lastSegment,
+  renderUse,
+  rootScope,
+ )
+import Metron.TCore (TTerm (TCycle), renderTTerm)
+import Metron.Type (
+  TypeDef (constructors),
+  renderForallIn,
+  renderTypeDef,
+  typeRefs,
+ )
+import Metron.Update (Propagation (skipped, upgraded))
 
 {- | @:edit@ (design §7.5): a stored definition or a data declaration as
 source to paste back. A name outside the current namespace is printed in a
@@ -313,6 +329,7 @@ kind flag or a type query searches everything. The type query is a written
 type whose unknown names are variables, matched by unification both ways,
 so @: a -> a@ finds @Num m -> Num m@ and @: Num -> Num@ finds @a -> a@.
 -}
+
 {- | @area :: Shape -> Num (m^2)@: a name and its signature as written back
 in a scope (design §4.8), the name by its shortest spelling.
 -}
@@ -340,6 +357,7 @@ upgradeReport short result =
 {- | Move every current definition still using an old version of a name to
 its current version, where it typechecks.
 -}
+
 -- Export (design §7.4) --------------------------------------------------------------
 
 {- | @:export [path] [file]@: what to export and where. No argument, or

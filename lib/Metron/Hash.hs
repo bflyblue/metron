@@ -20,56 +20,74 @@ module Metron.Hash (
   hashFromHex,
 ) where
 
-import Data.Bifunctor ( first )
-import Data.Bits ( shiftL, shiftR, (.&.), (.|.) )
-import Data.ByteString ( ByteString )
-import Data.ByteString.Builder
-    ( Builder, word8, byteString, toLazyByteString )
-import Data.Char ( digitToInt, isHexDigit )
-import Data.Ratio ( denominator, numerator, (%) )
-import Data.Text ( Text )
-import Metron.Core
-    ( primArity,
-      finToInt,
-      vecFromList,
-      vecLength,
-      vecToList,
-      vecTraverse,
-      Alt(Alt),
-      ConRef(..),
-      Fin(..),
-      Hash(..),
-      Hint(..),
-      Label(..),
-      Lit(LTensor),
-      Nat(..),
-      NudgeKind(..),
-      Plus,
-      SomeVec(SomeVec),
-      Term(..),
-      Vec(..) )
-import Metron.Dimension ( dimFromAtoms, DimAtom(DVar, Base) )
-import Metron.Encode
-    ( encodeTypeDef, hashTypeDef, sint, text, varint )
-import Metron.Type
-    ( Arg(ARole, AType, ALen, AShape, ADim, AAxis, AFrame, ASpace),
-      Axis(AVar, AAnon, ANamed),
-      Frame(Frame),
-      FrameSlot(FrVar, FrNamed),
-      Kind(KRole, KType, KLen, KShape, KDim, KAxis, KFrame, KSpace),
-      Len(LRank, LLit, LVar),
-      Role(RVar, RAmount, RUnit),
-      Shape(SCons, SNil, SVar),
-      Space(Space),
-      SpaceSlot(SpVar, SpNamed),
-      Type(..),
-      TypeDef(TypeDef) )
-import Data.ByteString.Lazy qualified as BL ( toStrict )
-import Data.ByteString qualified as BS
-    ( drop, foldl', indexMaybe, length, pack, take, unpack )
-import Crypto.Hash.SHA256 qualified as SHA256 ( hash )
-import Data.Text qualified as T ( length, pack, unpack )
-import Data.Text.Encoding qualified as TE ( decodeUtf8' )
+import Crypto.Hash.SHA256 qualified as SHA256 (hash)
+import Data.Bifunctor (first)
+import Data.Bits (shiftL, shiftR, (.&.), (.|.))
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS (
+  drop,
+  foldl',
+  indexMaybe,
+  length,
+  pack,
+  take,
+  unpack,
+ )
+import Data.ByteString.Builder (
+  Builder,
+  byteString,
+  toLazyByteString,
+  word8,
+ )
+import Data.ByteString.Lazy qualified as BL (toStrict)
+import Data.Char (digitToInt, isHexDigit)
+import Data.Ratio (denominator, numerator, (%))
+import Data.Text (Text)
+import Data.Text qualified as T (length, pack, unpack)
+import Data.Text.Encoding qualified as TE (decodeUtf8')
+import Metron.Core (
+  Alt (Alt),
+  ConRef (..),
+  Fin (..),
+  Hash (..),
+  Hint (..),
+  Label (..),
+  Lit (LTensor),
+  Nat (..),
+  NudgeKind (..),
+  Plus,
+  SomeVec (SomeVec),
+  Term (..),
+  Vec (..),
+  finToInt,
+  primArity,
+  vecFromList,
+  vecLength,
+  vecToList,
+  vecTraverse,
+ )
+import Metron.Dimension (DimAtom (Base, DVar), dimFromAtoms)
+import Metron.Encode (
+  encodeTypeDef,
+  hashTypeDef,
+  sint,
+  text,
+  varint,
+ )
+import Metron.Type (
+  Arg (AAxis, ADim, AFrame, ALen, ARole, AShape, ASpace, AType),
+  Axis (AAnon, ANamed, AVar),
+  Frame (Frame),
+  FrameSlot (FrNamed, FrVar),
+  Kind (KAxis, KDim, KFrame, KLen, KRole, KShape, KSpace, KType),
+  Len (LLit, LRank, LVar),
+  Role (RAmount, RUnit, RVar),
+  Shape (SCons, SNil, SVar),
+  Space (Space),
+  SpaceSlot (SpNamed, SpVar),
+  Type (..),
+  TypeDef (TypeDef),
+ )
 
 -- | The canonical encoding of a closed term.
 encodeTerm :: Term Z -> ByteString

@@ -36,95 +36,123 @@ module Metron.Store (
   mergeStores,
 ) where
 
-import Control.Monad ( foldM, foldM_, forM_, unless, void, when )
-import Data.Either ( lefts, rights )
-import Data.List ( sortOn )
-import Data.Map.Strict ( Map )
-import Data.Maybe ( fromMaybe )
-import Data.Set ( Set )
-import Data.Text ( Text )
-import Data.Time.Clock.POSIX ( getPOSIXTime )
-import Metron.Codebase
-    ( addPreference,
-      addStoredUse,
-      addTypeDef,
-      bindConName,
-      bindFieldName,
-      bindName,
-      bindTypeName,
-      clearFlags,
-      dropSignature,
-      emptyCodebase,
-      lookupName,
-      markChart,
-      markUnit,
-      removePreference,
-      removeStoredUse,
-      setSignature,
-      typeNameOf,
-      typeOf,
-      unbindName,
-      Codebase(terms, signatures, uses, fieldNames, preferences, units,
-               charts, typeNames, conNames, names, typeDefs),
-      Reference(..) )
-import Metron.Core ( refs, showHash, Hash, Nat(Z), Term )
-import Metron.Dimension ( Spelling(..) )
-import Metron.Hash
-    ( encodeTypeDef,
-      hashTypeDef,
-      decodeStored,
-      decodeTypeDef,
-      encodeStored,
-      hashFromHex,
-      hashHex,
-      hashTerm )
-import Metron.Parser ( parseType )
-import Metron.Prelude ( stdlibCodebase )
-import Metron.Resolve.Error ( renderResolveError )
-import Metron.Type.Syntax ( signatureScheme )
-import Metron.Resolve ( storeTerm )
-import Metron.Syntax ( Use(..), renderUse, rootScope )
-import Metron.Type ( Scheme, TypeDef(..), renderSignature )
-import Metron.Type.Match ( signatureHolds )
-import System.Directory
-    ( canonicalizePath,
-      createDirectoryIfMissing,
-      doesDirectoryExist,
-      doesFileExist,
-      doesPathExist,
-      getCurrentDirectory,
-      getXdgDirectory,
-      listDirectory,
-      renameFile,
-      XdgDirectory(XdgData) )
-import System.FilePath ( (</>), takeDirectory )
-import Data.ByteString qualified as BS
-    ( ByteString, readFile, writeFile )
-import Data.Map.Strict qualified as Map
-    ( difference,
-      keys,
-      lookup,
-      member,
-      toList,
-      fromList,
-      fromListWith,
-      insert )
-import Data.Set qualified as Set
-    ( member, union, difference, empty, insert, toList )
-import Data.Text qualified as T
-    ( lines,
-      null,
-      splitOn,
-      strip,
-      stripPrefix,
-      unlines,
-      unwords,
-      words,
-      pack,
-      unpack )
-import Data.Text.IO qualified as TIO
-    ( appendFile, readFile, writeFile )
-import Data.Text.Read qualified as TR ( decimal )
+import Control.Monad (foldM, foldM_, forM_, unless, void, when)
+import Data.ByteString qualified as BS (
+  ByteString,
+  readFile,
+  writeFile,
+ )
+import Data.Either (lefts, rights)
+import Data.List (sortOn)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (
+  difference,
+  fromList,
+  fromListWith,
+  insert,
+  keys,
+  lookup,
+  member,
+  toList,
+ )
+import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import Data.Set qualified as Set (
+  difference,
+  empty,
+  insert,
+  member,
+  toList,
+  union,
+ )
+import Data.Text (Text)
+import Data.Text qualified as T (
+  lines,
+  null,
+  pack,
+  splitOn,
+  strip,
+  stripPrefix,
+  unlines,
+  unpack,
+  unwords,
+  words,
+ )
+import Data.Text.IO qualified as TIO (
+  appendFile,
+  readFile,
+  writeFile,
+ )
+import Data.Text.Read qualified as TR (decimal)
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Metron.Codebase (
+  Codebase (
+    charts,
+    conNames,
+    fieldNames,
+    names,
+    preferences,
+    signatures,
+    terms,
+    typeDefs,
+    typeNames,
+    units,
+    uses
+  ),
+  Reference (..),
+  addPreference,
+  addStoredUse,
+  addTypeDef,
+  bindConName,
+  bindFieldName,
+  bindName,
+  bindTypeName,
+  clearFlags,
+  dropSignature,
+  emptyCodebase,
+  lookupName,
+  markChart,
+  markUnit,
+  removePreference,
+  removeStoredUse,
+  setSignature,
+  typeNameOf,
+  typeOf,
+  unbindName,
+ )
+import Metron.Core (Hash, Nat (Z), Term, refs, showHash)
+import Metron.Dimension (Spelling (..))
+import Metron.Hash (
+  decodeStored,
+  decodeTypeDef,
+  encodeStored,
+  encodeTypeDef,
+  hashFromHex,
+  hashHex,
+  hashTerm,
+  hashTypeDef,
+ )
+import Metron.Parser (parseType)
+import Metron.Prelude (stdlibCodebase)
+import Metron.Resolve (storeTerm)
+import Metron.Resolve.Error (renderResolveError)
+import Metron.Syntax (Use (..), renderUse, rootScope)
+import Metron.Type (Scheme, TypeDef (..), renderSignature)
+import Metron.Type.Match (signatureHolds)
+import Metron.Type.Syntax (signatureScheme)
+import System.Directory (
+  XdgDirectory (XdgData),
+  canonicalizePath,
+  createDirectoryIfMissing,
+  doesDirectoryExist,
+  doesFileExist,
+  doesPathExist,
+  getCurrentDirectory,
+  getXdgDirectory,
+  listDirectory,
+  renameFile,
+ )
+import System.FilePath (takeDirectory, (</>))
 
 newtype Store = Store {dir :: FilePath}
 
@@ -200,7 +228,10 @@ openStore seeding d = do
               <> "; this metron opens format "
               <> tshow formatVersion
           _ ->
-            T.pack d <> " is not a metron codebase (its format file says \"" <> line <> "\")"
+            T.pack d
+              <> " is not a metron codebase (its format file says \""
+              <> line
+              <> "\")"
  where
   directories = do
     createDirectoryIfMissing True (d </> "terms")

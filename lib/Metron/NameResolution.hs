@@ -14,50 +14,83 @@ module Metron.NameResolution (
   groupResolver,
 ) where
 
-import Data.Containers.ListUtils ( nubOrd )
-import Control.Monad ( when )
-import Data.Maybe ( mapMaybe, isJust )
-import Text.Read ( readMaybe )
-import Data.Set ( Set )
-import Data.Text ( Text )
-import Metron.Builtin ( isSpaceDef )
-import Metron.Codebase
-    ( fieldNamesOf,
-      findByPrefix,
-      historyOf,
-      typeOf,
-      isChartName,
-      isUnitName,
-      lookupConName,
-      lookupFieldName,
-      lookupName,
-      lookupTerm,
-      lookupTypeDef,
-      lookupTypeName,
-      Codebase(uses, names, history, conNames, typeNames, fieldNames),
-      Reference(..) )
-import Metron.Core
-    ( vecIndex, showFullHash, ConRef(UserCon), Hash, Term(Lam, Cycle) )
-import Metron.Desugar
-    ( ConInfo(ConInfo),
-      FieldInfo(FieldInfo),
-      Resolution(Resolution),
-      Resolved(..),
-      Resolver )
-import Metron.Type ( TypeDef(constructors), Scheme(Forall), Type(TQty, TChart, TFun), Role(RUnit) )
-import Metron.Desugar qualified as D ( spaceQuery )
-import Data.Map.Strict qualified as Map
-    ( keys, lookupGE, member, findWithDefault, fromListWith )
-import Metron.Syntax qualified as S
-    ( lastSegment,
-      qualify,
-      Scope(uses, namespace),
-      Span,
-      Use(path, alias) )
-import Data.Set qualified as Set
-    ( member, empty, fromList, toList )
-import Data.Text qualified as T
-    ( intercalate, isPrefixOf, splitOn, stripPrefix, breakOn, drop, null, all, any, unpack, pack )
+import Control.Monad (when)
+import Data.Containers.ListUtils (nubOrd)
+import Data.Map.Strict qualified as Map (
+  findWithDefault,
+  fromListWith,
+  keys,
+  lookupGE,
+  member,
+ )
+import Data.Maybe (isJust, mapMaybe)
+import Data.Set (Set)
+import Data.Set qualified as Set (
+  empty,
+  fromList,
+  member,
+  toList,
+ )
+import Data.Text (Text)
+import Data.Text qualified as T (
+  all,
+  any,
+  breakOn,
+  drop,
+  intercalate,
+  isPrefixOf,
+  null,
+  pack,
+  splitOn,
+  stripPrefix,
+  unpack,
+ )
+import Metron.Builtin (isSpaceDef)
+import Metron.Codebase (
+  Codebase (conNames, fieldNames, history, names, typeNames, uses),
+  Reference (..),
+  fieldNamesOf,
+  findByPrefix,
+  historyOf,
+  isChartName,
+  isUnitName,
+  lookupConName,
+  lookupFieldName,
+  lookupName,
+  lookupTerm,
+  lookupTypeDef,
+  lookupTypeName,
+  typeOf,
+ )
+import Metron.Core (
+  ConRef (UserCon),
+  Hash,
+  Term (Cycle, Lam),
+  showFullHash,
+  vecIndex,
+ )
+import Metron.Desugar (
+  ConInfo (ConInfo),
+  FieldInfo (FieldInfo),
+  Resolution (Resolution),
+  Resolved (..),
+  Resolver,
+ )
+import Metron.Desugar qualified as D (spaceQuery)
+import Metron.Syntax qualified as S (
+  Scope (namespace, uses),
+  Span,
+  Use (alias, path),
+  lastSegment,
+  qualify,
+ )
+import Metron.Type (
+  Role (RUnit),
+  Scheme (Forall),
+  Type (TChart, TFun, TQty),
+  TypeDef (constructors),
+ )
+import Text.Read (readMaybe)
 
 -- Names and namespaces (design §7.6) ----------------------------------------------
 
@@ -211,10 +244,11 @@ groupResolver group members scope cb query
             Ambiguous fulls -> Just (AAmbiguous fulls)
             NotFound -> Nothing
 
--- | Hashes select stored terms, never a local binder. A name narrows the
--- search to its current and historical references. Bare hashes search all
--- terms. Unit/chart roles come from the selected term's type, not from the
--- name's current flags, which may describe a different version entirely.
+{- | Hashes select stored terms, never a local binder. A name narrows the
+search to its current and historical references. Bare hashes search all
+terms. Unit/chart roles come from the selected term's type, not from the
+name's current flags, which may describe a different version entirely.
+-}
 historicalReference :: S.Scope -> Codebase -> Text -> Maybe Resolved
 historicalReference scope cb query = Just $ either AInvalidReference id $ do
   let (written0, suffix) = T.breakOn "#" query
@@ -224,34 +258,59 @@ historicalReference scope cb query = Just $ either AInvalidReference id $ do
     [p] -> Right (p, Nothing)
     [p, i] | Just j <- readMaybe (T.unpack i), j >= (0 :: Int) -> Right (p, Just j)
     _ -> Left "invalid hash reference: expected #hash or #hash.index"
-  when (T.null prefix || not (T.all (`elem` ("0123456789abcdefghijklmnopqrstuv" :: String)) prefix))
+  when
+    ( T.null prefix
+        || not (T.all (`elem` ("0123456789abcdefghijklmnopqrstuv" :: String)) prefix)
+    )
     (Left "invalid hash prefix: use lowercase base32hex digits 0-9 and a-v")
   let hashes = findByPrefix prefix cb
-  (full, candidates) <- if T.null written
-    then Right ("", [Reference h member | h <- hashes])
-    else case qualifyWith cb.uses (\n -> isLabel TermLabel cb n || Map.member n cb.history) scope written of
-      Found n -> Right (n, nubOrd
-        [r | r <- maybe [] pure (lookupName n cb) ++ historyOf n cb,
-             r.hash `elem` hashes, maybe True (\i -> r.index == Just i) member])
-      Ambiguous ns -> Left ("ambiguous historical name: " <> T.intercalate ", " ns)
-      NotFound -> Left ("unknown historical name `" <> written <> "`")
+  (full, candidates) <-
+    if T.null written
+      then Right ("", [Reference h member | h <- hashes])
+      else case qualifyWith
+        cb.uses
+        (\n -> isLabel TermLabel cb n || Map.member n cb.history)
+        scope
+        written of
+        Found n ->
+          Right
+            ( n
+            , nubOrd
+                [ r
+                | r <- maybe [] pure (lookupName n cb) ++ historyOf n cb
+                , r.hash `elem` hashes
+                , maybe True (\i -> r.index == Just i) member
+                ]
+            )
+        Ambiguous ns -> Left ("ambiguous historical name: " <> T.intercalate ", " ns)
+        NotFound -> Left ("unknown historical name `" <> written <> "`")
   r <- case candidates of
     [] -> Left ("no stored version matches `" <> query <> "`")
     [r] -> Right r
-    _ -> Left ("ambiguous hash reference `" <> query
-      <> "`: use a longer prefix or a member index; matches: "
-      <> T.intercalate ", " [showFullHash ref.hash <> maybe "" (\i -> "." <> T.pack (show i)) ref.index | ref <- candidates])
+    _ ->
+      Left
+        ( "ambiguous hash reference `"
+            <> query
+            <> "`: use a longer prefix or a member index; matches: "
+            <> T.intercalate
+              ", "
+              [ showFullHash ref.hash <> maybe "" (\i -> "." <> T.pack (show i)) ref.index
+              | ref <- candidates
+              ]
+        )
   case (lookupTerm r.hash cb, r.index) of
     (Just (Cycle _ bodies), Just i) | isJust (vecIndex i bodies) -> pure ()
     (Just (Cycle _ _), _) -> Left "a recursive group reference needs a valid .index member"
     (Just _, Nothing) -> pure ()
     (Just _, Just _) -> Left "a member index is only valid for a recursive group"
     _ -> Left "hash reference is not a stored term"
-  Forall _ ty <- maybe (Left "hash reference has no stored type") Right (typeOf r cb)
+  Forall _ ty <-
+    maybe (Left "hash reference has no stored type") Right (typeOf r cb)
   let unit = case ty of TQty RUnit _ _ -> True; _ -> False
       chart = returnsChart ty
       parameterised = case ty of TFun _ _ -> chart; _ -> False
-  pure (AQualified full (ATerm (Resolution (r.hash, r.index) unit chart parameterised)))
+  pure
+    (AQualified full (ATerm (Resolution (r.hash, r.index) unit chart parameterised)))
  where
   returnsChart = \case
     TChart _ -> True

@@ -11,142 +11,183 @@ module Metron.Resolve (
   withHint,
 ) where
 
-import Control.Monad.State.Strict
-    ( StateT(runStateT), MonadTrans(lift), gets, modify )
-import Data.Foldable ( foldlM )
-import Data.Graph ( SCC(..), stronglyConnComp )
-import Data.List ( sortOn )
-import Data.Maybe ( fromMaybe, isJust, isNothing )
-import Data.Set ( Set )
-import Data.Text ( Text )
-import Metron.Builtin ( axesDef, boolT, frameDef, frameDefMoving )
-import Metron.Check
-    ( checkCore,
-      CheckError(CoreLintError, InferenceError),
-      CheckedCore(typed, linted) )
-import Metron.Codebase
-    ( addTerm,
-      addTypeDef,
-      bindName,
-      bindTypeName,
-      clearFlags,
-      lookupName,
-      lookupTypeDef,
-      lookupTypeName,
-      lookupTypes,
-      markChart,
-      markUnit,
-      setSignature,
-      signatureOf,
-      typeOf,
-      Codebase(signatures, typeNames, uses),
-      Reference(Reference) )
-import Metron.Core
-    ( conTypes,
-      refsWritten,
-      vecAppend,
-      vecFromList,
-      vecMap,
-      vecToList,
-      vecTraverse,
-      Hash,
-      Hint(Hint),
-      Nat(Z),
-      SomeVec(SomeVec),
-      Term(PrimApp, Cycle),
-      Vec(..) )
-import Metron.Desugar
-    ( desugarDefinition,
-      desugarMarked,
-      fillOperands,
-      provenanceAt,
-      Provenance(ascriptions) )
-import Metron.Hash ( hashTypeDef, hashTerm, placeholderHash )
-import Metron.Infer
-    ( TypeLookup,
-      elaborateClosedWith,
-      hasReadingMarkers,
-      noAnnotations,
-      readingsOf,
-      rewriteReadings,
-      Annotations(signatureFor, Annotations),
-      TypeError(message, path) )
-import Metron.NameResolution
-    ( disjointness,
-      groupResolver,
-      isLabel,
-      qualifyWith,
-      LabelKind(..),
-      Qualified(..) )
-import Metron.Resolve.Error ( ResolveError(..) )
-import Metron.Type
-    ( substOnce,
-      varArg,
-      Scheme(..),
-      Type,
-      TypeDef,
-      TypeLookup(TypeLookup),
-      defaultAxes,
-      renderScheme,
-      withBuiltins )
-import Metron.Type.Match ( signatureHolds )
-import Metron.Type.Syntax
-    ( enterData,
-      enterSpace,
-      explicitScheme,
-      renumberBound,
-      signatureScheme,
-      tyNames,
-      Bound )
-import Metron.Desugar qualified as D
-    ( ascriptionPath,
-      desugarMarked,
-      desugarMember,
-      signatureMarker,
-      Path )
-import Data.Map.Strict qualified as Map
-    ( null,
-      delete,
-      Map,
-      empty,
-      keysSet,
-      lookup,
-      toList,
-      union,
-      fromList,
-      insert,
-      map )
-import Metron.Syntax qualified as S
-    ( declKey,
-      isSignature,
-      BindKind(..),
-      Binding(name, kind, body, span, params),
-      ChartClauses(spin, parent, origin, step, generators),
-      DataDecl(constructors, name),
-      Decl(..),
-      Expr(..),
-      FieldDecl(FieldDecl),
-      Name(..),
-      Node(UnitSyntax, Num, Labelled, Tuple, List, CaseOf, Bool, Var,
-           Lam, App, Let, If, BinOp, Neg, Pow, SectionL, SectionR, Vec, Proj,
-           Slice, FieldOf, Record, Ascribe, ChartForm, FromTo, UnitBody),
-      Op(Infix),
-      PatNode(PWild, PCon, PVar),
-      Pattern(node),
-      Pos(Pos),
-      Scope,
-      Span(Span) )
-import Data.Set qualified as Set
-    ( member,
-      notMember,
-      empty,
-      fromList,
-      insert,
-      intersection,
-      null,
-      singleton,
-      toList )
-import Data.Text qualified as T ( intercalate, pack )
+import Control.Monad.State.Strict (
+  MonadTrans (lift),
+  StateT (runStateT),
+  gets,
+  modify,
+ )
+import Data.Foldable (foldlM)
+import Data.Graph (SCC (..), stronglyConnComp)
+import Data.List (sortOn)
+import Data.Map.Strict qualified as Map (
+  Map,
+  delete,
+  empty,
+  fromList,
+  insert,
+  keysSet,
+  lookup,
+  map,
+  null,
+  toList,
+  union,
+ )
+import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Set (Set)
+import Data.Set qualified as Set (
+  empty,
+  fromList,
+  insert,
+  intersection,
+  member,
+  notMember,
+  null,
+  singleton,
+  toList,
+ )
+import Data.Text (Text)
+import Data.Text qualified as T (intercalate, pack)
+import Metron.Builtin (axesDef, boolT, frameDef, frameDefMoving)
+import Metron.Check (
+  CheckError (CoreLintError, InferenceError),
+  CheckedCore (linted, typed),
+  checkCore,
+ )
+import Metron.Codebase (
+  Codebase (signatures, typeNames, uses),
+  Reference (Reference),
+  addTerm,
+  addTypeDef,
+  bindName,
+  bindTypeName,
+  clearFlags,
+  lookupName,
+  lookupTypeDef,
+  lookupTypeName,
+  lookupTypes,
+  markChart,
+  markUnit,
+  setSignature,
+  signatureOf,
+  typeOf,
+ )
+import Metron.Core (
+  Hash,
+  Hint (Hint),
+  Nat (Z),
+  SomeVec (SomeVec),
+  Term (Cycle, PrimApp),
+  Vec (..),
+  conTypes,
+  refsWritten,
+  vecAppend,
+  vecFromList,
+  vecMap,
+  vecToList,
+  vecTraverse,
+ )
+import Metron.Desugar (
+  Provenance (ascriptions),
+  desugarDefinition,
+  desugarMarked,
+  fillOperands,
+  provenanceAt,
+ )
+import Metron.Desugar qualified as D (
+  Path,
+  ascriptionPath,
+  desugarMarked,
+  desugarMember,
+  signatureMarker,
+ )
+import Metron.Hash (hashTerm, hashTypeDef, placeholderHash)
+import Metron.Infer (
+  Annotations (Annotations, signatureFor),
+  TypeError (message, path),
+  TypeLookup,
+  elaborateClosedWith,
+  hasReadingMarkers,
+  noAnnotations,
+  readingsOf,
+  rewriteReadings,
+ )
+import Metron.NameResolution (
+  LabelKind (..),
+  Qualified (..),
+  disjointness,
+  groupResolver,
+  isLabel,
+  qualifyWith,
+ )
+import Metron.Resolve.Error (ResolveError (..))
+import Metron.Syntax qualified as S (
+  BindKind (..),
+  Binding (body, kind, name, params, span),
+  ChartClauses (generators, origin, parent, spin, step),
+  DataDecl (constructors, name),
+  Decl (..),
+  Expr (..),
+  FieldDecl (FieldDecl),
+  Name (..),
+  Node (
+    App,
+    Ascribe,
+    BinOp,
+    Bool,
+    CaseOf,
+    ChartForm,
+    FieldOf,
+    FromTo,
+    If,
+    Labelled,
+    Lam,
+    Let,
+    List,
+    Neg,
+    Num,
+    Pow,
+    Proj,
+    Record,
+    SectionL,
+    SectionR,
+    Slice,
+    Tuple,
+    UnitBody,
+    UnitSyntax,
+    Var,
+    Vec
+  ),
+  Op (Infix),
+  PatNode (PCon, PVar, PWild),
+  Pattern (node),
+  Pos (Pos),
+  Scope,
+  Span (Span),
+  declKey,
+  isSignature,
+ )
+import Metron.Type (
+  Scheme (..),
+  Type,
+  TypeDef,
+  TypeLookup (TypeLookup),
+  defaultAxes,
+  renderScheme,
+  substOnce,
+  varArg,
+  withBuiltins,
+ )
+import Metron.Type.Match (signatureHolds)
+import Metron.Type.Syntax (
+  Bound,
+  enterData,
+  enterSpace,
+  explicitScheme,
+  renumberBound,
+  signatureScheme,
+  tyNames,
+ )
 
 typeLookupFor :: Codebase -> TypeLookup
 typeLookupFor cb = TypeLookup (`lookupTypes` cb) (withBuiltins (`lookupTypeDef` cb))
@@ -414,9 +455,14 @@ enterComponent checking group signed cb0 = \case
         (Left . typeErrorIn b prov)
         Right
         (withReadings cb [signedAs signed cb0 b.name.text] written)
-    checkedCore <- either (Left . \case
-      InferenceError err -> typeErrorIn b prov err
-      CoreLintError err -> LintFailure b.name err) Right (checkCore noAnnotations (typeLookupFor cb) term)
+    checkedCore <-
+      either
+        ( Left . \case
+            InferenceError err -> typeErrorIn b prov err
+            CoreLintError err -> LintFailure b.name err
+        )
+        Right
+        (checkCore noAnnotations (typeLookupFor cb) term)
     let typed = checkedCore.typed
         linted = checkedCore.linted
 
@@ -663,9 +709,10 @@ enterCycle checking group signed cb sbs = do
       let h = hashTerm cycleTerm
       checkedCore <-
         either
-          (Left . \case
-            InferenceError err -> cycleTypeError sorted provs err
-            CoreLintError err -> LintFailure (headName sorted) err)
+          ( Left . \case
+              InferenceError err -> cycleTypeError sorted provs err
+              CoreLintError err -> LintFailure (headName sorted) err
+          )
           Right
           (checkCore noAnnotations (typeLookupFor cbm) cycleTerm)
       let typed = checkedCore.typed
@@ -911,7 +958,8 @@ codebase already holds, which the loader ensures by ordering.
 -}
 storeTerm :: Hash -> Term Z -> Codebase -> Either Text Codebase
 storeTerm h term cb = do
-  checked <- either (Left . message) Right (checkCore noAnnotations (typeLookupFor cb) term)
+  checked <-
+    either (Left . message) Right (checkCore noAnnotations (typeLookupFor cb) term)
   pure (addTerm h term checked.linted checked.typed cb)
  where
   message (InferenceError err) = err.message
