@@ -5702,9 +5702,39 @@ the same term runs under any backend that has the built-ins it uses.
   Higham's running error analysis: one extra double per value, bounding
   the accumulated rounding under the standard model of floating point,
   with a per-function figure for `sin`, `exp` and the other library
-  functions, which are not correctly rounded). Its own built-ins read that
-  and the floating-point structure: `roundingBound`, `ulps`, `eps`,
-  `nextUp`, `fma`, `isNaN`, `isInfinite`. `precision` does not apply.
+  functions, which are not correctly rounded). `precision` does not apply.
+- **How `double` estimates its error: `:set samples N`** (decided by the
+  owner). The arithmetic is the same under every setting: each scalar
+  carries its ordinary round-to-nearest IEEE result, which is the value
+  shown and the value a ported formula computes, and which alone decides
+  every `if` and comparison, so a run takes the branches Haskell would.
+  What else is carried is the setting's choice:
+  - `samples 0` (the default) carries the running error bound above:
+    guaranteed under the model, pessimistic, about twice the cost.
+  - `samples N`, for `N > 0`, carries N copies computed in lockstep with
+    random rounding, each operation rounding each copy up or down to a
+    neighbouring double with equal probability: stochastic arithmetic, the
+    CESTAC method behind CADNA (N = 3 is its usual choice). Their spread,
+    scaled by Student's t, estimates the significant digits that survive:
+    realistic, since rounding errors partly cancel as they do in practice,
+    statistical rather than guaranteed, about N times the cost in one pass.
+    When the copies disagree about a comparison that decides an `if`, the
+    branch is flagged as numerically unstable ("`if disc > 0` goes both
+    ways: the condition is lost in rounding"). The random choices come from
+    a generator seeded by `:set seed` (a fixed default), so the same input
+    under the same settings gives the same estimate.
+- **`double`'s built-ins are the same under every setting,** so the
+  before-running check depends only on `:backend`. `errorOf x` is the
+  absolute error estimate (the bound under `samples 0`, the scaled spread
+  under `samples N`) and `digitsOf x` the significant digits it implies; a
+  check such as `digitsOf r < 10` is written once and run either way.
+  Printing says which kind of estimate a value has, `3.3e-16 (bound)` or
+  `4.1e-17 (estimate, 3 samples)`. The rest describe the format and do not
+  depend on the setting: `ulps`, `eps`, `nextUp`, `fma`, `isNaN`,
+  `isInfinite`. `samples`, like `precision`, is a session setting: it
+  changes what a stored function computes, never its hash. A built-in that
+  returns the raw copies (`samplesOf`) is left out until there is a use for
+  it.
 - **The command:** `:backend` names the current backend, `:backend
   double` switches, and `--backend double` chooses one on the command
   line, as `--set` does.
