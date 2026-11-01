@@ -773,6 +773,65 @@ apart (decided by the owner).
   that has since grown, stops marking; a product of two zero-mean `±σ`
   values still marks what it makes directly, but no longer every value
   computed downstream of it.
+
+  *Re-judged, as built (2026-11-01, `Metron.Affine.SecondOrder`).* A
+  value carries, for each operation that made a second-order statistical
+  term, an upper bound on that term's standard deviation in the value's
+  own unit, rounded up to three digits, or unbounded. A product's term is
+  `√((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²)`; a function's is the largest change of
+  `f'` from `m` to `m ± σ`, times σ, or its curvature bound across the
+  σ-widened enclosure times σ², whichever is larger; a mixed correction's
+  (below) is its size. Every operation carries its operands' terms:
+
+  - a scaling by `k` multiplies them by `|k|`, and a sum adds them, term
+    by term under each operation's name;
+  - a product scales each operand's terms by the other factor's largest
+    size, `|m| + r + σ + q`: its midpoint, bound radius, σ and the total
+    of its own terms;
+  - a function scales them by the largest `|f'|` over the operand's bound
+    enclosure widened by `σ + q` on each side, unbounded when that
+    reaches a pole or leaves the domain.
+
+  Where the value is used (printing, `:budget`, a comparison, `floor`,
+  `mid`, `sd`, the covariances), the sum of its terms is compared with its
+  own first-order σ (`skewOf`), unbounded when that σ is zero, and the
+  mark names the operation whose term is largest. A term below the
+  precision floor at the value's midpoint is dropped at every operation.
+
+  *Why it does not under-mark a real non-linearity in the cases tested.*
+  Two rules. Sizes add: by Minkowski's inequality the standard deviation
+  of a sum of random terms is at most the sum of theirs whatever their
+  correlation, so a term that two operands share (`n*n + n*n`, perfectly
+  correlated) counts at its full size, never in quadrature. And a term is
+  scaled by the largest slope over the widened enclosure, not by the slope
+  at the midpoint, which at a stationary point is zero and would drop a
+  term that the next order keeps: `n*n*n` (the factor `n` has midpoint 0;
+  its σ keeps the term) and `cos (n*n)` stay unbounded. A first-order σ
+  that cancels leaves the term the whole value, unbounded: `x * (4 - x)`
+  at `2 ±σ 1e-3`, `(n*n + m) - m`. Every mark in the suite stays. The
+  price is overstatement where terms of opposite sign cancel, which sizes
+  cannot show: a composition's steps add, where the old rule took the
+  largest. `atan2` at 45° with σ a thirtieth of the radius reads 13% (7%
+  before; its term is 2.4%); `asin` as `atan (x / √(1 − x²))` read 31%
+  for a term of 5%, so `asin` is now lifted itself, its curvature
+  `|t| / (1 − t²)^(3/2)`, and reads 5.8% (12% before).
+
+  | value (`a`, `b`, `n` each `0 ±σ 1`) | before | after |
+  |---|---|---|
+  | `a * b`, `n * n` | unbounded | unbounded |
+  | `a * b + (0 ±σ 1000)` | unbounded, `mid` and `<` refuse | `0 ±σ 1000`, not marked; `< 5000` is `true` |
+  | `a * b + (0 ±σ 10)` | unbounded | 10% |
+  | `n * n * n`, `cos (n * n)`, `n * n + n * n` | unbounded | unbounded |
+  | `el.e` of `fromState` on `[7000, 100, 0 ±σ 1] km`, `[0.01, 7.5, 1 ±σ 0.0001] km/s` | refused: `circ` "marked non-linear by mul" | `0.016428 ±σ 1.8e-5`, not marked |
+  | `tanh (5 ±σ 0.1)`, `exp (0 ±σ 0.1)`, `(1 ±σ 0.1) * (1 ±σ 0.1)` | 24%, 11%, 7.1% | the same |
+  | `asin (0.99 ±σ 0.001)` | 12% | 5.8% |
+
+  The Kepler solvers (`meanToEccentric`, `meanToHyperbolic`) took `mid`
+  of their residual on the values. On a `±σ` input that residual's first
+  order cancels, so it is now rightly marked, and `mid` refuses it. They
+  bound `|f(E)|` by the residual at the midpoints and twice the bound
+  radius of the residual on the values: rigorous, since the first lies in
+  the second's enclosure.
 - **Monte Carlo is the answer for the non-linear case** and is deferred:
   `:sample expr` would draw the statistical nudges from their distributions,
   evaluate the expression many times and report quantiles, the GUM's
@@ -806,9 +865,11 @@ apart (decided by the owner).
   its midpoint to either `m − σ` or `m + σ`, against `|f'(m)|`, unbounded when
   either point leaves the domain (`recip`, `sqrt`, `log`) or when `f'(m) =
   0` (`cos` at 0). `abs` is linear unless its kink lies within σ of the bound
-  enclosure, then unbounded. The measure is kept squared and exact, rounded
-  up to three digits, and a value keeps the largest measure, with its
-  operation, of everything it was computed from (`Skew`). Functions with a
+  enclosure, then unbounded. ~~The measure is kept squared and exact,
+  rounded up to three digits, and a value keeps the largest measure, with
+  its operation, of everything it was computed from (`Skew`).~~ Each term
+  is carried as an absolute size and re-judged against the value's own σ
+  where it is used (the mark is re-judged, as built, above). Functions with a
   second-derivative bound (`sin`, `cos`, `tan`, `atan`, `tanh`) also use
   that bound across σ, so equal endpoint derivatives cannot hide
   oscillation: the largest `|f''|` over the bound enclosure widened by σ on
@@ -1122,6 +1183,47 @@ matters: `x - x` is exactly 0 always, since equal forms cancel term by term
 before any length is measured, and `(x + c) - x` is exactly `c` whenever
 the midpoints were short.
 
+*Linear results held, as built (2026-11-01, `Metron.Affine.heldLinear`).*
+`addM`, and so `subM` and `sumM`, and `scaleM` on a form compute the
+linear result exactly, equal terms cancelling first, then measure the
+length (`exactLength`) of its midpoint, every coefficient and the slack.
+Past `exactLimit`, 224 digits at the default precision, all of them are
+rounded as a non-linear result's are (`shortenLinear`): the midpoint to
+`p + 4` significant digits, the bound coefficients to a grid of `p + 4`
+digits of the value's size and the slack up onto it, the statistical
+coefficients to `p + 4` digits of their own, their rounding a mixed
+correction measured against the σ (§3.2), never a bound. The bound
+rounding is a fresh nudge named `add: rounding` or `mul: rounding`,
+addressed by the operation, its operands (a sum's in the order of their
+encodings, so `a + b` and `b + a` are one unknown) and the precision.
+
+One rule the decision did not name: a value's earlier roundings of linear
+results join the new one. Without it a loop that rounds every few dozen
+steps added a nudge each time until the 64 were full, and compaction
+folded them into slack, which is anonymous and does not cancel: the
+harmonic sum minus itself printed `0.0000000000000000000…`, not `0`.
+Joining is sound, a coefficient becoming part of a bound, and forgets
+only those roundings' correlation with other values. So `x - x` is `0`
+for every form without slack, however long, and `(x + c) - x` is `c` when
+the midpoints are short and an enclosure of `c` when they are not
+(`c = 1/7^300 + 1/3`).
+
+Wall time of the executable under a 4 GB cap, before → after; peak RSS is
+31 MB in every case, before and after, so memory is constant:
+
+| program | before | after |
+|---|---|---|
+| `H₃₀₀₀₀`, `x + 1/k` summed on `x = 0 ± 0.001` | 6.6 s (13 s in the audit) | 0.20 s |
+| `H₆₀₀₀₀`, `H₁₂₀₀₀₀` | 39 s, — | 0.30 s, 0.52 s |
+| `Σ xᵏ/k`, `x = 999/1000`, exact terms `t * x`, to 3000, 30000, 60000 terms | 2.9 s, past 300 s, — | 0.16 s, 0.80 s, 1.7 s |
+| `t * 0.999` ten thousand times, `t` a form compared each step | 30 s | 0.18 s |
+| `Σ xᵏ/k!`, `x = 1/3`, exact terms, on `1 ± 1e-30`, 3000 and 6000 terms | 1.1 s, 6.3 s | 0.59 s, 2.0 s |
+
+The last is not linear in the number of terms, and not because of a
+length: its term `1/(3ᵏ k!)` is exact and short, its numerator being 1,
+but its size grows by about `log k` digits a step, and every step pays
+for the size. The `digits` limit (§8.1) bounds that.
+
 **§3.2.8 exact while small, as built (2026-11-01).**
 
 *The rule* (`Metron.Affine.exactResult`). An exact result's length is the
@@ -1143,8 +1245,9 @@ operands (in order for a sum or a product, so `a + b` and `b + a` are one
 unknown) and the precision. An integer power squares through `mul`, so
 `(2/3)^1000` is exact until a square passes the limit and at working
 precision after. `addM`, `subM`, `scaleM` and `sumM` take the precision.
-Linear operations on forms never round: `x - x` is `0` and `(x + 1/3) - x`
-is `1/3`. A comparison takes the exact difference of its operands, never
+Linear operations on forms ~~never round~~ round only past the same limit,
+after equal terms cancel (linear results held, as built, above): `x - x`
+is `0` and `(x + 1/3) - x` is `1/3`. A comparison takes the exact difference of its operands, never
 rounded. What changes: a long exact value is now an enclosure, so
 `(1/3)^500 + 1 - 1` prints `0.0000000000000000000…` (within one unit of the
 true `2.7e-239`) where it printed the exact value.
@@ -1206,7 +1309,9 @@ but not in the product's measure). The product's measure,
 (Isserlis), so `*` was right; `/`, `*` of a reciprocal, overstates by about
 √2; a composition takes the largest of its steps' measures, so `asin (0.99
 ±σ 0.001)` reads 12% against 5%, and `atan2` at 45° with σ a thirtieth of
-the radius 7% against 2.4%. Measured after, against `|f''| σ / |f'|`:
+the radius 7% against 2.4% (since the mark is re-judged, §3.2, a
+composition adds its steps' terms: `atan2` there reads 13%, and `asin`,
+lifted itself, 5.8%). Measured after, against `|f''| σ / |f'|`:
 
 | value | before | after | `\|f''\| σ / \|f'\|` |
 |---|---|---|---|
@@ -1235,8 +1340,8 @@ exact argument, one with a bound and one with a σ (`test/Precision.hs`).
 
 | built-in | result | roundings | internals | cost at 20, 50, 200 | fix |
 |---|---|---|---|---|---|
-| `+`, `-`, `neg` | exact while short; forms linear | an exact result's rounding is a nudge, `add` | — | 0.1 s | exact while small |
-| `*`, `emul`, `scale`, `outer` | exact while short; a product of forms shortened | `mul`; the product's remainder | — | 0.1 s | exact while small |
+| `+`, `-`, `neg` | exact while short; forms linear, held to the limit | an exact result's rounding is a nudge, `add`; a form's, `add: rounding` | — | 0.1 s | exact while small; linear results held |
+| `*`, `emul`, `scale`, `outer` | exact while short; a form scaled held to the limit; a product of forms shortened | `mul`; `mul: rounding`; the product's remainder | — | 0.1 s | exact while small; linear results held |
 | `/`, `ediv`, `to` | exact while short; otherwise `*` and `recip` | `div`; `recip` | — | 0.1 s | exact while small |
 | `^` (integer) | squaring through `*` | each square's | `log₂ n` products | 0.1 s (`(2/3)^1000`) | exact while small |
 | `sqrt` | working precision; exact for squares | yes | integer root of `2p` digits | 0.1 s; `sqrt 1e-99999` 24 s, 924 MB → 0.14 s, 19 MB | root at relative precision |
@@ -1244,7 +1349,7 @@ exact argument, one with a bound and one with a σ (`test/Precision.hs`).
 | `log` | working precision | yes | fixed point; `ln 2` kept | 0.1 s; `log 1e-99999` 28 s, 104 s, past 120 s → 0.1 s | argument in fixed point; encoder |
 | `sin`, `cos` | working precision | yes | reduction mod `π/2`, π kept; fixed point | 0.1 s; `sin 1e10` at 200, 1.5 s → 0.1 s | fixed point, π kept, local curvature |
 | `tan` | working precision | yes | sine over cosine, at more digits near a pole | 0.1 s | lifted itself |
-| `asin`, `acos` | `atan (x / √(1 − x²))` | yes | as `sqrt`, `/`, `atan` | at 200, 4.7 s → 0.1 s | through `atan` |
+| `asin`, `acos` | working precision; `acos` is `π/2 − asin` | yes | lifted itself, its value `atan (x / √(1 − x²))` at the midpoint, its curvature `\|t\| / (1 − t²)^(3/2)` | at 200, 4.7 s → 0.1 s | lifted itself (the mark re-judged) |
 | `atan` | working precision | yes | fixed-point halvings and series | at 200, 1.0 s → 0.1 s | local curvature |
 | `atan2` | working precision | yes | as `/` and `atan` | at 200, 1.5 s → 0.1 s | the larger operand divides |
 | `sinh`, `cosh` | working precision | yes | series near zero, `exp` beyond | 0.1 s | fixed point |
@@ -1279,7 +1384,8 @@ functions (`cross`, `trace`, `asinh`, …) are compositions of these.
   hold a linear result's midpoint and coefficients to the same limit,
   rounding past it with a fresh nudge named by the operation and its
   operands. `x - x` stays `0`, and `(x + c) - x` stays `c` whenever the
-  midpoints are short.
+  midpoints are short. *Done* (decided by the owner and built, 2026-11-01:
+  linear results held, as built, above): `H₃₀₀₀₀` takes 0.20 s.
 - **`expm` with uncertain entries is slow at high precision**: 13 s for a
   3 × 3 at precision 200, as before. A product of forms with 64 nudges costs
   milliseconds there, and the series takes about a hundred terms, a matrix
@@ -1291,7 +1397,15 @@ functions (`cross`, `trace`, `asinh`, …) are compositions of these.
   on a state with `0 ±σ 1` components marks the eccentricity and refuses its
   comparisons. The product's estimate is right; carrying the second-order
   term's absolute size, scaled by each later slope, and comparing it with
-  the final σ would be the change. A question for the owner.
+  the final σ would be the change. A question for the owner. *Done*
+  (decided by the owner and built, 2026-11-01: the mark re-judged, as
+  built, §3.2): that eccentricity is `0.016428 ±σ 1.8e-5`, unmarked.
+- **A composition overstates its second-order term** (since the mark is
+  re-judged, §3.2): its steps' sizes add, while their terms may cancel in
+  part. `atan2` at 45° with σ a thirtieth of the radius reads 13% for a
+  term of 2.4%. Lifting a function itself, as `tan`, `tanh` and `asin`
+  are, is the fix where it matters; carrying signed second-order
+  coefficients, a quadratic form in the nudges, would be the general one.
 
 #### 3.2.9 Comparison
 
@@ -1915,8 +2029,9 @@ Var(x₁) = 1² + 3² = 10, Var(x₂) = 2² = 4, Cov(x₁, x₂) = 1·2 + 3·0 =
 linear steps this is exactly the textbook `J P Jᵀ`, because the coefficients
 transform by `J`. Through nonlinear steps it is first-order propagation, the same
 approximation an extended Kalman filter makes. Only the remainder from bounded
-inputs is a rigorous bound. Discarded statistical corrections are tracked by
-the non-linearity measure; covariance summaries refuse marked results.
+inputs is a rigorous bound. Discarded statistical corrections are carried as
+sizes and judged against the σ (§3.2); covariance summaries refuse marked
+results.
 
 There is no "reading" to choose: each nudge knows its kind. `±` contributes to the
 bound, `±σ` to the covariance, and the printing, comparison, budget and covariance
@@ -5606,7 +5721,11 @@ two language additions; time, frames and geodesy are the second):
   steps, then take one step on the values themselves, so the result
   carries the inputs' uncertainty to first order, and add `±` the bound
   `|f(E)| / (1 − e)` (`/ (e − 1)` for the hyperbola), computed from the
-  residual's enclosure and `e`'s, so it is exact. Iterating on midpoints
+  residual's enclosure and `e`'s, so it is exact. (Since the mark is
+  re-judged, §3.2, the residual on the values is marked for a `±σ`
+  input, its first order cancelling; `|f(E)|` is bounded by the residual
+  at the midpoints and twice the residual's bound radius on the values,
+  without its `mid`.) Iterating on midpoints
   keeps the intermediate iterates' nudges, which mean nothing, out of the
   result; `mid` refuses a value marked non-linear, so such an input is an
   error. The parabola is closed form (Barker, `B = c − 1/c`). Vallado
@@ -5859,10 +5978,15 @@ stays at 10⁷: the suite builds a 3000 × 3000 outer product, which needs
   rounded (§3.2.8, exact while small, as built). `iter (1/3) 20`, the
   exact logistic map, took 13 s and takes 0.10 s; `log 1e-99999` took
   28 s and 0.97 GB and takes 0.10 s and 19 MB, its series in fixed point
-  and its operand's encoding linear. What remains is a *linear* loop on a
+  and its operand's encoding linear. ~~What remains is a *linear* loop on a
   value that is already an enclosure, `x + 1/k` collecting the
   denominators of its exact terms (§3.2.8, as built, left open): `H₃₀₀₀₀`
-  takes 13 s.
+  takes 13 s.~~ A linear loop on an enclosure is held to the same length
+  (§3.2.8, linear results held, as built): `H₃₀₀₀₀` takes 0.20 s, and a
+  series of exact terms `Σ xᵏ/k` to 30000 terms 0.80 s, where it ran past
+  300 s. What remains is an exact value's *size*: `Σ xᵏ/k!` with exact
+  terms pays each step for the `k log k` digits of `k!`, which `digits`
+  bounds.
 - *A chaotic iteration's enclosure grows until it is useless*: the
   logistic map at working precision is meaningful for about 100 steps at
   precision 20, then its enclosure covers more than `[0, 1]`, its square

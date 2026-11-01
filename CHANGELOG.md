@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Linear results are held to the same length (design §3.2.8, linear
+  results held, as built): a sum or a scaling of uncertain values whose
+  midpoint or coefficients pass eight times `p + 4` digits is rounded to
+  `p + 4` digits, the rounding a bound nudge named `add: rounding` or
+  `mul: rounding`; a value's earlier such roundings join the new one.
+  Equal terms cancel first, so `x - x` is still `0`, and `(x + c) - x` is
+  still `c` when the midpoints are short. `x + 1/k` summed 30000 times on
+  `x = 0 ± 0.001` took 6.6 s and takes 0.20 s; the series `Σ xᵏ/k` with
+  `x = 999/1000` to 30000 terms ran past 300 s and takes 0.80 s, linear in
+  the terms, in constant memory.
+- The non-linear mark is re-judged at each operation (design §3.2, as
+  built): a value carries the size of each second-order statistical term
+  with the operation that made it, every operation scales and adds those
+  sizes, and they are compared with the value's own σ wherever it is
+  used. A product of two zero-mean `±σ` values is still marked, but `a *
+  b + (0 ±σ 1000)` is not, and `astro.kepler.fromState` with a `0 ±σ 1`
+  component no longer refuses `el.e`. `asin` is lifted itself: `asin
+  (0.99 ±σ 0.001)` reads 5.8% where it read 12% (its term is 5%). A
+  composition's steps now add: `atan2` at 45° with a σ a thirtieth of the
+  radius reads 13% where it read 7%. The Kepler solvers no longer take
+  the midpoint of their residual on the values, now marked; their
+  definitions, and so their hashes, change.
 - Exact while small (design §3.2.8, as built): an exact result of `+`,
   `-`, `*`, `/` or an integer power stays exact while the shorter of its
   numerator and denominator is within eight times `p + 4` digits (224 at
