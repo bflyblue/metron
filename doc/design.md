@@ -4873,8 +4873,8 @@ Core is small on purpose. Every later phase (inference, elaboration, hashing,
 evaluation) is written against these fifteen constructors, and surface
 features are added by extending the desugarer, not the phases.
 
-**Implemented in:** `Metron.Core` (`Term`, `Alt`, `ConRef`, `Label`, `alphaEq`, `refs`, `directUses`, `rewriteRefs`), `Metron.Primitive` (`primArity`), `Metron.Desugar` (`desugarClosed`, `desugarDefinition`, `eta`, `foldConstant`), `Metron.Builtin` (`boolDef`, `pairDef`, `listDef`, `tupleDef`).
-**Tested by:** "core"; "desugar"; "data"; "properties" › "typed programs".
+**Implemented in:** `Metron.Core` (`Term`, `Alt`, `ConRef`, `Label`, `alphaEq`, `traverseChildren`, `refs`, `directUses`, `rewriteRefs`), `Metron.Primitive` (`primArity`), `Metron.Desugar` (`desugarClosed`, `desugarDefinition`, `eta`, `foldConstant`), `Metron.Builtin` (`boolDef`, `pairDef`, `listDef`, `tupleDef`).
+**Tested by:** "core"; "traversal"; "desugar"; "data"; "properties" › "typed programs".
 
 ### 5.2 The nominal form
 

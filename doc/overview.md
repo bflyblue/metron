@@ -100,7 +100,7 @@ Every module under `lib/Metron`, with its job and the design section that govern
 | `Metron.Parser` | Megaparsec parser for programs, expressions and types | §2.5 to §2.7 |
 | `Metron.Desugar` | Surface AST to Core, the quantity rule, provenance, ascription markers | §2.9, §4.7, §4.8 |
 | `Metron.NameResolution` | Names through scopes and namespaces, shortest spellings for printing | §7.6 |
-| `Metron.Core` | Core: the well-scoped untyped term language, `alphaEq`, references | §5.1, doc/core.md |
+| `Metron.Core` | Core: the well-scoped untyped term language, `alphaEq`, the one traversal (`traverseChildren`) and the walks on it | §5.1, doc/core.md |
 | `Metron.TCore` | Typed Core and its independent `lint` | §5.3, doc/core.md |
 | `Metron.Primitive` | Primitive arities and base units | §4.3, §5.1 |
 | `Metron.Primitive.Types` | Primitive type schemes, computed for literal arguments | §4.2, §4.3 |
