@@ -15,6 +15,7 @@ module Metron.Lexer (
   tokenizeWithin,
   prepare,
   showToken,
+  subscripted,
 ) where
 
 import Data.Char (isAlphaNum, isDigit, isLetter)
@@ -288,7 +289,7 @@ identifierOrKeyword = do
             || x == '\''
             || isSubscript x
       )
-  let name = T.cons c rest
+  let name = subscripted (T.cons c rest)
   pure $ case name of
     "let" -> TKw KLet
     "unit" -> TKw KUnit
@@ -315,6 +316,26 @@ identifierOrKeyword = do
     _ -> TIdent name
  where
   isSubscript x = x >= '₀' && x <= '₉'
+
+{- | An identifier with its ASCII subscripts in their unicode spelling
+(design §2.8): inside it, @_@ followed by digits is those digits as
+subscripts, so @v_0@ is @v₀@ and @x_12@ is @x₁₂@. The first character is
+the identifier's own, so @_0@ stays as it is and no identifier starts
+with a subscript.
+-}
+subscripted :: Text -> Text
+subscripted t = case T.unpack t of
+  [] -> t
+  c : cs -> T.pack (c : go cs)
+ where
+  go = \case
+    '_' : rest@(d : _)
+      | isDigit d ->
+          let (ds, more) = span isDigit rest
+           in map lowered ds ++ go more
+    x : rest -> x : go rest
+    [] -> []
+  lowered d = toEnum (fromEnum '₀' + fromEnum d - fromEnum '0')
 
 isSuperscriptDigit :: Char -> Bool
 isSuperscriptDigit = (`elem` ("⁰¹²³⁴⁵⁶⁷⁸⁹" :: String))

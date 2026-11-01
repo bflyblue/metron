@@ -103,6 +103,21 @@ lexerTests =
     , testCase "keywords and identifiers"
         $ toks "let x' = true in x'"
           @?= Right [TKw KLet, TIdent "x'", TEquals, TKw KTrue, TKw KIn, TIdent "x'"]
+    , testCase "an ASCII subscript is the unicode one (design §2.8)" $ do
+        toks "v_0 x_12 a_1b _0 x_ x__1 e₁"
+          @?= Right
+            [ TIdent "v₀"
+            , TIdent "x₁₂"
+            , TIdent "a₁b"
+            , TIdent "_0"
+            , TIdent "x_"
+            , TIdent "x_₁"
+            , TIdent "e₁"
+            ]
+        -- It once lexed as an identifier of its own, which did not resolve.
+        runLinesP
+          ["let v₀ = 3", "v_0 + 1", "let w_1 = 2", "w₁", ":view v_0", ":view w₁"]
+          @?= Right ["4", "2", "v₀ = 3", "w₁ = 2"]
     , testCase "unicode operators map to canonical tokens"
         $ toks "λx → x ⊗ 2 ÷ 3 ≤ 4 && ¬false"
           @?= Right

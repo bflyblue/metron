@@ -11,31 +11,44 @@ module Metron.Session.Names (
   relabel,
 ) where
 
-import Data.List ( sortOn )
-import Data.Text ( Text )
-import Metron.Codebase
-    ( bindConName,
-      bindFieldName,
-      bindName,
-      bindTypeName,
-      isChartName,
-      isUnitName,
-      lookupConName,
-      lookupFieldName,
-      lookupName,
-      lookupTypeName,
-      markChart,
-      markUnit,
-      setSignature,
-      signatureOf,
-      unbindName,
-      Codebase(uses, names, conNames, typeNames, fieldNames, history) )
-import Metron.NameResolution ( disjointness, isLabel, isNamespace, qualifyWith, LabelKind(..), Qualified(NotFound, Found, Ambiguous) )
-import Metron.Session.Types ( Session(scope, codebase) )
-import Data.Map.Strict qualified as Map ( member )
-import Metron.Syntax qualified as S
-    ( qualify, Pos(Pos), Scope(namespace), Span(Span) )
-import Data.Text qualified as T ( intercalate, stripPrefix, pack )
+import Data.List (sortOn)
+import Data.Map.Strict qualified as Map (member)
+import Data.Text (Text)
+import Data.Text qualified as T (intercalate, pack, splitOn, stripPrefix)
+import Metron.Codebase (
+  Codebase (conNames, fieldNames, history, names, typeNames, uses),
+  bindConName,
+  bindFieldName,
+  bindName,
+  bindTypeName,
+  isChartName,
+  isUnitName,
+  lookupConName,
+  lookupFieldName,
+  lookupName,
+  lookupTypeName,
+  markChart,
+  markUnit,
+  setSignature,
+  signatureOf,
+  unbindName,
+ )
+import Metron.Lexer (subscripted)
+import Metron.NameResolution (
+  LabelKind (..),
+  Qualified (Ambiguous, Found, NotFound),
+  disjointness,
+  isLabel,
+  isNamespace,
+  qualifyWith,
+ )
+import Metron.Session.Types (Session (codebase, scope))
+import Metron.Syntax qualified as S (
+  Pos (Pos),
+  Scope (namespace),
+  Span (Span),
+  qualify,
+ )
 
 {- | A name given to a command: relative to the current namespace, through
 the uses, or absolute with a leading dot (design §7.6).
@@ -51,13 +64,15 @@ uses offer it as several (a type in one namespace and a term in another,
 path. A name that nothing offers is itself.
 -}
 argPaths :: S.Scope -> Codebase -> Text -> [Text]
-argPaths scope c n
+argPaths scope c written
   | Just p <- T.stripPrefix "." n = [p]
   | otherwise = case qualifyWith c.uses known scope n of
       Found full -> [full]
       Ambiguous fulls -> sortOn (\p -> (not (isLabel TypeLabel c p), p)) fulls
       NotFound -> [n]
  where
+  -- Written as an identifier is, with its ASCII subscripts folded (design §2.8).
+  n = T.intercalate "." (map subscripted (T.splitOn "." written))
   known x =
     isLabel TermLabel c x
       || isLabel TypeLabel c x

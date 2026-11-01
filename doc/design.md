@@ -691,6 +691,10 @@ Rules:
   thing it raises, as in m² or x⁻¹".
 - `°` and the arc marks attach to the preceding number with no space and are
   unit atoms, so `45° + 30′` works.
+- Inside an identifier, `_` followed by digits is those digits as
+  subscripts: `v_0` is the identifier `v₀`, and `x_12` is `x₁₂`. The first
+  character is the identifier's own, so `_0` stays `_0`. A name given to a
+  command folds the same way. Names print in their unicode spelling.
 
 The printer emits ASCII by default. `:set unicode on` (§7.3) switches the
 exponents, `->`, `\` and `<= >= /= ||` to their unicode spellings. §7.3 has
@@ -701,7 +705,7 @@ In the REPL a character can be typed by name, as in Julia: `\mu` then TAB
 becomes `μ`, `\pm` becomes `±`, `\^2` becomes `²`. §7.3 has the table. Every
 entry lexes as its ASCII spelling here, or is an identifier letter.
 
-**Implemented in:** `Metron.Lexer` (`symbol`, `superscript`, `isSuperscriptDigit`, `prepare`), `Metron.Unicode` (`completions`, `lookupName`), `Metron.Pretty` (`respell`).
+**Implemented in:** `Metron.Lexer` (`symbol`, `superscript`, `isSuperscriptDigit`, `subscripted`, `prepare`), `Metron.Session.Names` (`argPaths`), `Metron.Unicode` (`completions`, `lookupName`), `Metron.Pretty` (`respell`).
 **Tested by:** "lexer"; "unicode echo"; "repl".
 
 ### 2.9 Desugaring
