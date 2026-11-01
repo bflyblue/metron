@@ -371,7 +371,7 @@ and leaves every other constructor to the traversal:
 | `refsWritten`, `rewriteRefs`, `rewriteRefsWritten` | `Metron.Core` | `Ref` |
 | `inlineRef` | `Metron.Core` | `Ref` |
 | `conTypes` | `Metron.Core` | `Con`, `Case` |
-| `renameTerm`, `weakenBy`, `closedIn` | `Metron.Core` | `Var`, through the variable hook |
+| `renameTerm`, `weakenBy`, `strengthen`, `closedIn` | `Metron.Core` | `Var`, through the variable hook |
 | `rewriteReadings`, `hasReadingMarkers` | `Metron.Infer` | `PrimApp` |
 | `restampTerm` | `Metron.Update` | `Con`, `Case`, `Noise`, `Uncertain` |
 | `child` | `Metron.Branch` | none: a subterm's number is its place in `children` |

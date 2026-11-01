@@ -7,6 +7,7 @@ module Lang.Syntax (
   respellTests,
 ) where
 
+import Control.Monad (forM_)
 import Data.Map.Strict qualified as Map (lookup)
 import Data.Text (Text)
 import Data.Text qualified as T (isInfixOf, unpack)
@@ -433,6 +434,31 @@ prettyTests =
         $ renderRational 5 (1 / 3) @?= "0.33333…"
     , testCase "negative" $ renderRational 20 (-(1 / 4)) @?= "-0.25"
     , testCase "scale zero" $ renderRational 0 (1 / 3) @?= "0…"
+    , testCase
+        "a primitive used as a value prints eta-reduced and reads back (design §2.9)"
+        -- `vmap sqrt` printed as `\x -> vmap (\x' -> sqrt x') x`.
+        $ forM_
+          [ ("vmap sqrt", "vmap sqrt")
+          , ("foldr add 0", "foldr add 0")
+          , ("map add", "map add")
+          , ("outer 2", "outer 2")
+          , ("slice 1 0", "slice 1 0")
+          , ("\\y -> atan2 y", "\\y -> atan2 y")
+          , -- a lambda the user wrote stays one, the binder's name kept
+            ("\\x -> neg x", "\\x -> -x")
+          , ("\\t -> slice 1 0 t", "\\t -> t._.0")
+          , ("\\w h -> w * h", "\\w -> \\h -> w * h")
+          , ("(2 *)", "\\x -> 2 * x")
+          , -- applied, the lambda stays: `sqrt 4` would be another term
+            ("(\\x -> vmap sqrt x) [4]", "(\\x -> vmap sqrt x) [4]")
+          ]
+        $ \(written, printed) ->
+          case runLinesP ["let h = " <> written, ":view h", ":hash h"] of
+            Right [view, hash] -> do
+              view @?= "h = " <> printed
+              runLinesP ["let h = " <> written, "let h' = " <> printed, ":hash h'"]
+                @?= Right [hash]
+            other -> assertFailure (show other)
     ]
 
 -- The unicode echo ------------------------------------------------------------------

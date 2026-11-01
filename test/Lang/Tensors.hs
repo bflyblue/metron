@@ -255,7 +255,7 @@ contractionTests =
           ["let f a = contract 0 1 (permute [1, 0] a)", ":view f", "f [[1, 2], [3, 4]]"]
           @?= Right ["f = \\a -> contract 0 1 (permute [1, 0] a)", "5"]
         runLines ["let g = permute [2, 0, 1]", ":view g"]
-          @?= Right ["g = \\x -> permute [2, 0, 1] x"]
+          @?= Right ["g = permute [2, 0, 1]"]
     ]
 
 sliceTests :: TestTree

@@ -111,6 +111,7 @@ import Metron.Core (
     Var
   ),
   Vec (..),
+  etaHint,
   lengthLimit,
   primArity,
   vecAppend,
@@ -1117,7 +1118,7 @@ eta path0 ctx0 sp (Builder build) args missing = go 0 path0 ctx0
         pure (build (supplied ++ vars))
     | otherwise = do
         record path sp
-        Lam (Hint "x") <$> go (j + 1) (0 : path) (VCons (fresh "eta" j) ctx)
+        Lam etaHint <$> go (j + 1) (0 : path) (VCons (fresh "eta" j) ctx)
 
 -- | Lambdas over a list of parameters, then the body.
 lams :: Path -> Ctx n -> S.Span -> [S.Name] -> S.Expr -> M (Term n)

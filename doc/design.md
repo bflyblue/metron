@@ -720,7 +720,7 @@ written in surface notation.
 | `let f x = e where k = …` | `let f = \x -> let k = … in e`. Where-bindings are non-recursive and scope over `e` |
 | ``a `g` b`` | `g a b` |
 | `(+ 1)`, `(2 *)` | `\x -> x + 1`, `\x -> 2 * x` |
-| `vmap sqrt v`, `foldr add 0 xs` | `vmap (\x -> sqrt x) v`, …: a primitive used as a value is eta-expanded to its arity, because Core primitives are saturated (§5.1). The pretty-printer eta-reduces these for display |
+| `vmap sqrt v`, `foldr add 0 xs` | `vmap (\x -> sqrt x) v`, …: a primitive used as a value is eta-expanded to its arity, because Core primitives are saturated (§5.1). The binders of such a lambda carry a hint no identifier spells (`Metron.Core.etaHint`), and the pretty-printer eta-reduces these for display: `let h = vmap sqrt` views as `h = vmap sqrt`. A lambda the user wrote stays one, `\x -> neg x` views as `\x -> -x`, and so does one applied, since `sqrt 4` would read back as another term. Hints are not hashed, so both read back to the same hash |
 | `f ∘ g` | `\x -> f (g x)` |
 | `3 m²`, `3 m s⁻²` | `scale 3 (m^2)`, `scale 3 (m*s^-2)` (the quantity rule, §2.6) |
 | `20 degC` | `pointOn degC 20` |
@@ -757,7 +757,7 @@ markers for inference to resolve (§2.6). The refusals quote the rule:
 - "permute [0, 0] is not a permutation of 0 .. 1: each position from 0 to 1
   must appear exactly once".
 
-**Implemented in:** `Metron.Desugar` (`desugar`, `eta`, `saturated`, `opPrim`, `specialForm`, `indexedForm`, `primLiterals`, `foldConstant`, `caseOf`, `recordExpr`, `quantityOf`), `Metron.Primitive` (`primArity`), `Metron.Pretty` (`renderTerm`).
+**Implemented in:** `Metron.Desugar` (`desugar`, `eta`, `saturated`, `opPrim`, `specialForm`, `indexedForm`, `primLiterals`, `foldConstant`, `caseOf`, `recordExpr`, `quantityOf`), `Metron.Core` (`etaHint`, `strengthen`), `Metron.Primitive` (`primArity`), `Metron.Pretty` (`renderTerm`, `renderTermUnits`).
 **Tested by:** "desugar"; "contraction and permutation"; "slicing along an axis"; "pretty".
 
 ### 2.10 Component access and qualified names

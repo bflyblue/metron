@@ -36,6 +36,7 @@ module Metron.Core (
   showFullHash,
   hashHasPrefix,
   Hint (..),
+  etaHint,
   NudgeKind (..),
   Label (..),
   renderLabel,
@@ -44,6 +45,7 @@ module Metron.Core (
   Alt (..),
   ConRef (..),
   weakenBy,
+  strengthen,
   alphaEq,
   refs,
   conTypes,
@@ -184,6 +186,14 @@ newtype Hash = Hash ByteString
 newtype Hint = Hint Text
   deriving stock (Eq, Ord, Show)
   deriving newtype (IsString)
+
+{- | The hint on each binder of an eta-expansion the desugarer makes, for a
+primitive used with fewer arguments than its arity (design §2.9). No
+identifier spells it, so the printer can tell such a lambda from one the
+user wrote, and print the primitive as it was written.
+-}
+etaHint :: Hint
+etaHint = Hint "§eta"
 
 {- | The kind of a nudge (design §3.2): a rigorous bound, or a 1σ standard
 uncertainty.
@@ -466,25 +476,38 @@ inlineRef target replacement = go
 
 -- Renaming and weakening ------------------------------------------------------
 
-{- | Apply a renaming of free variables, lifting it under binders. The one use
-is weakening: moving a term under new binders it does not mention.
+{- | Apply a renaming of free variables, lifting it under binders, in an
+applicative: weakening moves a term under new binders it does not
+mention, and strengthening, which can fail, moves it out from under one.
 -}
+renameTermA :: (Applicative f) => (Fin n -> f (Fin m)) -> Term n -> f (Term m)
+renameTermA f =
+  traverseChildren (fmap Var . f) (\hs -> renameTermA (liftFinBy hs f))
+
 renameTerm :: (Fin n -> Fin m) -> Term n -> Term m
-renameTerm f =
-  runIdentity
-    . traverseChildren
-      (Identity . Var . f)
-      (\hs -> Identity . renameTerm (liftFinBy hs f))
+renameTerm f = runIdentity . renameTermA (Identity . f)
 
-liftFin :: (Fin n -> Fin m) -> Fin (S n) -> Fin (S m)
+liftFin ::
+  (Applicative f) => (Fin n -> f (Fin m)) -> Fin (S n) -> f (Fin (S m))
 liftFin f = \case
-  FZ -> FZ
-  FS i -> FS (f i)
+  FZ -> pure FZ
+  FS i -> FS <$> f i
 
-liftFinBy :: Vec k a -> (Fin n -> Fin m) -> Fin (Plus k n) -> Fin (Plus k m)
+liftFinBy ::
+  (Applicative f) =>
+  Vec k a ->
+  (Fin n -> f (Fin m)) ->
+  Fin (Plus k n) ->
+  f (Fin (Plus k m))
 liftFinBy ks f = case ks of
   VNil -> f
   VCons _ rest -> liftFin (liftFinBy rest f)
+
+{- | A term moved out from under its innermost binder, when it does not
+mention it: the inverse of weakening by one.
+-}
+strengthen :: Term (S n) -> Maybe (Term n)
+strengthen = renameTermA (\case FZ -> Nothing; FS i -> Just i)
 
 -- | Move a term under @k@ new innermost binders it does not mention.
 weakenBy :: Vec k a -> Term n -> Term (Plus k n)

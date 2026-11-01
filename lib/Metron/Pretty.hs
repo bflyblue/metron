@@ -27,7 +27,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.Char (intToDigit, isAlphaNum)
 import Data.Either (fromRight)
-import Data.List (sortOn)
+import Data.List (sortOn, unsnoc)
 import Data.Map.Strict qualified as Map (lookup)
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ratio (denominator, numerator, (%))
@@ -99,12 +99,14 @@ import Metron.Core (
   Hash,
   Hint (Hint),
   Lit (LTensor),
-  Nat (Z),
+  Nat (S, Z),
   NudgeKind (..),
   Term (..),
   Vec (..),
+  etaHint,
   renderLabel,
   showHash,
+  strengthen,
   vecAppend,
   vecMap,
   vecToList,
@@ -1052,10 +1054,20 @@ renderTermUnits spelling namer isUnitRef = go 0
       | r < 0 -> paren (prec > 8) (renderRational 20 r)
       | otherwise -> renderRational 20 r
     Lit (LTensor (dims, rs)) -> renderNested (renderRational 20) dims rs
-    Lam (Hint h) b ->
-      let h' = freshen h ctx
-          lambda = if spelling == Unicode then "λ" else "\\"
-       in paren (prec > 0) (lambda <> h' <> arrow <> go 0 (VCons h' ctx) b)
+    -- A primitive used as a value was eta-expanded to its arity (design
+    -- §2.9). It prints as written, `vmap sqrt`, `foldr add 0`, which reads
+    -- back as the same term.
+    Lam{}
+      | Just (p, leading) <- etaPrimitive t
+      , byName ctx p ->
+          if null leading
+            then p
+            else paren (prec > 10) (T.unwords (p : map (go 11 ctx) leading))
+    Lam h b -> lambda prec ctx h b
+    -- A lambda applied keeps its binder: `round e` would read back as the
+    -- primitive applied to `e`, not the lambda that applies it.
+    App (Lam h b) a ->
+      paren (prec > 10) (lambda 10 ctx h b <> " " <> go 11 ctx a)
     App f a -> paren (prec > 10) (go 10 ctx f <> " " <> go 11 ctx a)
     Let (Hint h) e b ->
       let h' = freshen h ctx
@@ -1215,6 +1227,35 @@ renderTermUnits spelling namer isUnitRef = go 0
       _ -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
 
   paren b s = if b then "(" <> s <> ")" else s
+
+  lambda :: Int -> Vec m Text -> Hint -> Term (S m) -> Text
+  lambda prec ctx (Hint h) b =
+    let h' = freshen h ctx
+        backslash = if spelling == Unicode then "λ" else "\\"
+     in paren (prec > 0) (backslash <> h' <> arrow <> go 0 (VCons h' ctx) b)
+
+  -- Lambdas the desugarer made for a primitive used with fewer arguments
+  -- than its arity (design §2.9), with 'etaHint' on their binders: the
+  -- primitive and the arguments it was written with, outside the
+  -- lambdas. The body applies it to those arguments, then to the binders
+  -- in order, which nothing else mentions.
+  etaPrimitive :: Term m -> Maybe (Text, [Term m])
+  etaPrimitive = \case
+    Lam h b | h == etaHint -> do
+      (p, args) <- case b of
+        PrimApp p args -> Just (p, args)
+        _ -> etaPrimitive b
+      (leading, final) <- unsnoc args
+      case final of
+        Var FZ -> (p,) <$> traverse strengthen leading
+        _ -> Nothing
+    _ -> Nothing
+  -- Whether a primitive reads back by its name: an identifier that no
+  -- local shadows.
+  byName :: Vec m Text -> Text -> Bool
+  byName ctx p =
+    fmap (map (.value)) (L.tokenize p) == Right [L.TIdent p]
+      && p `notElem` vecToList ctx
 
   -- A case's alternatives run to the end of the expression, so a term that
   -- ends in one is parenthesised where more text follows it: a let's
