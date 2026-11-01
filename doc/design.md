@@ -848,6 +848,7 @@ accesses, and the desugarer decides what it is:
 
 **Implemented in:** `Metron.Lexer` (`projection`, `wildcard`, `field`), `Metron.Parser` (`atom`, `primary`), `Metron.Desugar` (`qualifiedChain`, `indexedForm`, `fieldVar`), `Metron.NameResolution` (`resolveName`).
 **Tested by:** "slicing along an axis"; "namespaces" › "an absolute .name picks the root's"; "namespaces" › "lexing: a dot not glued to a value is an absolute name"; "data".
+
 ## 3. Values, numbers and units
 
 ### 3.1 The value universe
@@ -1154,7 +1155,8 @@ Exact values become affine only at:
 
 - the nonlinear built-ins of §3.2.2 on arguments whose results are not
   exact rationals.
-- the constant `pi`.
+- the constant `pi`. There is no constant `e`, because `e` is the
+  eccentricity in most orbital code. Euler's number is `exp 1`.
 - `sqrt` of a rational that is not a square (`sqrt 4` is `2`,
   `sqrt (9/4)` is `1.5`).
 - `±`, `±σ`, `noise` and `gauss`.
@@ -2332,6 +2334,7 @@ backend's (§8.2).
 
 **Implemented in:** `Metron.Affine` (`statCoefficients`, `crossCovarianceRows`), `Metron.Eval` (`covarianceMatrix`, `runPrim`), `Metron.Numerical.Linear` (`choleskyRows`), `Metron.Scalar` (`affineCovariance`), `Metron.Prelude` (`covarianceBlocks`).
 **Tested by:** "affine" › "covariance is the square-root factor's product; cholesky inverts it"; "affine" › "cholesky and ±σ refuse a matrix that is provably not symmetric"; "affine" › "v ±σ P is a vector with covariance P, stamped like any ±"; "affine" › ":covariance separates the statistical part from the bound box"; "affine" › "propagateCov2 agrees exactly with the affine forms' own correlation".
+
 ### 3.6 Points and charts: affine quantities
 
 Some quantities are **points**, not amounts: a temperature, an instant, an
@@ -3283,22 +3286,7 @@ beside a length that has one, is a binder of its own (`det : forall n a.
 Mat n a -> Num`). Errors, `:lint` and `:core` print a named slot by name
 and an axis variable as its length.
 
-**Open.** These are known gaps (§10):
-
-- The store's log keeps a re-stamped definition's new version, not the step
-  between, so a chart moved by `:rename` reloads without the intermediate
-  binding in its history.
-- A chart redefined as no chart drops its axes' type label in the session,
-  but the log does not record it.
-- A root chart's origin is along its space's base axes, so a named value
-  there (`let o = [100, 200, 0] m`, `chart site on GCRS at o`) is refused as
-  anonymous. The value needs `o :: forall (a : 3). Vec a m`.
-- `withAxes`'s printed type does not show that its argument is anonymous.
-- `det`'s `Mat n a` reads back with a length of its own, since no type says
-  `card a ~ card n`.
-- The first pass of a group that holds charts falls back to one pass when a
-  chart needs the group's own data constructors. A signature or data field
-  there that names the chart's axes is then refused.
+**Open.** Six known gaps of axis sets, in the store log, chart origins, printing and one-pass groups, are listed in §10.3.
 
 **Implemented in:** `Metron.Infer` (`unifyAxis`, `freshAxis`, `defaultValueAxes`, `generalise`), `Metron.Type.Syntax` (`tyLen`, `namedAxes`, `signatureScheme`, `enterData`), `Metron.Builtin` (`axesDef`, `axesHash`, `axesTag`, `mintedPath`), `Metron.Resolve` (`mintedBy`, `mintTypes`, `labelFrames`, `scopedSignature`), `Metron.Primitive.Types` (`primScheme`), `Metron.Type` (`renderScheme`, `defaultAxes`).
 **Tested by:** "axis slots"; "named axes"; "forall"; "type annotations"; "rotations".
@@ -3833,18 +3821,11 @@ point on a frame with parameters still needs its configuration, so `on`
 covers only points whose conversion needs no `from`. Otherwise the
 desugared `to` is refused as F7 says, and the subtraction is written out.
 
-**Open.** These are deferred or known gaps (§10, §11):
-
-- A frame per item of data (F3).
-- Constraints over `Diff` beyond the pending one (F4).
-- Printing values with `·` (§4.1).
-- A `data` declaration that names a chart's axes, pending in one group with
-  a chart whose definition uses that declaration's fields, is read before
-  the chart (§3.9's one-pass fallback). `:add` the chart first.
-- Whether `astro.State` holds a point on a frame (§3.8).
+**Open.** A frame per item of data (§11.3), constraints over `Diff` beyond the pending one, printing values with `·`, a `data` declaration that names a chart's axes in one group with the chart (§10.3), and whether `astro.State` holds a point (§11.3).
 
 **Implemented in:** `Metron.Parser` (`chartStatement`), `Metron.Desugar` (`desugar`, `spaceNamed`, `refuseMoving`), `Metron.Infer` (`unifyFrame`, `unifyFrameSlot`, `unifySpace`, `overTensor`, `decide`), `Metron.Type.Syntax` (`enterSpace`, `tyFrame`, `chartTypeFrame`), `Metron.Builtin` (`spaceDef`, `spaceHash`, `spaceOf`, `frameDef`, `frameHash`, `frameTag`, `frameDefMoving`), `Metron.Resolve` (`mintedBy`, `mintTypes`, `labelFrames`), `Metron.Eval` (`runPrim`, `chartRoute`, `takesArguments`), `Metron.Primitive.Types` (`primScheme`), `Metron.Pretty` (`renderTermUnits`).
 **Tested by:** "spaces and frames (design §3.10, part F)"; "named axes"; "dimension syntax" › "a point or chart takes a frame"; "turnedCharts"; "movingCharts".
+
 ## 4. Type system
 
 The type system is Hindley-Milner with let-polymorphism. It is extended with
@@ -5170,6 +5151,7 @@ for the whole group, and nothing from the group is stored.
 
 **Implemented in:** `Metron.Resolve` (`processGroup`, `enterGroup`, `freeNames`, `enterComponent`).
 **Tested by:** "codebase"; "end to end".
+
 ## 7. Codebase and names
 
 ### 7.1 Model
@@ -6459,6 +6441,7 @@ coordinates, azimuth, elevation and range), then Lambert.
 
 **Implemented in:** `Metron.Prelude` (`stdlibSource`, `stdlibAliases`, `stdlibDefaultUses`, `stdlibNamespaces`, `stdlibCodebase`, `isLibraryPath`), `Metron.Store` (`stdlibSeed`, `seedStore`), `Metron.Driver` (`seededSession`, `stdlibUpgrade`), `Metron.Codebase` (`addStoredUse`, `removeStoredUse`).
 **Tested by:** "standard library"; "prelude"; "astro (design §7.7)" › "constant sets", "relations", "elements and states", "anomalies and Kepler solvers", "propagation and J2", "manoeuvres"; "limits (design §8.1)" › "constant memory" › "foldl stays lazy in its accumulator; foldl' evaluates it".
+
 ## 8. Evaluation
 
 The evaluator is an environment-passing interpreter over **Typed Core**
@@ -7147,17 +7130,7 @@ For example, `count n = if n * x > 100000 then n else count (n + 1)` with
 10⁵` in its own doubles, up to about 1.4·10⁵ steps, under the default
 `depth` and in constant memory.
 
-**Open.** A value shared with the evaluation around a split (a `let`, an
-argument, a definition the batch shares) is computed once for all its
-copies, and its branch points count the copies of the group that first
-forces it, nominal group first. Its values are right and the same at
-every K, but its table counts only that group. "Left the evaluated path"
-follows control, so a branch point on a value computed off its copies'
-path earlier does not count them. A loop in which samples stop at many
-different steps keeps each stopped group's environment until the loop
-ends. Off the nominal path a recombined number's IEEE value is a NaN, so
-an index position (`exactly`) refuses it there. A readable summary is
-wanted for a branch point inside a loop (§10).
+**Open.** The limits of branch tables (a value shared around a split, control-based "left the path" counts, the memory of stopped groups in a loop, NaN off the nominal path) and a readable summary for a branch point inside a loop are listed in §10.1.
 
 **Implemented in:** `Metron.Remark` (`pend`, `remarksOf`, `tables`), `Metron.Limits` (`reach`, `enter`, `within`), `Metron.Branch` (`tableLines`), `Metron.Eval` (`narrow`, `andThen`, `perOption`, `recombine`, `settle`), `Metron.Scalar` (`scatterM`).
 **Tested by:** "backends (design §8.2)" › "the table at a branch point", "splitting: each sample follows its own branch", "samples N: copies under random rounding"; "limits (design §8.1)" › "depth" › "a tail call through a split is no deeper (design §8.2)", "a split whose value something waits for nests"; "limits (design §8.1)" › "constant memory" › "a loop whose condition carries draws, each sample stopping at its own step".
@@ -7360,6 +7333,7 @@ others is a separate decision.
 
 **Implemented in:** `Metron.Needs` (`needsOf`, `reachedBy`, `checkBackend`), `Metron.Core` (`directUses`), `Metron.Scalar` (`refusalOf`, `sampledOwn`, `refusal`, `needsSamples`, `lacks`).
 **Tested by:** "backends (design §8.2)" › "built-ins a backend lacks are refused before running"; "backends (design §8.2)" › ":backend chooses the evaluator of the scalars" › "the declared σ, gauss, mid and sd need samples under double", "the double backend's are refused under affine"; "backends (design §8.2)" › "declared σ is sampled: Monte Carlo under double" › "the definitions that were refused run once samples are set".
+
 ## 9. Module layout and libraries
 
 The library code is in `lib/`, the executable in `src/` and the tests in `test/`, as [style.md](style.md) requires. [overview.md](overview.md) §5 maps every module to its job and its design section. This section states the rules that the layout keeps.
@@ -7389,6 +7363,7 @@ Seeds that once failed are replayed by name, so that they cannot fail again unse
 
 **Implemented in:** `src/Main.hs`; `cbits/limits.c`; `metron.cabal`.
 **Tested by:** "properties" › "blind programs", "typed programs", "replayed seeds"; "affine"; "dimension syntax"; "backends (design §8.2)" › "the running bound contains the true error".
+
 ## 10. Roadmap
 
 This is the one list of pending work. Everything built is described in its own section and is not repeated here. An item is **Designed** when its design is decided and only the building is left, and **Open** when the design is not settled. Questions that need the owner's decision are in §11. Each item names the section that has its context.
@@ -7494,6 +7469,7 @@ These need the owner's decision. Each names the section with its context.
   - A type outside the edited file whose fields use an edited type keeps the old one, and the report says so. `:rename` re-declares such a type (§7.2). Follow it here too, or ask for a wider scope?
   - A definition deleted from the file that another definition in the file still uses resolves to the codebase's version while the file is entered, so the user is left stale (and told). Refuse that edit instead?
   - What does not round-trip through `:export` (§7.4) does not round-trip through `:edit`: two labels on one stamped or recursive reference, and a stamp that no longer matches its path, report as updated from an unchanged file.
+
 ## 12. Worked scenario: iapetus
 
 These sessions show the pieces working together on the owner's orbital-mechanics use. The first two are copied from a run of `metron --no-codebase -i` and print what is shown, except the hashes, which depend on the build's standard library. The last three are the test suite's own sessions: each test checks every output shown, so they stay true.

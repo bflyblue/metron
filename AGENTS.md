@@ -66,7 +66,7 @@ Run hlint with the project's extensions. Plain `hlint` misreads record-dot synta
 hlint -XGHC2024 -XOverloadedRecordDot -XOverloadedStrings -XNoFieldSelectors -XDuplicateRecordFields lib src test
 ```
 
-Run `fourmolu -i` on each file you touch. Follow [doc/style.md](doc/style.md). The code must build with `-Wall` and no warnings. If `hlint` or `fourmolu` is not on your PATH, use `nix run nixpkgs#hlint --` or `nix run nixpkgs#fourmolu --`.
+Run `fourmolu -i` on each file you touch. Follow [doc/style.md](doc/style.md). The cabal file turns on `-Wall`. Keep the build free of warnings. If `hlint` or `fourmolu` is not on your PATH, use `nix run nixpkgs#hlint --` or `nix run nixpkgs#fourmolu --`.
 
 ## Testing norms
 
@@ -80,4 +80,4 @@ Run `fourmolu -i` on each file you touch. Follow [doc/style.md](doc/style.md). T
 
 - Commit in green steps: each commit builds and passes the tests.
 - End each commit message with the attribution lines that the harness gives you.
-- Update doc/design.md, the changelog and the tests in the same commit as the code they describe.
+- Keep doc/design.md (its **Implemented in:** and **Tested by:** lines included) in step with the code you change.
