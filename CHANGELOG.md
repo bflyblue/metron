@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A product's operand of unknown rank keeps the lengths it already has
+  when it is defaulted (design §4.2). Before, the whole operand became a
+  scalar for `*` or a vector for `·`, so `\x -> [[x]] · [2]` and `\x ->
+  [x] * [1]` were refused with "a tensor of rank at least 2 against a
+  vector", though each checks once `x`'s rank is known. Now only the
+  unknown part takes the least rank it can: they are `Num -> Vec 1` and
+  `Num -> Mat 1 1`. A bare operand defaults as before. Found by the typed
+  generator at a fixed seed, which is now a test.
+
 - Exact while small (design §3.2.8, as built): an exact result of `+`,
   `-`, `*`, `/` or an integer power stays exact while the shorter of its
   numerator and denominator is within eight times `p + 4` digits (224 at

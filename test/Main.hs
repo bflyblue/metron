@@ -89,6 +89,7 @@ import System.Directory (
 import System.FilePath ((</>))
 import Test.Tasty
 import Test.Tasty.HUnit
+import Test.Tasty.Options (IsOption (parseValue))
 import Test.Tasty.QuickCheck
 
 {- | Every test has a five-minute limit as a backstop to 'caseLimit', which
@@ -401,6 +402,15 @@ elabText src = do
     first (("type error: " <>) . (.message)) (elaborateClosed noLookup t)
   _ <- first ("lint: " <>) (lintClosed noLookup typed)
   pure typed
+
+-- | Inference accepts a closed program, and lint gives its schemes back.
+lintsAsInferred :: Text -> Assertion
+lintsAsInferred src =
+  case parseExpr src >>= first renderDesugarError . desugarClosed noResolver of
+    Left err -> assertFailure (T.unpack err)
+    Right (t, _) -> case elaborateClosed noLookup t of
+      Left err -> assertFailure (T.unpack err.message)
+      Right (schemes, typed) -> lintClosed noLookup typed @?= Right schemes
 
 showCore :: TTerm Z -> Text
 showCore = renderTTerm (\_ _ _ -> "#ref") VNil
@@ -3115,13 +3125,17 @@ timedForAllShow gen shown k = forAllShow gen shown (within caseLimit . k)
 timedForAll :: (Show a, Testable p) => Gen a -> (a -> p) -> Property
 timedForAll gen = timedForAllShow gen show
 
+-- | The first invariant of core.md §9: lint gives back inference's schemes.
+lintAgreesProperty :: Source -> Property
+lintAgreesProperty src = forProgram src $ \e ->
+  withElaborated src e $ \_ (schemes, typed) -> lintClosed noLookup typed === Right schemes
+
 -- | The invariants of core.md §9 over programs from one source.
 pipelineProperties :: Source -> [TestTree]
 pipelineProperties src =
-  [ testProperty "whatever inference accepts, lint accepts with the same type"
-      $ forProgram src
-      $ \e ->
-        withElaborated src e $ \_ (schemes, typed) -> lintClosed noLookup typed === Right schemes
+  [ testProperty
+      "whatever inference accepts, lint accepts with the same type"
+      (lintAgreesProperty src)
   , -- Only well-typed terms: an ill-typed one such as a number applied to
     -- a number has no surface spelling because of the quantity rule, and
     -- `:view` only ever prints stored, checked definitions.
@@ -3880,7 +3894,30 @@ propertyTests =
             generatorProperty
             : pipelineProperties typedSource
         )
+    , -- Seeds that once failed, kept so that they cannot fail again unseen
+      -- once the random runs have moved on.
+      testGroup
+        "replayed seeds"
+        [ -- `[[x]] · [2]` with `x` of unknown rank: the default made the
+          -- operand a vector instead of keeping its two lengths.
+          replayed
+            "typed programs: a product's operand keeps the lengths it has"
+            "(SMGen 15595120681743185597 18082114794975947591,66)"
+            (lintAgreesProperty typedSource)
+        ]
     ]
+
+{- | A property run once, at a seed given as @--quickcheck-replay@ takes
+it. A seed that does not parse fails the test rather than running at a
+random one.
+-}
+replayed :: TestName -> String -> Property -> TestTree
+replayed name seed prop = case parseValue seed of
+  Just replay ->
+    localOption (replay :: QuickCheckReplay)
+      . localOption (QuickCheckTests 1)
+      $ testProperty name prop
+  Nothing -> testCase name (assertFailure ("the replay seed does not parse: " <> seed))
 
 {- | The typed generator checks itself: inference succeeds on every program
 and the type it was built for is an instance of the inferred scheme.
@@ -4143,6 +4180,33 @@ lintRegressionTests =
             Left err -> T.isInfixOf "lengths differ" err @? T.unpack err
             Right v -> assertFailure (show v)
           evalText "(\\k -> let g = \\v -> k * v in g [1, 2]) 3" @?= Right ["[3, 6]"]
+    , -- Found by the type-directed generator. The default for a product's
+      -- operand of unknown rank made the whole operand a scalar (for `*`)
+      -- or a vector (for `@`), even one such as `[[x]]` that already had
+      -- two lengths, so inference refused programs that check once `x`'s
+      -- rank is known. The open part takes the least rank it can instead.
+      testCase "an unknown-rank product operand keeps the lengths it has" $ do
+        typeOfText "\\x -> [[x]] @ [2]"
+          @?= Right "forall d (a : 1). Num d -> Vec a d"
+        typeOfText "\\x -> [x] * [1]"
+          @?= Right "forall d (a : 1) (b : 1). Num d -> Mat a b d"
+        typeOfText "\\x -> [[x]] * [1]"
+          @?= Right "forall d (a : 1) (b : 1) (c : 1). Num d -> Tensor [a, b, c] d"
+        typeOfText "(\\x -> [[x]] @ [2]) 3" @?= Right "Vec 1"
+        -- Dot's two constraints share their prefix; the result's two
+        -- lengths make the left operand a matrix.
+        typeOfText "\\x -> (x @ [[1, 2]]).0.1"
+          @?= Right "forall n (a : 1) d. Mat (n + 1) a d -> Num d"
+        -- The bare defaults are unchanged.
+        typeOfText "\\x -> x @ [2]" @?= Right "forall (a : 1) d. Vec a d -> Num d"
+        typeOfText "\\x -> x * [2]" @?= Right "forall d (a : 1). Num d -> Vec a d"
+        mapM_
+          lintsAsInferred
+          [ "\\x -> [[x]] @ [2]"
+          , "\\x -> [x] * [1]"
+          , "\\x -> [[x]] * [1]"
+          , "\\x -> (x @ [[1, 2]]).0.1"
+          ]
     , -- Found by the type-directed generator. A let inside an operand of a
       -- product or of `==` settled the operator's own constraint, created
       -- outside the let, and defaulted its operand to a scalar.

@@ -9,13 +9,15 @@ Two things make "well-typed by construction" more than plain Hindley-Milner
 here (design §4.2):
 
 * The products and equality have deferred constraints, and at a let or at
-  the top level an unsolved one is defaulted: the left operand of @*@
-  becomes a scalar, and both operands of a @*@ or @/@ whose role nothing
-  fixes (design §3.10, U9), the left operand of @\@@ a vector, an unknown
-  @==@ type @Num@. The generator tracks whether inference can see the rank of each
-  expression it builds ('pinned'), and wraps an operand whose rank it
-  cannot see and whose intended type is not the default (@e + 0 [m]@,
-  @e && true@).
+  the top level an unsolved one is defaulted: the unseen part of the left
+  operand of @*@ or @\@@ takes the least rank it can, so a left operand
+  of unseen rank becomes a scalar for @*@ and a vector for @\@@, and one
+  with leading lengths, such as @[[x]]@, keeps them with @x@ a scalar;
+  both operands of a @*@ or @/@ whose role nothing fixes (design §3.10,
+  U9) become scalars, and an unknown @==@ type @Num@. The generator tracks
+  whether inference can see the rank of each expression it builds
+  ('pinned'), and wraps an operand whose rank it cannot see and whose
+  intended type is not the default (@e + 0 [m]@, @e && true@).
 * Inference may find a more general type than the one a subterm was built
   for (@\\x -> 1@ built at @Num -> Num@ is @a -> Num@). That is harmless
   in HM, and 'instanceOf' is how the property checks the result: the
