@@ -23,6 +23,7 @@ import Metron.Double (
   Spread (..),
   digitsOfDbl,
   estimateOf,
+  showDouble,
   showSampled,
  )
 import Metron.Driver (feed, seededSession, startBackend, startSettings)
@@ -47,6 +48,7 @@ backendTests =
     , printingTests
     , boundTests
     , samplesTests
+    , warningTests
     , switchingTests
     , checkTests
     , settingTests
@@ -591,6 +593,139 @@ samplesTests =
               @? T.unpack out
           other -> assertFailure (show other)
     ]
+
+-- The count in the warning ------------------------------------------------------------------
+
+{- | The unstable-branch warning counts the copies the condition held for,
+over every batch (design §8.2): the same text, counts and order at every
+@cores@.
+-}
+warningTests :: TestTree
+warningTests =
+  testGroup
+    "a branch the copies disagree on: the count over all the copies"
+    [ testCase "the count is the copies the condition held for" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        let held = VU.length (VU.filter (> 0.9) cs)
+        (held > 0 && held < 1000) @? show held
+        runWith batchedConfig (defs <> ["if x > 0.9 then 1 else 2"])
+          @?= Right ["1\n" <> drawn "1 > 0.9" held 1000]
+    , testCase
+        "the same at 1, 2 and 4 cores, with batches whose copies all agree"
+        $ do
+          cs <- copiesAfter batchedConfig defs "x"
+          -- Only the smallest copy fails x > m, so at 4 cores three batches
+          -- record nothing: their copies count all the same.
+          let m = VU.minimum cs
+              held = VU.length (VU.filter (> 0.9) cs)
+              slices = [VU.slice b.first b.count cs | b <- batchesOf 1000 4]
+              src =
+                "[if x > "
+                  <> showDouble m
+                  <> " then 1 else 2, if x > 0.9 then 1 else 2]"
+              at k = runWith batchedConfig{cores = k} (defs <> [src])
+          length (filter (VU.all (> m)) slices) @?= 3
+          at 1
+            @?= Right
+              [ T.intercalate
+                  "\n"
+                  [ "[1, 1]"
+                  , drawn ("1 > " <> showDouble m) 999 1000
+                  , drawn "1 > 0.9" held 1000
+                  ]
+              ]
+          at 2 @?= at 1
+          at 4 @?= at 1
+    , testCase "two comparisons with the same operands are two warnings" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        let held = VU.length (VU.filter (> 0.9) cs)
+            at k =
+              runWith
+                batchedConfig{cores = k}
+                (defs <> ["[if x > 0.9 then 1 else 2, if x > 0.9 then 3 else 4]"])
+        at 1
+          @?= Right
+            [ T.intercalate
+                "\n"
+                ["[1, 3]", drawn "1 > 0.9" held 1000, drawn "1 > 0.9" held 1000]
+            ]
+        at 4 @?= at 1
+    , testCase "one comparison made twice with the same operands sums its copies" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        let held = VU.length (VU.filter (> 0.9) cs)
+            at k =
+              runWith
+                batchedConfig{cores = k}
+                (defs <> ["let f z = if z > 0.9 then 1 else 0", "f x + f x"])
+        at 1 @?= Right ["2\n" <> drawn "1 > 0.9" (2 * held) 2000]
+        at 4 @?= at 1
+    , testCase "a comparison in a loop warns for each set of operands" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        let held n = VU.length (VU.filter (\c -> c * n > 0.9 * n) cs)
+            line n = drawn (showDouble n <> " > " <> showDouble (0.9 * n)) (held n) 1000
+            at k =
+              runWith
+                batchedConfig{cores = k}
+                ( defs
+                    <> [ "let go n acc = if n == 0 then acc else go (n - 1) (if x * n > 0.9 * n then acc + 1 else acc)"
+                       , "go 3 0"
+                       ]
+                )
+        at 1 @?= Right [T.intercalate "\n" ("3" : map line [3, 2, 1])]
+        at 2 @?= at 1
+        at 4 @?= at 1
+    , testCase "copies that differ by rounding alone say so, with their count" $ do
+        let cfg = doubleConfig{samples = 10}
+        sum' <- either (assertFailure . T.unpack) pure (doubleOf cfg "1 + 1e-16")
+        held <- case sum'.estimate of
+          Copies RoundingOnly cs -> pure (VU.length (VU.filter (> 1) cs))
+          other -> assertFailure (show other) >> pure 0
+        (held > 0 && held < 10) @? show held
+        let at k = runWith cfg{cores = k} ["if 1 + 1e-16 > 1 then 1 else 2"]
+            line =
+              "2\nwarning: the comparison 1 > 1 goes both ways (true in "
+                <> tshow held
+                <> " of 10 samples): the condition is lost in rounding"
+        at 1 @?= Right [line]
+        at 2 @?= at 1
+        at 4 @?= at 1
+    , testCase "an if and a case on the comparison warn alike" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        let held = VU.length (VU.filter (> 0.9) cs)
+            at k e = runWith batchedConfig{cores = k} (defs <> [e])
+        at 1 "if x > 0.9 then 1 else 2"
+          @?= Right ["1\n" <> drawn "1 > 0.9" held 1000]
+        at 1 "case x > 0.9 of true -> 1; false -> 2"
+          @?= at 1 "if x > 0.9 then 1 else 2"
+        at 4 "case x > 0.9 of true -> 1; false -> 2"
+          @?= at 1 "if x > 0.9 then 1 else 2"
+    ]
+ where
+  defs = ["let x = 1 ±σ 0.1"]
+  drawn :: Text -> Int -> Int -> Text
+  drawn cmp held n =
+    "warning: the comparison "
+      <> cmp
+      <> " goes both ways (true in "
+      <> tshow held
+      <> " of "
+      <> tshow n
+      <> " samples): the condition depends on the declared uncertainty"
+  tshow :: (Show a) => a -> Text
+  tshow = T.pack . show
+
+-- | The copies of a number, evaluated after some lines.
+copiesAfter :: Config -> [Text] -> Text -> IO (VU.Vector Double)
+copiesAfter cfg ls src = either (\e -> assertFailure (T.unpack e) >> pure VU.empty) pure $ do
+  s <- sessionAfter cfg ls
+  e <- parseExpr src
+  (_, v) <- evalValueAs @Dbl s.config s.scope s.staging src e
+  case v of
+    VTensor [] _ _ buf
+      | [Right x] <- V.toList buf
+      , Copies _ cs <- x.estimate ->
+          Right cs
+    _ -> Left ("no copies: " <> src)
 
 -- The settings of the copies --------------------------------------------------------------
 
