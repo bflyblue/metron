@@ -64,7 +64,6 @@ module Metron.Affine (
   sincSqM,
   coscSqM,
   enclose,
-  tidyM,
   floorM,
   ceilM,
   roundM,
@@ -437,7 +436,10 @@ the bound remainder as a fresh bound nudge (the midpoint's rounding
 joins it), and measures for discarded statistical corrections. A mixed
 correction shares the original randomness and must not be added as an
 independent statistical nudge. Its size relative to the retained sigma
-is recorded, just like a discarded statistical quadratic term.
+is recorded, just like a discarded statistical quadratic term. The
+linear part's coefficients are shortened first ('shortenLinear'): the
+bound ones' rounding joins the fresh nudge, the statistical ones' the
+measure.
 -}
 opResult ::
   Text ->
@@ -449,21 +451,96 @@ opResult ::
   Magnitude ->
   Magnitude
 opResult name p operands boundSize statSize sk base =
-  finish p (withFresh name p operands boundSize (markedBy (skews [sk, mixed]) base))
+  finish
+    p
+    ( withFresh
+        name
+        p
+        operands
+        (boundSize + short.boundError)
+        (markedBy (skews [sk, mixed]) short.value)
+    )
  where
-  firstSigma = statSigma p base
+  short = shortenLinear p base
+  statSize' = statSize + short.statError
+  firstSigma = statSigma p short.value
   mixed
-    | statSize == 0 = Nothing
+    | statSize' == 0 = Nothing
     | firstSigma == 0 = Just (Skew Nothing name)
     | otherwise =
         Just
           (Skew
-            (Just (roundUpSig 3 ((statSize / firstSigma) ^ (2 :: Int))))
+            (Just (roundUpSig 3 ((statSize' / firstSigma) ^ (2 :: Int))))
             (name <> ": uncertain statistical coefficient"))
 
 -- | Round up to @k@ significant digits: an upper bound stays one.
 roundUpSig :: Int -> Rational -> Rational
 roundUpSig k r = roundUpAt (precisionExponent k r) r
+
+{- | The number of significant digits a non-linear operation keeps in the
+rationals it produces (design §3.2.8): the working precision and four
+guard digits.
+-}
+shortDigits :: Precision -> Int
+shortDigits p = p + 4
+
+-- | A rational to 'shortDigits' significant digits, rounded to nearest.
+shorten :: Precision -> Rational -> Rational
+shorten p r = roundAt (precisionExponent (shortDigits p) r) r
+
+{- | An approximation with its value shortened ('shorten') and the rounding
+added to its error bound.
+-}
+shortenApprox :: Precision -> Approx -> Approx
+shortenApprox p (v, e) = let v' = shorten p v in (v', e + abs (v - v'))
+
+{- | A form with its coefficients shortened ('shortenLinear'), and the total
+rounding of its bound coefficients and of its statistical ones.
+-}
+data Shortened = Shortened
+  { value :: Magnitude
+  , boundError :: Rational
+  , statError :: Rational
+  }
+
+{- | The linear part of a non-linear operation's result with every
+coefficient shortened (design §3.2.8). Multiplying coefficients by slopes
+and midpoints adds their digits, and an iteration feeds a value back
+into several places that are added again, so without this a
+coefficient's length multiplies with every step of the iteration.
+
+A bound coefficient is rounded to a grid of 'shortDigits' significant
+digits of the value's size (the larger of its midpoint and its radius),
+and the slack rounded up onto it; their rounding joins the operation's
+fresh nudge. A coefficient below the grid rounds to zero and its nudge
+goes: an iteration that converges would otherwise keep every nudge it
+ever made, each smaller and longer than the last. A statistical
+coefficient is rounded to 'shortDigits' significant digits of its own,
+so it never vanishes; its rounding is an error in the coefficient, which
+is measured against the retained σ as a slope's error is, never made a
+bound.
+-}
+shortenLinear :: Precision -> Magnitude -> Shortened
+shortenLinear p = \case
+  x@(Exact _) -> Shortened x 0 0
+  x@(Affine m ts s sk) ->
+    let e = precisionExponent (shortDigits p) (max (abs m) (radius x))
+        grid = 10 ^^ e :: Rational
+        short (c, n) = case n.kind of
+          Bound -> (roundAt e c, n)
+          Stat -> (shorten p c, n)
+        ts' = Map.map short ts
+        changes =
+          Map.elems
+            ( Map.intersectionWith
+                (\(c, n) (c', _) -> (n.kind, abs (c - c')))
+                ts
+                ts'
+            )
+        errorOf k = sum [d | (k', d) <- changes, k' == k]
+        s' = fromInteger (ceiling (s / grid)) * grid
+     in Shortened (affine m ts' s' sk) (errorOf Bound) (errorOf Stat)
+
 
 recipM :: Precision -> Magnitude -> Either ArithError Magnitude
 recipM p x
@@ -524,7 +601,9 @@ linearise x f slope = case x of
   Affine _ ts s sk -> affine f (Map.map (first (slope *)) ts) (abs slope * s) sk
 
 {- | Add a fresh bound nudge named after the operation, its operands and the
-precision, so that identical computations share it (design §3.2.4).
+precision, so that identical computations share it (design §3.2.4). Its
+size is rounded up to 'shortDigits' significant digits: a bound stays
+one, and a remainder summed from long series errors stays short.
 -}
 withFresh ::
   Text -> Precision -> [Magnitude] -> Rational -> Magnitude -> Magnitude
@@ -534,7 +613,7 @@ withFresh name p operands size base =
       -- error joins this operation's nudge rather than the anonymous slack,
       -- so that two evaluations of the same operation still cancel exactly.
       m' = if Map.null ts && s == 0 then m else roundAt (precisionExponent p m) m
-      size' = size + abs (m - m')
+      size' = roundUpSig (shortDigits p) (size + abs (m - m'))
    in if size' == 0
         then base
         else
@@ -626,7 +705,10 @@ enclosure and the slope's own error, each times σ, are measured against
 the retained σ, never made independent nudges or bounds. The statistical
 correction is measured, not carried: the largest change of @f'@ from
 the midpoint to @m − σ@ or @m + σ@, relative to @|f'(m)|@, unbounded
-when either point leaves the function's domain.
+when either point leaves the function's domain. The value and the slope
+at the midpoint are shortened ('shortenApprox') before they are used,
+their rounding joining their errors: a series summed in exact rationals
+is far longer than its precision, and the slope multiplies every nudge.
 -}
 liftWith ::
   Text ->
@@ -642,8 +724,8 @@ liftWith name p inDomain f f' remainderOver spread x =
   let m = midpoint x
       r = boundRadius x
       sigma = statSigma p x
-      (fm, fe) = f m
-      (fm', fe') = f' m
+      (fm, fe) = shortenApprox p (f m)
+      (fm', fe') = shortenApprox p (f' m)
       boundSize = fe + fe' * r + (if r == 0 then 0 else remainderOver fm fm')
       statSize = (fe' + spread) * sigma
       measured
@@ -910,29 +992,6 @@ positions.
 enclose ::
   Text -> Precision -> [Magnitude] -> Rational -> Magnitude -> Magnitude
 enclose name p operands size base = finish p (withFresh name p operands size base)
-
-{- | Round the bound coefficients and the slack of an affine form to
-@p + 4@ significant digits of its size, the error joining one fresh
-nudge, as a midpoint's rounding does (design §3.2.7, §3.2.8). 'mulM'
-rounds the midpoint it forms but not the coefficients it multiplies, so
-a long chain of products, a matrix series, would otherwise carry
-coefficients whose digits grow with every step. Statistical coefficients
-are kept as they are: their error would not be a bound.
--}
-tidyM :: Precision -> Magnitude -> Magnitude
-tidyM p x = case x of
-  Exact _ -> x
-  Affine m ts s sk ->
-    let e = precisionExponent (p + 4) (max (abs m) (radius x))
-        grid = 10 ^^ e :: Rational
-        roundBound (c, nd)
-          | nd.kind == Bound = (roundAt e c, nd)
-          | otherwise = (c, nd)
-        ts' = Map.map roundBound ts
-        s' = fromInteger (ceiling (s / grid)) * grid
-        err =
-          sum (zipWith (\(c, _) (c', _) -> abs (c - c')) (Map.elems ts) (Map.elems ts'))
-     in finish p (withFresh "round" p [x] err (affine m ts' s' sk))
 
 -- Rounding to integers --------------------------------------------------------------------
 

@@ -1,7 +1,8 @@
 module Main (main) where
 
 import Support.Render (render)
-import Control.Monad (forM_)
+import Control.Exception (evaluate)
+import Control.Monad (foldM, forM_)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -9,6 +10,7 @@ import Data.ByteString qualified as BS
 import Data.List (sort)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
+import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -2226,7 +2228,7 @@ turnedChartTests =
           @?= Right
             [ "chart pf on eci step km by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"
             , "[887785.38831025442775…, 5462310.6012293745031…, 4286607.0498705616718…] eci"
-            , "[6999.9999999999999999…, -1.3e-20 ± 9.1e-20, 6e-21 ± 2.4e-20] pf"
+            , "[6999.9999999999999999…, -1.3e-20 ± 8.9e-20, 6e-21 ± 2.4e-20] pf"
             , "[-6.9508252147247766082…, -0.95119863033241545830…, 2.6516504294495532165…] km s^-1"
             , "[4.5767451288348659649…, -1.3794313182928119555…, 1.0170048711651340350…; -1.3794313182928119555…, 4.0482548711651340350…, -3.5986214154904359879…; 1.0170048711651340350…, -3.5986214154904359879…, 5.3749999999999999999…] km^2"
             , "7000 km"
@@ -2409,7 +2411,7 @@ movingChartTests =
                    ]
             )
             @?= Right
-              ["stored use astro", "true", "3.6460579499989e-8 ± 5.3e-20", "[0, 0, 0] m"]
+              ["stored use astro", "true", "3.6460579499999995e-8 ± 2.9e-23", "[0, 0, 0] m"]
     , testCase
         "two levels: a station under a spinning Earth, a dish spinning on the station"
         $ do
@@ -4351,6 +4353,25 @@ displayTests =
 -- enclosures, declared uncertainty keeps its identity, and printing never
 -- shows a digit that is not certain.
 
+{- | Newton's method for Kepler's equation, @E − e sin E = M@, with the
+step count as an argument: @ea@ is used four times in each step.
+-}
+keplerIter :: Text
+keplerIter =
+  "let keplerIter m e k ea = if k == 0 then ea else keplerIter m e (k - 1) (ea - (ea - e * sin ea * 1 rad - m) / (1 - e * cos ea))"
+
+-- | @k@ steps of 'keplerIter' from @M = 235.4°@, @e = 0.4@.
+keplerAt :: Int -> Text
+keplerAt k = "keplerIter (235.4 deg) 0.4 " <> T.pack (show k) <> " (235.4 deg)"
+
+-- | The most decimal digits in a numerator or denominator of a magnitude.
+longestRational :: Magnitude -> Int
+longestRational = \case
+  Exact r -> digits r
+  Affine m ts s _ -> maximum (digits m : digits s : map (digits . fst) (Map.elems ts))
+ where
+  digits r = max (length (show (abs (numerator r)))) (length (show (denominator r)))
+
 {- | A position and a velocity built on two shared statistical nudges, so
 that their cross-covariance is full: over @(e0, e1)@, @r@ has coefficient
 rows @(1, 2)@ and @(3, 0)@, @v@ rows @(0, 1)@ and @(1, -1)@.
@@ -5443,6 +5464,48 @@ affineTests =
         $ case evalText "sqrt ((7 / cos (-4 rad))^2)" of
           Right [v] -> T.isPrefixOf "10.70919959526478302" v @? T.unpack v
           other -> assertFailure (show other)
+    , -- Newton's method for Kepler's equation took ten times longer with
+      -- every step (four steps took 110 s): nothing shortened the
+      -- coefficients and remainders a non-linear operation produced, and a
+      -- value fed back into several places multiplied their length.
+      localOption (mkTimeout 5_000_000)
+        . testCase "Newton's method for Kepler's equation iterates quickly"
+        $ runLinesP [keplerIter, keplerAt 12]
+          @?= Right ["220.51207476752206740… deg"]
+    , localOption (mkTimeout 20_000_000)
+        . testCase "an iteration's cost grows linearly with its steps"
+        $ do
+          let timed k = do
+                start <- getPOSIXTime
+                out <- evaluate (runLinesP [keplerIter, keplerAt k])
+                _ <- evaluate (either T.length (sum . map T.length) out)
+                end <- getPOSIXTime
+                out @?= Right ["220.51207476752206740… deg"]
+                pure (end - start)
+          t10 <- timed 10
+          t20 <- timed 20
+          -- linear is 2; the suite runs tests in parallel, so allow noise
+          t20 < 5 * t10 @? "10 steps took " <> show t10 <> ", 20 took " <> show t20
+    , localOption (mkTimeout 10_000_000)
+        . testCase "an iteration's rationals stay short"
+        $ do
+          let p = 24
+              meanAnomaly =
+                uncertain
+                  Stat
+                  (Tagged "m" 0)
+                  (mulM p (Exact (1177 / 5)) (scaleM (1 / 180) (piM p)))
+                  (Exact (1 / 1000))
+              step ea = do
+                let e = Exact (2 / 5)
+                    residual = subM (subM ea (mulM p e (sinM p ea))) meanAnomaly
+                    den = subM (Exact 1) (mulM p e (cosM p ea))
+                subM ea <$> divM p residual den
+              steps k = foldM (\ea _ -> step ea) meanAnomaly [1 .. k :: Int]
+          case (longestRational <$> steps 10, longestRational <$> steps 40) of
+            (Right l10, Right l40) ->
+              l40 <= 2 * l10 @? "10 steps: " <> show l10 <> " digits; 40: " <> show l40
+            other -> assertFailure (show other)
     , testProperty "sqrt, recip, exp and log enclose their true values"
         $ \(Positive n) (Positive d) e1 (Small k) ->
           let r = fromIntegral (n :: Int) / fromIntegral (d :: Int) :: Rational
