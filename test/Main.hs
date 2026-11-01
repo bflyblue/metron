@@ -1,12 +1,13 @@
 module Main (main) where
 
-import Support.Render (render)
 import Control.Exception (evaluate)
 import Control.Monad (foldM, forM_)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Support.Render (render)
 
+import Astro (astroTests)
 import Data.List (sort)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
@@ -17,6 +18,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import Gen (exprDepth, genProgram, instanceOf)
 import Metron.Affine hiding (Builtin, DivideByZero)
 import Metron.Affine qualified as A
 import Metron.Builtin
@@ -52,6 +54,7 @@ import Metron.Infer (
  )
 import Metron.Lexer hiding (TNum, TProj)
 import Metron.Lexer qualified as L
+import Metron.NameResolution (LabelKind (..), Qualified (..), qualifyName)
 import Metron.Parser
 import Metron.Prelude (
   isLibraryPath,
@@ -61,17 +64,15 @@ import Metron.Prelude (
   stdlibNamespaces,
  )
 import Metron.Pretty
+import Metron.Primitive.Types
 import Metron.Repl qualified as R
-import Metron.NameResolution ( LabelKind (..), Qualified (..), qualifyName )
-import Metron.Type.Syntax ( queryScheme )
 import Metron.Store
 import Metron.Syntax qualified as S
 import Metron.TCore
-import Metron.Primitive.Types
-import Metron.Type.Match
 import Metron.Type
+import Metron.Type.Match
+import Metron.Type.Syntax (queryScheme)
 import Metron.Unicode qualified as U
-import Gen (exprDepth, genProgram, instanceOf)
 import System.Directory (
   createDirectoryIfMissing,
   doesDirectoryExist,
@@ -136,6 +137,7 @@ main =
       , partUTests
       , partFTests
       , roleTests
+      , astroTests
       ]
 
 -- Term-building helpers -------------------------------------------------
@@ -663,6 +665,17 @@ parserTests =
         $ parseShape "1 + 2 * 3" @?= Right (O S.Add (N 1) (O S.Outer (N 2) (N 3)))
     , testCase "left associativity of -"
         $ parseShape "10 - 3 - 2" @?= Right (O S.Sub (O S.Sub (N 10) (N 3)) (N 2))
+    , testCase "conversions chain from the left: x to a to b is (x to a) to b" $ do
+        parseShape "x to a to b" @?= Right (O S.To (O S.To (V "x") (V "a")) (V "b"))
+        parseShape "x to a to b to c"
+          @?= Right (O S.To (O S.To (O S.To (V "x") (V "a")) (V "b")) (V "c"))
+        parseShape "x + 1 to a to b"
+          @?= Right (O S.To (O S.To (O S.Add (V "x") (N 1)) (V "a")) (V "b"))
+        -- After a conversion from a configuration, or a subtraction in a frame.
+        parseShape "v from c to c1 to km"
+          @?= Right (O S.To (A (A (V "v") (V "c")) (V "c1")) (V "km"))
+        parseShape "b .- a on c to km"
+          @?= Right (O S.To (O S.On (O S.PSub (V "b") (V "a")) (V "c")) (V "km"))
     , testCase "application binds tighter than operators"
         $ parseShape "f x + g y"
           @?= Right (O S.Add (A (V "f") (V "x")) (A (V "g") (V "y")))
@@ -1095,17 +1108,16 @@ codebaseTests =
           ls "--charts degC" @?= Right ["chart degC : Chart degC"]
           ls "--types"
             @?= Right
-              ( [ -- The library's types: a body's state, the joint covariance
-                  -- in blocks, the spaces and the charts' frames, then Bool,
-                  -- lists and pairs.
-                  astroState
-                , astroStateCon
-                , "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
-                , "Cov2 : forall n d d1. Mat n n (d^2) -> Mat n n (d*d1) -> Mat n n (d1^2) -> Cov2 n d d1"
-                , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
-                , "Circle : Num m -> Shape"
-                , "Rect : Num m -> Num m -> Shape"
-                ]
+              ( -- The library's types: astro's records, the joint covariance
+                -- in blocks, the spaces and the charts' frames, then Bool,
+                -- lists and pairs.
+                astroTypes
+                  ++ [ "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
+                     , "Cov2 : forall n d d1. Mat n n (d^2) -> Mat n n (d*d1) -> Mat n n (d1^2) -> Cov2 n d d1"
+                     , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
+                     , "Circle : Num m -> Shape"
+                     , "Rect : Num m -> Num m -> Shape"
+                     ]
                   ++ builtinTypeListing
                   ++ [ "frame degC"
                      , "frame degF"
@@ -1249,43 +1261,77 @@ codebaseTests =
               assertBool "distinct" (T.takeWhile (/= ' ') cur /= old)
             other -> assertFailure (show other)
           Left err -> assertFailure (T.unpack err)
-    , testCase "historical values and functions resolve in expressions and definitions" $ do
-        let setup = ["let f x = x + 1", ":add"]
-            digest = "#" <> hashShownAs setup "f"
-            changed = setup ++ ["let f x = x + 2", ":update"]
-        expecting (runLines (changed ++
-          ["f" <> digest <> " 10", digest <> " 10", "let old = f" <> digest,
-           "old 10", "let f = 99 in f" <> digest <> " 10"])) $ \outs ->
-            lastN 4 outs @?= replicate 4 "11"
-        expecting (runLines (changed ++ [":unname f", "f" <> digest <> " 10"])) $ \outs ->
-          last outs @?= "11"
+    , testCase
+        "historical values and functions resolve in expressions and definitions"
+        $ do
+          let setup = ["let f x = x + 1", ":add"]
+              digest = "#" <> hashShownAs setup "f"
+              changed = setup ++ ["let f x = x + 2", ":update"]
+          expecting
+            ( runLines
+                ( changed
+                    ++ [ "f" <> digest <> " 10"
+                       , digest <> " 10"
+                       , "let old = f" <> digest
+                       , "old 10"
+                       , "let f = 99 in f" <> digest <> " 10"
+                       ]
+                )
+            )
+            $ \outs ->
+              lastN 4 outs @?= replicate 4 "11"
+          expecting (runLines (changed ++ [":unname f", "f" <> digest <> " 10"])) $ \outs ->
+            last outs @?= "11"
     , testCase "hash arguments do not steal measurement labels" $ do
         let digest = hashText 5
-        expecting (runLines ["let x = 5", ":add", "let ident x = x",
-          "ident (" <> digest <> ")", "let n = 5 ± 1 #sensor", "n - n",
-          "let n2 = 5 ± 1#sensor", "n - n2"]) $ \outs ->
+        expecting
+          ( runLines
+              [ "let x = 5"
+              , ":add"
+              , "let ident x = x"
+              , "ident (" <> digest <> ")"
+              , "let n = 5 ± 1 #sensor"
+              , "n - n"
+              , "let n2 = 5 ± 1#sensor"
+              , "n - n2"
+              ]
+          )
+          $ \outs ->
             lastN 3 outs @?= ["5", "0", "0"]
     , testCase "historical names respect namespace lookup and explicit absolute paths" $ do
         let setup = ["namespace lab\n  let f x = x + 1", ":add"]
             digest = "#" <> hashShownAs setup "lab.f"
-        expecting (runLines (setup ++ ["lab.f" <> digest <> " 3",
-          ":use lab", "f" <> digest <> " 4", ".lab.f" <> digest <> " 5"])) $ \outs -> do
+        expecting
+          ( runLines
+              ( setup
+                  ++ [ "lab.f" <> digest <> " 3"
+                     , ":use lab"
+                     , "f" <> digest <> " 4"
+                     , ".lab.f" <> digest <> " 5"
+                     ]
+              )
+          )
+          $ \outs -> do
             take 1 (drop 1 outs) @?= ["4"]
             lastN 2 outs @?= ["5", "6"]
     , testCase "hash references validate missing, malformed and ambiguous prefixes" $ do
         expectError (runLines ["#w"]) "invalid hash prefix"
-        expectError (runLines ["#0000000000000000000000000000000000000000000000000000"])
+        expectError
+          (runLines ["#0000000000000000000000000000000000000000000000000000"])
           "no stored version matches"
-        expectError (runLines ["let x = 5", ":add", "x" <> hashText 6])
+        expectError
+          (runLines ["let x = 5", ":add", "x" <> hashText 6])
           "no stored version matches"
-        expectError (runLines ["let x = 5", ":add", hashText 5 <> ".0"])
+        expectError
+          (runLines ["let x = 5", ":add", hashText 5 <> ".0"])
           "member index is only valid"
         let numbers = [0 .. 64]
             groups = Map.fromListWith (++) [(T.take 2 (hashText n), [n]) | n <- numbers]
             prefix = case filter ((> 1) . length . snd) (Map.toList groups) of
               (p, _) : _ -> p
               [] -> error "65 hashes must share one of 32 initial digits"
-            setup = ["let n" <> T.pack (show n) <> " = " <> T.pack (show n) | n <- [0 :: Int .. 64]]
+            setup =
+              ["let n" <> T.pack (show n) <> " = " <> T.pack (show n) | n <- [0 :: Int .. 64]]
         expectError (runLines (setup ++ [":add", prefix])) "ambiguous hash reference"
     , testCase "recursive-group references select and validate members" $ do
         let setup = ["let down n = if n == 0 then 0 else down (n - 1)", ":add"]
@@ -1299,22 +1345,45 @@ codebaseTests =
         let setup = ["let ident x = x", "let five = 5", ":add"]
             fn = hashTerm (Lam (Hint "x") (Var FZ))
             value = hashTerm (num 5)
-            source = renderTerm (\digest _ _ -> showHash digest) VNil
-              (App (Ref fn Nothing (Hint "")) (Ref value Nothing (Hint "")))
+            source =
+              renderTerm
+                (\digest _ _ -> showHash digest)
+                VNil
+                (App (Ref fn Nothing (Hint "")) (Ref value Nothing (Hint "")))
         source @?= showHash fn <> " (" <> showHash value <> ")"
         expecting (runLines (setup ++ [source])) $ \outs -> last outs @?= "5"
-    , testCase "historical references do not become dependencies on new local bindings" $ do
-        let setup = ["let x = 5", "let y = x + 1", "let z = y * 2", ":add"]
-        expecting (runLines (setup ++ ["let x = x" <> hashText 5 <> " + 1\nlet newOnly = x * 3",
-          ":update", "x", "y", "z", "newOnly", ":todo"])) $ \outs ->
-          lastN 5 outs @?= ["6", "7", "14", "18", "nothing to do"]
-    , testCase "historical record fields and tensor projections remain postfix operations" $ do
-        let setup = ["data Box = Box {value :: Num}", "let box = Box {value = 7}",
-                     "let vector = [3, 4]", ":add"]
-            boxRef = "box#" <> hashShownAs setup "box"
-            vectorRef = "vector#" <> hashShownAs setup "vector"
-        expecting (runLines (setup ++ [boxRef <> ".value", "(" <> vectorRef <> ").0"])) $ \outs ->
-          lastN 2 outs @?= ["7", "3"]
+    , testCase
+        "historical references do not become dependencies on new local bindings"
+        $ do
+          let setup = ["let x = 5", "let y = x + 1", "let z = y * 2", ":add"]
+          expecting
+            ( runLines
+                ( setup
+                    ++ [ "let x = x" <> hashText 5 <> " + 1\nlet newOnly = x * 3"
+                       , ":update"
+                       , "x"
+                       , "y"
+                       , "z"
+                       , "newOnly"
+                       , ":todo"
+                       ]
+                )
+            )
+            $ \outs ->
+              lastN 5 outs @?= ["6", "7", "14", "18", "nothing to do"]
+    , testCase
+        "historical record fields and tensor projections remain postfix operations"
+        $ do
+          let setup =
+                [ "data Box = Box {value :: Num}"
+                , "let box = Box {value = 7}"
+                , "let vector = [3, 4]"
+                , ":add"
+                ]
+              boxRef = "box#" <> hashShownAs setup "box"
+              vectorRef = "vector#" <> hashShownAs setup "vector"
+          expecting (runLines (setup ++ [boxRef <> ".value", "(" <> vectorRef <> ").0"])) $ \outs ->
+            lastN 2 outs @?= ["7", "3"]
     , testCase "historical unit and chart roles come from the referenced version" $ do
         let setup = ["unit track = 400 m", ":add"]
             ref = "track#" <> hashShownAs setup "track"
@@ -1328,11 +1397,20 @@ codebaseTests =
     , testCase "historical references survive a store reload" $ withTempStore $ \dir -> do
         let setup = ["let f x = x + 1", ":add"]
             digest = "#" <> hashShownAs setup "f"
-        _ <- persistLines dir (setup ++ ["let f x = x + 2", ":update",
-          "let previous = f" <> digest, ":add"])
+        _ <-
+          persistLines
+            dir
+            ( setup
+                ++ [ "let f x = x + 2"
+                   , ":update"
+                   , "let previous = f" <> digest
+                   , ":add"
+                   ]
+            )
         (s, notes) <- reload dir
         notes @?= []
-        linesIn s ["previous 10", "f" <> digest <> " 10", "f 10"] @?= Right ["11", "11", "12"]
+        linesIn s ["previous 10", "f" <> digest <> " 10", "f 10"]
+          @?= Right ["11", "11", "12"]
     , testCase "alpha-equivalent definitions share a hash"
         $ expecting
           ( outputsWhere
@@ -3689,6 +3767,30 @@ partUTests =
           file <- editFileOf s [ns]
           (_, outs) <- edited (EditNamespace ns) file s
           (ns, outs) @?= (ns, ["nothing changed"])
+    , testCase "a case that more text follows prints in parentheses and reads back" $ do
+        -- A field access is a case, so `let x = r.mass in …` is one.
+        let defs =
+              [ "data B = B {mass :: Num kg}"
+              , "let f r = let x = r.mass in x * 2"
+              , "let g r = if (case r of B m -> m > 1 kg) then 1 else 2"
+              , "let k b = case b of B m -> (case m > 1 kg of true -> 1; false -> 2)"
+              ]
+        views <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            (runLinesP (defs ++ [":view f", ":view g"]))
+        views
+          @?= [ "f = \\r -> let x = (case r of B mass -> mass) in x * 2"
+              , "g = \\r -> if (case r of B m -> m > 1 kg) then 1 else 2"
+              ]
+        -- Each printed body, entered again, is the same term.
+        forM_ ["f", "g", "k"] $ \n ->
+          expecting (runLinesP (defs ++ [":view " <> n, ":hash " <> n])) $ \case
+            [v, hsh] ->
+              expecting (runLinesP (take 1 defs ++ ["let " <> v, ":hash " <> n])) $ \outs ->
+                lastN 1 outs @?= [hsh]
+            other -> assertFailure (show other)
     ]
 
 roleTests :: TestTree
@@ -4141,6 +4243,12 @@ preludeTests =
         evalP "1 L to m^3" @?= Right ["0.001 m^3"]
         evalU ["astro", "physics"] "1 AU / c to s"
           @?= Right ["499.00478383615641191… s"]
+    , testCase "conversions chain from the left, and print back so" $ do
+        evalP "1 km to m to km" @?= Right ["1 km"]
+        evalP "20 degC to degF to kelvin" @?= Right ["293.15 kelvin"]
+        evalP "1.5 h to min to s" @?= Right ["5400 s"]
+        runLinesP ["let f x = x to m to km", ":view f", "f (1500 m)"]
+          @?= Right ["f = \\x -> x to m to km", "1.5 km"]
     , testCase "constants are exact where SI defines them so"
         $ evalU ["physics"] "c" @?= Right ["299792458 m s^-1"]
     , testCase "the hour is hr, with h an alias; Planck's h needs use physics" $ do
@@ -4503,7 +4611,9 @@ affineTests =
         $ do
           evalText "6.67430e-11 ±σ 1.5e-15" @?= Right ["6.67430e-11 ±σ 1.5e-15"]
           evalText "(6.67430e-11 ±σ 1.5e-15) * (2 ± 0.1)"
-            @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12) (non-linear: mul: uncertain statistical coefficient, second-order term 5% of the first-order σ; a mean and a σ do not describe it)"]
+            @?= Right
+              [ "1.335e-10 ±σ 3e-15 (bound 6.7e-12) (non-linear: mul: uncertain statistical coefficient, second-order term 5% of the first-order σ; a mean and a σ do not describe it)"
+              ]
           -- σ by σ is second order: measured, never a bound (design §3.2)
           evalText "(1 ±σ 0.1) * (1 ±σ 0.1)"
             @?= Right
@@ -4566,7 +4676,9 @@ affineTests =
         evalText "let n = 0 ±σ 1 in n - n" @?= Right ["0"]
     , testCase "expm refuses statistical inputs instead of erasing them" $ do
         let refused src = case evalP src of
-              Left err -> T.isInfixOf "expm with statistical uncertainty is not supported" err @? T.unpack err
+              Left err ->
+                T.isInfixOf "expm with statistical uncertainty is not supported" err
+                  @? T.unpack err
               Right out -> assertFailure (show out)
         refused "let n = 0 ±σ 1 in expm [n, 0; 0, 0]"
         refused "let n = 0 ±σ 1 in expm [0, n; -n, 0]"
@@ -4580,11 +4692,11 @@ affineTests =
         -- the delta method's second-order term, |f''|·σ² against |f'|·σ
         evalText "exp (0 ±σ 0.1)"
           @?= Right
-              [ "1.0 ±σ 0.1 (non-linear: exp, second-order term 11% of the first-order σ; a mean and a σ do not describe it)"
+            [ "1.0 ±σ 0.1 (non-linear: exp, second-order term 11% of the first-order σ; a mean and a σ do not describe it)"
             ]
         evalText "sqrt (100 ±σ 10)"
           @?= Right
-              [ "10.0 ±σ 0.5 (non-linear: sqrt, second-order term 5.4% of the first-order σ; a mean and a σ do not describe it)"
+            [ "10.0 ±σ 0.5 (non-linear: sqrt, second-order term 5.4% of the first-order σ; a mean and a σ do not describe it)"
             ]
         -- the threshold is a setting
         runLines [":set nonlinear 10", "(1 ±σ 0.1) * (1 ±σ 0.1)"]
@@ -4738,10 +4850,10 @@ affineTests =
             , "  bound  f @0    1e-9          100% of bound"
             , "  bound  sqrt    1e-26         0% of bound"
             ]
-    , testCase "the prelude's G carries its σ and the derived masses inherit it" $ do
+    , testCase "the library's G carries its σ and a mass derived from it inherits it" $ do
         evalU ["astro"] "G" @?= Right ["6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
-        evalU ["astro"] "M_earth" @?= Right ["5.97217e24 ±σ 1.3e20 kg"]
-        case evalU ["astro"] ":budget M_earth" of
+        evalU ["astro"] "iau2015.earth.mu / G" @?= Right ["5.97217e24 ±σ 1.3e20 kg"]
+        case evalU ["astro"] ":budget iau2015.earth.mu / G" of
           Right (_ : _ : row : _) -> T.isInfixOf "σ      G" row && T.isInfixOf "100% of σ²" row @? T.unpack row
           other -> assertFailure (show other)
     , testCase "a unit is its own term: an amount of the same size is not one" $ do
@@ -4856,7 +4968,8 @@ affineTests =
           @?= Left "error: cholesky needs a symmetric matrix: entries .0.1 and .1.0 differ"
         -- Overlap is not proof of symmetry.
         evalP "cholesky [4, 2 ± 0.1; 2, 3]"
-          @?= Left "error: cholesky needs a symmetric matrix: symmetry of entries .0.1 and .1.0 cannot be established"
+          @?= Left
+            "error: cholesky needs a symmetric matrix: symmetry of entries .0.1 and .1.0 cannot be established"
         evalP "[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2" @?= Right ["[0 ±σ 1, 0.0 ±σ 1.0] m"]
     , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
         runLinesP
@@ -5730,18 +5843,19 @@ storeTests =
             , ":ls --types"
             ]
             @?= withBuiltinTypes
-              [ "[1, 0; 0, 1] m^2"
-              , "[0, 0; 0, 0] m s"
-              , "Cov2 {rr = [1, 0; 0, 1] m^2, rv = [0, 0; 0, 0] m s, vv = [1, 0; 0, 1] s^2}"
-              , "rr [1, 0; 0, 1] m^2"
-              , "rv [0, 0; 0, 0] m s"
-              , "vv [1, 0; 0, 1] s^2"
-              , "bound box ([0, 0] m, [0, 0] s)"
-              , astroState
-              , astroStateCon
-              , "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
-              , "Cov2 : forall n d d1. Mat n n (d^2) -> Mat n n (d*d1) -> Mat n n (d1^2) -> Cov2 n d d1"
-              ]
+              ( [ "[1, 0; 0, 1] m^2"
+                , "[0, 0; 0, 0] m s"
+                , "Cov2 {rr = [1, 0; 0, 1] m^2, rv = [0, 0; 0, 0] m s, vv = [1, 0; 0, 1] s^2}"
+                , "rr [1, 0; 0, 1] m^2"
+                , "rv [0, 0; 0, 0] m s"
+                , "vv [1, 0; 0, 1] s^2"
+                , "bound box ([0, 0] m, [0, 0] s)"
+                ]
+                  ++ astroTypes
+                  ++ [ "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
+                     , "Cov2 : forall n d d1. Mat n n (d^2) -> Mat n n (d*d1) -> Mat n n (d1^2) -> Cov2 n d d1"
+                     ]
+              )
     , testCase
         "a root binding shadows the library's on reload; :use and :unuse persist"
         $ withTempStore
@@ -5870,7 +5984,8 @@ storeTests =
           opened <- openStore theSeed dir
           case opened of
             Left err ->
-              err @?= T.pack dir <> ": this codebase is format 10; this metron opens format 12"
+              err
+                @?= T.pack dir <> ": this codebase is format 10; this metron opens format 12"
             Right _ -> assertFailure "opened a store of another format"
           snapshot dir >>= (@?= before)
           listDirectory dir >>= (@?= entries) . sort
@@ -6909,9 +7024,32 @@ replTests =
                   ]
         completeAt s "b.ma" @?= Just ("b", [R.Completion ".mass" "mass" True])
         map (.display) (R.completions s "b" ".ma") @?= ["mass"]
-        -- Every field completes, the library's Cov2 and State fields among them.
+        -- Every field completes, the library's among them: Cov2's, and
+        -- astro's State, Body, Elements and Transfer.
         map (.display) (R.completions s "b" ".")
-          @?= ["epoch", "mass", "pos", "rr", "rv", "vel", "vv"]
+          @?= [ "a"
+              , "argp"
+              , "dv1"
+              , "dv2"
+              , "dv3"
+              , "e"
+              , "epoch"
+              , "flattening"
+              , "i"
+              , "j2"
+              , "mass"
+              , "mu"
+              , "nu"
+              , "pos"
+              , "raan"
+              , "radius"
+              , "rate"
+              , "rr"
+              , "rv"
+              , "tof"
+              , "vel"
+              , "vv"
+              ]
     , testCase ":load completes file names" $ do
         completeAt seeded ":load fo" @?= Nothing
         R.loadsFile " :load " @? ":load"
@@ -7830,12 +7968,14 @@ namespaceTests =
           (runLinesP [":export orbitl"])
           "`orbitl` is not a namespace; to write a file give a path like orbitl.metron"
         fmap fst (exportRequest s ["orbitl"])
-          @?= Left "`orbitl` is not a namespace; to write a file give a path like orbitl.metron"
+          @?= Left
+            "`orbitl` is not a namespace; to write a file give a path like orbitl.metron"
         expectError
           (runLinesP [":export nowhere out.metron"])
           "`nowhere` is not a namespace"
         fmap fst (exportRequest s ["out.metron"]) @?= Right (Just "out.metron")
-        fmap fst (exportRequest s ["orbital", "out.metron"]) @?= Right (Just "out.metron")
+        fmap fst (exportRequest s ["orbital", "out.metron"])
+          @?= Right (Just "out.metron")
         fmap snd (exportRequest s ["orbital", "out.metron"])
           @?= exportSource s (Just "orbital")
     , testCase ":export refuses a definition on a version no name points at"
@@ -8169,14 +8309,31 @@ editTests =
         file' <-
           replaceOnce "unit km = kilo * 1 metre\n" "unit km = 1001 m\n" file
         (s', outs) <- edited (EditNamespace "si") file' s
-        -- The library's own users are in the file; the user's are propagated,
-        -- two independent ones in an order their hashes decide.
+        -- The library's own users in si are in the file; the others are
+        -- propagated, the user's and astro.de440's bodies (written in km),
+        -- independent ones in an order their hashes decide.
         take 1 outs @?= [T.replace "si.km" "km" (movedLine "updated" s s' "si.km")]
         sort (drop 1 outs)
           @?= sort
-            [ movedLine "upgraded" s s' "orbital.earth"
-            , movedLine "upgraded" s s' "trip"
-            ]
+            ( [ movedLine "upgraded" s s' "orbital.earth"
+              , movedLine "upgraded" s s' "trip"
+              ]
+                ++ [ movedLine "upgraded" s s' ("astro.de440." <> b)
+                   | b <-
+                       [ "sun"
+                       , "mercury"
+                       , "venus"
+                       , "earth"
+                       , "moon"
+                       , "mars"
+                       , "jupiter"
+                       , "saturn"
+                       , "uranus"
+                       , "neptune"
+                       , "pluto"
+                       ]
+                   ]
+            )
         snd <$> feed s' "trip to m" @?= Right ["2002 m"]
         -- The codebase without the library: nothing under si is removed.
         plain <- editFileOf s []
@@ -8413,7 +8570,9 @@ stdlibTests =
           length outs @?= librarySize "linalg" + 1 - 3
         expecting (runLinesP [":ls --all"]) $ \outs -> do
           ("unit si.km : Unit m" `elem` outs) @? "full paths with --all"
-          length outs @?= length stdlibNames + 3 - 6
+          -- six records (Cov2, Pair, and astro's State, Body, Elements and
+          -- Transfer) list two lines for one label, and their 21 fields none
+          length outs @?= length stdlibNames + 6 - 21
         runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
     , testCase "a root name shadows the library's: c and physics.c" $ do
         runLinesP
@@ -8566,14 +8725,22 @@ stdlibTests =
           hashOf (lab ++ [":move lab.x field"]) "field.x"
             @?= hashOf [multiline ["namespace field", "  let x = 1 ± 0.1"], ":add"] "field.x"
           -- The library's G: its dependents follow it.
-          expecting (runLinesP [":rename astro.G astro.Gn", ":todo"]) $ \outs ->
-            map (T.unwords . take 2 . T.words) outs
-              @?= [ "renamed `astro.G`"
-                  , "re-hashed astro.Gn"
-                  , "upgraded astro.M_earth"
-                  , "upgraded astro.M_sun"
-                  , "nothing to"
-                  ]
+          expecting
+            ( runLinesP
+                [ "use astro"
+                , "let mEarth = iau2015.earth.mu / G"
+                , ":add"
+                , ":rename astro.G astro.Gn"
+                , ":todo"
+                ]
+            )
+            $ \outs ->
+              map (T.unwords . take 2 . T.words) (drop 1 outs)
+                @?= [ "renamed `astro.G`"
+                    , "re-hashed Gn"
+                    , "upgraded mEarth"
+                    , "nothing to"
+                    ]
     , testCase
         ":rename of a nominal type re-hashes it, its users and the types that use it"
         $ do
@@ -9455,11 +9622,21 @@ withBuiltinTypes ts =
     )
 
 -- | How @:ls --types@ lists the library's @astro.State@ (design §3.8).
-astroState, astroStateCon :: Text
-astroState =
-  "data astro.State c n = astro.State {epoch :: Point c, pos :: Vec n m, vel :: Vec n (m/s)}"
-astroStateCon =
-  "astro.State : forall c n. Point c -> Vec n m -> Vec n (m/s) -> astro.State c n"
+
+{- | The library's records in @astro@, as @:ls --types@ lists them: a body
+of a constant set, the classical elements, a transfer, a body's state.
+-}
+astroTypes :: [Text]
+astroTypes =
+  [ "data astro.Body = astro.Body {mu :: Num (m^3/s^2), radius :: Num m, flattening :: Num, j2 :: Num, rate :: Num (rad/s)}"
+  , "astro.Body : Num (m^3/s^2) -> Num m -> Num -> Num -> Num (rad/s) -> astro.Body"
+  , "data astro.kepler.Elements = astro.kepler.Elements {a :: Num m, e :: Num, i :: Num rad, raan :: Num rad, argp :: Num rad, nu :: Num rad}"
+  , "astro.kepler.Elements : Num m -> Num -> Num rad -> Num rad -> Num rad -> Num rad -> astro.kepler.Elements"
+  , "data astro.maneuver.Transfer = astro.maneuver.Transfer {dv1 :: Num (m/s), dv2 :: Num (m/s), dv3 :: Num (m/s), tof :: Num s}"
+  , "astro.maneuver.Transfer : Num (m/s) -> Num (m/s) -> Num (m/s) -> Num s -> astro.maneuver.Transfer"
+  , "data astro.State c n = astro.State {epoch :: Point c, pos :: Vec n m, vel :: Vec n (m/s)}"
+  , "astro.State : forall c n. Point c -> Vec n m -> Vec n (m/s) -> astro.State c n"
+  ]
 
 -- | The signatures a user wrote: the library's own (`linalg.vimap`) left out.
 userSignatures :: Codebase -> [Text]
@@ -9659,7 +9836,47 @@ partFTests :: TestTree
 partFTests =
   testGroup
     "spaces and frames (design §3.10, part F)"
-    [ testCase "shared chart configurations cancel before uncertainty arithmetic" $ do
+    [ testCase "pointAt places an amount on a chart from its origin along its axes" $ do
+        let setup =
+              [ "space Shop = Vec 3 m"
+              , "chart room on Shop"
+              , "chart bench on room at [2, 1, 0] m by rotz (90 deg)"
+              , "chart pf on room step km by rotz (30 deg) then rotx (45 deg)"
+              ]
+        runLinesP
+          ( setup
+              ++ [ ":type pointAt"
+                 , "pointAt bench ([1, 2, 3] m)"
+                 , -- the origin and the step apply; the axes are the chart's
+                   "pointAt pf ([1, 2, 3] m)"
+                 , "pointAt pf ([1, 2, 3] m) == [0, 0, 0] pf .+ withAxes pf ([1, 2, 3] m)"
+                 , "pointAt bench ([1, 2, 3] m) .- [0, 0, 0] bench"
+                 , "let q = (pointAt bench ([1, 0, 0] m) to room) .- [2, 2, 0] room"
+                 , "q · q < 1e-40 m^2"
+                 , -- a computed amount along the chart's axes
+                   "let off = withAxes pf ([0, 0, 2] m)"
+                 , "pointAt pf (off + off)"
+                 , -- a scalar chart: degC's origin is 273.15 K
+                   "pointAt degC (5 K)"
+                 , "pointAt degF (9 deltaF) to degC"
+                 ]
+          )
+          @?= Right
+            [ "forall c. Chart c -> Diff c -> Point c"
+            , "[1, 2, 3] bench"
+            , "[0.001, 0.002, 0.003] pf"
+            , "true"
+            , "[1, 2, 3] m"
+            , "true"
+            , "[0, 0, 0.004] pf"
+            , "5 degC"
+            , "-12.777777777777777777… degC"
+            ]
+        -- An amount along another chart's axes is not silently relabelled.
+        expectError
+          (runLinesP (setup ++ ["pointAt pf (withAxes bench ([1, 2, 3] m))"]))
+          "the axes of"
+    , testCase "shared chart configurations cancel before uncertainty arithmetic" $ do
         runLinesP
           [ "space Review = Vec 3 m"
           , "chart root on Review"

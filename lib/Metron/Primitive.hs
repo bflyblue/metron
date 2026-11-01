@@ -5,8 +5,8 @@ module Metron.Primitive (
   typedPrims,
 ) where
 
-import Data.Text ( Text )
-import Metron.Dimension ( BaseDim(..) )
+import Data.Text (Text)
+import Metron.Dimension (BaseDim (..))
 
 primArity :: Text -> Maybe Int
 primArity = \case
@@ -81,6 +81,8 @@ primArity = \case
   "pointOn" -> Just 2
   "pointAdd" -> Just 2
   "pointSub" -> Just 2
+  -- An amount placed on a chart from its origin along its axes (design §7.7).
+  "pointAt" -> Just 2
   -- Conversions (design §3.10, F5, F7, F10): a point to a chart, a point
   -- from a configuration of its frame to a chart, and an amount along a
   -- chart's axes, from the space's base axes or from a configuration.

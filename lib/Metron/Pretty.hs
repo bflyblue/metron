@@ -25,88 +25,125 @@ module Metron.Pretty (
   respell,
 ) where
 
-import Control.Applicative ( (<|>) )
-import Data.Char ( intToDigit, isAlphaNum )
-import Data.Maybe ( fromMaybe, isJust, mapMaybe )
-import Data.Ratio ( denominator, numerator, (%) )
-import Data.Text ( Text )
-import Metron.Affine
-    ( decimalExponent,
-      roundAt,
-      sqrtApprox,
-      collapse,
-      divM,
-      midpoint,
-      nonLinearAt,
-      nudges,
-      sigmaOf,
-      skewOf,
-      Collapsed(variance, mid, bound),
-      Magnitude(Affine, Exact),
-      Nudge(origin, kind),
-      Origin(Declared, Tagged),
-      Skew(ratioSq, operation) )
-import Metron.Builtin ( pattern ConsC, pattern FalseC, pattern NilC, pattern TrueC, pattern TupleC )
-import Metron.Core
-    ( renderLabel,
-      showHash,
-      vecAppend,
-      vecMap,
-      vecToList,
-      Alt(Alt),
-      ConRef(UserCon),
-      Fin(..),
-      Hash,
-      Hint(Hint),
-      Lit(LTensor),
-      Nat(Z),
-      NudgeKind(..),
-      Term(..),
-      Vec(..) )
-import Metron.Dimension
-    ( Spelling(..),
-      arrowText,
-      exponentText,
-      productText,
-      renderUnitsIn )
-import Metron.UnitHint ( Preferences, UnitAtom(..), UnitFactor(power, atom), UnitHint(atoms, pinned, dim, factor) )
-import Metron.Eval ( pattern VBool, coordinatesOn, Applied(Applied), Chart(dim, name, applied, step, dims, origin), EvalError(Internal), Value(..) )
-import Metron.Primitive ( baseUnit )
-import Metron.TCore ( patternText )
-import Metron.Type ( conText )
-import Metron.Affine qualified as A ( Origin(Builtin) )
-import Metron.Lexer qualified as L
-    ( prepare,
-      tokenize,
-      Keyword(KFalse, KTrue),
-      Located(span, value),
-      Token(TOp, TIdent, TRParen, TRBracket, TProj, TWild, TField, TAbs,
-            TNum, TSup, TKw, TPlusMinus, TArrow, TLambda) )
-import Data.Map.Strict qualified as Map ( lookup )
-import Metron.Syntax qualified as S ( Pos(Pos), Span(from, to) )
-import Data.Text qualified as T
-    ( concat,
-      all,
-      any,
-      drop,
-      dropWhileEnd,
-      intercalate,
-      isPrefixOf,
-      isSuffixOf,
-      justifyLeft,
-      justifyRight,
-      length,
-      null,
-      replicate,
-      splitOn,
-      take,
-      takeWhile,
-      uncons,
-      unsnoc,
-      unwords,
-      pack,
-      unpack )
-import Data.Vector qualified as V ( head, toList )
+import Control.Applicative ((<|>))
+import Data.Char (intToDigit, isAlphaNum)
+import Data.Map.Strict qualified as Map (lookup)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
+import Data.Ratio (denominator, numerator, (%))
+import Data.Text (Text)
+import Data.Text qualified as T (
+  all,
+  any,
+  concat,
+  drop,
+  dropWhileEnd,
+  intercalate,
+  isPrefixOf,
+  isSuffixOf,
+  justifyLeft,
+  justifyRight,
+  length,
+  null,
+  pack,
+  replicate,
+  splitOn,
+  take,
+  takeWhile,
+  uncons,
+  unpack,
+  unsnoc,
+  unwords,
+ )
+import Data.Vector qualified as V (head, toList)
+import Metron.Affine (
+  Collapsed (bound, mid, variance),
+  Magnitude (Affine, Exact),
+  Nudge (kind, origin),
+  Origin (Declared, Tagged),
+  Skew (operation, ratioSq),
+  collapse,
+  decimalExponent,
+  divM,
+  midpoint,
+  nonLinearAt,
+  nudges,
+  roundAt,
+  sigmaOf,
+  skewOf,
+  sqrtApprox,
+ )
+import Metron.Affine qualified as A (Origin (Builtin))
+import Metron.Builtin (
+  pattern ConsC,
+  pattern FalseC,
+  pattern NilC,
+  pattern TrueC,
+  pattern TupleC,
+ )
+import Metron.Core (
+  Alt (Alt),
+  ConRef (UserCon),
+  Fin (..),
+  Hash,
+  Hint (Hint),
+  Lit (LTensor),
+  Nat (Z),
+  NudgeKind (..),
+  Term (..),
+  Vec (..),
+  renderLabel,
+  showHash,
+  vecAppend,
+  vecMap,
+  vecToList,
+ )
+import Metron.Dimension (
+  Spelling (..),
+  arrowText,
+  exponentText,
+  productText,
+  renderUnitsIn,
+ )
+import Metron.Eval (
+  Applied (Applied),
+  Chart (applied, dim, dims, name, origin, step),
+  EvalError (Internal),
+  Value (..),
+  coordinatesOn,
+  pattern VBool,
+ )
+import Metron.Lexer qualified as L (
+  Keyword (KFalse, KTrue),
+  Located (span, value),
+  Token (
+    TAbs,
+    TArrow,
+    TField,
+    TIdent,
+    TKw,
+    TLambda,
+    TNum,
+    TOp,
+    TPlusMinus,
+    TProj,
+    TRBracket,
+    TRParen,
+    TSup,
+    TWild
+  ),
+  prepare,
+  tokenize,
+ )
+import Metron.Primitive (baseUnit)
+import Metron.Syntax qualified as S (Pos (Pos), Span (from, to))
+import Metron.TCore (patternText)
+import Metron.Type (conText)
+import Metron.UnitHint (
+  Preferences,
+  UnitAtom (..),
+  UnitFactor (atom, power),
+  UnitHint (atoms, dim, factor, pinned),
+ )
 
 -- Numbers ------------------------------------------------------------------------
 
@@ -652,7 +689,7 @@ renderTermUnits spelling namer isUnitRef = go 0
       let h' = freshen h ctx
        in paren
             (prec > 0)
-            ("let " <> h' <> " = " <> go 0 ctx e <> " in " <> go 0 (VCons h' ctx) b)
+            ("let " <> h' <> " = " <> unclosed ctx e <> " in " <> go 0 (VCons h' ctx) b)
     Con c args -> case (c, args) of
       (TrueC, []) -> "true"
       (FalseC, []) -> "false"
@@ -669,16 +706,27 @@ renderTermUnits spelling namer isUnitRef = go 0
     Case sc [Alt FalseC VNil el, Alt TrueC VNil th] ->
       paren
         (prec > 0)
-        ("if " <> go 0 ctx sc <> " then " <> go 0 ctx th <> " else " <> go 0 ctx el)
+        ( "if "
+            <> unclosed ctx sc
+            <> " then "
+            <> unclosed ctx th
+            <> " else "
+            <> go 0 ctx el
+        )
     Case sc alts ->
       paren
         (prec > 0)
-        ("case " <> go 0 ctx sc <> " of " <> T.intercalate "; " (map alt alts))
+        ( "case "
+            <> unclosed ctx sc
+            <> " of "
+            <> T.intercalate "; " (zipWith alt [1 ..] alts)
+        )
      where
-      alt (Alt c hs b) =
+      alt k (Alt c hs b) =
         let names = freshenAll (vecMap (\(Hint h) -> h) hs) ctx
             ctx' = vecAppend names ctx
-         in patternText c (vecToList names) <> arrow <> go 0 ctx' b
+            body = if k == length alts then go 0 ctx' b else unclosed ctx' b
+         in patternText c (vecToList names) <> arrow <> body
     -- A superscript must be glued to the atom it raises (§2.8); after
     -- anything else, a `#label` or a stale `x#hash` included, the power
     -- keeps its caret.
@@ -791,6 +839,21 @@ renderTermUnits spelling namer isUnitRef = go 0
       _ -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
 
   paren b s = if b then "(" <> s <> ")" else s
+
+  -- A case's alternatives run to the end of the expression, so a term that
+  -- ends in one is parenthesised where more text follows it: a let's
+  -- bound value, an if's condition and then-branch, a scrutinee, an
+  -- alternative before another. `let x = r.f in …` is such a term, since
+  -- a field access is a case.
+  unclosed :: Vec m Text -> Term m -> Text
+  unclosed ctx e = paren (endsInCase e) (go 0 ctx e)
+  endsInCase :: Term m -> Bool
+  endsInCase = \case
+    Case _ [Alt FalseC VNil el, Alt TrueC VNil _] -> endsInCase el
+    Case _ _ -> True
+    Let _ _ b -> endsInCase b
+    Lam _ b -> endsInCase b
+    _ -> False
 
   -- A chart's clauses (design §3.10, F10), each a list of none or one
   -- (the generators of any number), each running to the next clause word,
@@ -914,10 +977,11 @@ binary = \case
   "ge" -> Just (">=", 4, N)
   "and" -> Just ("&&", 3, R)
   "or" -> Just ("||", 2, R)
-  "to" -> Just ("to", 1, N)
-  -- A point or an amount to a chart (design §3.10, F5, F10).
-  "toChart" -> Just ("to", 1, N)
-  "toAxes" -> Just ("to", 1, N)
+  "to" -> Just ("to", 1, L)
+  -- A point or an amount to a chart (design §3.10, F5, F10). Conversions
+  -- chain from the left (design §2.5): `x to a to b` is `(x to a) to b`.
+  "toChart" -> Just ("to", 1, L)
+  "toAxes" -> Just ("to", 1, L)
   _ -> Nothing
 
 -- | A magnitude to two significant digits, for radii and bias boxes.
