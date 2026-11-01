@@ -19,30 +19,31 @@ import Test.Tasty.QuickCheck
 
 operatorTests :: TestTree
 operatorTests =
-  testGroup
-    "fixity"
-    [ testCase "every pair of operators, nested either way, reads back" $ do
-        let failures =
-              [ (spelling, printed, back)
-              | spelling <- [Ascii, Unicode]
-              , f <- readable
-              , g <- readable
-              , t <-
-                  [ abc (op f (op g v2 v1) v0)
-                  , abc (op f v2 (op g v1 v0))
-                  ]
-              , let (printed, back) = roundTrip spelling t
-              , back /= Right (show t)
-              ]
-        failures @?= []
-    , testProperty "operator trees read back" $ forAll (genTree 4) $ \body ->
-        let t = abc body
-         in conjoin
-              [ counterexample (T.unpack printed) (back === Right (show t))
-              | spelling <- [Ascii, Unicode]
-              , let (printed, back) = roundTrip spelling t
-              ]
-    ]
+  localOption (mkTimeout 60_000_000)
+    $ testGroup
+      "fixity"
+      [ testCase "every pair of operators, nested either way, reads back" $ do
+          let failures =
+                [ (spelling, printed, back)
+                | spelling <- [Ascii, Unicode]
+                , f <- readable
+                , g <- readable
+                , t <-
+                    [ abc (op f (op g v2 v1) v0)
+                    , abc (op f v2 (op g v1 v0))
+                    ]
+                , let (printed, back) = roundTrip spelling t
+                , back /= Right (show t)
+                ]
+          failures @?= []
+      , testProperty "operator trees read back" $ forAll (genTree 4) $ \body ->
+          let t = abc body
+           in conjoin
+                [ counterexample (T.unpack printed) (back === Right (show t))
+                | spelling <- [Ascii, Unicode]
+                , let (printed, back) = roundTrip spelling t
+                ]
+      ]
 
 -- | The operators the parser reads, as opposed to @to@, which it reads as a keyword.
 readable :: [Fixity]

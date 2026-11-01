@@ -21,41 +21,42 @@ import Test.Tasty.QuickCheck
 
 traversalTests :: TestTree
 traversalTests =
-  testGroup
-    "traversal"
-    [ testProperty "mapChildren id is the identity" $ anyTerm $ \t ->
-        show (mapChildren id t) === show t
-    , testProperty "children are the subterms foldChildren visits" $ anyTerm $ \t ->
-        length (children t) === getSum (foldChildren (const (Sum 1)) t)
-    , testProperty "rewriteRefs rewrites exactly the references the map names"
-        $ forAll genRefMap
-        $ \m -> anyTerm $ \t ->
-          let f h i = Map.lookup (h, i) m
-           in cover 20 (hits m t) "a reference rewritten"
-                $ refsWithIndex (rewriteRefs f t)
-                  === Set.map (\r -> fromMaybe r (Map.lookup r m)) (refsWithIndex t)
-    , testProperty "rewriteRefs with nothing to rewrite is the identity" $ anyTerm $ \t ->
-        show (rewriteRefs (\_ _ -> Nothing) t) === show t
-    , testProperty "inlineRef leaves no reference to its target"
-        $ forAll (elements coreHashes)
-        $ \target -> forAll (sized (genCoreTerm DZ . min 10)) $ \r -> anyTerm $ \t ->
-          let inlined :: Term m -> Bool
-              inlined = Set.member (target, Nothing) . refsWithIndex
-           in not (inlined r)
-                ==> cover 5 (inlined t) "a reference inlined"
-                $ not (inlined (inlineRef target r t))
-    , testProperty "weakening by nothing is the identity" $ anyTerm $ \t ->
-        show (weakenBy VNil t) === show t
-    , testProperty "a closed term weakened is the same term"
-        $ forAll (sized (genCoreTerm DZ . min 40))
-        $ \t -> show (weakenBy (VCons () (VCons () VNil)) t) === show t
-    , testProperty "restamping with identities is the identity" $ anyTerm $ \t ->
-        show (restampTerm id id t) === show t
-    , testProperty "rewriting no readings is the identity" $ anyTerm $ \t ->
-        show (rewriteReadings Map.empty t) === show t
-    , testProperty "blanking hints keeps the term" $ anyTerm $ \t ->
-        alphaEq (blankHints t) t
-    ]
+  localOption (mkTimeout 60_000_000)
+    $ testGroup
+      "traversal"
+      [ testProperty "mapChildren id is the identity" $ anyTerm $ \t ->
+          show (mapChildren id t) === show t
+      , testProperty "children are the subterms foldChildren visits" $ anyTerm $ \t ->
+          length (children t) === getSum (foldChildren (const (Sum 1)) t)
+      , testProperty "rewriteRefs rewrites exactly the references the map names"
+          $ forAll genRefMap
+          $ \m -> anyTerm $ \t ->
+            let f h i = Map.lookup (h, i) m
+             in cover 20 (hits m t) "a reference rewritten"
+                  $ refsWithIndex (rewriteRefs f t)
+                    === Set.map (\r -> fromMaybe r (Map.lookup r m)) (refsWithIndex t)
+      , testProperty "rewriteRefs with nothing to rewrite is the identity" $ anyTerm $ \t ->
+          show (rewriteRefs (\_ _ -> Nothing) t) === show t
+      , testProperty "inlineRef leaves no reference to its target"
+          $ forAll (elements coreHashes)
+          $ \target -> forAll (sized (genCoreTerm DZ . min 10)) $ \r -> anyTerm $ \t ->
+            let inlined :: Term m -> Bool
+                inlined = Set.member (target, Nothing) . refsWithIndex
+             in not (inlined r)
+                  ==> cover 5 (inlined t) "a reference inlined"
+                  $ not (inlined (inlineRef target r t))
+      , testProperty "weakening by nothing is the identity" $ anyTerm $ \t ->
+          show (weakenBy VNil t) === show t
+      , testProperty "a closed term weakened is the same term"
+          $ forAll (sized (genCoreTerm DZ . min 40))
+          $ \t -> show (weakenBy (VCons () (VCons () VNil)) t) === show t
+      , testProperty "restamping with identities is the identity" $ anyTerm $ \t ->
+          show (restampTerm id id t) === show t
+      , testProperty "rewriting no readings is the identity" $ anyTerm $ \t ->
+          show (rewriteReadings Map.empty t) === show t
+      , testProperty "blanking hints keeps the term" $ anyTerm $ \t ->
+          alphaEq (blankHints t) t
+      ]
 
 -- | A property of a term in any scope, with its shapes counted.
 anyTerm :: (Testable p) => (forall n. Term n -> p) -> Property
