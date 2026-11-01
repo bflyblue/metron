@@ -34,6 +34,7 @@ import Metron.Parser (parseExpr)
 import Metron.Scalar (Backend (..), Batch (..), Rounding (..), Scalar)
 import Metron.Session.Types (Session (..), emptySession)
 import Metron.Syntax qualified as S (rootScope)
+import Numeric (showFFloat)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -49,6 +50,8 @@ backendTests =
     , boundTests
     , samplesTests
     , tableTests
+    , splitTests
+    , mixtureTests
     , switchingTests
     , checkTests
     , settingTests
@@ -578,7 +581,8 @@ samplesTests =
 {- | A branch point whose copies would choose otherwise than the branch
 taken has a table (design §8.2, "Branches under copies"): a row for each
 alternative counting the copies whose own scrutinee selects it, summed
-over every batch, so the same at every @cores@.
+over every batch, so the same at every @cores@. Where the copies carry
+draws they split there, and the table is a note.
 -}
 tableTests :: TestTree
 tableTests =
@@ -588,8 +592,8 @@ tableTests =
         cs <- copiesAfter batchedConfig defs "x"
         let held = VU.length (VU.filter (> 0.9) cs)
         (held > 0 && held < 1000) @? show held
-        runWith batchedConfig (defs <> ["if x > 0.9 then 1 else 2"])
-          @?= Right ["1\n" <> drawn "x > 0.9" "1000 samples" (held, 1000 - held) True]
+        tablesOf (runWith batchedConfig (defs <> ["if x > 0.9 then 1 else 2"]))
+          @?= Right [drawn "x > 0.9" "1000 samples" (held, 1000 - held) True]
     , testCase "an if and a case on its condition give the same table" $ do
         let at k e = runWith batchedConfig{cores = k} (defs <> [e])
         at 1 "case x > 0.9 of true -> 1; false -> 2" @?= at 1 "if x > 0.9 then 1 else 2"
@@ -611,14 +615,10 @@ tableTests =
           length (filter (VU.all (> m)) slices) @?= 3
           -- and the batches do run, and merge
           mergesAfter batchedConfig{cores = 4} defs src @?= Right True
-          at 1
+          tablesOf (at 1)
             @?= Right
-              [ T.intercalate
-                  "\n"
-                  [ "[1, 1]"
-                  , drawn ("x > " <> showDouble m) "1000 samples" (999, 1) True
-                  , drawn "x > 0.9" "1000 samples" (held, 1000 - held) True
-                  ]
+              [ drawn ("x > " <> showDouble m) "1000 samples" (999, 1) True
+              , drawn "x > 0.9" "1000 samples" (held, 1000 - held) True
               ]
           at 2 @?= at 1
           at 4 @?= at 1
@@ -630,7 +630,7 @@ tableTests =
                 batchedConfig{cores = k}
                 (defs <> ["[if x > 0.9 then 1 else 2, if x > 0.9 then 3 else 4]"])
             table = drawn "x > 0.9" "1000 samples" (held, 1000 - held) True
-        at 1 @?= Right [T.intercalate "\n" ["[1, 3]", table, table]]
+        tablesOf (at 1) @?= Right [table, table]
         at 4 @?= at 1
     , testCase "a branch point reached twice counts both evaluations" $ do
         cs <- copiesAfter batchedConfig defs "x"
@@ -639,14 +639,13 @@ tableTests =
               runWith
                 batchedConfig{cores = k}
                 (defs <> ["let f z = if z > 0.9 then 1 else 0", "f x + f x"])
-        at 1
+        tablesOf (at 1)
           @?= Right
-            [ "2\n"
-                <> drawn
-                  "z > 0.9"
-                  "2 evaluations × 1000 samples"
-                  (2 * held, 2 * (1000 - held))
-                  True
+            [ drawn
+                "z > 0.9"
+                "2 evaluations × 1000 samples"
+                (2 * held, 2 * (1000 - held))
+                True
             ]
         at 4 @?= at 1
     , testCase "a branch point in a loop: one table over its evaluations" $ do
@@ -661,69 +660,90 @@ tableTests =
                        , "go 3 0"
                        ]
                 )
-        at 1
+        tablesOf (at 1)
           @?= Right
-            [ "3\n"
-                <> drawn
-                  "x * n > 0.9 * n"
-                  "3 evaluations × 1000 samples"
-                  (3000 - elses, elses)
-                  True
+            [ drawn
+                "x * n > 0.9 * n"
+                "3 evaluations × 1000 samples"
+                (3000 - elses, elses)
+                True
             ]
         at 2 @?= at 1
         at 4 @?= at 1
     , testCase
-        "a branch point inside another counts the copies that left at the outer one" $ do
-        cs <- copiesAfter batchedConfig defs "x"
-        let count f = VU.length (VU.filter f cs)
-            at k =
-              runWith
-                batchedConfig{cores = k}
-                (defs <> ["if x > 0.9 then (if x > 1.05 then 1 else 3) else 2"])
-            outer = count (> 0.9)
-            inner = count (> 1.05)
-        at 1
-          @?= Right
-            [ T.intercalate
-                "\n"
-                [ "3"
-                , drawn "x > 0.9" "1000 samples" (outer, 1000 - outer) True
-                , ifTable
-                    "warning"
-                    "x > 1.05"
-                    ( "1000 samples (by the declared uncertainty; "
-                        <> tshow (1000 - outer)
-                        <> " had left the evaluated path at an earlier branch point"
-                    )
-                    (inner, 1000 - inner)
-                    False
-                ]
-            ]
-        at 4 @?= at 1
-    , testCase
-        "a short circuit: the copies that would have gone on have left the path" $ do
-        cs <- copiesAfter batchedConfig defs "x"
-        let count f = VU.length (VU.filter f cs)
-            gone = count (> 1.05)
-            inner = count (> 0.9)
-            at k =
-              runWith
-                batchedConfig{cores = k}
-                (defs <> ["if x > 1.05 && x < 1.1 then 1 else (if x > 0.9 then 2 else 3)"])
-        at 1
-          @?= Right
-            [ "2\n"
-                <> ifTable
-                  "warning"
-                  "x > 0.9"
+        "a branch point inside another: the copies that went the other way left earlier"
+        $ do
+          cs <- copiesAfter batchedConfig defs "x"
+          let count f = VU.length (VU.filter f cs)
+              at k =
+                runWith
+                  batchedConfig{cores = k}
+                  (defs <> ["if x > 0.9 then (if x > 1.05 then 1 else 3) else 2"])
+              outer = count (> 0.9)
+              inner = count (> 1.05)
+          tablesOf (at 1)
+            @?= Right
+              [ drawn "x > 0.9" "1000 samples" (outer, 1000 - outer) True
+              , ifTable
+                  "note"
+                  "x > 1.05"
                   ( "1000 samples (by the declared uncertainty; "
-                      <> tshow gone
+                      <> tshow (1000 - outer)
                       <> " had left the evaluated path at an earlier branch point"
                   )
-                  (inner, 1000 - inner)
-                  True
+                  (inner, outer - inner)
+                  False
+              ]
+          at 2 @?= at 1
+          at 4 @?= at 1
+    , testCase
+        "rounding alone: a short circuit's copies that would have gone on leave the path"
+        $ do
+          let cfg = doubleConfig{samples = 10}
+          sum' <- either (assertFailure . T.unpack) pure (doubleOf cfg "1 + 1e-16")
+          held <- case sum'.estimate of
+            Copies RoundingOnly cs -> pure (VU.length (VU.filter (> 1) cs))
+            other -> assertFailure (show other) >> pure 0
+          let at k =
+                runWith
+                  cfg{cores = k}
+                  ["if 1 + 1e-16 > 1 && 2 > 1 then 1 else (if 1 + 1e-16 > 1 then 2 else 3)"]
+          at 1
+            @?= Right
+              [ "3\n"
+                  <> ifTable
+                    "warning"
+                    "1 + 1e-16 > 1"
+                    ( "10 samples (lost in rounding; "
+                        <> tshow held
+                        <> " had left the evaluated path at an earlier branch point"
+                    )
+                    (held, 10 - held)
+                    False
+              ]
+          at 4 @?= at 1
+    , testCase "draws: a short circuit splits the copies, as an if does" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        let count f = VU.length (VU.filter f cs)
+            both = count (\c -> c > 1.05 && c < 1.1)
+            inner = count (> 0.9) - both
+        tablesOf
+          ( runWith
+              batchedConfig
+              (defs <> ["if x > 1.05 && x < 1.1 then 1 else (if x > 0.9 then 2 else 3)"])
+          )
+          @?= Right
+            [ drawn "x > 1.05 && x < 1.1" "1000 samples" (both, 1000 - both) False
+            , ifTable
+                "note"
+                "x > 0.9"
+                ( "1000 samples (by the declared uncertainty; "
+                    <> tshow both
+                    <> " had left the evaluated path at an earlier branch point"
+                )
+                (inner, 1000 - both - inner)
+                True
             ]
-        at 4 @?= at 1
     , testCase "copies that differ by rounding alone say so, with their count" $ do
         let cfg = doubleConfig{samples = 10}
         sum' <- either (assertFailure . T.unpack) pure (doubleOf cfg "1 + 1e-16")
@@ -746,17 +766,346 @@ tableTests =
         at 4 @?= at 1
     , testCase "`/=` reads as written, and a row of 0 needs no special wording"
         $ runWith batchedConfig (defs <> ["if x /= 1 then 1 else 2"])
-          @?= Right ["2\n" <> drawn "x /= 1" "1000 samples" (1000, 0) False]
+          @?= Right
+            [ "2 (Monte Carlo: mean 1, sd 0, 1000 samples)\n"
+                <> drawn "x /= 1" "1000 samples" (1000, 0) False
+            ]
     , testCase "a case on data whose copies choose nothing has no table"
         $ runWith batchedConfig (defs <> ["case {x, 2} of {} -> 0; y : ys -> y"])
           @?= runWith batchedConfig (defs <> ["x"])
+    , testCase
+        "a case on a list pattern: its scrutinee's samples have their own lengths"
+        $ do
+          cs <- copiesAfter batchedConfig defs "x"
+          let long = VU.length (VU.filter (> 0.95) cs)
+              at k =
+                runWith
+                  batchedConfig{cores = k}
+                  ( defs
+                      <> ["let g y = if y > 0.95 then {y} else {}", "case g x of {} -> 0; z : zs -> z"]
+                  )
+          tablesOf (at 1)
+            @?= Right
+              [ drawn "y > 0.95" "1000 samples" (long, 1000 - long) True
+              , T.intercalate
+                  "\n"
+                  [ "note: the branch at `case g x of` goes both ways across 1000 samples (by the declared uncertainty):"
+                  , "  {}       " <> T.justifyRight 3 ' ' (tshow (1000 - long))
+                  , "  z : zs   "
+                      <> T.justifyRight 3 ' ' (tshow long)
+                      <> "   ← taken (the nominal branch)"
+                  ]
+              ]
+          at 2 @?= at 1
+          at 4 @?= at 1
+    , testCase
+        "a value shared with the evaluation around a split, at 1, 2, 4 and 32 cores"
+        $ do
+          let at k =
+                runWith
+                  batchedConfig{cores = k}
+                  (defs <> ["let w = (if x > 0.85 then 3 else 4) in if x > 0.9 then 1 else w"])
+          at 2 @?= at 1
+          at 4 @?= at 1
+          at 32 @?= at 1
     ]
  where
   defs = ["let x = 1 ±σ 0.1"]
-  -- A table where the copies carry draws, after the condition and the
+  -- A note where the copies carry draws, after the condition and the
   -- copies it is across.
   drawn :: Text -> Text -> (Int, Int) -> Bool -> Text
-  drawn cond across = ifTable "warning" cond (across <> " (by the declared uncertainty")
+  drawn cond across = ifTable "note" cond (across <> " (by the declared uncertainty")
+
+-- Splitting: Monte Carlo follows each sample's own branch --------------------------------
+
+{- | Where the copies carry draws, they are samples: each alternative is
+evaluated with the group of copies that selects it, and the results are
+put back together copy by copy (design §8.2).
+-}
+splitTests :: TestTree
+splitTests =
+  testGroup
+    "splitting: each sample follows its own branch"
+    [ testCase
+        "if x > 0.9 then 1 else 2 at 10⁴ samples: a Bernoulli sample's mean and deviation"
+        $ do
+          -- x = 1 ±σ 0.1 is below 0.9 with probability Φ(−1).
+          let p = 0.15865525393145707 :: Double
+              n = 10000
+              sigma = sqrt (p * (1 - p))
+              se = sigma / sqrt n
+              seSd = abs (1 - 2 * p) / (2 * sigma) * se
+              at e = either (Left . T.unpack) (Right . (.value)) (doubleOf monteCarlo e)
+              src = "let x = 1 ±σ 0.1 in let r = if x > 0.9 then 1 else 2 in "
+          case (at (src <> "mid r"), at (src <> "sd r")) of
+            (Right m, Right s) -> do
+              (abs (m - (1 + p)) < 5 * se) @? ("mean " <> show m)
+              (abs (s - sigma) < 5 * seSd) @? ("sd " <> show s)
+            other -> assertFailure (show other)
+    , testCase "each copy is its own branch's, keyed as before" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        out <- copiesAfter batchedConfig defs "if x > 0.9 then 1 else 2"
+        out @?= VU.map (\c -> if c > 0.9 then 1 else 2) cs
+    , testCase "groups split again at a later branch point" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        out <-
+          copiesAfter
+            batchedConfig
+            defs
+            "if x > 0.9 then (if x > 1.05 then 1 else 3) else 2"
+        out @?= VU.map (\c -> if c > 0.9 then (if c > 1.05 then 1 else 3) else 2) cs
+    , testCase "a tensor puts its components back together copy by copy"
+        $ case numbersIn
+          batchedConfig
+          "let x = 1 ±σ 0.1 in let v = if x > 0.9 then [1, x] else [2, 0] in [x, v.0, v.1]" of
+          Right [x, v0, v1] -> do
+            let xs = copiesOf x
+            copiesOf v0 @?= VU.map (\c -> if c > 0.9 then 1 else 2) xs
+            copiesOf v1 @?= VU.map (\c -> if c > 0.9 then c else 0) xs
+            -- the nominal value is the nominal branch's
+            (v0.value, v1.value) @?= (1, 1)
+          other -> assertFailure (show other)
+    , testCase "the same constructor recombines field by field" $ do
+        case numbersIn
+          batchedConfig
+          "let x = 1 ±σ 0.1 in let p = if x > 0.9 then (x, 1) else (2 * x, 2) in case p of (a, b) -> [x, a, b]" of
+          Right [x, a, b] -> do
+            let xs = copiesOf x
+            copiesOf a @?= VU.map (\c -> if c > 0.9 then c else 2 * c) xs
+            copiesOf b @?= VU.map (\c -> if c > 0.9 then 1 else 2) xs
+          other -> assertFailure (show other)
+        -- and prints as one tuple, not as outcomes
+        case runWith batchedConfig (defs <> ["if x > 0.9 then (x, 1) else (2 * x, 2)"]) of
+          Right [out] -> ("(1 (Monte Carlo" `T.isPrefixOf` out) @? T.unpack out
+          other -> assertFailure (show other)
+    , testCase "an alternative no copy selects is not evaluated"
+        $
+        -- Every copy of x is above 0.5, so `loop 0` would run to the limit.
+        runWith
+          batchedConfig
+          ( defs
+              <> ["let loop n = loop n", ":set steps 100000", "if x > 0.5 then 1 else loop 0"]
+          )
+          @?= Right ["1"]
+    , testCase "steps counts every group's evaluation" $ do
+        let run x =
+              runWith
+                batchedConfig
+                [ "let work n = if n == 0 then 0 else work (n - 1)"
+                , "let x = " <> x
+                , ":set steps 3000"
+                , "if x > 0.9 then work 300 else work 300"
+                ]
+        -- Unsplit, one evaluation of `work 300` fits; split, two do not.
+        run "1" @?= Right ["0"]
+        expectLeft "the evaluation took more than 3000 steps" (run "1 ±σ 0.1")
+    , testCase "1, 2 and 4 cores give the same copies, bit for bit" $ do
+        let src =
+              "let x = 1 ±σ 0.1 in let y = 2 ±σ 0.3 in [if x > 0.9 then x * y else y, if y > 2 then (if x > 1 then 1 else 2) else 3]"
+            at k = case copiesBatched batchedConfig{cores = k} src of
+              Right (Just cs) -> pure cs
+              other -> assertFailure (show other) >> pure []
+        one <- at 1
+        two <- at 2
+        four <- at 4
+        two @?= one
+        four @?= one
+        (map (.estimate) <$> numbersIn batchedConfig src)
+          @?= Right (map (Copies Drawn) one)
+    , testCase "rounding alone does not split: the copies follow the nominal branch" $ do
+        runWith doubleConfig{samples = 10} ["if 1 + 1e-16 > 1 then 1 else 2"]
+          @?= Right
+            [ "2\n"
+                <> ifTable "warning" "1 + 1e-16 > 1" "10 samples (lost in rounding" (7, 3) False
+            ]
+        -- a condition whose copies differ by rounding is no mixture
+        runWith doubleConfig{samples = 10} ["1 + 1e-16 > 1"] @?= Right ["false"]
+    , testCase "affine and samples 0 are unaffected" $ do
+        expectLeft "cannot decide" (runWith defaultConfig defs')
+        runWith
+          doubleConfig
+          ["if 1 + 1e-16 > 1 then 1 else 2", "if 2 > 1 then (3, true) else (4, false)"]
+          @?= Right ["2", "(3, true)"]
+    ]
+ where
+  defs = ["let x = 1 ±σ 0.1"]
+  defs' = ["let x = 1 ±σ 0.1", "if x > 0.9 then 1 else 2"]
+  copiesOf x = case x.estimate of
+    Copies _ cs -> cs
+    ErrorBound _ -> VU.empty
+
+-- Mixtures: samples whose outcomes differ in kind -----------------------------------------
+
+{- | Where the groups of a split give different constructors, the value is
+a mixture of outcomes (design §8.2): each option a group of the copies
+with its own value, printed as a table of outcomes.
+-}
+mixtureTests :: TestTree
+mixtureTests =
+  testGroup
+    "mixtures of outcomes"
+    [ testCase "classify: the outcomes' counts, and a case on them one numeric sample" $ do
+        let cfg = monteCarlo
+            lines' =
+              [ "data Sign = Neg | Pos"
+              , "let x = 0.05 ±σ 0.1"
+              , "let classify z = if z < 0 then Neg else Pos"
+              ]
+        cs <- copiesAfter cfg lines' "x"
+        let neg = VU.length (VU.filter (< 0) cs)
+            pos = 10000 - neg
+            -- Φ(−0.5), the chance of Neg
+            p = 0.3085375387259869 :: Double
+            se = sqrt (p * (1 - p) / 10000)
+        (abs (fromIntegral neg / 10000 - p) < 5 * se) @? show neg
+        out <- copiesAfter cfg lines' "case classify x of Neg -> -1; Pos -> 1"
+        out @?= VU.map (\c -> if c < 0 then -1 else 1) cs
+        case runWith cfg (lines' <> ["classify x"]) of
+          Right [printed] ->
+            take 4 (T.lines printed)
+              @?= [ "Pos (Monte Carlo over 10000 samples, 2 outcomes):"
+                  , "  outcome   samples   share"
+                  , "  Pos          " <> tshow pos <> "   " <> share pos 10000 <> "   ← nominal"
+                  , "  Neg          " <> tshow neg <> "   " <> share neg 10000
+                  ]
+          other -> assertFailure (show other)
+        -- its mean, 1 − 2·Φ(−0.5), within five standard errors
+        case runWith cfg (lines' <> ["mid (case classify x of Neg -> -1; Pos -> 1)"]) of
+          Right (m : _) ->
+            (abs (read (T.unpack (T.takeWhile (/= '\n') m)) - (1 - 2 * p)) < 5 * 2 * se)
+              @? T.unpack m
+          other -> assertFailure (show other)
+    , testCase "an outcome with numbers shows each one's own cluster" $ do
+        let lines' =
+              [ "data Impact = Impact {arrival :: Num s, speed :: Num (m/s)}"
+              , "data Shot = Hit Impact | Miss"
+              , "let x = 1 ±σ 0.1"
+              ]
+        cs <- copiesAfter batchedConfig lines' "x"
+        let hits = VU.length (VU.filter (> 0.9) cs)
+        case runWith
+          batchedConfig
+          ( lines'
+              <> [ "if x > 0.9 then Hit (Impact {arrival = 12 s + x * 1 s, speed = 3 m/s * x}) else Miss"
+                 ]
+          ) of
+          Right [printed] -> case T.lines printed of
+            header : columns : hitRow : missRow : _ -> do
+              header
+                @?= "Hit (Impact {arrival = 13 s, speed = 3 m s^-1}) (Monte Carlo over 1000 samples, 2 outcomes):"
+              columns @?= "  outcome      samples   share   fields"
+              ( "  Hit Impact       "
+                  <> tshow hits
+                  <> "   "
+                  <> share hits 1000
+                  <> "   0.arrival: mean 13."
+                )
+                `T.isPrefixOf` hitRow
+                @? T.unpack hitRow
+              ("0.speed: mean 3." `T.isInfixOf` hitRow && "← nominal" `T.isSuffixOf` hitRow)
+                @? T.unpack hitRow
+              missRow
+                @?= "  Miss             "
+                  <> tshow (1000 - hits)
+                  <> "   "
+                  <> share (1000 - hits) 1000
+            _ -> assertFailure (T.unpack printed)
+          other -> assertFailure (show other)
+    , testCase "two mixtures combine copy by copy" $ do
+        let lines' = ["let x = 1 ±σ 0.1", "let y = 1 ±σ 0.2"]
+        xs <- copiesAfter batchedConfig lines' "x"
+        ys <- copiesAfter batchedConfig lines' "y"
+        let both = VU.length (VU.filter id (VU.zipWith (\a b -> a > 0.9 && b > 1) xs ys))
+        out <- copiesAfter batchedConfig lines' "if x > 0.9 && y > 1 then 1 else 0"
+        VU.sum out @?= fromIntegral both
+        case runWith batchedConfig (lines' <> ["x > 0.9 && y > 1"]) of
+          Right [printed] ->
+            ( ("  true          " <> tshow both <> "   " <> share both 1000)
+                `elem` T.lines printed
+            )
+              @? T.unpack printed
+          other -> assertFailure (show other)
+    , testCase "lists of different lengths: outcomes by structure" $ do
+        let lines' = ["let x = 0.05 ±σ 0.1"]
+            src = "if x > 0 then {x, 2 * x} else (if x > -0.1 then {x} else {})"
+        cs <- copiesAfter batchedConfig lines' "x"
+        let two = VU.length (VU.filter (> 0) cs)
+            none = VU.length (VU.filter (<= -0.1) cs)
+            one = 1000 - two - none
+        case runWith batchedConfig (lines' <> [src]) of
+          Right [printed] -> do
+            let rows = map (T.unwords . T.words) (take 3 (drop 2 (T.lines printed)))
+                expected =
+                  [ "{_, _} " <> tshow two <> " " <> share two 1000 <> " 0: mean"
+                  , "{_} " <> tshow one <> " " <> share one 1000 <> " 0: mean"
+                  , "{} " <> tshow none <> " " <> share none 1000
+                  ]
+            take 1 (T.lines printed)
+              @?= ["{0.05, 0.1} (Monte Carlo over 1000 samples, 3 outcomes):"]
+            and (zipWith T.isPrefixOf expected rows) @? show rows
+          other -> assertFailure (show other)
+    , testCase "past `:set outcomes`, the usual limit error" $ do
+        let lines' = ["let x = 0.05 ±σ 0.1", ":set outcomes 2"]
+        expectLeft
+          "error: the value has more than 2 outcomes (`:set outcomes`)"
+          ( runWith
+              batchedConfig
+              (lines' <> ["if x > 0 then {x, 2 * x} else (if x > -0.1 then {x} else {})"])
+          )
+        expectLeft
+          "error: the value would have more than 2 outcomes (`:set outcomes`)"
+          ( runWith
+              batchedConfig
+              ( lines'
+                  <> ["data T = A | B | C", "if x > 0.1 then A else (if x > 0 then B else C)"]
+              )
+          )
+    , testCase "more than ten outcomes: the ten commonest, then the rest counted"
+        $ case runWith
+          batchedConfig
+          [ "let x = 1 ±σ 0.1"
+          , "let upto n k = if k >= n then {} else k : upto n (k + 1)"
+          , "upto (floor (x * 30)) 0"
+          ] of
+          Right [printed] -> case drop 12 (T.lines printed) of
+            others : _ ->
+              ("  and " `T.isPrefixOf` others && " others" `T.isSuffixOf` others)
+                @? T.unpack printed
+            [] -> assertFailure (T.unpack printed)
+          other -> assertFailure (show other)
+    , testCase "1, 2 and 4 cores give the same mixtures, and the batches merge" $ do
+        let lines' =
+              [ "data Sign = Neg | Pos"
+              , "let x = 0.05 ±σ 0.1"
+              , "let upto n k = if k >= n then {} else k : upto n (k + 1)"
+              ]
+            srcs =
+              [ "if x < 0 then Neg else Pos"
+              , "if x > 0 then {x, 2 * x} else (if x > -0.1 then {x} else {})"
+              , "(if x < 0 then Neg else Pos, x > 0.1)"
+              , "upto (floor (x * 300)) 0"
+              ]
+            at k = runWith batchedConfig{cores = k} (lines' <> srcs)
+        at 2 @?= at 1
+        at 4 @?= at 1
+        mapM_ (\s -> mergesAfter batchedConfig{cores = 4} lines' s @?= Right True) srcs
+    ]
+ where
+  share :: Int -> Int -> Text
+  share k n =
+    T.pack
+      (showFFloat (Just 1) (100 * fromIntegral k / fromIntegral n :: Double) "")
+      <> "%"
+
+-- | The tables printed after each value, each as its lines.
+tablesOf :: Either Text [Text] -> Either Text [Text]
+tablesOf = fmap (concatMap tablesIn)
+ where
+  tablesIn out = map (T.intercalate "\n") (grouped (dropWhile (not . header) (T.lines out)))
+  header l = "note: " `T.isPrefixOf` l || "warning: " `T.isPrefixOf` l
+  grouped = \case
+    [] -> []
+    h : rest -> let (rows, more) = break header rest in (h : rows) : grouped more
 
 {- | The table of an @if@: its kind, condition, what it is across (the
 samples, the cause and anything more, without the closing parenthesis),

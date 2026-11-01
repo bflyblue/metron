@@ -471,6 +471,7 @@ setSetting name value cfg = case name of
                 , rounding = cfg.rounding
                 , cores = cfg.cores
                 , batch = cfg.batch
+                , group = cfg.group
                 }
           )
           "nonlinear must be a non-negative integer, a percentage"

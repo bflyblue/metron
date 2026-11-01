@@ -20,6 +20,11 @@ before evaluation.
 -}
 module Metron.Eval (
   ValueOf (.., VData),
+  Narrowing (..),
+  narrow,
+  placesWithin,
+  Mixture (..),
+  Option (..),
   Choice (..),
   Value,
   pattern VBool,
@@ -60,7 +65,7 @@ module Metron.Eval (
   scalar,
 ) where
 
-import Control.Monad (foldM, when, zipWithM)
+import Control.Monad (foldM, when)
 import Data.Bifunctor (first)
 import Data.IntSet qualified as IntSet (
   IntSet,
@@ -68,11 +73,14 @@ import Data.IntSet qualified as IntSet (
   fromList,
   member,
   size,
+  toAscList,
   union,
+  unions,
  )
+import Data.List (findIndex)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map (empty, insert, null)
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T (intercalate, pack)
@@ -126,6 +134,7 @@ import Metron.Core (
   lengthLimit,
   vecAppend,
   vecIndex,
+  vecMap,
   vecMapIndexed,
   vecToList,
  )
@@ -151,10 +160,14 @@ import Metron.Limits (
   Limits (..),
   beyond,
   defaultLimits,
+  departing,
+  enter,
+  inSorted,
   log10Abs,
   nested,
   reach,
   spend,
+  within,
  )
 import Metron.Primitive (baseUnit, primArity, typedPrims)
 import Metron.Remark (Cause (..), Site (..))
@@ -173,6 +186,7 @@ import Metron.Scalar (
   lacks,
   memberAt,
   memberCount,
+  memberVector,
   ownerOf,
  )
 import Metron.Scalar qualified as Scalar (Shape (..))
@@ -250,6 +264,10 @@ data Config = Config
   {- ^ the batch of the copies this evaluation carries, set only by the
   evaluation that runs the batches; 'Nothing', all of them
   -}
+  , group :: Maybe Members
+  {- ^ the copies this evaluation carries when a branch point split them
+  and sent them down one alternative (design §8.2); 'Nothing', the batch's
+  -}
   }
   deriving stock (Show)
 
@@ -267,6 +285,7 @@ defaultConfig =
     , rounding = RoundRandom
     , cores = 1
     , batch = Nothing
+    , group = Nothing
     }
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
@@ -286,7 +305,7 @@ settingsOf cfg =
     , samples = cfg.samples
     , seed = cfg.seed
     , rounding = cfg.rounding
-    , copies = batchMembers cfg
+    , copies = fromMaybe (batchMembers cfg) cfg.group
     }
 
 -- | The copies an evaluation of the whole batch carries (design §8.2).
@@ -472,8 +491,26 @@ data ValueOf s
     variable (design §8); only a type application consumes one
     -}
     VTyAbs VarId Kind (Arg -> ThunkOf s)
+  | {- | a value whose samples differ in what it is (design §8.2): the
+    double backend's copies, when they carry draws, grouped by the
+    outcome each has, a constructor or a function, never a number
+    -}
+    VMixture (Mixture s)
 
 type Value = ValueOf Magnitude
+
+{- | A mixture (design §8.2, "Branches under copies"): options, each a
+group of the copies, by global number, ascending, with the value they
+share, its numbers' copies those of the group. The options together are
+the copies of the evaluation the mixture is in, and no two have the same
+constructor. On the nominal path one option is the nominal one, the
+nominal value's, even when none of the copies has it; off it, none is.
+An option's value is never a mixture itself; its fields may be.
+-}
+data Mixture s = Mixture {nominal :: Maybe Int, options :: [Option s]}
+
+-- | One outcome of a mixture: the copies that have it, and its value for them.
+data Option s = Option {members :: VU.Vector Int, value :: ValueOf s}
 
 {- | What a data value's copies choose (design §8.2, "Branches under
 copies"): nothing of their own, or each copy's own constructor, by its
@@ -494,7 +531,7 @@ pattern VData c fields <- VCon c fields _
   where
     VData c fields = VCon c fields NoCopies
 
-{-# COMPLETE VTensor, VPoint, VChart, VData, VClosure, VUnit, VTyAbs #-}
+{-# COMPLETE VTensor, VPoint, VChart, VData, VClosure, VUnit, VTyAbs, VMixture #-}
 
 -- | A boolean: @True@ or @False@ of the built-in @Bool@ ("Metron.Builtin").
 pattern VBool :: Bool -> ValueOf s
@@ -502,13 +539,37 @@ pattern VBool b <- VData (asBool -> Just b) []
   where
     VBool b = VData (boolC b) []
 
-{- | A condition with its copies' own results: the comparison's decision as
-a boolean value.
+{- | A condition as a value, in the evaluation of a context's copies (design
+§8.2): the nominal result, and what the copies say. Copies that differ by
+rounding alone follow the nominal result and keep their own beside it.
+Copies that carry draws are samples, each with its own result: a mixture
+of the two when they differ among themselves or from the nominal one,
+else the result they share. Off the nominal path the nominal result means
+nothing, and only the copies decide.
 -}
-condition :: Bool -> Maybe Outcomes -> ValueOf s
-condition b =
-  VCon (boolC b) []
-    . maybe NoCopies (\o -> Copied o.cause o.left (VU.map fromEnum o.each))
+conditionIn :: Context -> Bool -> Maybe Outcomes -> ValueOf s
+conditionIn ctx b = \case
+  Nothing -> VBool b
+  Just o
+    | o.cause == Rounding ->
+        VCon (boolC b) [] (Copied o.cause o.left (VU.map fromEnum o.each))
+    | otherwise ->
+        let globals = memberVector ctx.members
+            holding h = VU.map snd (VU.filter ((== h) . fst) (VU.zip o.each globals))
+         in mixtureOf ctx.nominal [Option (holding h) (VBool h) | h <- [b, not b]]
+
+{- | Options as a value: those with copies, and, on the nominal path, the
+nominal one, the first given, even with none. A single option is its
+value.
+-}
+mixtureOf :: Bool -> [Option s] -> ValueOf s
+mixtureOf onNominal given = case kept of
+  [o] -> o.value
+  _ -> VMixture (Mixture (if onNominal then Just 0 else Nothing) kept)
+ where
+  kept = case given of
+    o : rest | onNominal -> o : filter (not . VU.null . (.members)) rest
+    _ -> filter (not . VU.null . (.members)) given
 
 -- | A boolean's copies' own results, if it has copies.
 outcomesOf :: ValueOf s -> Maybe Outcomes
@@ -603,6 +664,9 @@ eval cfg rt = go
  where
   p = settingsOf cfg
   hp = precisionOf cfg
+  -- Whether the evaluation carries copies, whose branch points are noted
+  -- (design §8.2).
+  copied = cfg.samples > 0 && backendOf @s == DoubleBackend
 
   -- One step of the evaluation (design §8.1): every reduction counts.
   go :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
@@ -669,28 +733,34 @@ eval cfg rt = go
     -- (design §8.2): the copies are counted by their own alternative,
     -- and those taken along by the nominal one are off their path inside
     -- it.
+    --
+    -- Under copies every case is noted, so that each copy is counted
+    -- wherever it reaches one, whichever batch carries it. On a mixture
+    -- the copies split: each option goes down its own alternative in a
+    -- group of its own, and the groups' results are put back together.
     TCase sc _ alts ->
       inner tenv (child 0) env sc >>= \case
         VCon c fields choice ->
-          case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
-            (i, TAlt _ bs body) : _ ->
+          case alternative c of
+            Just (i, TAlt _ bs body) ->
               let env' = vecAppend (attach bs fields) env
                in case choice of
-                    NoCopies -> go tenv (child i) env' body
+                    NoCopies
+                      | copied ->
+                          case reach rt.budget rt.context site (conIndex c) Rounding False IntSet.empty Nothing of
+                            !_ -> go tenv (child i) env' body
+                      | otherwise -> go tenv (child i) env' body
                     Copied cause left chosen ->
-                      let off = reach rt.budget rt.context site (conIndex c) cause False left chosen
+                      let off = reach rt.budget rt.context site (conIndex c) cause False left (Just chosen)
                        in if IntSet.size off == IntSet.size rt.context.departed
                             then go tenv (child i) env' body
                             else
-                              eval
-                                cfg
-                                rt{context = rt.context{departed = off}}
-                                tenv
-                                (child i)
-                                env'
-                                body
-            [] -> Left (Internal ("case: no alternative for " <> conText c))
+                              eval cfg rt{context = departing off rt.context} tenv (child i) env' body
+            Nothing -> Left (Internal ("case: no alternative for " <> conText c))
+        VMixture m -> caseOnMixture cfg rt tenv site env alts m
         _ -> Left (Internal "case: the scrutinee is not data")
+     where
+      alternative = alternativeFor alts
     TLamWith _ _ body free -> Right (VClosure (Closure tenv (child 0) (keepFree free env) body))
     TApp f a -> do
       fv <- inner tenv (child 0) env f
@@ -825,6 +895,10 @@ eval cfg rt = go
     TTyApp b a ->
       inner tenv site env b >>= \case
         VTyAbs _ _ f -> f (resolveArg tenv a)
+        VMixture m ->
+          perOption cfg rt m $ \_ _ _ -> \case
+            VTyAbs _ _ f -> f (resolveArg tenv a)
+            _ -> Left (Internal "type application to a value that is not polymorphic")
         _ -> Left (Internal "type application to a value that is not polymorphic")
     -- A cycle is not itself a value; it is reached through @TRef h (Just i)@.
     TCycle{} -> Left (BadCycleIndex (-1))
@@ -1007,7 +1081,375 @@ apply ::
   #-}
 apply cfg rt f arg = case f of
   VClosure (Closure tenv site env body) -> eval cfg rt tenv site (VCons arg env) body
+  -- A mixture of functions (design §8.2): each applied for its own copies.
+  VMixture m -> perOption cfg rt m (\cfg' rt' r g -> apply cfg' rt' g (narrow r <$> arg))
   _ -> Left (Internal "application of a non-function")
+
+-- Splitting the copies ----------------------------------------------------------------
+
+-- | A case's alternative for a constructor, and its place among them, from 1.
+alternativeFor :: [TAlt n] -> ConRef -> Maybe (Int, TAlt n)
+alternativeFor alts c = case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
+  found : _ -> Just found
+  [] -> Nothing
+
+{- | A case on a mixture (design §8.2): a branch point where the copies
+split, noted, and each option sent down its own alternative in a group of
+its own, the groups' results put back together.
+-}
+caseOnMixture ::
+  (Scalar s) =>
+  Config ->
+  RuntimeOf s ->
+  TyEnv ->
+  Site ->
+  Env s n ->
+  [TAlt n] ->
+  Mixture s ->
+  ThunkOf s
+caseOnMixture cfg rt tenv site env alts m =
+  case reach rt.budget ctx site taken Draws True IntSet.empty (Just chosen) of
+    !_ ->
+      perOption cfg rt m $ \cfg' rt' r -> \case
+        VCon c fields _
+          | Just (i, TAlt _ bs body) <- alternativeFor alts c ->
+              eval
+                cfg'
+                rt'
+                tenv
+                site{path = i : site.path}
+                (vecAppend (attach bs fields) (vecMap (fmap (narrow r)) env))
+                body
+        _ -> Left (Internal "case: an option of the scrutinee is not data")
+ where
+  ctx = rt.context
+  conOf o = case o.value of
+    VCon c _ _ -> conIndex c
+    _ -> -1
+  chosen =
+    VU.update
+      (VU.replicate (memberCount ctx.members) (-1))
+      (VU.concat [VU.map (,conOf o) (placesIn ctx.members o.members) | o <- m.options])
+  taken =
+    maybe (-1) (\k -> maybe (-1) conOf (listToMaybe (drop k m.options))) m.nominal
+
+{- | How a value made for an evaluation's copies is narrowed to a group of
+them (design §8.2): the places of the group's copies among the
+evaluation's, the group's copies by global number, and whether the group
+is on the nominal path.
+-}
+data Narrowing = Narrowing {places :: VU.Vector Int, copies :: VU.Vector Int, nominal :: Bool}
+
+{- | The places, among an evaluation's copies, of a group of them, by
+global number; both ascending.
+-}
+placesIn :: Members -> VU.Vector Int -> VU.Vector Int
+placesIn outer group = case outer of
+  Range from _ -> VU.map (subtract from) group
+  Listed all' -> VU.findIndices (inSorted group) all'
+
+{- | A value for a group of the copies it was made for, lazily: every
+number keeps the group's copies, a mixture the options the group has, and
+a function or a chart what it holds narrowed alike.
+-}
+narrow :: (Scalar s) => Narrowing -> ValueOf s -> ValueOf s
+narrow r = \case
+  VTensor dims d hint buf -> VTensor dims d hint (V.map (fmap (restrictM r.places)) buf)
+  VPoint dims d c buf -> VPoint dims d (narrowChart r c) (V.map (fmap (restrictM r.places)) buf)
+  VChart c -> VChart (narrowChart r c)
+  VCon c fields choice ->
+    VCon
+      c
+      (map (fmap (narrow r)) fields)
+      ( case choice of
+          NoCopies -> NoCopies
+          Copied cause left alts -> Copied cause left (VU.backpermute alts r.places)
+      )
+  VClosure (Closure tenv site env body) ->
+    VClosure (Closure tenv site (vecMap (fmap (narrow r)) env) body)
+  VUnit v -> VUnit (narrow r v)
+  VTyAbs v k f -> VTyAbs v k (fmap (narrow r) . f)
+  VMixture m ->
+    let kept =
+          [ ( nominal
+            , Option
+                shared
+                (narrow (Narrowing (placesIn (Listed o.members) shared) shared nominal) o.value)
+            )
+          | (i, o) <- zip [0 :: Int ..] m.options
+          , let shared = VU.filter (inSorted r.copies) o.members
+                nominal = r.nominal && m.nominal == Just i
+          , nominal || not (VU.null shared)
+          ]
+     in case kept of
+          [(_, o)] -> o.value
+          _ -> VMixture (Mixture (findIndex fst kept) (map snd kept))
+
+-- | A chart narrowed to a group of the copies: every number in it.
+narrowChart :: (Scalar s) => Narrowing -> ChartOf s -> ChartOf s
+narrowChart r c =
+  Chart
+    { name = c.name
+    , step = one c.step
+    , stepHint = c.stepHint
+    , origin = V.map one c.origin
+    , localOrigin = V.map one c.localOrigin
+    , dims = c.dims
+    , dim = c.dim
+    , parent = narrowChart r <$> c.parent
+    , generators = map (V.map one) c.generators
+    , rotation = many c.rotation
+    , rotationInverse = many c.rotationInverse
+    , relativeRotation = many c.relativeRotation
+    , relativeRotationInverse = many c.relativeRotationInverse
+    , spin = V.map one <$> c.spin
+    , spinAbs = many c.spinAbs
+    , originVelocity = many c.originVelocity
+    , applied = case c.applied of
+        Applied args -> Applied (map (fmap (narrow r)) args)
+    , frame = c.frame
+    , moving = c.moving
+    }
+ where
+  one = restrictM r.places
+  many = fmap (fmap (V.map one))
+
+{- | The evaluation of a group of the copies (design §8.2): its settings
+carry the group's copies, its context is new, and every value it takes
+from the evaluation around it, its environment and the definitions
+shared by the batch, is narrowed to the group.
+-}
+groupOf ::
+  (Scalar s) =>
+  Config ->
+  RuntimeOf s ->
+  VU.Vector Int ->
+  Bool ->
+  (Config, RuntimeOf s, Narrowing)
+groupOf cfg rt group nominal = (cfg{group = Just (Listed group)}, rt', r)
+ where
+  r = Narrowing (placesIn rt.context.members group) group nominal
+  rt' =
+    rt
+      { context = enter rt.budget rt.context (Listed group) nominal
+      , shared = fmap (fmap (narrow r)) . rt.shared
+      }
+
+{- | An operation on a mixture (design §8.2): done for each option, in a
+group of its own with the option's copies, given the option's value and
+how to narrow the evaluation's other values to the group, and the
+results put back together. The nominal option is done even with no
+copies, for the nominal value; another with none is not done at all.
+-}
+perOption ::
+  (Scalar s) =>
+  Config ->
+  RuntimeOf s ->
+  Mixture s ->
+  (Config -> RuntimeOf s -> Narrowing -> ValueOf s -> ThunkOf s) ->
+  ThunkOf s
+perOption cfg rt m k =
+  recombine
+    rt
+    cfg.limits.outcomes
+    [ Part rt'.context nominal (k cfg' rt' r o.value)
+    | (i, o) <- zip [0 :: Int ..] m.options
+    , let nominal = rt.context.nominal && m.nominal == Just i
+    , nominal || not (VU.null o.members)
+    , let (cfg', rt', r) = groupOf cfg rt o.members nominal
+    ]
+
+{- | A group's result: its evaluation, whether it is the nominal one, and
+the value, for the group's copies.
+-}
+data Part s = Part Context Bool (ThunkOf s)
+
+{- | The groups' results put back together, copy by copy (design §8.2):
+numbers, tensors and units as one, each copy from its own group, the
+nominal value from the nominal group; data by outcome, a constructor's
+groups merged field by field, and where the groups give different
+constructors, or functions, a mixture with an option for each. More
+options than the @outcomes@ limit stop the evaluation.
+-}
+recombine :: (Scalar s) => RuntimeOf s -> Int -> [Part s] -> ThunkOf s
+recombine rt limit parts =
+  assemble
+    rt.budget
+    limit
+    (memberVector rt.context.members)
+    [ Piece ctx (memberVector ctx.members) nominal t
+    | Part ctx nominal t <- filter isNominal parts ++ filter (not . isNominal) parts
+    ]
+ where
+  isNominal (Part _ n _) = n
+
+{- | A value for some of the copies: the evaluation that makes it, the
+copies by global number, whether it is the nominal value, and the value.
+-}
+data Piece s = Piece Context (VU.Vector Int) Bool (ThunkOf s)
+
+{- | Pieces that together are a value for the given copies, put together:
+'recombine', for a value or for one field of the data its groups share.
+The nominal piece, if any, first.
+-}
+assemble ::
+  (Scalar s) => Budget -> Int -> VU.Vector Int -> [Piece s] -> ThunkOf s
+assemble b limit target pieces = do
+  values <-
+    traverse
+      (\(Piece ctx ms nominal t) -> (ctx,ms,nominal,) <$> forcedFor b ctx t)
+      pieces
+  let flat = concatMap explode values
+  case flat of
+    [] -> Left (Internal "a split with no group")
+    (_, _, _, v0) : _
+      | numeric v0 ->
+          numbersOf
+            [(ctx, placesWithin target ms, nominal, v) | (ctx, ms, nominal, v) <- flat]
+      | otherwise -> outcomesFrom (classes flat)
+ where
+  explode (ctx, ms, nominal, v) = case v of
+    VMixture m ->
+      [ (ctx, o.members, nominal && m.nominal == Just i, o.value)
+      | (i, o) <- zip [0 :: Int ..] m.options
+      ]
+    _ -> [(ctx, ms, nominal, v)]
+  numeric = \case
+    VTensor{} -> True
+    VPoint{} -> True
+    VUnit _ -> True
+    _ -> False
+  -- Numbers: element by element, each from every piece.
+  numbersOf ps = case ps of
+    (_, _, _, VUnit _) : _ -> VUnit <$> numbersOf [(c, pl, n, u) | (c, pl, n, VUnit u) <- ps]
+    (_, _, _, VTensor dims d hint buf) : _ ->
+      Right (VTensor dims d hint (V.generate (V.length buf) (element ps)))
+    (_, _, _, VPoint dims d c buf) : _ ->
+      Right (VPoint dims d c (V.generate (V.length buf) (element ps)))
+    _ -> Left (Internal "a split's groups give numbers of different kinds")
+  element ps k = do
+    xs <-
+      traverse (\(c, pl, n, v) -> (pl,n,) <$> forcedElement b c (bufferOf v V.! k)) ps
+    Right
+      ( scatterM
+          (VU.length target)
+          (listToMaybe [x | (_, True, x) <- xs])
+          [(pl, x) | (pl, _, x) <- xs]
+      )
+  bufferOf = \case
+    VTensor _ _ _ buf -> buf
+    VPoint _ _ _ buf -> buf
+    VUnit u -> bufferOf u
+    _ -> V.empty
+  -- Data by its constructor; anything else, a function, a chart, alone.
+  classes = foldl' place []
+  place acc piece@(_, _, _, v) = case v of
+    VCon c _ _
+      | (before, (k, ps) : after) <- break ((== Just c) . fst) acc ->
+          before ++ (k, ps ++ [piece]) : after
+      | otherwise -> acc ++ [(Just c, [piece])]
+    _ -> acc ++ [(Nothing, [piece])]
+  outcomesFrom groups
+    | length groups > limit =
+        Left
+          ( Exceeded
+              OutcomeCount
+              ("the value would have more than " <> tshow limit <> " outcomes")
+          )
+    | otherwise = do
+        options <- traverse (classOf . snd) groups
+        case options of
+          [(_, _, v)] -> Right v
+          _ ->
+            Right
+              ( VMixture
+                  ( Mixture
+                      (findIndex (\(_, n, _) -> n) options)
+                      [Option ms v | (ms, _, v) <- options]
+                  )
+              )
+  classOf = \case
+    [(ctx, ms, nominal, v)] -> Right (ms, nominal, bracketed b ctx v)
+    ps@((_, _, _, VCon c fields0 _) : _) -> do
+      let ms =
+            VU.fromList
+              (IntSet.toAscList (IntSet.fromList (concat [VU.toList m | (_, m, _, _) <- ps])))
+          nominal = or [n | (_, _, n, _) <- ps]
+          fieldsOf = \case
+            VCon _ fs _ -> fs
+            _ -> []
+          field j =
+            assemble
+              b
+              limit
+              ms
+              [Piece ctx m n (fieldAt (fieldsOf v) j) | (ctx, m, n, v) <- ps]
+          choice = case [ch | (_, _, _, VCon _ _ ch@Copied{}) <- ps] of
+            [] -> NoCopies
+            Copied cause _ _ : _ ->
+              Copied
+                cause
+                (IntSet.unions [l | (_, _, _, VCon _ _ (Copied _ l _)) <- ps])
+                ( VU.update
+                    (VU.replicate (VU.length ms) (conIndex c))
+                    ( VU.concat
+                        [ VU.zip (placesWithin ms m) as
+                        | (_, m, _, VCon _ _ (Copied _ _ as)) <- ps
+                        ]
+                    )
+                )
+            NoCopies : _ -> NoCopies
+      Right (ms, nominal, VCon c (map field (zipWith const [0 ..] fields0)) choice)
+    _ -> Left (Internal "a split's groups give outcomes of different kinds")
+
+{- | A value whose samples differ in what it is (a mixture, design §8.2)
+given where only one kind of value will do and nothing splits it: a
+primitive on charts or lists, which the evaluator does not yet run once
+for each outcome.
+-}
+mixed :: EvalError
+mixed =
+  Unsupported
+    "an operation on a value whose samples have different outcomes (a mixture): only `case`, application and the conditions split one"
+
+-- | The evaluator's own primitive for every field of data compared: see 'runPrim'.
+conjunctionName :: Text
+conjunctionName = "§all"
+
+-- | A constructor's field by its place; lint makes the counts agree.
+fieldAt :: [ThunkOf s] -> Int -> ThunkOf s
+fieldAt fields j = case drop j fields of
+  f : _ -> f
+  [] -> Left (Internal "a missing field")
+
+-- | The places of some copies among others, both by global number, ascending.
+placesWithin :: VU.Vector Int -> VU.Vector Int -> VU.Vector Int
+placesWithin outer group = VU.findIndices (inSorted group) outer
+
+{- | A value forced for a group's copies, so that a branch point it
+reaches counts only them (design §8.2).
+-}
+forcedFor :: Budget -> Context -> ThunkOf s -> ThunkOf s
+forcedFor b ctx t = within b ctx (either (const t) (`seq` t) t)
+
+-- | A tensor element forced for a group's copies.
+forcedElement :: Budget -> Context -> ElemOf s -> ElemOf s
+forcedElement b ctx e = within b ctx (either (const e) (`seq` e) e)
+
+{- | A group's value passed on whole, its parts forced, whenever they are,
+for the group's copies: its branch points count them, not those of
+whatever group forces the value later.
+-}
+bracketed :: Budget -> Context -> ValueOf s -> ValueOf s
+bracketed b ctx = \case
+  VCon c fields choice -> VCon c (map (forcedFor b ctx . fmap (bracketed b ctx)) fields) choice
+  VTensor dims d hint buf -> VTensor dims d hint (V.map (forcedElement b ctx) buf)
+  VPoint dims d c buf -> VPoint dims d c (V.map (forcedElement b ctx) buf)
+  VUnit v -> VUnit (bracketed b ctx v)
+  VMixture m ->
+    VMixture
+      m{options = [Option o.members (bracketed b ctx o.value) | o <- m.options]}
+  v -> v
 
 arith :: Either ArithError a -> Either EvalError a
 arith = either (Left . convert) Right
@@ -1028,17 +1470,20 @@ tensor ::
 tensor = \case
   VTensor dims d hint buf -> Right (dims, d, hint, buf)
   VUnit v -> tensor v
+  VMixture _ -> Left mixed
   _ -> Left (Internal "expected a tensor")
 
 point ::
   ValueOf s -> Either EvalError ([Int], Dim, ChartOf s, Vector (ElemOf s))
 point = \case
   VPoint dims d sc buf -> Right (dims, d, sc, buf)
+  VMixture _ -> Left mixed
   _ -> Left (Internal "expected a point")
 
 chartOf :: ValueOf s -> Either EvalError (ChartOf s)
 chartOf = \case
   VChart s -> Right s
+  VMixture _ -> Left mixed
   _ -> Left (Internal "expected a chart")
 
 -- | A number or a point: what the comparisons order.
@@ -1055,6 +1500,7 @@ scalarFull :: ValueOf s -> Either EvalError (s, Dim, Maybe UnitHint)
 scalarFull = \case
   VTensor [] d hint buf | V.length buf == 1 -> (,d,hint) <$> V.head buf
   VUnit v -> scalarFull v
+  VMixture _ -> Left mixed
   _ -> Left (Internal "expected a number")
 
 {- | What @seq@ evaluates (design §7.7): every component of a number, a
@@ -1096,6 +1542,7 @@ forceValue = \case
 bool :: ValueOf s -> Either EvalError Bool
 bool = \case
   VBool b -> Right b
+  VMixture _ -> Left mixed
   _ -> Left (Internal "expected a boolean")
 
 {- | Make a scalar value its own display unit. Forces its magnitude, which
@@ -1275,8 +1722,8 @@ runPrim cfg rt prim ty args = case (prim, args) of
               (V.map (\x -> x >>= \x' -> sized cfg.limits =<< arith (divM p x' k)) xs)
           )
   -- A condition keeps its copies' own results (design §8.2).
-  ("eq", [a, b]) -> uncurry condition <$> equal a b
-  ("ne", [a, b]) -> uncurry condition . negated <$> equal a b
+  ("eq", [a, b]) -> equal a b
+  ("ne", [a, b]) -> negation (equal a b)
   ("lt", [a, b]) -> compareWith Lt a b
   ("le", [a, b]) -> compareWith Le a b
   ("gt", [a, b]) -> compareWith Gt a b
@@ -1284,7 +1731,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
   -- Lazy in the second argument.
   ("and", [a, b]) -> shortCircuit True a b
   ("or", [a, b]) -> shortCircuit False a b
-  ("not", [a]) -> uncurry condition . negated <$> (conditionOf =<< a)
+  ("not", [a]) -> negation a
   ("floor", [a]) -> dimensionless (arith . floorM p) a
   ("ceil", [a]) -> dimensionless (arith . ceilM p) a
   ("round", [a]) -> dimensionless (arith . roundM p) a
@@ -1676,6 +2123,10 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("originOf", [s]) -> do
     sc <- chartOf =<< s
     Right (VTensor [V.length sc.origin] sc.dim Nothing (V.map Right sc.origin))
+  -- Not a primitive of the language: the evaluator's own, for the fields
+  -- of data compared, every one evaluated. Last, so that the primitives'
+  -- names are matched in one run.
+  _ | prim == conjunctionName -> conjunction args
   -- The backend's own built-ins (design §8.2): the shapes are shared, the
   -- numbers the backend's.
   _ | Just o <- own @s prim -> runOwn o
@@ -1884,58 +2335,98 @@ runPrim cfg rt prim ty args = case (prim, args) of
   angle f a = do
     x <- scalar =<< a
     num (dimBase Ang) Nothing <$> f x
+  -- A condition as a value in this evaluation (design §8.2).
+  condition = conditionIn rt.context
   compareWith rel a b = do
     x <- ordered =<< a
     y <- ordered =<< b
     (\d -> condition d.holds d.copies) <$> arith (relate p rel x y)
   equalAll xs ys =
-    foldl' (combined (&&)) (True, Nothing)
+    uncurry condition . foldl' (combined (&&)) (True, Nothing)
       <$> mapM
         (\(u, v) -> (\d -> (d.holds, d.copies)) <$> arith (equalM p u v))
         (zip xs ys)
   negated (h, o) = (not h, (\x -> x{each = VU.map not x.each}) <$> o)
   conditionOf v = (,outcomesOf v) <$> bool v
+  -- An operation on a mixture (design §8.2): this primitive again, for
+  -- each option, its other operands narrowed to the option's copies.
+  again name m before after =
+    perOption cfg rt m $ \cfg' rt' r v ->
+      runPrim
+        cfg'
+        rt'
+        name
+        ty
+        (map (fmap (narrow r)) before ++ Right v : map (fmap (narrow r)) after)
   {- @a && b@ and @a || b@ (design §8.2): when the first decides, the
   second is not evaluated, and a copy whose own first operand would have
   gone on to it leaves the evaluated path here; its result is taken to
-  be the nominal one. -}
-  shortCircuit isAnd a b = do
-    (x, ox) <- conditionOf =<< a
-    if x == isAnd
-      then do
-        (y, oy) <- conditionOf =<< b
-        Right
-          (uncurry condition (combined (if isAnd then (&&) else (||)) (x, ox) (y, oy)))
-      else case ox of
-        Just o
-          | VU.any (== isAnd) o.each ->
-              let leaving =
-                    IntSet.fromList
-                      [ memberAt p.copies i
-                      | (i, goesOn) <- zip [0 ..] (VU.toList o.each)
-                      , goesOn == isAnd
-                      ]
-               in Right
-                    ( condition
-                        x
-                        (Just o{left = IntSet.union o.left leaving, each = VU.map (const x) o.each})
-                    )
-        _ -> Right (condition x ox)
+  be the nominal one. Samples, whose first operands differ, split. -}
+  shortCircuit isAnd a b =
+    a >>= \case
+      VMixture m -> again prim m [] [b]
+      xv -> do
+        (x, ox) <- conditionOf xv
+        if x == isAnd
+          then
+            b >>= \case
+              VMixture m -> again prim m [Right xv] []
+              yv -> do
+                (y, oy) <- conditionOf yv
+                Right
+                  (uncurry condition (combined (if isAnd then (&&) else (||)) (x, ox) (y, oy)))
+          else case ox of
+            Just o
+              | VU.any (== isAnd) o.each ->
+                  let leaving =
+                        IntSet.fromList
+                          [ memberAt p.copies i
+                          | (i, goesOn) <- zip [0 ..] (VU.toList o.each)
+                          , goesOn == isAnd
+                          ]
+                   in Right
+                        ( condition
+                            x
+                            (Just o{left = IntSet.union o.left leaving, each = VU.map (const x) o.each})
+                        )
+            _ -> Right (condition x ox)
+  negation a =
+    a >>= \case
+      VMixture m -> again "not" m [] []
+      v -> uncurry condition . negated <$> conditionOf v
+  -- Every condition, all of them evaluated, copy by copy; a mixture among
+  -- them splits.
+  conjunction ts = do
+    vs <- sequence ts
+    case break isMixture vs of
+      (before, VMixture m : after) -> again conjunctionName m (map Right before) (map Right after)
+      _ ->
+        uncurry condition . foldl' (combined (&&)) (True, Nothing)
+          <$> mapM conditionOf vs
+  isMixture = \case
+    VMixture _ -> True
+    _ -> False
   -- Tensors of one shape (lint agrees), data or points: the equality
   -- instances of design §4.2. Tensors are equal when every component is
-  -- decided equal (design §3.2.9). Copy by copy, so are their copies.
+  -- decided equal (design §3.2.9). Copy by copy, so are their copies; a
+  -- mixture splits.
   equal a b = do
     x <- a
     y <- b
     case (x, y) of
+      (VMixture m, _) -> again "eq" m [] [Right y]
+      (_, VMixture m) -> again "eq" m [Right x] []
       (VTensor _ _ _ xs, VTensor _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
         equalAll xs' ys'
       (VCon c xs cx, VCon c' ys cy)
         | c == c' && length xs == length ys ->
-            foldl' (combined (&&)) (sameCon c c' cx cy) <$> zipWithM equal xs ys
-        | otherwise -> Right (sameCon c c' cx cy)
+            conjunction
+              ( Right (uncurry condition (sameCon c c' cx cy))
+                  : zipWith (\u v -> runPrim cfg rt "eq" ty [u, v]) xs ys
+              )
+        | otherwise -> Right (uncurry condition (sameCon c c' cx cy))
       (VPoint _ _ _ xs, VPoint _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
@@ -2189,6 +2680,7 @@ listElems :: ValueOf s -> Either EvalError [ThunkOf s]
 listElems = \case
   VData NilC [] -> Right []
   VData ConsC [x, xs] -> (x :) <$> (listElems =<< xs)
+  VMixture _ -> Left mixed
   _ -> Left (Internal "expected a list")
 
 -- | The @n × n@ identity, row-major and exact.

@@ -1,14 +1,14 @@
 -- | Deliberately simple rendering for semantic evaluator tests; not a user-facing printer.
 module Support.Render (render) where
 
+import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
-import Data.Ratio (numerator, denominator)
-import Metron.Eval
-import Metron.Builtin
-import Metron.Type (conText)
 import Metron.Affine
+import Metron.Builtin
+import Metron.Eval
+import Metron.Type (conText)
 
 {- | A plain rendering for tests. Forces every element. Exact magnitudes
 print as @n/d@ in base units, affine ones as an approximate @mid±r@, and
@@ -33,6 +33,8 @@ render = \case
   VClosure _ -> Right "<function>"
   VTyAbs{} -> Right "<polymorphic value>"
   VUnit v -> ("unit " <>) <$> render v
+  -- The affine backend has no copies, so never a mixture.
+  VMixture _ -> Right "<mixture>"
  where
   magnitude = \case
     Exact r -> frac r
@@ -55,6 +57,5 @@ render = \case
     x : _ -> Just x
     [] -> Nothing
 
-
-tshow :: Show a => a -> Text
+tshow :: (Show a) => a -> Text
 tshow = T.pack . show

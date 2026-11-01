@@ -71,7 +71,7 @@ import Metron.Infer qualified as I (
   readingsOf,
   rewriteReadings,
  )
-import Metron.Limits (limitHint, newBudget, newContext, remarksAfter)
+import Metron.Limits (limitHint, newBudget, remarksAfter, rootContext)
 import Metron.NameResolution (resolverFor)
 import Metron.Needs (Needs, checkBackend, reachedBy)
 import Metron.Pretty (Display, renderValue)
@@ -242,7 +242,7 @@ batchedValue cfg cb h typed = unsafePerformIO $ do
   pure $ case sequence results of
     Left _ -> Left <$> failure results
     Right batches -> do
-      v <- merged (map fst batches)
+      v <- merged (zip (batchesOf cfg.samples cfg.cores) (map fst batches))
       -- Each comparison's copies counted over all the batches.
       Just (Right (v, foldMap snd batches))
 {-# NOINLINE batchedValue #-}
@@ -397,7 +397,7 @@ runtimeWith cfg cb = (rt, strictify external)
       , budget =
           newBudget cfg.limits (cb, fmap (.first) cfg.batch)
       , context =
-          newContext (batchMembers cfg) True True [] (cb, fmap (.first) cfg.batch)
+          rootContext (batchMembers cfg)
       }
   analysed = LazyMap.map (strictify external . snd) cb.derived
   known = LazyMap.map (signatures external . snd) cb.derived

@@ -24,7 +24,10 @@ module Metron.Limits (
   spend,
   nested,
   Context (..),
-  newContext,
+  rootContext,
+  departing,
+  inSorted,
+  enter,
   reach,
   within,
   remarksAfter,
@@ -46,15 +49,16 @@ import Control.Exception (
   throwIO,
   try,
  )
-import Control.Monad (unless)
+import Control.Monad (when)
 import Data.Bits (shiftR, unsafeShiftL)
 import Data.Char (isDigit)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IntMap.Strict (IntMap)
 import Data.IntMap.Strict qualified as IntMap
 import Data.IntSet (IntSet)
 import Data.IntSet qualified as IntSet
 import Data.Map.Strict (Map)
-import Data.Maybe (isNothing)
+
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -72,7 +76,7 @@ import Metron.Remark (
   pend,
   remarksOf,
  )
-import Metron.Scalar (Members, memberVector)
+import Metron.Scalar (Members, memberCount, memberVector)
 import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import System.Mem (performMajorGC)
 import System.Timeout (timeout)
@@ -89,13 +93,15 @@ data Limits = Limits
   -- ^ the largest decimal exponent, either way, of a number
   , components :: Int
   -- ^ the components of one tensor
+  , outcomes :: Int
+  -- ^ the outcomes one mixture of the double backend's samples may have (design §8.2)
   , time :: Maybe Int
   -- ^ wall-clock seconds per input; 'Nothing' is off
   }
   deriving stock (Eq, Show)
 
 -- | Which limit was hit.
-data Limit = Memory | Steps | Depth | Digits | Components | Time
+data Limit = Memory | Steps | Depth | Digits | Components | OutcomeCount | Time
   deriving stock (Eq, Show, Enum, Bounded)
 
 {- | The defaults, chosen by measurement (design §8.1, as built): the test
@@ -110,6 +116,7 @@ defaultLimits =
     , depth = 100_000
     , digits = 100_000
     , components = 10_000_000
+    , outcomes = 1000
     , time = Nothing
     }
 
@@ -121,6 +128,7 @@ limitName = \case
   Depth -> "depth"
   Digits -> "digits"
   Components -> "components"
+  OutcomeCount -> "outcomes"
   Time -> "time"
 
 -- | What an error ends with: the setting that would let it finish.
@@ -135,6 +143,7 @@ settingLines l =
   , "depth " <> tshow l.depth
   , "digits " <> tshow l.digits
   , "components " <> tshow l.components
+  , "outcomes " <> tshow l.outcomes
   , "time " <> maybe "off" tshow l.time
   ]
 
@@ -148,6 +157,7 @@ setLimit name value l = case name of
   "depth" -> Just (positive (\k -> l{depth = k}))
   "digits" -> Just (positive (\k -> l{digits = k}))
   "components" -> Just (positive (\k -> l{components = k}))
+  "outcomes" -> Just (positive (\k -> l{outcomes = k}))
   "time"
     | value == "off" -> Just (Right l{time = Nothing})
     | otherwise -> Just (positive (\k -> l{time = Just k}))
@@ -202,14 +212,19 @@ with the value it would have had, or fails with the limit it hit.
 data Budget = Budget
   { limits :: Limits
   , counters :: ForeignPtr Int
+  {- ^ the steps taken, the nesting now, the branch points the nominal path
+  has reached, and the contexts made (design §8.2)
+  -}
   , branches :: IORef (Map Site Pending)
   -- ^ the branch points reached with copies, kept in place as the counters are
-  , current :: IORef (Maybe (VU.Vector Int))
-  {- ^ the group of copies, by global number, whose alternative is being
-  evaluated, when a branch point has split them: a value shared with the
-  evaluation around the split, when forced for the group, counts only the
-  group's copies at its branch points
+  , current :: IORef (Maybe Context)
+  {- ^ the group of copies whose evaluation is being forced, when a branch
+  point has split them: a value shared with the evaluation around the
+  split, when forced for the group, counts only the group's copies at its
+  branch points
   -}
+  , overlaps :: IORef (IntMap (VU.Vector Int))
+  -- ^ the places, among a context's copies, of those in a group, once found
   }
 
 {- | A fresh budget, for one evaluation. Each of the double backend's
@@ -220,48 +235,56 @@ evaluates.
 newBudget :: Limits -> a -> Budget
 newBudget l x = unsafeDupablePerformIO $ do
   _ <- evaluate (x `seq` ())
-  cs <- mallocForeignPtrArray 2
-  withForeignPtr cs $ \p -> mapM_ (\i -> pokeElemOff p i 0) [0, 1]
-  Budget l cs <$> newIORef mempty <*> newIORef Nothing
+  cs <- mallocForeignPtrArray 4
+  withForeignPtr cs $ \p -> mapM_ (\i -> pokeElemOff p i 0) [0 .. 3]
+  Budget l cs <$> newIORef mempty <*> newIORef Nothing <*> newIORef IntMap.empty
 {-# NOINLINE newBudget #-}
 
 {- | Where an evaluation is, among the double backend's copies (design
-§8.2): the copies it carries, whether it is the evaluation of the whole
-batch, whether it follows the nominal path, and its place below the
-branch points that split the copies, with a count of the branch points
-it has reached itself. The count is the evaluation's own, so a branch
-point has the same place in every batch, whatever the other groups of a
-split do. And the copies, by global number, that an earlier branch point
-this evaluation is inside took along although their own scrutinee
-chose another alternative: they have left the evaluated path.
+§8.2): a key of its own, the copies it carries, whether it is the
+evaluation of the whole batch, and whether it follows the nominal path;
+and the copies, by global number, that an earlier branch point this
+evaluation is inside took along although their own scrutinee chose
+another alternative: they have left the evaluated path.
 -}
 data Context = Context
-  { members :: Members
+  { key :: Int
+  , members :: Members
   , whole :: Bool
   , nominal :: Bool
-  , place :: [Int]
-  , counter :: IORef Int
   , departed :: IntSet
   }
 
-{- | A context with its own count and no copy departed. Its last argument
-keeps two from sharing one.
--}
-newContext :: Members -> Bool -> Bool -> [Int] -> a -> Context
-newContext m whole nominal place x = unsafePerformIO $ do
-  _ <- evaluate (x `seq` ())
-  counter <- newIORef 0
-  pure (Context m whole nominal place counter IntSet.empty)
-{-# NOINLINE newContext #-}
+-- | A context whose evaluation has taken more copies off their path.
+departing :: IntSet -> Context -> Context
+departing off ctx = Context ctx.key ctx.members ctx.whole ctx.nominal off
 
-{- | Note that an evaluation reached a branch point with copies: their own
-alternatives, in the order of the context's copies, the copies the
-scrutinee already says are off their path, the alternative the
-evaluation takes, and whether the copies split there. Only the copies of
-the group being evaluated count, if any is. The result is the copies off
-their path in the alternative taken: those before, and, unless the copies
-split, those whose own alternative is another. Not dupable, since the
-context's count is taken once; the alternatives make every call its own.
+-- | The evaluation of a whole batch.
+rootContext :: Members -> Context
+rootContext m = Context 0 m True True IntSet.empty
+
+{- | The evaluation of a group of a context's copies, the ones a branch
+point sent down one alternative, on the nominal path or off it. Its key
+is new. The members make every call its own.
+-}
+enter :: Budget -> Context -> Members -> Bool -> Context
+enter b outer m nominal = unsafePerformIO $ withForeignPtr b.counters $ \p -> do
+  _ <- evaluate m
+  k <- peekElemOff p 3
+  pokeElemOff p 3 (k + 1)
+  pure (Context (k + 1) m False nominal outer.departed)
+{-# NOINLINE enter #-}
+
+{- | Note that an evaluation reached a branch point (design §8.2): the
+alternative it takes, what the copies spread by, whether they split
+there, the copies the scrutinee already says are off their path, and the
+copies' own alternatives in the order of the context's copies, when they
+have their own; without, every copy takes the evaluation's. Only the
+copies of the group being forced count, if any is. The result is the
+copies off their path in the alternative taken: those before, and,
+unless the copies split, those whose own alternative is another. Not
+dupable, since the nominal path's count is taken once; the arguments make
+every call its own.
 -}
 reach ::
   Budget ->
@@ -271,56 +294,81 @@ reach ::
   Cause ->
   Bool ->
   IntSet ->
-  VU.Vector Int ->
+  Maybe (VU.Vector Int) ->
   IntSet
-reach b ctx site taken cause split left alts = unsafePerformIO $ do
-  n <- readIORef ctx.counter
-  writeIORef ctx.counter (n + 1)
+reach b ctx site taken cause split left alts = unsafePerformIO $ withForeignPtr b.counters $ \p -> do
+  n <- peekElemOff p 2
+  when ctx.nominal (pokeElemOff p 2 (n + 1))
   group <- readIORef b.current
+  places <- case group of
+    Just g | g.key /= ctx.key -> Just <$> overlap b ctx g
+    _ -> pure Nothing
   let everyone = memberVector ctx.members
-      places = case group of
-        Nothing -> Nothing
-        Just g -> Just (VU.findIndices (inSorted g) everyone)
-      counted = maybe alts (VU.backpermute alts) places
       globals = maybe everyone (VU.backpermute everyone) places
-      rows =
-        IntMap.fromList
-          [ (a, k)
-          | (a, k) <- zip [0 ..] (VU.toList (alternativeCounts counted))
-          , k > 0
-          ]
+      size = maybe (memberCount ctx.members) VU.length places
+      rows = case alts of
+        Nothing -> IntMap.singleton taken size
+        Just as ->
+          IntMap.fromList
+            [ (a, k)
+            | (a, k) <-
+                zip [0 ..] (VU.toList (alternativeCounts (maybe as (VU.backpermute as) places)))
+            , k > 0
+            ]
       off = IntSet.union ctx.departed left
       already
         | IntSet.null off = 0
         | otherwise = VU.length (VU.filter (`IntSet.member` off) globals)
-      leaving
-        | split = IntSet.empty
-        | otherwise =
-            IntSet.fromList
-              (VU.toList (VU.ifilter (\i _ -> VU.unsafeIndex alts i /= taken) everyone))
-  unless (VU.null counted)
+      leaving = case alts of
+        Just as
+          | not split ->
+              IntSet.fromList
+                (VU.toList (VU.ifilter (\i _ -> VU.unsafeIndex as i /= taken) everyone))
+        _ -> IntSet.empty
+  when (size > 0)
     $ modifyIORef'
       b.branches
       ( pend
           site
           Reach
-            { position = ctx.place ++ [n]
+            { order = (n, if ctx.nominal then 0 else 1)
             , nominal = if ctx.nominal then Just taken else Nothing
             , cause
             , rows
             , departed = already
             , split
-            , counted =
-                if ctx.whole && isNothing group then Nothing else Just (VU.toList globals)
+            , counted = case (places, group) of
+                (Nothing, _) | ctx.whole -> Nothing
+                (Nothing, _) -> Just (ctx.key, everyone)
+                (Just _, Just g) -> Just (pair ctx g, globals)
+                (Just _, Nothing) -> Just (ctx.key, globals)
             }
       )
   pure (IntSet.union off leaving)
 {-# NOINLINE reach #-}
 
-{- | Evaluate a value for a group of copies, by global number: its branch
-points count only them. The group in force before is restored after.
+-- | A key for the copies a context and a group share.
+pair :: Context -> Context -> Int
+pair ctx g = ctx.key * 4294967296 + g.key
+
+{- | The places, among a context's copies, of those in a group: found once
+for each context and group.
 -}
-within :: Budget -> VU.Vector Int -> a -> a
+overlap :: Budget -> Context -> Context -> IO (VU.Vector Int)
+overlap b ctx g = do
+  known <- readIORef b.overlaps
+  case IntMap.lookup (pair ctx g) known of
+    Just ps -> pure ps
+    Nothing -> do
+      let gs = memberVector g.members
+          ps = VU.findIndices (inSorted gs) (memberVector ctx.members)
+      modifyIORef' b.overlaps (IntMap.insert (pair ctx g) ps)
+      pure ps
+
+{- | Evaluate a value for a group of copies: its branch points count only
+them. The group in force before is restored after.
+-}
+within :: Budget -> Context -> a -> a
 within b g x = unsafePerformIO $ do
   before <- readIORef b.current
   writeIORef b.current (Just g)

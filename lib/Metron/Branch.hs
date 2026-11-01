@@ -175,7 +175,14 @@ branchAt spelling namer named (Inside ctx t) = case t of
         }
   _ -> Nothing
  where
-  render = named . renderTermIn spelling namer ctx
+  -- A scrutinee that runs to the end of the text is parenthesised.
+  render sc =
+    let text = named (renderTermIn spelling namer ctx sc)
+     in case sc of
+          Case{} -> "(" <> text <> ")"
+          Let{} -> "(" <> text <> ")"
+          Lam{} -> "(" <> text <> ")"
+          _ -> text
 
 tshow :: (Show a) => a -> Text
 tshow = T.pack . show

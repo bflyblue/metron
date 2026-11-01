@@ -60,6 +60,7 @@ module Metron.Double (
   showEstimate,
   originNote,
   sampleNote,
+  clusterNote,
   showSampled,
   nextUpDouble,
   nextDownDouble,
@@ -98,8 +99,8 @@ import Metron.Scalar (
   Scalar (..),
   Settings (..),
   Shape (..),
+  globalOf,
   lacks,
-  memberAt,
   memberCount,
   needsSamples,
  )
@@ -250,7 +251,9 @@ constantCopies s op xs r side = case s.rounding of
   RoundRandom ->
     VU.generate
       (memberCount s.copies)
-      (\i -> roundTo (coin s (memberAt s.copies i) op xs) r side)
+      (\i -> roundTo (coin s (global i) op xs) r side)
+ where
+  global = globalOf s.copies
 
 {- | The neighbour a random rounding chooses: the nearest double @r@ and the
 side the exact result lies on.
@@ -333,13 +336,14 @@ operation s op say fv fb fc xs =
         Nothing -> ErrorBound (boundOf [(x.value, b) | x <- xs, ErrorBound b <- [x.estimate]])
         Just n ->
           let columns = map (copiesOf n) xs
+              global = globalOf s.copies
               -- To nearest, each copy is the operation itself; at random, the
               -- coin picks the neighbour.
               copy i =
                 let ys = map (VU.! i) columns
                  in case s.rounding of
                       RoundNearest -> fv ys
-                      RoundRandom -> fc (coin s (memberAt s.copies i) op ys) ys
+                      RoundRandom -> fc (coin s (global i) op ys) ys
            in Copies (foldMap spreadOf xs) (VU.generate n copy)
       -- Nothing to add is an exact result, which stays exact.
       boundOf bs
@@ -721,7 +725,7 @@ drawn s k o m =
         0
         ( Copies
             Drawn
-            (VU.generate (memberCount s.copies) (standardNormal s key . memberAt s.copies))
+            (VU.generate (memberCount s.copies) (standardNormal s key . globalOf s.copies))
         )
         Nothing
 
@@ -981,16 +985,30 @@ sampleNote layout xs = case [VU.length cs | x <- xs, Copies Drawn cs <- [x.estim
   [] -> Nothing
  where
   (means, deviations) = unzip (map statistics xs)
-  statistics x =
-    let cs = case x.estimate of
-          Copies _ v -> v
-          ErrorBound _ -> VU.singleton x.value
-        k = fromIntegral (VU.length cs)
-        m = meanOf cs
-        s = deviationOf cs
-     in ( showSampled (s / sqrt k) m
-        , showSampled (if k < 2 then 0 else s / sqrt (2 * (k - 1))) s
-        )
+
+{- | The mean and deviation of a group of samples, laid out as its numbers
+are: what an outcome of a mixture shows of each number it holds (design
+§8.2), @mean 12.43 s, sd 0.21 s@.
+-}
+clusterNote :: ([Text] -> Text) -> [Dbl] -> Text
+clusterNote layout xs = "mean " <> layout means <> ", sd " <> layout deviations
+ where
+  (means, deviations) = unzip (map statistics xs)
+
+{- | A number's copies' mean and deviation, each to the digits its own
+standard error resolves.
+-}
+statistics :: Dbl -> (Text, Text)
+statistics x =
+  let cs = case x.estimate of
+        Copies _ v -> v
+        ErrorBound _ -> VU.singleton x.value
+      k = fromIntegral (VU.length cs)
+      m = meanOf cs
+      s = deviationOf cs
+   in ( showSampled (s / sqrt k) m
+      , showSampled (if k < 2 then 0 else s / sqrt (2 * (k - 1))) s
+      )
 
 {- | A statistic with standard error @se@: rounded to the place of the
 second significant digit of @se@, its trailing zeros kept, written as
@@ -1173,6 +1191,29 @@ choleskyD s what a
      in done ++ [new]
   dotTo j xs ys = foldl' (addD s) (exactDbl 0) (take j (zipWith (mulD s) xs ys))
 
+-- Splitting the copies ------------------------------------------------------------------
+
+{- | The numbers the groups of a split computed, put back together copy by
+copy (design §8.2): each group's copies at their places among @n@. The
+value is the nominal group's, the IEEE result at the nominal inputs; an
+evaluation off the nominal path has none, and its value is a NaN, the
+same in every batch, which nothing reads. Only draws split the copies,
+so the result is a Monte Carlo sample: its copies carry draws, whatever
+each group's did (a group's literal, alone, carries none).
+-}
+scatterD :: Int -> Maybe Dbl -> [(VU.Vector Int, Dbl)] -> Dbl
+scatterD n nominal parts =
+  Dbl
+    (maybe (0 / 0) (.value) nominal)
+    ( Copies
+        Drawn
+        ( VU.update
+            (VU.replicate n (0 / 0))
+            (VU.concat [VU.zip ps (copiesOf (VU.length ps) x) | (ps, x) <- parts])
+        )
+    )
+    (nominal >>= (.origin))
+
 -- The instance --------------------------------------------------------------------------
 
 refused :: Text -> Either ArithError a
@@ -1237,6 +1278,10 @@ instance Scalar Dbl where
   invertM s n rows = Right (invertD s n rows)
   matrixExpM s n rows = Right (matrixExpD s n rows)
   choleskyM = choleskyD
+  restrictM places x = case x.estimate of
+    Copies sp cs -> x{estimate = Copies sp (VU.backpermute cs places)}
+    ErrorBound _ -> x
+  scatterM = scatterD
   own = \case
     -- The error estimate itself, as a number known exactly. It measures
     -- rounding, so a number whose copies carry draws is refused.

@@ -54,7 +54,8 @@ import Metron.Core
       Term(Cycle),
       Vec(VNil) )
 import Metron.Dimension ( Spelling(..) )
-import Metron.Eval ( Config(nonlinear, unicode) )
+import Metron.Eval ( Config(limits, nonlinear, samples, unicode) )
+import Metron.Limits ( Limits(outcomes) )
 import Metron.Prelude ( isLibraryPath )
 import Metron.Pretty
     ( renderParamsUnits,
@@ -264,6 +265,9 @@ printerFor cfg scope cb =
     , spelling = spellingOf cfg
     , unitName = shortestName scope cb
     , nonlinear = cfg.nonlinear
+    , samples = cfg.samples
+    , outcomes = cfg.limits.outcomes
+    , typeNames = nameTypes scope cb
     }
 
 -- | The spelling output uses (design §7.3, @:set unicode@).

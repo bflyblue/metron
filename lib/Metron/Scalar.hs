@@ -40,6 +40,7 @@ module Metron.Scalar (
   Members (..),
   memberCount,
   memberAt,
+  globalOf,
   memberVector,
   wholeBatch,
   roundingName,
@@ -194,7 +195,7 @@ data Settings = Settings
   -- ^ the seed of those copies' random choices (@:set seed@)
   , rounding :: Rounding
   -- ^ how each copy rounds (@:set rounding@)
-  , copies :: Members
+  , copies :: !Members
   -- ^ which of the copies this evaluation carries
   }
   deriving stock (Eq, Show)
@@ -234,6 +235,15 @@ memberAt m i = case m of
   Range first _ -> first + i
   Listed v -> VU.unsafeIndex v i
 {-# INLINE memberAt #-}
+
+{- | The global number of the copy at each place, the kind of members found
+once, for a loop over the copies.
+-}
+globalOf :: Members -> Int -> Int
+globalOf = \case
+  Range first _ -> (first +)
+  Listed v -> VU.unsafeIndex v
+{-# INLINE globalOf #-}
 
 memberVector :: Members -> VU.Vector Int
 memberVector = \case
@@ -376,6 +386,23 @@ class (Eq s) => Scalar s where
 
   -- | The backend's own built-ins by name (design §8.2).
   own :: Text -> Maybe (Own s)
+
+  {- | A number for a group of its copies (design §8.2): the copies at
+  these places, in this order. A number without copies is itself.
+  -}
+  restrictM :: VU.Vector Int -> s -> s
+  restrictM _ = id
+
+  {- | The numbers the groups of a split computed, put back together copy
+  by copy (design §8.2): so many copies in all, the nominal group's
+  number, if the evaluation has one, and each group's number with the
+  places of its copies among all of them.
+  -}
+  scatterM :: Int -> Maybe s -> [(VU.Vector Int, s)] -> s
+  scatterM _ nominal parts = case (nominal, parts) of
+    (Just x, _) -> x
+    (Nothing, (_, x) : _) -> x
+    (Nothing, []) -> literal (settingsAt 0) 0
 
 -- The affine backend -----------------------------------------------------------------
 

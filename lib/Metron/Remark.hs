@@ -27,6 +27,7 @@ import Data.IntMap.Strict qualified as IntMap
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Vector.Unboxed qualified as VU
 import Metron.Core (Hash)
 
 {- | Where a node sits: the enclosing top-level definition and the path of
@@ -51,10 +52,10 @@ instance Semigroup Cause where
 batch sees it.
 -}
 data Reach = Reach
-  { position :: [Int]
-  {- ^ where in the evaluation's order: the branch points reached before
-  it in the same evaluation, below the branch points and alternatives
-  of the split it is in, the same in every batch
+  { order :: (Int, Int)
+  {- ^ where in the evaluation's order: the branch points the nominal path
+  reached before it, the same in every batch, and 0 on the nominal path
+  itself or 1 off it
   -}
   , nominal :: Maybe Int
   {- ^ the alternative the nominal value selects, when the evaluation is
@@ -67,8 +68,11 @@ data Reach = Reach
   -- ^ of those, copies already off their own path, left behind by rounding
   , split :: Bool
   -- ^ whether the copies split here, each group down its own alternative
-  , counted :: Maybe [Int]
-  -- ^ the copies counted, by global number; 'Nothing' when all the batch's were
+  , counted :: Maybe (Int, VU.Vector Int)
+  {- ^ the copies counted, by global number, under a key for that set of
+  them; 'Nothing' when all the batch's were. The set is read only the
+  first time its key is
+  -}
   }
 
 {- | One batch's record of a branch point, reach by reach. A copy's number
@@ -76,7 +80,7 @@ of reaches is kept only where not every copy was there, so that a table
 can say how many times the point was reached.
 -}
 data Pending = Pending
-  { first :: [Int]
+  { first :: (Int, Int)
   , rows :: IntMap Int
   , taken :: IntMap Int
   , departed :: Int
@@ -84,7 +88,7 @@ data Pending = Pending
   , cause :: Cause
   , split :: Bool
   , full :: Int
-  , partial :: IntMap Int
+  , partial :: IntMap (VU.Vector Int, Int)
   }
 
 -- | Add a reach to a batch's records.
@@ -101,12 +105,13 @@ pend site r = Map.insertWith after site this
       , cause = old.cause <> new.cause
       , split = old.split || new.split
       , full = old.full + new.full
-      , partial = IntMap.unionWith (+) old.partial new.partial
+      , partial =
+          IntMap.unionWith (\(_, j) (cs, k) -> (cs, j + k)) new.partial old.partial
       }
   total = sum (IntMap.elems r.rows)
   this =
     Pending
-      { first = r.position
+      { first = r.order
       , rows = r.rows
       , taken = maybe IntMap.empty (`IntMap.singleton` 1) r.nominal
       , departed = r.departed
@@ -116,7 +121,8 @@ pend site r = Map.insertWith after site this
       , cause = r.cause
       , split = r.split
       , full = maybe 1 (const 0) r.counted
-      , partial = maybe IntMap.empty (IntMap.fromList . map (,1)) r.counted
+      , partial =
+          maybe IntMap.empty (\(key, cs) -> IntMap.singleton key (cs, 1)) r.counted
       }
 
 {- | Branch points as one or more batches recorded them: '<>' combines the
@@ -129,7 +135,7 @@ times any one copy reached it, which every batch counts alike for its own
 copies; the rest are sums.
 -}
 data Tally = Tally
-  { first :: [Int]
+  { first :: (Int, Int)
   , rows :: IntMap Int
   , taken :: IntMap Int
   , departed :: Int
@@ -170,8 +176,13 @@ remarksOf = Remarks . Map.map done
       , differing = p.differing
       , cause = p.cause
       , split = p.split
-      , evaluations = p.full + maximum (0 : IntMap.elems p.partial)
+      , evaluations = p.full + maximum (0 : IntMap.elems (perCopy p.partial))
       }
+  -- How many times each copy was counted, over the sets of copies.
+  perCopy =
+    IntMap.foldl'
+      (\acc (cs, k) -> VU.foldl' (\m c -> IntMap.insertWith (+) c k m) acc cs)
+      IntMap.empty
 
 {- | A branch point some copies would leave by another alternative, over
 all the copies: what its table says.

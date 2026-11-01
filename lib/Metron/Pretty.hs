@@ -27,7 +27,10 @@ module Metron.Pretty (
 ) where
 
 import Control.Applicative ((<|>))
+import Control.Monad (when)
 import Data.Char (intToDigit, isAlphaNum)
+import Data.Either (fromRight)
+import Data.List (sortOn)
 import Data.Map.Strict qualified as Map (lookup)
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ratio (denominator, numerator, (%))
@@ -55,8 +58,17 @@ import Data.Text qualified as T (
   unsnoc,
   unwords,
  )
-import Data.Vector qualified as V (head, toList)
-import Data.Vector.Unboxed qualified as VU (length, map)
+import Data.Vector qualified as V (empty, fromList, head, length, toList, (!))
+import Data.Vector.Unboxed qualified as VU (
+  Vector,
+  enumFromN,
+  filter,
+  fromList,
+  length,
+  map,
+  null,
+  toList,
+ )
 import Metron.Affine (
   Collapsed (bound, mid, variance),
   Magnitude (Affine, Exact),
@@ -111,6 +123,7 @@ import Metron.Double (
   Dbl (..),
   Estimate (..),
   carriesDraws,
+  clusterNote,
   estimateOf,
   originNote,
   sampleNote,
@@ -120,9 +133,14 @@ import Metron.Double (
 import Metron.Eval (
   Applied (Applied),
   ChartOf (applied, dim, dims, name, origin, step),
-  EvalError (Internal),
+  EvalError (Exceeded, Internal),
+  Mixture (..),
+  Narrowing (..),
+  Option (..),
   ValueOf (..),
   coordinatesOn,
+  narrow,
+  placesWithin,
   pattern VBool,
  )
 import Metron.Lexer qualified as L (
@@ -147,8 +165,9 @@ import Metron.Lexer qualified as L (
   prepare,
   tokenize,
  )
+import Metron.Limits (Limit (OutcomeCount), inSorted)
 import Metron.Primitive (baseUnit)
-import Metron.Scalar (Scalar (hintFactor), settingsAt)
+import Metron.Scalar (Scalar (hintFactor, scatterM), settingsAt)
 import Metron.Syntax qualified as S (Pos (Pos), Span (from, to))
 import Metron.TCore (patternText)
 import Metron.Type (conText)
@@ -158,6 +177,7 @@ import Metron.UnitHint (
   UnitFactor (atom, power),
   UnitHint (atoms, dim, factor, pinned),
  )
+import Numeric (showFFloat)
 
 -- Numbers ------------------------------------------------------------------------
 
@@ -315,6 +335,12 @@ data Printer = Printer
   -- ^ how the full name of a unit or chart prints (design §7.6)
   , nonlinear :: Rational
   -- ^ the threshold over which a value prints marked non-linear (design §3.2)
+  , samples :: Int
+  -- ^ the double backend's copies, of which a mixture's outcomes are groups (design §8.2)
+  , outcomes :: Int
+  -- ^ the most outcomes a mixture may print with (@:set outcomes@)
+  , typeNames :: Text -> Text
+  -- ^ declared types and constructors written by hash, named (design §7.2)
   }
 
 {- | A printer that knows no field names, for callers without a codebase:
@@ -328,6 +354,9 @@ plainPrinter namer =
     , spelling = Ascii
     , unitName = id
     , nonlinear = 1 / 100
+    , samples = 0
+    , outcomes = 1000
+    , typeNames = id
     }
 
 {- | A measure of non-linearity (design §3.2): the operation, and its
@@ -367,6 +396,18 @@ class (Scalar s) => Display s where
   numbers are laid out, in its shape and with its unit.
   -}
   numbersNote :: Rational -> ([Text] -> Text) -> [s] -> Text
+
+  {- | A number as its nominal value alone, without what it carries: how a
+  mixture's nominal value prints (design §8.2).
+  -}
+  nominalOnly :: s -> s
+  nominalOnly = id
+
+  {- | What an outcome of a mixture shows of its numbers (design §8.2): the
+  copies' mean and deviation, laid out as the numbers are.
+  -}
+  clusterText :: ([Text] -> Text) -> [s] -> Text
+  clusterText _ _ = ""
 
 instance Display Magnitude where
   renderNumbers scale = map (renderMagnitude scale)
@@ -419,6 +460,8 @@ instance Display Dbl where
           (Nothing, ErrorBound _ : _) -> ["bound"]
           (Nothing, Copies _ cs : _) -> ["estimate, " <> tshow (VU.length cs) <> " samples"]
      in T.concat [" (" <> t <> ")" | t <- kind ++ maybe [] pure (originNote xs)]
+  nominalOnly x = x{estimate = ErrorBound 0}
+  clusterText = clusterNote
 
 {- | Print a value. A tensor with a display unit whose dimension matches
 prints its magnitudes in that unit (design §3.2.12); otherwise in SI base
@@ -428,7 +471,269 @@ its current name.
 renderValue ::
   (Display s) =>
   Printer -> Int -> Preferences -> ValueOf s -> Either EvalError Text
-renderValue printer scale prefs = renderValueWith printer scale prefs (renderNumbers scale)
+renderValue printer scale prefs v = do
+  mixed <- hasMixture v
+  if mixed
+    then renderMixture printer scale prefs v
+    else renderValueWith printer scale prefs (renderNumbers scale) v
+
+-- Mixtures ----------------------------------------------------------------------------
+
+-- | Whether a value holds a mixture anywhere (design §8.2): forces its data.
+hasMixture :: ValueOf s -> Either EvalError Bool
+hasMixture = \case
+  VMixture _ -> Right True
+  VData _ fields -> anyM fields
+  VUnit v -> hasMixture v
+  _ -> Right False
+ where
+  anyM = \case
+    [] -> Right False
+    f : rest -> f >>= hasMixture >>= \found -> if found then Right True else anyM rest
+
+{- | One outcome of a value whose samples differ in what it is: the copies
+that have it, by global number, whether it is the nominal value's, and
+the value for those copies, with no mixture in it.
+-}
+data Outcome s = Outcome {members :: VU.Vector Int, nominal :: Bool, value :: ValueOf s}
+
+{- | A value's outcomes (design §8.2): a mixture's options, and the data
+around and inside them taken apart, the copies of each the ones its
+parts share.
+-}
+outcomesOf ::
+  (Scalar s) => VU.Vector Int -> Bool -> ValueOf s -> Either EvalError [Outcome s]
+outcomesOf ms nominal = \case
+  VMixture m ->
+    concat
+      <$> sequence
+        [ outcomesOf o.members (nominal && m.nominal == Just i) o.value
+        | (i, o) <- zip [0 :: Int ..] m.options
+        ]
+  VData c fields -> do
+    perField <- mapM (>>= outcomesOf ms nominal) fields
+    pure
+      [ Outcome both n (VData c [Right (narrowed both n o) | o <- parts])
+      | (both, n, parts) <- foldl' combine [(ms, nominal, [])] perField
+      ]
+  v -> Right [Outcome ms nominal v]
+ where
+  combine acc outs =
+    [ (both, n && o.nominal, parts ++ [o])
+    | (shared, n, parts) <- acc
+    , o <- outs
+    , let both = VU.filter (inSorted o.members) shared
+    , not (VU.null both) || (n && o.nominal)
+    ]
+  narrowed both n o = narrow (Narrowing (placesWithin o.members both) both n) o.value
+
+{- | A mixture printed (design §8.2): its nominal value, then a table of
+its outcomes, the ten commonest, each with its samples, its share and
+the mean and deviation of each number it holds, the nominal one marked.
+-}
+renderMixture ::
+  (Display s) =>
+  Printer -> Int -> Preferences -> ValueOf s -> Either EvalError Text
+renderMixture printer scale prefs v = do
+  outs <- outcomesOf (VU.enumFromN 0 printer.samples) True v
+  let byLabel =
+        foldl'
+          ( \acc o ->
+              let label = printer.typeNames (outcomeLabel printer o.value)
+               in case break ((== label) . fst) acc of
+                    (before, (l, os) : after) -> before ++ (l, os ++ [o]) : after
+                    _ -> acc ++ [(label, [o])]
+          )
+          []
+          outs
+      total = sum [VU.length o.members | o <- outs]
+  when (length byLabel > printer.outcomes)
+    $ Left
+      ( Exceeded
+          OutcomeCount
+          ("the value has more than " <> tshow printer.outcomes <> " outcomes")
+      )
+  rows <- traverse summary byLabel
+  shownNominal <- case [o | o <- outs, o.nominal] ++ outs of
+    o : _ -> renderValueWith printer scale prefs (renderNumbers scale) (stripped o.value)
+    [] -> Left (Internal "a mixture with no outcome")
+  let ordered = sortOn (\(label, count, _, _) -> (negate count, label)) rows
+      shown = take 10 ordered
+      others = length ordered - length shown
+      anyFields = any (\(_, _, _, fs) -> not (T.null fs)) shown
+      wLabel = maximum (T.length "outcome" : [T.length l | (l, _, _, _) <- shown])
+      wCount = maximum (T.length "samples" : [T.length (tshow c) | (_, c, _, _) <- shown])
+      share c =
+        T.pack
+          ( showFFloat
+              (Just 1)
+              (100 * fromIntegral c / fromIntegral (max 1 total) :: Double)
+              ""
+          )
+          <> "%"
+      wShare = maximum (T.length "share" : [T.length (share c) | (_, c, _, _) <- shown])
+      line label count sh fields mark =
+        T.dropWhileEnd
+          (== ' ')
+          ( "  "
+              <> T.justifyLeft wLabel ' ' label
+              <> "   "
+              <> T.justifyRight wCount ' ' count
+              <> "   "
+              <> T.justifyRight wShare ' ' sh
+              <> (if anyFields then "   " <> fields else "")
+          )
+          <> mark
+  pure
+    ( T.intercalate
+        "\n"
+        ( ( shownNominal
+              <> " (Monte Carlo over "
+              <> tshow total
+              <> " samples, "
+              <> tshow (length byLabel)
+              <> " outcomes):"
+          )
+            : line "outcome" "samples" "share" "fields" ""
+            : [ line
+                  label
+                  (tshow count)
+                  (share count)
+                  fields
+                  (if isNominal then "   ← nominal" else "")
+              | (label, count, isNominal, fields) <- shown
+              ]
+            ++ ["  and " <> tshow others <> " others" | others > 0]
+        )
+    )
+ where
+  -- An outcome's copies and the summary of each number it holds, over
+  -- every path that gives it.
+  summary (label, os) = do
+    let union' = VU.fromList (sortOn id (concat [VU.toList o.members | o <- os]))
+        leafLists = map (leavesOf printer . (.value)) os
+    fields <- case leafLists of
+      first' : _ ->
+        sequence
+          [ (path,)
+              <$> clusterOf
+                union'
+                [ (o.members, leaf)
+                | (o, leaves) <- zip os leafLists
+                , (p, leaf) <- leaves
+                , p == path
+                ]
+          | (path, _) <- first'
+          ]
+      [] -> pure []
+    pure
+      ( label
+      , VU.length union'
+      , any (.nominal) os
+      , T.intercalate
+          "; "
+          [if T.null path then t else path <> ": " <> t | (path, t) <- fields]
+      )
+  -- A number's samples across the outcomes that hold it, as its mean and
+  -- deviation in its unit.
+  clusterOf union' parts = case parts of
+    (_, VUnit _) : _ -> clusterOf union' [(ms, unwrapped leaf) | (ms, leaf) <- parts]
+    (_, VTensor dims d hint buf) : _ -> do
+      elements <-
+        traverse
+          ( \k ->
+              scatterM (VU.length union') Nothing
+                <$> traverse
+                  (\(ms, leaf) -> (placesWithin union' ms,) <$> (bufferOf leaf V.! k))
+                  parts
+          )
+          [0 .. V.length buf - 1]
+      (shape, scaled, units) <-
+        displayParts
+          printer
+          scale
+          prefs
+          (VTensor dims d hint (V.fromList (map Right elements)))
+      let laid ts = renderNested id shape ts <> (if T.null units then "" else " " <> units)
+      pure (clusterText laid scaled)
+    _ -> pure ""
+  unwrapped = \case
+    VUnit w -> w
+    w -> w
+  bufferOf = \case
+    VTensor _ _ _ buf -> buf
+    VPoint _ _ _ buf -> buf
+    VUnit u -> bufferOf u
+    _ -> V.empty
+
+{- | What an outcome is, as a label: its data as written, with @_@ for each
+number, and a record by its constructor alone, its fields' numbers shown
+beside it.
+-}
+outcomeLabel :: Printer -> ValueOf s -> Text
+outcomeLabel printer = \case
+  VBool True -> "true"
+  VBool False -> "false"
+  VData (TupleC _) fields -> "(" <> T.intercalate ", " (map field fields) <> ")"
+  v@(VData c _)
+    | c == ConsC || c == NilC ->
+        "{"
+          <> T.intercalate ", " (map (outcomeLabel printer) (fromRight [] (listItems v)))
+          <> "}"
+  VData c@(UserCon h i) fields
+    | not (null fields)
+    , Just _ <- sequence (printer.fieldNames h i (length fields)) ->
+        conText c
+  VData c fields -> T.unwords (conText c : map (paren . field) fields)
+  VClosure _ -> "<function>"
+  VChart _ -> "chart"
+  VTyAbs{} -> "<polymorphic value>"
+  VMixture _ -> "<mixture>"
+  _ -> "_"
+ where
+  field = either (const "_") (outcomeLabel printer)
+  paren t = if T.any (== ' ') t then "(" <> t <> ")" else t
+
+{- | The numbers an outcome holds, each by its path: a record's field by
+its name, any other field or item by its place.
+-}
+leavesOf :: Printer -> ValueOf s -> [(Text, ValueOf s)]
+leavesOf printer = go ""
+ where
+  go path = \case
+    v@VTensor{} -> [(path, v)]
+    v@VUnit{} -> [(path, v)]
+    v@VPoint{} -> [(path, v)]
+    v@(VData c _)
+      | c == ConsC || c == NilC ->
+          concat
+            ( zipWith
+                (go . at path . tshow)
+                [0 :: Int ..]
+                (fromRight [] (listItems v))
+            )
+    VData (UserCon h i) fields
+      | not (null fields)
+      , Just names <- sequence (printer.fieldNames h i (length fields)) ->
+          concat (zipWith (either (const []) . go . at path) names fields)
+    VData _ fields ->
+      concat
+        ( zipWith
+            (either (const []) . go . at path . tshow)
+            [0 :: Int ..]
+            fields
+        )
+    _ -> []
+  at path n = if T.null path then n else path <> "." <> n
+
+-- | A value's numbers as their nominal values alone.
+stripped :: (Display s) => ValueOf s -> ValueOf s
+stripped = \case
+  VTensor dims d hint buf -> VTensor dims d hint (fmap (fmap nominalOnly) buf)
+  VPoint dims d c buf -> VPoint dims d c (fmap (fmap nominalOnly) buf)
+  VUnit v -> VUnit (stripped v)
+  VData c fields -> VData c (map (fmap stripped) fields)
+  v -> v
 
 {- | 'renderValue' with a chosen rendering for the magnitudes of one value,
 a tensor's components in order.

@@ -30,7 +30,8 @@ module Metron.Batch (
 import Control.Exception (evaluate)
 
 import Data.Either (lefts)
-import Data.List (transpose)
+import Data.IntSet qualified as IntSet
+import Data.List (elemIndex, transpose)
 import Data.Set (Set)
 import Data.Set qualified as Set (fromList)
 import Data.Text (Text)
@@ -38,8 +39,15 @@ import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import GHC.Float (castDoubleToWord64)
 import Metron.Builtin (pattern ConsC, pattern NilC)
+import Metron.Core (ConRef (UserCon))
 import Metron.Double (Dbl (..), Estimate (..))
-import Metron.Eval (EvalError (Exceeded), ValueOf (..))
+import Metron.Eval (
+  Choice (..),
+  EvalError (Exceeded),
+  Mixture (..),
+  Option (..),
+  ValueOf (..),
+ )
 import Metron.Limits (Limit (Steps))
 import Metron.Scalar (Batch (..))
 
@@ -64,37 +72,38 @@ batchesOf n k0 =
 acrossCopies :: Set Text
 acrossCopies = Set.fromList ["mid", "sd", "errorOf", "digitsOf"]
 
-{- | Force what a value will print, in the order the printer forces it
-("Metron.Pretty"), down to the copies, and no further: the elements of
-a tensor in order and the fields of a constructor in order, each in full,
-up to the first error, where printing stops; a list's spine and items
-first, then each item. So a batch does the reductions the single
-evaluation's printing does, and no others. Run in the thread that
-evaluates its batch, so that each batch is forced in one thread only.
-'False' once an error is met.
+{- | Force what a value will print ("Metron.Pretty"), down to the copies,
+and no further: the elements of a tensor in order and the fields of a
+constructor in order, each in full, up to the first error, where
+printing stops; a list item by item; every outcome of a mixture (design
+§8.2). So a batch does the reductions the single evaluation's printing
+does, and no others, and has noted every branch point it reaches before
+its notes are read. Run in the thread that evaluates its batch, so that
+each batch is forced in one thread only. 'False' once an error is met.
 -}
 forced :: ValueOf Dbl -> IO Bool
 forced = \case
   VTensor _ _ _ xs -> allM forcedElement (V.toList xs)
   VPoint _ _ _ xs -> allM forcedElement (V.toList xs)
-  v@(VData c _) | c == ConsC || c == NilC -> case items v of
-    Just vs -> allM forced vs
-    Nothing -> pure False
+  v@(VData c _) | c == ConsC || c == NilC -> list v
   VData _ fs -> allM (either (const (pure False)) forced) fs
   VUnit v -> forced v
   VChart _ -> pure True
   VClosure _ -> pure True
   VTyAbs{} -> pure True
+  -- Every outcome of a mixture, as the printer shows them all (design §8.2).
+  VMixture m -> allM (forced . (.value)) m.options
  where
   forcedElement = \case
     Right x -> True <$ evaluate x
     Left _ -> pure False
-  -- The spine and each item to its constructor, as the printer walks a
-  -- list before it prints any item.
-  items = \case
-    VData NilC [] -> Just []
-    VData ConsC [Right x, Right xs] -> (x :) <$> items xs
-    _ -> Nothing
+  -- Each item, then the rest; a rest whose samples differ in length is a
+  -- mixture, each of whose options is forced in turn.
+  list = \case
+    VData NilC [] -> pure True
+    VData ConsC [Right x, Right xs] -> forced x >>= \ok -> if ok then list xs else pure False
+    VMixture m -> allM (list . (.value)) m.options
+    _ -> pure False
 
 -- | Each action in turn, while they succeed.
 allM :: (a -> IO Bool) -> [a] -> IO Bool
@@ -102,45 +111,101 @@ allM f = \case
   [] -> pure True
   x : rest -> f x >>= \ok -> if ok then allM f rest else pure False
 
-{- | The batches' values as one: the same shape in each, the copies of each
-number concatenated in batch order. 'Nothing' when they differ in any
-way but their copies, or hold a chart, whose numbers are not merged; the
-input then runs as one evaluation.
+{- | The batches' values as one: the copies of each number concatenated in
+batch order, and the outcomes of a mixture (design §8.2) merged by
+outcome, each outcome's copies in batch order too, so that a value is the
+same for every @cores@. 'Nothing' when they differ in any way but their
+copies and outcomes, or hold a chart or a mixture of functions, which are
+not merged; the input then runs as one evaluation.
 -}
-merged :: [ValueOf Dbl] -> Maybe (ValueOf Dbl)
-merged = \case
+merged :: [(Batch, ValueOf Dbl)] -> Maybe (ValueOf Dbl)
+merged bvs = mergedAt True [(VU.enumFromN b.first b.count, v) | (b, v) <- bvs]
+
+{- | Values for disjoint sets of the copies, by global number, in batch
+order, as one value for them all: on the nominal path, whose numbers'
+IEEE values agree in every batch, or off it, where they mean nothing.
+-}
+mergedAt :: Bool -> [(VU.Vector Int, ValueOf Dbl)] -> Maybe (ValueOf Dbl)
+mergedAt onNominal parts = case pieces of
   [] -> Nothing
-  vs@(v0 : _) -> case v0 of
+  (_, _, v0) : _ -> case v0 of
     VTensor dims d hint xs0 -> do
       bufs <-
         traverse
           ( \case
-              VTensor dims' _ _ b | dims' == dims && V.length b == V.length xs0 -> Just b
+              (_, _, VTensor dims' _ _ b) | dims' == dims && V.length b == V.length xs0 -> Just b
               _ -> Nothing
           )
-          vs
+          pieces
       VTensor dims d hint . V.fromList
-        <$> traverse element (transpose (map V.toList bufs))
-    VUnit _ -> VUnit <$> (merged =<< traverse (\case VUnit v -> Just v; _ -> Nothing) vs)
-    VData c fs0 -> do
-      fieldss <-
-        traverse
-          (\case VData c' fs | c' == c && length fs == length fs0 -> Just fs; _ -> Nothing)
-          vs
-      VData c <$> traverse field (transpose fieldss)
-    VClosure _ -> Just v0
-    VTyAbs{} -> Just v0
-    VChart _ -> Nothing
-    VPoint{} -> Nothing
+        <$> traverse (element nominalNumbers) (transpose (map V.toList bufs))
+    VUnit _ ->
+      VUnit
+        <$> ( mergedAt onNominal
+                =<< traverse (\case (ms, _, VUnit v) -> Just (ms, v); _ -> Nothing) pieces
+            )
+    VCon{} -> do
+      classes <- traverse classOf (grouped pieces)
+      case classes of
+        [(_, _, v)] -> Just v
+        _ ->
+          Just
+            ( VMixture
+                ( Mixture
+                    (elemIndex True [n | (_, n, _) <- classes])
+                    [Option ms v | (ms, _, v) <- classes]
+                )
+            )
+    VClosure _ | length pieces == length parts -> Just v0
+    VTyAbs{} | length pieces == length parts -> Just v0
+    _ -> Nothing
  where
-  field ts = case sequence ts of
-    Right vs -> Right <$> merged vs
+  pieces = concatMap explode parts
+  explode (ms, v) = case v of
+    VMixture m ->
+      [ (o.members, onNominal && m.nominal == Just i, o.value)
+      | (i, o) <- zip [0 :: Int ..] m.options
+      ]
+    _ -> [(ms, onNominal, v)]
+  nominalNumbers = onNominal
+  -- Data by constructor, in the order first met.
+  grouped = foldl' place []
+  place acc piece@(_, _, v) = case v of
+    VCon c _ _
+      | (before, (k, ps) : after) <- break ((== c) . fst) acc ->
+          before ++ (k, ps ++ [piece]) : after
+      | otherwise -> acc ++ [(c, [piece])]
+    _ -> acc
+  classOf (c, ps) = do
+    let ms = VU.concat [m | (m, _, _) <- ps]
+        nominal = or [n | (_, n, _) <- ps]
+    fieldss <- traverse (\case (_, _, VCon _ fs _) -> Just fs; _ -> Nothing) ps
+    case fieldss of
+      fs0 : _ | all ((== length fs0) . length) fieldss -> do
+        fields <- traverse (field nominal [m | (m, _, _) <- ps]) (transpose fieldss)
+        Just (ms, nominal, VCon c fields (choiceOf c ps))
+      _ -> Nothing
+  field nominal mss ts = case sequence ts of
+    Right vs -> Right <$> mergedAt nominal (zip mss vs)
     Left _ -> Left <$> failure ts
+  -- Copies' own constructors, side by side where any has them.
+  choiceOf (UserCon _ k) ps = case [cause | (_, _, VCon _ _ (Copied cause _ _)) <- ps] of
+    [] -> NoCopies
+    cause : _ ->
+      Copied
+        cause
+        (IntSet.unions [l | (_, _, VCon _ _ (Copied _ l _)) <- ps])
+        ( VU.concat
+            [ case ch of
+                Copied _ _ as -> as
+                NoCopies -> VU.replicate (VU.length m) k
+            | (m, _, VCon _ _ ch) <- ps
+            ]
+        )
 
 {- | The error batches that failed give together: the @steps@ limit, if
-any reached it (each has the whole limit and takes the same steps, so
-all reach it alike); else their error, if all failed alike; else none,
-and the batches do not merge.
+any reached it; else their error, if all failed alike; else none, and the
+batches do not merge.
 -}
 failure :: [Either EvalError a] -> Maybe EvalError
 failure rs = case [e | Left e@(Exceeded Steps _) <- rs] of
@@ -150,20 +215,21 @@ failure rs = case [e | Left e@(Exceeded Steps _) <- rs] of
     _ -> Nothing
 
 -- | One element across the batches: all numbers, merged, or all errors.
-element :: [Either EvalError Dbl] -> Maybe (Either EvalError Dbl)
-element es = case sequence es of
-  Right xs -> Right <$> number xs
+element :: Bool -> [Either EvalError Dbl] -> Maybe (Either EvalError Dbl)
+element onNominal es = case sequence es of
+  Right xs -> Right <$> number onNominal xs
   Left _ -> Left <$> failure es
 
-{- | One number across the batches: the same IEEE value in each, bit for
-bit, and its copies concatenated, carrying draws if any batch's do; a
-number without copies (known exactly) is the same in each.
+{- | One number across the batches: on the nominal path the same IEEE value
+in each, bit for bit, off it the first's, which means nothing; and its
+copies concatenated, carrying draws if any batch's do. A number without
+copies (known exactly) is the same in each.
 -}
-number :: [Dbl] -> Maybe Dbl
-number = \case
+number :: Bool -> [Dbl] -> Maybe Dbl
+number onNominal = \case
   [] -> Nothing
   xs@(x0 : _)
-    | any ((/= bits x0.value) . bits . (.value)) xs -> Nothing
+    | onNominal && any ((/= bits x0.value) . bits . (.value)) xs -> Nothing
     | otherwise -> case traverse copies xs of
         Just css -> Just x0{estimate = Copies (foldMap fst css) (VU.concat (map snd css))}
         Nothing
