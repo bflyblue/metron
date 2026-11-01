@@ -9,6 +9,7 @@ module Metron.Pretty (
   renderRough,
   renderValue,
   renderValueWith,
+  Display (..),
   displayParts,
   renderExact,
   renderBudget,
@@ -60,6 +61,7 @@ import Metron.Affine (
   Magnitude (Affine, Exact),
   Nudge (kind, origin),
   Origin (Declared, Tagged),
+  Precision,
   Skew (operation, ratioSq),
   collapse,
   decimalExponent,
@@ -106,9 +108,9 @@ import Metron.Dimension (
  )
 import Metron.Eval (
   Applied (Applied),
-  Chart (applied, dim, dims, name, origin, step),
+  ChartOf (applied, dim, dims, name, origin, step),
   EvalError (Internal),
-  Value (..),
+  ValueOf (..),
   coordinatesOn,
   pattern VBool,
  )
@@ -135,6 +137,7 @@ import Metron.Lexer qualified as L (
   tokenize,
  )
 import Metron.Primitive (baseUnit)
+import Metron.Scalar (Scalar (hintFactor), settingsAt)
 import Metron.Syntax qualified as S (Pos (Pos), Span (from, to))
 import Metron.TCore (patternText)
 import Metron.Type (conText)
@@ -334,21 +337,44 @@ nonLinearNote threshold ms = case mapMaybe (nonLinearAt threshold) ms of
   [] -> ""
   sk : _ -> " (non-linear: " <> skewText sk <> "; a mean and a σ do not describe it)"
 
+{- | How a backend's numbers print (design §8.2): the rest of a value, its
+shape, units, charts and data, prints the same under every backend.
+-}
+class (Scalar s) => Display s where
+  -- | A number at a scale, in significant digits.
+  renderNumber :: Int -> s -> Text
+
+  -- | A number in a display unit: divided by the unit's factor, at a working precision.
+  inUnit :: Precision -> Magnitude -> s -> Maybe s
+
+  {- | What a value adds after its numbers: a mark of non-linearity over
+  the threshold, the kind of an error estimate.
+  -}
+  numbersNote :: Rational -> [s] -> Text
+
+instance Display Magnitude where
+  renderNumber = renderMagnitude
+  inUnit p f r = either (const Nothing) Just (divM p r f)
+  numbersNote = nonLinearNote
+
 {- | Print a value. A tensor with a display unit whose dimension matches
 prints its magnitudes in that unit (design §3.2.12); otherwise in SI base
 units. Unit names go through the namer so that a renamed unit prints under
 its current name.
 -}
-renderValue :: Printer -> Int -> Preferences -> Value -> Either EvalError Text
-renderValue printer scale prefs = renderValueWith printer scale prefs (renderMagnitude scale)
+renderValue ::
+  (Display s) =>
+  Printer -> Int -> Preferences -> ValueOf s -> Either EvalError Text
+renderValue printer scale prefs = renderValueWith printer scale prefs (renderNumber scale)
 
 -- | 'renderValue' with a chosen rendering for each magnitude.
 renderValueWith ::
+  (Display s) =>
   Printer ->
   Int ->
   Preferences ->
-  (Magnitude -> Text) ->
-  Value ->
+  (s -> Text) ->
+  ValueOf s ->
   Either EvalError Text
 renderValueWith printer scale prefs showMagnitude = \case
   VBool True -> Right "true"
@@ -384,17 +410,17 @@ renderValueWith printer scale prefs showMagnitude = \case
   -- chart with no name, as coordinates in base units from its origin.
   VPoint dims d s buf -> do
     xs <- sequence (V.toList buf)
-    pure $ case (chartName s, coordinatesOn (scale + 4) s xs) of
+    pure $ case (chartName s, coordinatesOn (settingsAt (scale + 4)) s xs) of
       (Just named, Right steps) ->
         renderNested showMagnitude dims steps
           <> " "
           <> named
-          <> nonLinearNote printer.nonlinear steps
+          <> numbersNote printer.nonlinear steps
       _ ->
         renderNested showMagnitude dims xs
           <> unitSuffix d
           <> " (point)"
-          <> nonLinearNote printer.nonlinear xs
+          <> numbersNote printer.nonlinear xs
   VChart s ->
     Right $ case chartName s of
       Just named -> "chart " <> named
@@ -414,7 +440,7 @@ renderValueWith printer scale prefs showMagnitude = \case
       | h.dim == d
       , not (null h.atoms)
       , Right m <- V.head buf
-      , midpoint m == midpoint h.factor ->
+      , midpoint (hintFactor m) == midpoint h.factor ->
           Right (unitExpressionText printer h)
     _ -> (<> " (a unit)") <$> recur v
   v -> do
@@ -422,7 +448,7 @@ renderValueWith printer scale prefs showMagnitude = \case
     pure
       ( renderNested showMagnitude dims scaled
           <> (if T.null units then "" else " " <> units)
-          <> nonLinearNote printer.nonlinear scaled
+          <> numbersNote printer.nonlinear scaled
       )
  where
   recur = renderValueWith printer scale prefs showMagnitude
@@ -473,11 +499,12 @@ atomNameWith named = \case
 (or in base units), and the unit text. Forces every element.
 -}
 displayParts ::
+  (Display s) =>
   Printer ->
   Int ->
   Preferences ->
-  Value ->
-  Either EvalError ([Int], [Magnitude], Text)
+  ValueOf s ->
+  Either EvalError ([Int], [s], Text)
 displayParts printer scale prefs = \case
   VTensor dims d hint buf -> do
     rs <- sequence (V.toList buf)
@@ -491,7 +518,7 @@ displayParts printer scale prefs = \case
       Just h
         | h.dim == d
         , midpoint h.factor /= 0
-        , Right converted <- mapM (\r -> divM (scale + 4) r h.factor) rs ->
+        , Just converted <- mapM (inUnit (scale + 4) h.factor) rs ->
             (dims, converted, renderHint h)
       _ -> (dims, rs, renderUnitsIn printer.spelling d)
   _ -> Left (Internal "expected a tensor")
@@ -989,7 +1016,7 @@ renderRough :: Magnitude -> Text
 renderRough m = renderRadius (abs (midpoint m))
 
 -- | The elements of a list value, forcing its spine.
-listItems :: Value -> Either EvalError [Value]
+listItems :: ValueOf s -> Either EvalError [ValueOf s]
 listItems = \case
   VData NilC [] -> Right []
   VData ConsC [x, xs] -> do
@@ -1009,7 +1036,7 @@ listSpine = \case
 but a single token goes in parentheses, @Rect (1 m) (2 m)@, since @m s^-1@
 after an argument would raise the whole application to the power.
 -}
-fieldText :: Value -> Text -> Text
+fieldText :: ValueOf s -> Text -> Text
 fieldText v s
   | selfDelimited s = s
   | VData _ (_ : _) <- v = paren

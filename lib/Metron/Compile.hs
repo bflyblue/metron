@@ -45,7 +45,7 @@ import Metron.Desugar (
 import Metron.Eval (
   Config (limits, precision),
   EvalError (..),
-  Runtime (..),
+  RuntimeOf (..),
   Value,
   evalAt,
   evalDefinition,
@@ -68,6 +68,7 @@ import Metron.Resolve (
   withHint,
  )
 import Metron.Resolve.Error (ResolveError (..), renderResolveError)
+import Metron.Scalar (Scalar)
 import Metron.Session.Types (LastExpr (LastExpr))
 import Metron.Source (printerFor)
 import Metron.Strictness (signatureAt, signatures, strictify)
@@ -198,7 +199,7 @@ table over the codebase, each entry evaluated when first used, so that a
 turned chart's rotation (design §3.8) is computed once and not once per
 mention of the chart.
 -}
-runtimeOf :: Config -> Codebase -> Runtime
+runtimeOf :: (Scalar s) => Config -> Codebase -> RuntimeOf s
 runtimeOf cfg cb = fst (runtimeWith cfg cb)
 
 {- | 'runtimeOf', and how a term to evaluate against it is prepared: every
@@ -206,7 +207,8 @@ definition's Typed Core, and the expression's, with the arguments its
 calls certainly evaluate marked ("Metron.Strictness"), each definition
 analysed once per evaluation, when first used.
 -}
-runtimeWith :: Config -> Codebase -> (Runtime, TTerm Z -> TTerm Z)
+runtimeWith ::
+  (Scalar s) => Config -> Codebase -> (RuntimeOf s, TTerm Z -> TTerm Z)
 runtimeWith cfg cb = (rt, strictify external)
  where
   rt =

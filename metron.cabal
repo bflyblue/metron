@@ -67,6 +67,7 @@ library
     , Metron.Prelude
     , Metron.Pretty
     , Metron.Repl
+    , Metron.Scalar
     , Metron.Resolve
     , Metron.Store
     , Metron.Strictness

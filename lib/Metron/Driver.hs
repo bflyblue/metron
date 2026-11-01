@@ -154,7 +154,7 @@ import Metron.Edit (
 import Metron.Eval (
   Config (Config, limits, nonlinear, precision, sigma, unicode),
   EvalError (Internal),
-  Value (VData, VTensor),
+  ValueOf (VData, VTensor),
   covarianceMatrix,
   precisionOf,
  )
