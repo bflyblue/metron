@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The warning for a comparison the copies disagree on says how many copies
+  the condition held for, over all of them: `warning: the comparison 1 >
+  0.9 goes both ways (true in 856 of 1000 samples): the condition depends
+  on the declared uncertainty`, in place of "across the 1000 samples".
+  The count is the same at every `:set cores`, to the copy. A comparison
+  is kept by its place in the term and its operands, so two comparisons
+  with the same operands are two warnings, a comparison in a loop is one
+  for each set of operands, and one made again with the same operands
+  adds its copies (`f x + f x` gives `of 2000 samples` at 1000).
 - An `if` or `case` whose comparison the copies disagree on because of
   draws of a declared σ (Monte Carlo under double) is flagged as depending
   on the declared uncertainty, not as "lost in rounding", which stays the

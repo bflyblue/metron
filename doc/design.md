@@ -6425,17 +6425,41 @@ Few copies can all agree by chance, and the value then prints as exact:
 at seed 1 and `0` at seed 3, the method's known weakness at small N.
 
 *Comparisons.* The IEEE result decides (`NaN` compares false, `/=` true).
-Under samples, a comparison whose copies disagree is noted on the
-evaluation's budget (`Metron.Limits.remark`, kept in place for the reason
-the step counter is) and printed after the value: `warning: the
-comparison 1 > 1 goes both ways across the 3 samples: the condition is
-lost in rounding`. When the copies carry draws of a declared σ (a Monte
-Carlo sample), the disagreement is the input uncertainty, not rounding, and
-the warning says so: `…: the condition depends on the declared
-uncertainty`; an `if` and a `case` on the comparison are flagged alike.
-The text is the same in every batch, so the batches give one warning. The
-design's wording names the `if`'s source; the comparison and its operands
-are what the evaluator has.
+Under samples, a comparison any of whose copies disagrees with the IEEE
+result is noted on the evaluation's budget (`Metron.Limits.remark`, kept
+in place for the reason the step counter is) and printed after the value:
+`warning: the comparison 1 > 1 goes both ways (true in 1 of 3 samples):
+the condition is lost in rounding`. When the copies carry draws of a
+declared σ (a Monte Carlo sample), the disagreement is the input
+uncertainty, not rounding, and the warning says so: `…: the condition
+depends on the declared uncertainty`; an `if` and a `case` on the
+comparison are flagged alike. The design's wording names the `if`'s
+source; the comparison and its operands are what the evaluator has.
+
+*As built (2026-11-01): the count over all the copies.* A note is data
+until the value is shown (`Metron.Remark`): the comparison's site, the
+same `Site` (definition and path) that names a nudge, threaded into
+`runPrim` from the primitive's node; its relation and operands' IEEE
+values; the cause, draws or rounding; and how many of this evaluation's
+copies the condition held for, of how many. A note is kept by site,
+relation and operand bits, so a comparison in a loop is a warning for
+each set of operands, and two comparisons with the same operands are two
+(`[if x > 0.9 then 1 else 2, if x > 0.9 then 3 else 4]` prints the line
+twice). A batch whose copies all agree with the IEEE result notes
+nothing, so the batches' counts alone would drop its copies, and K would
+change the count. So every comparison with copies takes a number, in the
+order the evaluation makes them, which every batch makes alike as it
+takes the same steps; a note keeps the numbers it disagreed at and how
+many copies disagreed. Notes combine by key, the numbers by union and
+the disagreeing copies by sum, across batches after they merge and within
+one evaluation; at each number a batch did not note, its copies held what
+the IEEE result says. So a comparison noted at `t` numbers over `N`
+samples counts `t·N` copies, and `true in X of t·N` is the same, copy for
+copy, at every K (tested at 1, 2 and 4, with batches that note nothing).
+A comparison made again with the same operands adds its copies: `f x + f
+x`, with `f z = if z > 0.9 then 1 else 0`, says `of 2000 samples` at
+1000. The text, `true in X of N samples` and the cause, is written last,
+in the order of each note's first number.
 
 *Printing.* The shortest digits that read back, written as Metron writes
 numbers (scientific outside `[10⁻⁴, 10¹⁵)`), then `± e` to two digits,
