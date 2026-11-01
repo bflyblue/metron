@@ -465,17 +465,24 @@ eval cfg rt = go
     TLam _ _ body -> Right (VClosure (Closure tenv (child 0) env body))
     TApp f a -> do
       fv <- go tenv (child 0) env f
-      v <- apply cfg rt fv (go tenv (child 1) env a)
+      let arg = go tenv (child 1) env a
       -- A moving chart applied is an instant of it (design §3.8), named
-      -- after it with the arguments it was applied to.
-      Right $ case (v, instantOf site [] (TApp f a)) of
-        (VChart c, Just (n, args)) ->
-          VChart
-            c
-              { name = Just (UnitNamed n)
-              , applied = Applied [go tenv s env x | (s, x) <- args]
-              }
-        _ -> v
+      -- after it with the arguments it was applied to. Any other
+      -- application is a tail call, so a loop runs in constant stack:
+      -- the call is made in each branch, not shared as a thunk.
+      case instantOf site [] (TApp f a) of
+        Nothing -> apply cfg rt fv arg
+        Just (n, args) ->
+          apply cfg rt fv arg >>= \case
+            VChart c ->
+              Right
+                ( VChart
+                    c
+                      { name = Just (UnitNamed n)
+                      , applied = Applied [go tenv s env x | (s, x) <- args]
+                      }
+                )
+            v -> Right v
     TLet _ _ e body -> go tenv (child 1) (VCons (go tenv (child 0) env e) env) body
     TPow t n -> do
       v <- go tenv (child 0) env t
