@@ -4580,7 +4580,7 @@ affineTests =
         -- clear of zero, proportional forms still cancel
         evalText "let x = 2 ± 1.5 in (3 * x) / x" @?= Right ["3"]
     , testCase "equal slack is not a shared unknown, so it does not cancel" $ do
-        let anonymous = Affine 2 Map.empty 1 Nothing
+        let anonymous = Affine 2 Map.empty 1 mempty
         case divM 24 anonymous anonymous of
           Right (Exact q) -> assertFailure ("cancelled to " <> show q)
           Right q -> radius q > 0 @? show q

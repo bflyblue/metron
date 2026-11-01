@@ -16,6 +16,7 @@ module Metron.Affine (
   -- * Magnitudes
   Magnitude (..),
   Skew (..),
+  SecondOrder,
   Decide (..),
   skewOf,
   nonLinearAt,
@@ -113,7 +114,6 @@ import Data.Map.Strict qualified as Map (
   toList,
   unionWith,
  )
-import Data.Maybe (catMaybes)
 import Data.Ord (Down (..))
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
@@ -171,41 +171,116 @@ data Magnitude
       , terms :: !(Map NudgeId (Rational, Nudge))
       , slack :: !Rational
       -- ^ anonymous worst-case radius: rounding and compaction leftovers
-      , skew :: !(Maybe Skew)
-      -- ^ the most non-linear operation the statistical part went through
+      , second :: !SecondOrder
+      -- ^ the second-order statistical terms the value carries
       }
   deriving stock (Eq, Show)
 
-{- | How far from linear an operation found a value's statistical part
-(design §3.2): the second-order statistical term it neglects over the
-first-order σ it keeps, squared, with 'Nothing' for a term over a σ of
-zero; and the operation. Statistical nudges propagate to first order
-only, so this is measured, never carried as a nudge. A value keeps the
-largest it was computed through, so the measure propagates; the
-threshold over which it marks the value non-linear is the caller's
-('Decide').
+{- | The second-order statistical terms a value carries (design §3.2, the
+mark is re-judged, not inherited): for each operation that made one, an
+upper bound on the standard deviation of the terms it made, in the
+value's own unit, 'Nothing' when unbounded. Statistical nudges propagate
+to first order only, so these are measured and carried as sizes, never
+as nudges, and compared with the value's own first-order σ wherever the
+value is used ('skewOf').
+
+Every operation carries them through as it carries its coefficients:
+scaled by the operation's slope ('scaledBy'), and combined across
+operands by adding sizes, under one operation's name ('<>'). Adding
+sizes is Minkowski's inequality: the standard deviation of a sum of
+random terms is at most the sum of theirs, whatever their correlation,
+so a term two operands share (@n·n + n·n@) is never counted at less
+than its size. Different operations' terms are kept apart only to name
+the largest; they are compared with the σ as their sum.
+-}
+newtype SecondOrder = SecondOrder (Map Text (Maybe Rational))
+  deriving stock (Eq, Show)
+
+instance Semigroup SecondOrder where
+  SecondOrder a <> SecondOrder b = SecondOrder (Map.unionWith plusSize a b)
+
+instance Monoid SecondOrder where
+  mempty = SecondOrder Map.empty
+
+-- | Two sizes added, rounded up to three digits; 'Nothing' is unbounded.
+plusSize :: Maybe Rational -> Maybe Rational -> Maybe Rational
+plusSize a b = roundUpSig 3 <$> ((+) <$> a <*> b)
+
+-- | One operation's second-order term of a size; none of size zero.
+secondTerm :: Text -> Maybe Rational -> SecondOrder
+secondTerm name = \case
+  Just 0 -> mempty
+  size -> SecondOrder (Map.singleton name (roundUpSig 3 <$> size))
+
+{- | Terms carried through an operation whose slope is at most the given
+size, 'Nothing' for none: each scaled by it, rounded up.
+-}
+scaledBy :: Maybe Rational -> SecondOrder -> SecondOrder
+scaledBy slope (SecondOrder ts)
+  | slope == Just 0 = mempty
+  | otherwise =
+      SecondOrder (Map.map (fmap (roundUpSig 3) . liftA2 (*) slope) ts)
+
+-- | The sum of the sizes, 'Nothing' when one is unbounded.
+totalSize :: SecondOrder -> Maybe Rational
+totalSize (SecondOrder ts) = sum <$> sequence (Map.elems ts)
+
+-- | Whether a value carries no second-order term.
+noSecond :: SecondOrder -> Bool
+noSecond (SecondOrder ts) = Map.null ts
+
+-- | The terms a magnitude carries.
+secondOf :: Magnitude -> SecondOrder
+secondOf = \case
+  Exact _ -> mempty
+  Affine _ _ _ sk -> sk
+
+{- | Terms within the precision floor at the value's midpoint dropped
+('belowFloor'): arithmetic noise never marks a value, wherever it is
+judged.
+-}
+floored :: Precision -> Magnitude -> Magnitude
+floored p = \case
+  Affine m ts s (SecondOrder sk)
+    | any noise sk ->
+        affine m ts s (SecondOrder (Map.filter (not . noise) sk))
+   where
+    noise = maybe False (\q -> belowFloor p m (q * q))
+  x -> x
+
+{- | How far from linear a value's statistical part is (design §3.2): the
+second-order statistical terms it carries over its first-order σ,
+squared, with 'Nothing' for terms over a σ of zero or unbounded terms;
+and the operation whose term is largest.
 -}
 data Skew = Skew {ratioSq :: Maybe Rational, operation :: Text}
   deriving stock (Eq, Show)
 
--- | The larger of two measures; 'Nothing' is unbounded.
-worse :: Skew -> Skew -> Skew
-worse a b = case (a.ratioSq, b.ratioSq) of
-  (Nothing, _) -> a
-  (_, Nothing) -> b
-  (Just ra, Just rb) -> if rb > ra then b else a
-
--- | The measure of a value computed from several.
-skews :: [Maybe Skew] -> Maybe Skew
-skews ms = case catMaybes ms of
-  [] -> Nothing
-  s : rest -> Just (foldr worse s rest)
-
--- | The measure a magnitude carries.
+{- | The judgement of the terms a magnitude carries against its own
+first-order σ, made where the value is used: the mark is re-judged, not
+inherited, so a term that later operations made negligible against a
+grown σ no longer marks the value. 'Nothing' for a value that carries
+none.
+-}
 skewOf :: Magnitude -> Maybe Skew
-skewOf = \case
-  Exact _ -> Nothing
-  Affine _ _ _ sk -> sk
+skewOf x = case Map.toList sk of
+  [] -> Nothing
+  t : rest ->
+    Just
+      ( Skew
+          { ratioSq = do
+              q <- totalSize (SecondOrder sk)
+              if variance == 0 then Nothing else Just (roundUpSig 3 (q * q / variance))
+          , operation = fst (foldr larger t rest)
+          }
+      )
+ where
+  SecondOrder sk = secondOf x
+  variance = let c = collapse x in c.variance
+  larger a b = case (snd a, snd b) of
+    (Nothing, _) -> a
+    (_, Nothing) -> b
+    (Just sa, Just sb) -> if sb > sa then b else a
 
 {- | The measure that marks a magnitude non-linear at a threshold: its
 second-order statistical term exceeds that fraction of its first-order σ.
@@ -236,20 +311,28 @@ isExact = \case
   Exact _ -> True
   _ -> False
 
-{- | An affine form with no nudges, no slack and no measure of
-non-linearity is exact.
+{- | An affine form with no nudges, no slack and no second-order term is
+exact.
 -}
 affine ::
-  Rational -> Map NudgeId (Rational, Nudge) -> Rational -> Maybe Skew -> Magnitude
+  Rational ->
+  Map NudgeId (Rational, Nudge) ->
+  Rational ->
+  SecondOrder ->
+  Magnitude
 affine m ts = affineNonZero m (Map.filter ((/= 0) . fst) ts)
 
 {- | 'affine' over terms already free of zero coefficients, so that a sum
 need not filter every term, which made a sum of n forms cost n².
 -}
 affineNonZero ::
-  Rational -> Map NudgeId (Rational, Nudge) -> Rational -> Maybe Skew -> Magnitude
+  Rational ->
+  Map NudgeId (Rational, Nudge) ->
+  Rational ->
+  SecondOrder ->
+  Magnitude
 affineNonZero m ts s sk
-  | Map.null ts && s == 0 && null sk = Exact m
+  | Map.null ts && s == 0 && noSecond sk = Exact m
   | otherwise = Affine m ts s sk
 
 parts :: Magnitude -> (Rational, Map NudgeId (Rational, Nudge), Rational)
@@ -380,7 +463,7 @@ terms, and is held to the length limit only after they have cancelled
 -}
 addM :: Precision -> Magnitude -> Magnitude -> Magnitude
 addM p (Exact a) (Exact b) = exactResult "add" p (sort [a, b]) (a + b)
-addM p x y = heldLinear "add" p (inOrder [x, y]) (addLinear x y)
+addM p x y = floored p (heldLinear "add" p (inOrder [x, y]) (addLinear x y))
 
 {- | A linear result held to the length limit (design §3.2.8, linear
 results are held to the same length): while its midpoint, coefficients
@@ -407,7 +490,7 @@ heldLinear name p operands x = case x of
               operands
               (sum (map (abs . fst) (Map.elems earlier)))
               0
-              Nothing
+              mempty
               (Affine m kept s sk)
   _ -> x
  where
@@ -449,7 +532,7 @@ addLinear x y =
             t2
         )
         (s1 + s2)
-        (skews [skewOf x, skewOf y])
+        (secondOf x <> secondOf y)
 
 addCoeff :: (Rational, Nudge) -> (Rational, Nudge) -> (Rational, Nudge)
 addCoeff (c, n) (d, _) = let !s = c + d in (s, n)
@@ -472,14 +555,19 @@ limit ('heldLinear').
 scaleM :: Precision -> Rational -> Magnitude -> Magnitude
 scaleM p k = \case
   Exact a -> exactResult "mul" p (sort [k, a]) (k * a)
-  x -> heldLinear "mul" p [Exact k, x] (scaleLinear k x)
+  x -> floored p (heldLinear "mul" p [Exact k, x] (scaleLinear k x))
 
 scaleLinear :: Rational -> Magnitude -> Magnitude
 scaleLinear k = \case
   Exact a -> Exact (k * a)
   Affine m ts s sk
     | k == 0 -> Exact 0
-    | otherwise -> affine (k * m) (Map.map (first (k *)) ts) (abs k * s) sk
+    | otherwise ->
+        affine
+          (k * m)
+          (Map.map (first (k *)) ts)
+          (abs k * s)
+          (scaledBy (Just (abs k)) sk)
 
 {- | Absolute value: @x@ or @−x@ when the bound enclosure does not straddle
 zero, otherwise that enclosure of @|x|@ as one fresh bound nudge and the
@@ -501,22 +589,23 @@ absM p x = case x of
               [x]
               (top / 2)
               sigma
-              (skews [skewOf x, unbounded])
+              -- \|x|'s slope is at most one: x's terms pass unscaled
+              (secondOf x <> unbounded)
               (Exact (top / 2))
  where
   sigma = statSigma p x
-  unbounded = if sigma > 0 then Just (Skew Nothing "abs") else Nothing
+  unbounded = if sigma > 0 then secondTerm "abs" Nothing else mempty
   kinked y
     | sigma > 0 && min (abs (lo x)) (abs (hi x)) <= sigma = markedBy unbounded y
     | otherwise = y
 
--- | A magnitude with a further measure of non-linearity.
-markedBy :: Maybe Skew -> Magnitude -> Magnitude
-markedBy sk x = case sk of
-  Nothing -> x
-  Just _ ->
-    let (m, ts, s) = parts x
-     in affine m ts s (skews [skewOf x, sk])
+-- | A magnitude with further second-order terms.
+markedBy :: SecondOrder -> Magnitude -> Magnitude
+markedBy sk x
+  | noSecond sk = x
+  | otherwise =
+      let (m, ts, s) = parts x
+       in affine m ts s (secondOf x <> sk)
 
 -- Nonlinear operations --------------------------------------------------------------
 
@@ -524,8 +613,8 @@ markedBy sk x = case sk of
 quadratic leftover splits by kind (design §3.2): bound by bound is a
 rigorous bound, as before; bound by statistical is a correction measured
 with the bound part at its worst. That correction and statistical by
-statistical terms are measured against the first-order σ, not carried
-as independent random variables.
+statistical terms are carried as sizes ('SecondOrder') and judged
+against the first-order σ, not carried as independent random variables.
 -}
 mulM :: Precision -> Magnitude -> Magnitude -> Magnitude
 mulM p (Exact a) y = scaleM p a y
@@ -550,39 +639,43 @@ mulM p x y =
       quadratic = (pos - neg) / 2 + (boundRadius x * boundRadius y - sum (map abs shared))
       cross = boundRadius x * statSigma p y + boundRadius y * statSigma p x
       -- The statistical leftover's standard deviation, for independent
-      -- unit nudges: √((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²), measured over the
-      -- first-order σ, squared so that it stays exact.
+      -- unit nudges: √((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²), carried as a size.
       a = statTerms t1
       b = statTerms t2
       ab = sum (Map.elems (Map.intersectionWith (*) a b))
       second = sumSq a * sumSq b + ab * ab
-      first' = sumSq (statTerms linear)
       mid = m1 * m2 + (pos + neg) / 2
       measured
-        | second == 0 || belowFloor p mid second = Nothing
-        | first' == 0 = Just (Skew Nothing "mul")
-        | otherwise = Just (Skew (Just (roundUpSig 3 (second / first'))) "mul")
-      base = affine mid linear (abs m2 * s1 + abs m1 * s2) Nothing
-   in opResult
-        "mul"
-        p
-        [x, y]
-        quadratic
-        cross
-        (skews [skewOf x, skewOf y, measured])
-        base
+        | second == 0 || belowFloor p mid second = mempty
+        | otherwise = secondTerm "mul" (Just (sqrtUp second))
+      -- Each operand's terms are scaled by the other factor's largest
+      -- size, its bound enclosure widened by its σ and its own terms: at
+      -- a midpoint of zero the slope is zero, and what remains of
+      -- (n·n)·n is the term times n, third order but no smaller than σ
+      -- times the term.
+      carried =
+        scaledBy (factorSize y) (secondOf x) <> scaledBy (factorSize x) (secondOf y)
+      base = affine mid linear (abs m2 * s1 + abs m1 * s2) mempty
+   in opResult "mul" p [x, y] quadratic cross (carried <> measured) base
  where
   sumSq = sum . map (\c -> c * c) . Map.elems
+  factorSize z =
+    (\q -> abs (midpoint z) + boundRadius z + statSigma p z + q)
+      <$> totalSize (secondOf z)
+
+-- | An upper bound on a square root, to three digits.
+sqrtUp :: Rational -> Rational
+sqrtUp r = let (s, e) = sqrtApprox 4 r in roundUpSig 3 (s + e)
 
 {- | The result of a non-linear operation (design §3.2): its linear part,
 the bound remainder as a fresh bound nudge (the midpoint's rounding
-joins it), and measures for discarded statistical corrections. A mixed
+joins it), and the sizes of discarded statistical corrections. A mixed
 correction shares the original randomness and must not be added as an
-independent statistical nudge. Its size relative to the retained sigma
-is recorded, just like a discarded statistical quadratic term. The
-linear part's coefficients are shortened first ('shortenLinear'): the
-bound ones' rounding joins the fresh nudge, the statistical ones' the
-measure.
+independent statistical nudge. Its size is carried, just like a
+discarded statistical quadratic term ('SecondOrder'). The linear part's
+coefficients are shortened first ('shortenLinear'): the bound ones'
+rounding joins the fresh nudge, the statistical ones' the mixed
+correction. Terms within the precision floor are dropped ('floored').
 -}
 opResult ::
   Text ->
@@ -590,7 +683,7 @@ opResult ::
   [Magnitude] ->
   Rational ->
   Rational ->
-  Maybe Skew ->
+  SecondOrder ->
   Magnitude ->
   Magnitude
 opResult = settle Working
@@ -606,34 +699,32 @@ settle ::
   [Magnitude] ->
   Rational ->
   Rational ->
-  Maybe Skew ->
+  SecondOrder ->
   Magnitude ->
   Magnitude
 settle rounding name p operands boundSize statSize sk base =
   finish
     p
-    ( withFreshRounded
-        rounding
-        name
+    ( floored
         p
-        operands
-        (boundSize + short.boundError)
-        (markedBy (skews [sk, mixed]) short.value)
+        ( withFreshRounded
+            rounding
+            name
+            p
+            operands
+            (boundSize + short.boundError)
+            (markedBy (sk <> mixed) short.value)
+        )
     )
  where
   short = shortenLinear p base
   statSize' = statSize + short.statError
-  firstSigma = statSigma p short.value
   mixed
-    | statSize' == 0 || belowFloor p (midpoint base) (statSize' * statSize') =
-        Nothing
-    | firstSigma == 0 = Just (Skew Nothing name)
+    | statSize' == 0 = mempty
+    -- Named for what it is against a σ: with none, the operation alone.
+    | statSigma p short.value == 0 = secondTerm name (Just statSize')
     | otherwise =
-        Just
-          ( Skew
-              (Just (roundUpSig 3 ((statSize' / firstSigma) ^ (2 :: Int))))
-              (name <> ": uncertain statistical coefficient")
-          )
+        secondTerm (name <> ": uncertain statistical coefficient") (Just statSize')
 
 {- | Whether a neglected second-order statistical term, given by its size
 squared, is within the precision floor at the value's midpoint: the last
@@ -747,8 +838,8 @@ divM p x y
   -- two equal radii are not one unknown, so a form with slack takes the
   -- general path.
   | Affine m _ 0 _ <- y
-  , Nothing <- skewOf x
-  , Nothing <- skewOf y
+  , noSecond (secondOf x)
+  , noSecond (secondOf y)
   , let k = midpoint x / m
   , x == scaleLinear k y =
       Right (Exact k)
@@ -769,10 +860,10 @@ powM p x n
 {- | Replace @x@ by the tangent line @f + slope·(x − mid)@: scale the nudges
 by the slope. The caller adds the remainder.
 -}
-linearise :: Magnitude -> Rational -> Rational -> Magnitude
-linearise x f slope = case x of
+linearise :: Magnitude -> Rational -> Rational -> SecondOrder -> Magnitude
+linearise x f slope carried = case x of
   Exact _ -> Exact f
-  Affine _ ts s sk -> affine f (Map.map (first (slope *)) ts) (abs slope * s) sk
+  Affine _ ts s _ -> affine f (Map.map (first (slope *)) ts) (abs slope * s) carried
 
 {- | Add a fresh bound nudge named after the operation, its operands and the
 precision, so that identical computations share it (design §3.2.4). Its
@@ -828,7 +919,7 @@ withFreshRounded rounding name p operands size base =
                 ts
             )
             s
-            (skewOf base)
+            (secondOf base)
 
 -- | A value known only as an enclosure @m ± size@ from one operation.
 fresh :: Text -> Precision -> [Magnitude] -> Rational -> Rational -> Magnitude
@@ -906,14 +997,25 @@ Lifting approximations to magnitudes -------------------------------------------
 first order. The remainder over the bound enclosure and both
 approximation errors become one fresh bound nudge. The parts that
 involve a statistical nudge, the slope's change across the bound
-enclosure and the slope's own error, each times σ, are measured against
-the retained σ, never made independent nudges or bounds. The statistical
-correction is measured, not carried: the largest change of @f'@ from
-the midpoint to @m − σ@ or @m + σ@, relative to @|f'(m)|@, unbounded
-when either point leaves the function's domain. The value and the slope
+enclosure and the slope's own error, each times σ, are carried as a
+size, never made independent nudges or bounds. The statistical
+correction is carried as a size too: the largest change of @f'@ from
+the midpoint to @m − σ@ or @m + σ@, times σ, unbounded when either point
+leaves the function's domain. The value and the slope
 at the midpoint are shortened ('shortenApprox') before they are used,
 their rounding joining their errors: a series summed in exact rationals
 is far longer than its precision, and the slope multiplies every nudge.
+
+The second-order term the function makes has size @|Δf'|·σ@, the
+largest change of the slope times σ, or @|f''|·σ²@ with a bound on the
+curvature across the σ-widened enclosure (@across@, 'Nothing' when that
+reaches a pole or leaves the domain: unbounded), whichever is
+larger; it is carried as a size and judged against the σ where the
+value is used. The terms the operand carries pass through scaled by the
+largest @|f'|@ over the operand's bound enclosure widened by its σ and
+the terms themselves (@slopeOver@, 'Nothing' when that leaves the
+domain): not by the slope at the midpoint, which at a stationary point
+is zero and would drop a term that the next order keeps (@cos (n·n)@).
 -}
 liftWith ::
   Text ->
@@ -923,9 +1025,11 @@ liftWith ::
   (Rational -> Approx) ->
   (Rational -> Rational -> Rational) ->
   Rational ->
+  Maybe Rational ->
+  (Rational -> Rational -> Maybe Rational) ->
   Magnitude ->
   Magnitude
-liftWith name p inDomain f f' remainderOver spread x =
+liftWith name p inDomain f f' remainderOver spread across slopeOver x =
   let m = midpoint x
       r = boundRadius x
       sigma = statSigma p x
@@ -934,24 +1038,24 @@ liftWith name p inDomain f f' remainderOver spread x =
       boundSize = fe + fe' * r + (if r == 0 then 0 else remainderOver fm fm')
       statSize = (fe' + spread) * sigma
       measured
-        | sigma == 0 = Nothing
-        | not (inDomain (m - sigma) && inDomain (m + sigma)) = Just (Skew Nothing name)
-        | otherwise =
+        | sigma == 0 = mempty
+        | not (inDomain (m - sigma) && inDomain (m + sigma)) = secondTerm name Nothing
+        | Nothing <- across = secondTerm name Nothing
+        | Just c <- across =
             let change = maximum [abs (fst (f' z) - fm') | z <- [m - sigma, m + sigma]]
-             in if change == 0 || belowFloor p fm (change * change * sigma * sigma)
-                  then Nothing
-                  else
-                    if fm' == 0
-                      then Just (Skew Nothing name)
-                      else Just (Skew (Just (roundUpSig 3 (change * change / (fm' * fm')))) name)
-   in opResult
-        name
-        p
-        [x]
-        boundSize
-        statSize
-        (skews [skewOf x, measured])
-        (linearise x fm fm')
+                size = max (change * sigma) (c * sigma * sigma)
+             in if size == 0 || belowFloor p fm (size * size)
+                  then mempty
+                  else secondTerm name (Just size)
+      carried
+        | noSecond (secondOf x) = mempty
+        | otherwise =
+            scaledBy
+              ( totalSize (secondOf x) >>= \q ->
+                  slopeOver (lo x - sigma - q) (hi x + sigma + q)
+              )
+              (secondOf x)
+   in opResult name p [x] boundSize statSize measured (linearise x fm fm' carried)
 
 {- | For a function that is convex or concave over the bound enclosure: the
 tangent line's error is largest at an endpoint, so evaluate it there, and
@@ -965,9 +1069,16 @@ liftEndpoints ::
   (Rational -> Approx) ->
   Magnitude ->
   Magnitude
-liftEndpoints name p inDomain f f' x = liftWith name p inDomain f f' remainder spread x
+liftEndpoints name p inDomain f f' x =
+  liftWith name p inDomain f f' remainder spread (Just 0) slopeOver x
  where
   m = midpoint x
+  -- \|f'| is largest at an end: f' is monotone, and |sinh| (cosh's slope)
+  -- falls to zero and rises again.
+  slopeOver a b
+    | inDomain a && inDomain b =
+        Just (maximum [abs v + e | z <- [a, b], let (v, e) = f' z])
+    | otherwise = Nothing
   remainder fm fm' =
     maximum
       [ abs (fy - fm - fm' * (y - m)) + ey + snd (f m)
@@ -991,6 +1102,11 @@ The bound is the largest @|f''|@ over the interval itself, not over the
 whole line: @atan@'s global bound, 0.65, against its slope @1/(1 + t²)@
 at @t = 75@ overstated the second-order term of @atan (75 ±σ 0.075)@ by
 five orders of magnitude, and @atan2@'s through it.
+
+@pole a b@ says whether @[a, b]@ reaches where the function is not
+smooth, a pole of @tan@ or an end of @asin@'s domain: a statistical
+part that reaches one is unbounded, and no curvature is asked of it. The
+caller refuses a bound enclosure that reaches one.
 -}
 liftBounded ::
   Text ->
@@ -998,22 +1114,39 @@ liftBounded ::
   (Rational -> Approx) ->
   (Rational -> Approx) ->
   (Rational -> Rational -> Rational) ->
+  (Rational -> Rational -> Bool) ->
   Magnitude ->
   Magnitude
-liftBounded name p f f' curvature x = markedBy (measured (midpoint lifted)) lifted
+liftBounded name p f f' curvature pole x =
+  liftWith
+    name
+    p
+    (\z -> not (pole z z))
+    f
+    f'
+    (\_ _ -> b * r * r / 2)
+    (b * r)
+    ( if sigma == 0
+        then Just 0
+        else
+          if pole (lo x - sigma) (hi x + sigma)
+            then Nothing
+            else Just (curvature (lo x - sigma) (hi x + sigma))
+    )
+    slopeOver
+    x
  where
   r = boundRadius x
   b = if r == 0 then 0 else curvature (lo x) (hi x)
-  lifted = liftWith name p (const True) f f' (\_ _ -> b * r * r / 2) (b * r) x
   sigma = statSigma p x
-  across = curvature (lo x - sigma) (hi x + sigma)
-  slope = abs (fst (f' (midpoint x)))
-  measured mid
-    | sigma == 0 || across == 0 = Nothing
-    | belowFloor p mid ((across * sigma * sigma) ^ (2 :: Int)) = Nothing
-    | slope == 0 = Just (Skew Nothing name)
+  -- \|f'| over [a, b]: at most its value at the midpoint and the curvature
+  -- times the farther end's distance; unbounded across a pole.
+  slopeOver a c
+    | pole a c = Nothing
     | otherwise =
-        Just (Skew (Just (roundUpSig 3 ((across * sigma / slope) ^ (2 :: Int)))) name)
+        let m = midpoint x
+            (v, e) = f' m
+         in Just (abs v + e + curvature a c * max (m - a) (c - m))
 
 -- Curvature -----------------------------------------------------------------------------
 
@@ -1143,6 +1276,7 @@ sinM p = \case
       (fst . sinCosApprox (p + 2))
       (snd . sinCosApprox (p + 2))
       sinCurvature
+      noPole
       x
 
 cosM :: Precision -> Magnitude -> Magnitude
@@ -1155,6 +1289,7 @@ cosM p = \case
       (snd . sinCosApprox (p + 2))
       (scaleA (-1) . fst . sinCosApprox (p + 2))
       cosCurvature
+      noPole
       x
 
 {- | Tangent, lifted itself rather than as the sine over the cosine: near
@@ -1170,16 +1305,19 @@ tanM p x
   | Exact 0 <- x = Right (Exact 0)
   | otherwise =
       Right
-        ( markedBy
-            pole
-            (liftBounded "tan" p (tanApprox (p + 2)) (sec2Approx (p + 2)) tanCurvature x)
+        ( liftBounded
+            "tan"
+            p
+            (tanApprox (p + 2))
+            (sec2Approx (p + 2))
+            tanCurvature
+            (periodicIn (1 % 2))
+            x
         )
- where
-  sigma = statSigma p x
-  pole
-    | sigma > 0 && periodicIn (1 % 2) (lo x - sigma) (hi x + sigma) =
-        Just (Skew Nothing "tan")
-    | otherwise = Nothing
+
+-- | No pole anywhere: for a function defined on the whole line.
+noPole :: Rational -> Rational -> Bool
+noPole _ _ = False
 
 -- | Arctangent, its curvature bounded over each interval ('atanCurvature').
 atanM :: Precision -> Magnitude -> Magnitude
@@ -1192,9 +1330,16 @@ atanM p = \case
       (atanApprox (p + 2))
       (\m -> (recip (1 + m * m), 0))
       atanCurvature
+      noPole
       x
 
--- | @asin x = atan (x / √(1 − x²))@.
+{- | Arcsine, lifted itself with its curvature bounded over each interval
+('asinCurvature'), its value @atan (x / √(1 − x²))@ at the midpoint. As
+that composition of forms, each step's second-order term was carried
+and their sizes added (design §3.2), and @asin (0.99 ±σ 0.001)@ read 31%
+where its term is 5%: the steps' terms cancel in part, which sizes
+cannot show.
+-}
 asinM :: Precision -> Magnitude -> Either ArithError Magnitude
 asinM p x
   | lo x < -1 || hi x > 1 =
@@ -1207,9 +1352,47 @@ asinM p x
         ( Domain
             "asin of an enclosure that reaches the edge of its domain, where the slope is infinite"
         )
-  | otherwise = do
-      inner <- sqrtM p (subM p (Exact 1) (mulM p x x))
-      atanM p <$> divM p x inner
+  | otherwise =
+      Right
+        ( liftBounded
+            "asin"
+            p
+            (asinApprox (p + 2))
+            (asinSlope (p + 4))
+            asinCurvature
+            edge
+            x
+        )
+ where
+  edge a b = a <= -1 || b >= 1
+
+{- | @asin m@ for @|m| < 1@, as @atan (m / s)@ with @s@ an enclosure of
+@√(1 − m²)@: the quotient's error, @|m| e / (s (s − e))@, passes
+through @atan@, whose slope is at most one.
+-}
+asinApprox :: Precision -> Rational -> Approx
+asinApprox p m =
+  let (s, e) = sqrtApprox (p + 4) (1 - m * m)
+      q = m / s
+      (a, ea) = atanApprox p q
+   in (a, ea + abs m * e / (s * (s - e)))
+
+-- | @asin' m = 1 / √(1 − m²)@ for @|m| < 1@, with its error.
+asinSlope :: Precision -> Rational -> Approx
+asinSlope p m =
+  let (s, e) = sqrtApprox p (1 - m * m)
+   in (recip s, e / (s * (s - e)))
+
+{- | @|asin''(t)| = |t| / (1 − t²)^(3/2)@ over @[a, b]@ inside @(−1, 1)@:
+rising with @|t|@, so largest at the end farther from zero; the root is
+taken from below, so the bound stays one.
+-}
+asinCurvature :: Rational -> Rational -> Rational
+asinCurvature a b =
+  let t = max (abs a) (abs b)
+      u = 1 - t * t
+      (s, e) = sqrtApprox 10 u
+   in t / (u * (s - e))
 
 acosM :: Precision -> Magnitude -> Either ArithError Magnitude
 acosM p x = subM p (scaleM p (1 % 2) (piM p)) <$> asinM p x
@@ -1265,6 +1448,11 @@ sinhM p = \case
           (coshApprox (p + 2))
           (\_ _ -> (c + ce) * r * r / 2)
           ((c + ce) * r)
+          (Just 0)
+          -- the slope, cosh, is largest at the end farther from zero
+          ( \a b ->
+              let (v, e) = coshApprox p (max (abs a) (abs b)) in Just (v + e)
+          )
           x
 coshM p = \case
   Exact 0 -> Exact 1
@@ -1280,7 +1468,14 @@ tanhM :: Precision -> Magnitude -> Magnitude
 tanhM p = \case
   Exact 0 -> Exact 0
   x ->
-    liftBounded "tanh" p (tanhApprox (p + 2)) (sech2Approx (p + 2)) tanhCurvature x
+    liftBounded
+      "tanh"
+      p
+      (tanhApprox (p + 2))
+      (sech2Approx (p + 2))
+      tanhCurvature
+      noPole
+      x
 
 -- | π at the working precision.
 piM :: Precision -> Magnitude
@@ -1351,7 +1546,7 @@ the shortening their coefficients kept the digits of @lcm (1, …, K)@.
 -}
 enclose ::
   Text -> Precision -> [Magnitude] -> Rational -> Magnitude -> Magnitude
-enclose name p operands size = opResult name p operands size 0 Nothing
+enclose name p operands size = opResult name p operands size 0 mempty
 
 -- Rounding to integers --------------------------------------------------------------------
 
@@ -1457,12 +1652,12 @@ uncertain k origin x e =
         m
         (Map.insertWith addCoeff (originId k origin m) (size, Nudge k origin) ts)
         (s + boundRadius e)
-        (skews [skewOf x, skewOf e])
+        (secondOf x <> secondOf e)
 
 -- | One component of @noise n@ / @gauss n@: a unit nudge.
 unitNoise :: NudgeKind -> Origin -> Magnitude
 unitNoise k origin =
-  affine 0 (Map.singleton (originId k origin 0) (1, Nudge k origin)) 0 Nothing
+  affine 0 (Map.singleton (originId k origin 0) (1, Nudge k origin)) 0 mempty
 
 {- | Design §3.2.4: an unlabelled nudge is named by its definition, path,
 component and midpoint, so  2@ and  3@ from  f x = x ± 0.01@ are

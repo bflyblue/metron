@@ -486,8 +486,12 @@ starter, for a fixed number of steps, then take one step on the values
 themselves, so that the result carries the inputs' uncertainty to first
 order, and declare the truncation error as a bound: for Kepler's
 equation @f(E) = E − e sin E − M@, @f' ≥ 1 − e@, so @|E − E*| ≤ |f(E)| /
-(1 − e)@, and for the hyperbola @f' ≥ e − 1@. The parabola is solved in
-closed form (Barker).
+(1 − e)@, and for the hyperbola @f' ≥ e − 1@. @|f(E)|@ is bounded by the
+residual at the midpoints and twice the bound radius of the residual on
+the values, never by the latter's midpoint: on a @±σ@ input its first
+order cancels, so it is second order and marked non-linear (design
+§3.2), and its midpoint is no mean. The parabola is solved in closed
+form (Barker).
 -}
 kepler :: [Statement]
 kepler =
@@ -590,7 +594,8 @@ kepler =
           [ "\\e m -> let em = mid e in let mm = mid m in"
           , "let x = newtonE e m (newtonStepsE 10 em mm (mm + em * sin mm * 1 rad)) in"
           , "let r = x - e * sin x * 1 rad - m in"
-          , "x ± (abs (mid r) + bound r) / (1 - (mid e + bound e))"
+          , "let r0 = mid x - em * sin (mid x) * 1 rad - mm in"
+          , "x ± (abs (mid r0) + bound r0 + 2 * bound r) / (1 - (mid e + bound e))"
           ]
       )
   , -- Hyperbolic: Newton from asinh (M / (e - 1)), which is not below the
@@ -607,7 +612,8 @@ kepler =
           [ "\\e m -> let em = mid e in let mm = mid m in"
           , "let x = newtonH e m (newtonStepsH 10 em mm (asinh (mm / (em - 1) / 1 rad) * 1 rad)) in"
           , "let r = e * sinh (x / 1 rad) * 1 rad - x - m in"
-          , "x ± (abs (mid r) + bound r) / (mid e - bound e - 1)"
+          , "let r0 = em * sinh (mid x / 1 rad) * 1 rad - mid x - mm in"
+          , "x ± (abs (mid r0) + bound r0 + 2 * bound r) / (mid e - bound e - 1)"
           ]
       )
   , -- Parabolic: B + B³/3 = M in closed form, B = c − 1/c with

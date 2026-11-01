@@ -14,6 +14,7 @@ import Data.ByteString qualified as BS (empty, length, pack)
 import Data.ByteString.Builder (Builder, byteString, toLazyByteString, word8)
 import Data.Either (fromRight)
 import Data.Map.Strict qualified as Map (size)
+import Data.Maybe (isJust)
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -38,6 +39,7 @@ import Metron.Affine (
   logM,
   midpoint,
   mulM,
+  nonLinearAt,
   nudges,
   piM,
   powM,
@@ -46,6 +48,7 @@ import Metron.Affine (
   scaleM,
   sinM,
   sinhM,
+  skewOf,
   sqrtM,
   subM,
   tanM,
@@ -74,6 +77,7 @@ precisionTests =
     , builtinTests
     , sizeTests
     , curvatureTests
+    , rejudgedTests
     ]
 
 -- Running sessions -------------------------------------------------------------------
@@ -859,8 +863,9 @@ curvatureTests =
           run ["tanh ((-1e6 ±σ 1))"] @?= Right ["-1.0000000000000000000…"]
           -- its σ and second-order term are both below the last digit
           unmarked "tanh ((40 ±σ 1))"
-    , testCase "asin near one: 5%, marked"
-        $ markedWithin 15 "asin (0.99 ±σ 0.001)"
+    , testCase
+        "asin near one: 5%, marked, lifted itself (it read 12%, then 31% as a sum)"
+        $ markedWithin 7 "asin (0.99 ±σ 0.001)"
     , testCase "tan refuses an enclosure that reaches a pole"
         $ case run ["tan ((1.5707963 ± 0.001) * 1 rad)"] of
           Left err -> T.isInfixOf "pole" err @? T.unpack err
@@ -897,3 +902,83 @@ curvatureTests =
       _ -> assertFailure ("not marked: " <> T.unpack out)
     other -> assertFailure (show other)
   percent t = (.value) <$> printedNumber (T.takeWhile (/= '%') t)
+
+-- The mark re-judged ----------------------------------------------------------------------
+
+{- | The non-linear mark is re-judged at each operation (design §3.2): a
+value carries the sizes of its second-order statistical terms and is
+compared with its own first-order σ where it is used, so a term that
+later operations made negligible no longer marks it, and a term that
+is still the whole of the value does.
+-}
+rejudgedTests :: TestTree
+rejudgedTests =
+  testGroup
+    "the non-linear mark is re-judged at each operation"
+    [ testCase "a product of two zero-mean ±σ values is marked" $ do
+        marked "let a = 0 ±σ 1 in let b = 0 ±σ 1 in a * b" "unbounded"
+        marked "let n = 0 ±σ 1 in n * n" "unbounded"
+    , testCase "that product in a sum with a far larger σ is not marked" $ do
+        unmarked "let a = 0 ±σ 1 in let b = 0 ±σ 1 in a * b + (0 ±σ 1000)"
+        unmarked "let n = 0 ±σ 1 in n * n + (0 ±σ 1000)"
+        -- and the value is described by its mean and σ again
+        run
+          [ "let a = 0 ±σ 1"
+          , "let b = 0 ±σ 1"
+          , "let s = a * b + (0 ±σ 1000)"
+          , "sd s"
+          , "s < 5000"
+          ]
+          @?= Right ["1000", "true"]
+    , testCase "a sum where the product is not dwarfed stays marked, by its size"
+        $ marked "let a = 0 ±σ 1 in let b = 0 ±σ 1 in a * b + (0 ±σ 10)" "10%"
+    , testCase "a term is never dropped by a slope of zero or a cancelled σ" $ do
+        -- n·n·n: the outer product's slope at zero is zero
+        marked "let n = 0 ±σ 1 in n * n * n" "unbounded"
+        -- cos at zero is stationary
+        marked "let n = 0 ±σ 1 in cos (n * n * 1 rad)" "unbounded"
+        -- the same term twice adds, it does not cancel in quadrature
+        marked "let n = 0 ±σ 1 in n * n + n * n" "unbounded"
+        -- a first-order σ that cancels leaves the term the whole value
+        marked "let x = 2 ±σ 1e-3 in x * (4 - x)" "unbounded"
+        marked "let n = 0 ±σ 1 in let m = 0 ±σ 1000 in (n * n + m) - m" "unbounded"
+    , testProperty
+        "a product of two zero-mean values in a sum marks iff σa σb / σc passes 1%"
+        $ forAll size
+        $ \sa -> forAll size $ \sb -> forAll size $ \sc ->
+          let v o s = uncertain Stat (Tagged o 0) (Exact 0) (Exact s)
+              x = addM p24 (mulM p24 (v "a" sa) (v "b" sb)) (v "c" sc)
+              ratio = sa * sb / sc
+              isMarked = isJust (nonLinearAt (1 / 100) x)
+           in counterexample (show (ratio, skewOf x))
+                $ if ratio > 1 / 100
+                  then property isMarked
+                  else
+                    if ratio < 1 / 101
+                      then property (not isMarked)
+                      else property True
+    , localOption (mkTimeout 5_000_000)
+        $ testCase "fromState with a 0 ±σ 1 component: el.e is first order"
+        $ case run
+          [ "use astro"
+          , "use astro.kepler"
+          , "let curtis = Body {mu = 398600 km^3/s^2, radius = 6378 km, flattening = 0, j2 = 0.00108263, rate = 0 rad/s}"
+          , "let el = fromState curtis ([7000, 100, 0 ±σ 1] km) ([0.01, 7.5, 1 ±σ 0.0001] km/s)"
+          , "el.e"
+          , "el.e > 0.01"
+          ] of
+          Right [e, decided] -> do
+            T.isPrefixOf "0.016428 ±σ 1.8e-5" e @? T.unpack e
+            not (T.isInfixOf "non-linear" e) @? T.unpack e
+            decided @?= "true"
+          other -> assertFailure (show other)
+    ]
+ where
+  size = (% 1000) <$> choose (1, 10 ^ (6 :: Int))
+  marked expr what = case run [expr] of
+    Right [out] ->
+      T.isInfixOf ("second-order term " <> what) out @? T.unpack out
+    other -> assertFailure (show other)
+  unmarked expr = case run [expr] of
+    Right [out] -> not (T.isInfixOf "non-linear" out) @? T.unpack out
+    other -> assertFailure (show other)
