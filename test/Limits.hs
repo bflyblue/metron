@@ -14,6 +14,7 @@ import Data.List (isPrefixOf)
 import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Stats (GCDetails (..), RTSStats (..), getRTSStats)
+import Lang.Common (persistLines, withTempStore)
 import Metron.Driver (Session, feed, seededSession)
 import Metron.Limits (
   Limits (..),
@@ -198,6 +199,40 @@ depthTests =
                   )
               (code, err) @?= (ExitSuccess, "")
               any ("200001 (Monte Carlo" `isPrefixOf`) (lines out) @? out
+    , testCase
+        "a case that splits in tail position passes its split on, in a 128 kB stack (design §8.2)"
+        -- The built metron on a stored codebase, which it loads in a stack
+        -- of under 48 kB (one in memory parses the library, which needs
+        -- some 600 kB). 3000 samples stop at about 2500 different steps, a
+        -- split at each. A case that put its split together itself,
+        -- instead of returning it, nests one level of the Haskell stack
+        -- per split, bounded only by the copies, and needs more than 300
+        -- kB here; passed on, the splits are put together one after
+        -- another at the top.
+        $ withTempStore
+        $ \dir -> do
+          _ <- persistLines dir []
+          found <- findExecutable "metron"
+          case found of
+            Nothing ->
+              assertFailure
+                "metron is not on the PATH: run the suite with cabal test, which puts it there"
+            Just metron -> do
+              (code, out, err) <-
+                readProcessWithExitCode
+                  metron
+                  ["+RTS", "-K128k", "-RTS", "--codebase", dir, "-i"]
+                  ( unlines
+                      [ ":backend double"
+                      , ":set samples 3000"
+                      , ":set cores 1"
+                      , "let x = 1 ±σ 0.05"
+                      , "let count n = if n * x > 20000 then n else count (n + 1)"
+                      , "count 16000"
+                      ]
+                  )
+              (code, err) @?= (ExitSuccess, "")
+              any ("20001 (Monte Carlo" `isPrefixOf`) (lines out) @? out
     , testCase "a split whose value something waits for nests"
         $ refused
           "the evaluation nested more than 1000 calls deep (`:set depth`)"
