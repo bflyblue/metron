@@ -11,15 +11,17 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
+import Data.Vector.Unboxed qualified as VU
 import Metron.Affine (Magnitude, midpoint, radius)
 import Metron.Codebase (Codebase (..), Reference (..), emptyCodebase)
 import Metron.Compile (evalValueAs)
-import Metron.Double (Dbl (..), digitsOfDbl, estimateOf)
-import Metron.Driver (feed, startBackend)
+import Metron.Double (Dbl (..), Estimate (..), digitsOfDbl, estimateOf)
+import Metron.Driver (feed, startBackend, startSettings)
 import Metron.Eval (Config (..), ValueOf (..), defaultConfig)
+import Metron.Limits (Limits (..))
 import Metron.Needs (needsOf)
 import Metron.Parser (parseExpr)
-import Metron.Scalar (Backend (..), Scalar)
+import Metron.Scalar (Backend (..), Rounding (..), Scalar)
 import Metron.Session.Types (Session (..), emptySession)
 import Metron.Syntax qualified as S (rootScope)
 import Test.Tasty
@@ -38,6 +40,7 @@ backendTests =
     , samplesTests
     , switchingTests
     , checkTests
+    , settingTests
     ]
 
 -- The check before running ----------------------------------------------------------------
@@ -518,4 +521,59 @@ samplesTests =
           @?= Right ["1"]
     , testCase "under the running bound nothing is flagged"
         $ runDouble ["if 1 + 1e-16 > 1 then 1 else 2"] @?= Right ["2"]
+    ]
+
+-- The settings of the copies --------------------------------------------------------------
+
+settingTests :: TestTree
+settingTests =
+  testGroup
+    ":set samples, seed and rounding, and --set"
+    [ testCase "samples goes up to 10⁵, and one copy has no spread" $ do
+        fmap (.config.samples) (sessionAfter defaultConfig [":set samples 100000"])
+          @?= Right 100000
+        expectLeft
+          "from 2 to 100000 copies"
+          (runWith defaultConfig [":set samples 100001"])
+        expectLeft "from 2 to 100000 copies" (runWith defaultConfig [":set samples 1"])
+    , testCase ":set rounding is nearest or random, random by default" $ do
+        ( elem "rounding nearest"
+            <$> runWith defaultConfig [":set rounding nearest", ":set"]
+          )
+          @?= Right True
+        (elem "rounding random" <$> runWith defaultConfig [":set"]) @?= Right True
+        expectLeft
+          "rounding is nearest or random"
+          (runWith defaultConfig [":set rounding up"])
+    , testCase
+        "rounding nearest: copies with no draws are the IEEE result, and print exact"
+        $ case doubleOf doubleConfig{samples = 10, rounding = RoundNearest} "0.1 + 0.2 * 3" of
+          Left err -> assertFailure (T.unpack err)
+          Right x -> do
+            x.estimate @?= Copies (VU.replicate 10 x.value)
+            estimateOf x @?= 0
+    , testCase "rounding random: the same copies do differ"
+        $ case doubleOf doubleConfig{samples = 10} "0.1 + 0.2 * 3" of
+          Left err -> assertFailure (T.unpack err)
+          Right x -> (estimateOf x > 0) @? show x
+    , testCase "rounding has no effect under samples 0"
+        $ runWith doubleConfig{rounding = RoundNearest} ["0.1 + 0.2"]
+          @?= runDouble ["0.1 + 0.2"]
+    , testCase "--set takes samples, seed and rounding, in order" $ do
+        let started =
+              startSettings
+                [("samples", "1000"), ("seed", "5"), ("rounding", "nearest"), ("seed", "6")]
+                defaultConfig
+        fmap (\c -> (c.samples, c.seed, c.rounding)) started
+          @?= Right (1000, 6, RoundNearest)
+    , testCase "--set refuses what :set refuses, and names an unknown setting" $ do
+        expectLeft
+          "from 2 to 100000"
+          ([] <$ startSettings [("samples", "1")] defaultConfig)
+        expectLeft
+          "--set: no setting colour"
+          ([] <$ startSettings [("colour", "on")] defaultConfig)
+    , testCase "--set still takes the limits"
+        $ fmap (.limits.steps) (startSettings [("steps", "500")] defaultConfig)
+          @?= Right 500
     ]

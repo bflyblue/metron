@@ -150,6 +150,7 @@ import Metron.Scalar (
   Decision (holds, lost),
   Own (..),
   Rel (..),
+  Rounding (..),
   Scalar (..),
   Settings (..),
   affineCovariance,
@@ -220,6 +221,8 @@ data Config = Config
   -}
   , seed :: Int
   -- ^ the seed of those copies' random choices (@:set seed@)
+  , rounding :: Rounding
+  -- ^ how those copies round (design §8.2, @:set rounding@)
   }
   deriving stock (Show)
 
@@ -234,6 +237,7 @@ defaultConfig =
     , backend = AffineBackend
     , samples = 0
     , seed = 1
+    , rounding = RoundRandom
     }
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
@@ -252,6 +256,7 @@ settingsOf cfg =
     , decide = decideOf cfg
     , samples = cfg.samples
     , seed = cfg.seed
+    , rounding = cfg.rounding
     }
 
 {- | What the evaluator needs from the codebase: the Typed Core behind a

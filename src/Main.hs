@@ -1,19 +1,19 @@
 module Main (main) where
 
 import Control.Exception (SomeException, displayException, evaluate, try)
-import Control.Monad (foldM, join, unless, when)
+import Control.Monad (join, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.Char (isSpace)
 import Data.IORef
 import Data.List (find)
-import Data.Maybe (catMaybes, fromMaybe, isNothing, listToMaybe)
+import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Metron.Codebase (emptyCodebase)
 import Metron.Driver
 import Metron.Eval (Config (..))
-import Metron.Limits (Limits (..), applyMemory, runLimited, setLimit)
+import Metron.Limits (Limits (..), applyMemory, runLimited)
 import Metron.Repl qualified as R
 import Metron.Store
 import System.Console.Haskeline
@@ -35,9 +35,9 @@ the user store. @--no-codebase@ runs in memory only. @--merge OTHER@ merges
 the store at OTHER into that codebase and exits.
 
 @--set NAME VALUE@, any number of times, starts the session with a
-resource limit changed as @:set NAME VALUE@ would (design §8.1): @memory@,
-@steps@, @depth@, @digits@, @components@ or @time@. @--backend NAME@ starts it
-under a backend, as @:backend NAME@ would (design §8.2): @affine@ or @double@.
+setting changed as @:set NAME VALUE@ would: a resource limit (design §8.1),
+@samples@, @seed@ or @rounding@ (design §8.2), or any other @:set@ takes.
+@--backend NAME@ starts it under a backend, as @:backend NAME@ would (design §8.2): @affine@ or @double@.
 -}
 main :: IO ()
 main = do
@@ -69,7 +69,7 @@ data Options = Options
   , inMemory :: Bool
   , mergeFrom :: Maybe FilePath
   , settings :: [(Text, Text)]
-  -- ^ limits to set at the start, in order
+  -- ^ settings to change at the start, in order
   , startBackend :: Maybe Text
   -- ^ the backend to start under (design §8.2)
   }
@@ -118,19 +118,11 @@ the empty codebase.
 startSession :: Options -> IO Live
 startSession opts = do
   live <- openSession opts
-  limits <-
+  cfg <-
     either (\err -> TIO.hPutStrLn stderr err >> exitFailure) pure
-      $ foldM
-        ( \l (n, v) ->
-            fromMaybe
-              (Left ("--set: no setting " <> n <> "; :set lists them"))
-              (setLimit n v l)
-        )
-        live.session.config.limits
-        opts.settings
-  applyMemory limits
-  let cfg = live.session.config
-      limited = live.session{config = cfg{limits = limits}}
+      $ startSettings opts.settings live.session.config
+  applyMemory cfg.limits
+  let limited = live.session{config = cfg}
   -- The backend, as :backend chooses it (design §8.2).
   chosen <- case opts.startBackend of
     Nothing -> pure limited

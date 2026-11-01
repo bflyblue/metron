@@ -15,6 +15,8 @@ module Metron.Driver (
   emptySession,
   seededSession,
   startBackend,
+  setSetting,
+  startSettings,
   stdlibUpgrade,
   feed,
   feedFile,
@@ -191,7 +193,13 @@ import Metron.Pretty (
  )
 import Metron.Resolve (processGroup, typeLookupFor)
 import Metron.Resolve.Error (ResolveError (Desugar), renderResolveError)
-import Metron.Scalar (Backend (..), backendName, backendNamed)
+import Metron.Scalar (
+  Backend (..),
+  backendName,
+  backendNamed,
+  roundingName,
+  roundingNamed,
+ )
 import Metron.Session.Names (
   argPath,
   argPaths,
@@ -413,6 +421,81 @@ propose session src decls = do
 
 -- Commands ----------------------------------------------------------------------
 
+{- | @:set name value@, as the command and @--set@ take it: the changed
+configuration, the reason it is refused, or 'Nothing' when there is no
+such setting.
+-}
+setSetting :: Text -> Text -> Config -> Maybe (Either Text Config)
+setSetting name value cfg = case name of
+  -- The double backend's estimate (design §8.2): 0 is the running bound,
+  -- N ≥ 2 copies; one copy has no spread, and Monte Carlo needs many.
+  "samples" ->
+    Just $ case natural of
+      Just k
+        | k == 0 || (k >= 2 && k <= maxSamples) -> Right cfg{samples = k}
+      _ ->
+        Left
+          "samples is 0 (a running error bound) or from 2 to 100000 copies"
+  "seed" -> Just (count (\k -> cfg{seed = k}) "seed must be a non-negative integer")
+  "rounding" ->
+    Just
+      ( maybe
+          (Left "rounding is nearest or random")
+          (\r -> Right cfg{rounding = r})
+          (roundingNamed value)
+      )
+  "precision" ->
+    Just
+      (count (\k -> cfg{precision = k}) "precision must be a non-negative integer")
+  "sigma" -> Just (count (\k -> cfg{sigma = k}) "sigma must be a non-negative integer")
+  -- The threshold, in percent of the first-order σ, over which a value is
+  -- marked non-linear (design §3.2).
+  "nonlinear" ->
+    Just
+      ( count
+          ( \k ->
+              Config
+                { precision = cfg.precision
+                , sigma = cfg.sigma
+                , unicode = cfg.unicode
+                , nonlinear = fromIntegral k / 100
+                , limits = cfg.limits
+                , backend = cfg.backend
+                , samples = cfg.samples
+                , seed = cfg.seed
+                , rounding = cfg.rounding
+                }
+          )
+          "nonlinear must be a non-negative integer, a percentage"
+      )
+  -- Output spelling (design §2.8, §7.3).
+  "unicode" -> Just $ case value of
+    "on" -> Right cfg{unicode = True}
+    "off" -> Right cfg{unicode = False}
+    _ -> Left "unicode is on or off"
+  -- The resource limits (design §8.1).
+  _ -> fmap (\l -> cfg{limits = l}) <$> setLimit name value cfg.limits
+ where
+  natural = case reads (T.unpack value) of
+    [(k, "")] | k >= (0 :: Int) -> Just k
+    _ -> Nothing
+  count adjust err = maybe (Left err) (Right . adjust) natural
+
+{- | The settings @--set NAME VALUE@ changes at the start, in order, each as
+@:set NAME VALUE@ would.
+-}
+startSettings :: [(Text, Text)] -> Config -> Either Text Config
+startSettings changes cfg0 = foldM change cfg0 changes
+ where
+  change cfg (n, v) =
+    fromMaybe
+      (Left ("--set: no setting " <> n <> "; :set lists them"))
+      (setSetting n v cfg)
+
+-- | The most copies @:set samples@ takes, 10⁵ (design §8.2).
+maxSamples :: Int
+maxSamples = 100000
+
 command :: Session -> Text -> [Text] -> Either Text (Session, [Text])
 command session src = \case
   ["set"] ->
@@ -424,48 +507,13 @@ command session src = \case
             , "nonlinear " <> T.pack (show (round (100 * cfg.nonlinear) :: Integer))
             , "samples " <> tshow cfg.samples
             , "seed " <> tshow cfg.seed
+            , "rounding " <> roundingName cfg.rounding
             ]
             ++ settingLines cfg.limits
       )
-  -- The double backend's estimate (design §8.2): 0 is the running bound,
-  -- N ≥ 2 copies under random rounding; one copy has no spread.
-  ["set", "samples", n] -> case reads (T.unpack n) of
-    [(k, "")]
-      | k == 0 || (k >= 2 && k <= 1000) ->
-          Right (session{config = cfg{samples = k}}, [])
-    _ ->
-      Left
-        "samples is 0 (a running error bound) or from 2 to 1000 copies under random rounding"
-  ["set", "seed", n] -> setting n (\k -> cfg{seed = k}) "seed must be a non-negative integer"
-  ["set", "precision", n] ->
-    setting n (\k -> cfg{precision = k}) "precision must be a non-negative integer"
-  ["set", "sigma", n] -> setting n (\k -> cfg{sigma = k}) "sigma must be a non-negative integer"
-  -- The threshold, in percent of the first-order σ, over which a value is
-  -- marked non-linear (design §3.2).
-  ["set", "nonlinear", n] ->
-    setting
-      n
-      ( \k ->
-          Config
-            { precision = cfg.precision
-            , sigma = cfg.sigma
-            , unicode = cfg.unicode
-            , nonlinear = fromIntegral k / 100
-            , limits = cfg.limits
-            , backend = cfg.backend
-            , samples = cfg.samples
-            , seed = cfg.seed
-            }
-      )
-      "nonlinear must be a non-negative integer, a percentage"
-  -- The resource limits (design §8.1).
   ["set", name, value]
-    | Just changed <- setLimit name value cfg.limits ->
-        (\l -> (session{config = cfg{limits = l}}, [])) <$> changed
-  -- Output spelling (design §2.8, §7.3).
-  ["set", "unicode", "on"] -> Right (session{config = cfg{unicode = True}}, [])
-  ["set", "unicode", "off"] -> Right (session{config = cfg{unicode = False}}, [])
-  ["set", "unicode", _] -> Left "unicode is on or off"
+    | Just changed <- setSetting name value cfg ->
+        (\c -> (session{config = c}, [])) <$> changed
   -- Display preferences (design §3.2.12): a unit per exact dimension.
   ["prefer"] ->
     keep
@@ -828,9 +876,6 @@ command session src = \case
   keep = fmap (session,)
   short = shortestName scope
   tshow = T.pack . show
-  setting n adjust err = case reads (T.unpack n) of
-    [(k, "")] | k >= (0 :: Int) -> Right (session{config = adjust k}, [])
-    _ -> Left err
   evalOf rest = do
     e <- parseExprWithin cfg.limits.digits (T.unwords rest)
     evalValue cfg scope ecb (T.unwords rest) e

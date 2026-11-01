@@ -45,7 +45,7 @@ commandDescriptions =
   , Command "backend" "[affine | double]"
   , Command
       "set"
-      "[precision n | sigma k | nonlinear percent | unicode on|off | samples n | seed n | memory|steps|depth|digits|components n | time s|off]"
+      "[precision n | sigma k | nonlinear percent | unicode on|off | samples n | seed n | rounding nearest|random | memory|steps|depth|digits|components n | time s|off]"
   , Command "prefer" "[unit]"
   , Command "unprefer" "unit"
   , Command "load" "file"

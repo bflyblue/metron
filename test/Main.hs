@@ -4424,14 +4424,35 @@ displayTests =
         let limits = settingLines defaultLimits
         runLinesP [":set"]
           @?= Right
-            ( ["precision 20", "sigma 3", "unicode off", "nonlinear 1", "samples 0", "seed 1"]
+            ( [ "precision 20"
+              , "sigma 3"
+              , "unicode off"
+              , "nonlinear 1"
+              , "samples 0"
+              , "seed 1"
+              , "rounding random"
+              ]
                 ++ limits
             )
         runLinesP [":set unicode on", ":set", ":set unicode off", ":set"]
           @?= Right
-            ( ["precision 20", "sigma 3", "unicode on", "nonlinear 1", "samples 0", "seed 1"]
+            ( [ "precision 20"
+              , "sigma 3"
+              , "unicode on"
+              , "nonlinear 1"
+              , "samples 0"
+              , "seed 1"
+              , "rounding random"
+              ]
                 ++ limits
-                ++ ["precision 20", "sigma 3", "unicode off", "nonlinear 1", "samples 0", "seed 1"]
+                ++ [ "precision 20"
+                   , "sigma 3"
+                   , "unicode off"
+                   , "nonlinear 1"
+                   , "samples 0"
+                   , "seed 1"
+                   , "rounding random"
+                   ]
                 ++ limits
             )
         case runLinesP [":set unicode maybe"] of

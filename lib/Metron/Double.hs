@@ -68,6 +68,7 @@ import Metron.Scalar (
   Decision (..),
   Own (..),
   Rel (..),
+  Rounding (..),
   Scalar (..),
   Settings (..),
   Shape (..),
@@ -184,6 +185,16 @@ coin s i op xs =
     )
     63
 
+{- | The copies of a constant whose nearest double is @r@ and whose exact
+value lies on @side@ of it: each @r@ when rounding to nearest, else each
+the neighbour its coin picks.
+-}
+constantCopies ::
+  Settings -> Word64 -> [Double] -> Double -> Ordering -> VU.Vector Double
+constantCopies s op xs r side = case s.rounding of
+  RoundNearest -> VU.replicate s.samples r
+  RoundRandom -> VU.generate s.samples (\i -> roundTo (coin s i op xs) r side)
+
 {- | The neighbour a random rounding chooses: the nearest double @r@ and the
 side the exact result lies on.
 -}
@@ -265,8 +276,14 @@ operation s op say fv fb fc xs =
         Nothing -> ErrorBound (boundOf [(x.value, b) | x <- xs, ErrorBound b <- [x.estimate]])
         Just n ->
           let columns = map (copiesOf n) xs
-           in Copies
-                (VU.generate n (\i -> let ys = map (VU.! i) columns in fc (coin s i op ys) ys))
+              -- To nearest, each copy is the operation itself; at random, the
+              -- coin picks the neighbour.
+              copy i =
+                let ys = map (VU.! i) columns
+                 in case s.rounding of
+                      RoundNearest -> fv ys
+                      RoundRandom -> fc (coin s i op ys) ys
+           in Copies (VU.generate n copy)
       -- Nothing to add is an exact result, which stays exact.
       boundOf bs
         | not (finite z) = 0 / 0
@@ -596,7 +613,7 @@ literalD s r =
   side = if finite v then compare r (toRational v) else EQ
   est
     | s.samples > 0 =
-        Copies (VU.generate s.samples (\i -> roundTo (coin s i 0 [v]) v side))
+        Copies (constantCopies s 0 [v] v side)
     | side == EQ || not (finite v) = ErrorBound 0
     | otherwise = ErrorBound (roundedUp (abs (r - toRational v)))
   roundedUp q = let d = fromRational q in if toRational d < q then nextUpDouble d else d
@@ -607,7 +624,7 @@ piD s
   | s.samples > 0 =
       Dbl
         pi
-        (Copies (VU.generate s.samples (\i -> roundTo (coin s i 19 []) pi GT)))
+        (Copies (constantCopies s 19 [] pi GT))
         Nothing
   | otherwise = Dbl pi (ErrorBound 1.2246467991473533e-16) Nothing
 

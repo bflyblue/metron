@@ -29,6 +29,9 @@ module Metron.Scalar (
   ownerOf,
   lacks,
   Settings (..),
+  Rounding (..),
+  roundingName,
+  roundingNamed,
   settingsAt,
   Decision (..),
   Rel (..),
@@ -126,8 +129,27 @@ data Settings = Settings
   -- ^ the double backend's copies under random rounding; 0 is the running bound (design §8.2)
   , seed :: Int
   -- ^ the seed of those copies' random choices (@:set seed@)
+  , rounding :: Rounding
+  -- ^ how each copy rounds (@:set rounding@)
   }
   deriving stock (Eq, Show)
+
+{- | How the double backend's copies round (design §8.2, @:set
+rounding@): each to nearest, so that they differ only in their draws of
+the declared uncertainty, or each randomly up or down (CESTAC), so that
+their spread is rounding and the draws together.
+-}
+data Rounding = RoundNearest | RoundRandom
+  deriving stock (Eq, Show, Enum, Bounded)
+
+-- | A rounding's name, as @:set rounding@ takes it.
+roundingName :: Rounding -> Text
+roundingName = \case
+  RoundNearest -> "nearest"
+  RoundRandom -> "random"
+
+roundingNamed :: Text -> Maybe Rounding
+roundingNamed t = lookup t [(roundingName r, r) | r <- [minBound .. maxBound]]
 
 {- | Settings at a working precision with the default comparison policy and
 no samples: for the printer, which converts to a display unit.
@@ -139,6 +161,7 @@ settingsAt p =
     , decide = Decide{sigma = 3, nonlinear = 1 / 100}
     , samples = 0
     , seed = 0
+    , rounding = RoundRandom
     }
 
 -- | An order relation, as the comparisons ask it.
