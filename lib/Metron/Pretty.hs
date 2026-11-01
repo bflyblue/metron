@@ -652,7 +652,7 @@ renderTermUnits spelling namer isUnitRef = go 0
       let h' = freshen h ctx
        in paren
             (prec > 0)
-            ("let " <> h' <> " = " <> go 0 ctx e <> " in " <> go 0 (VCons h' ctx) b)
+            ("let " <> h' <> " = " <> unclosed ctx e <> " in " <> go 0 (VCons h' ctx) b)
     Con c args -> case (c, args) of
       (TrueC, []) -> "true"
       (FalseC, []) -> "false"
@@ -669,16 +669,21 @@ renderTermUnits spelling namer isUnitRef = go 0
     Case sc [Alt FalseC VNil el, Alt TrueC VNil th] ->
       paren
         (prec > 0)
-        ("if " <> go 0 ctx sc <> " then " <> go 0 ctx th <> " else " <> go 0 ctx el)
+        ("if " <> unclosed ctx sc <> " then " <> unclosed ctx th <> " else " <> go 0 ctx el)
     Case sc alts ->
       paren
         (prec > 0)
-        ("case " <> go 0 ctx sc <> " of " <> T.intercalate "; " (map alt alts))
+        ( "case "
+            <> unclosed ctx sc
+            <> " of "
+            <> T.intercalate "; " (zipWith alt [1 ..] alts)
+        )
      where
-      alt (Alt c hs b) =
+      alt k (Alt c hs b) =
         let names = freshenAll (vecMap (\(Hint h) -> h) hs) ctx
             ctx' = vecAppend names ctx
-         in patternText c (vecToList names) <> arrow <> go 0 ctx' b
+            body = if k == length alts then go 0 ctx' b else unclosed ctx' b
+         in patternText c (vecToList names) <> arrow <> body
     -- A superscript must be glued to the atom it raises (§2.8); after
     -- anything else, a `#label` or a stale `x#hash` included, the power
     -- keeps its caret.
@@ -791,6 +796,21 @@ renderTermUnits spelling namer isUnitRef = go 0
       _ -> paren (prec > 10) (T.unwords (p : map (go 11 ctx) args))
 
   paren b s = if b then "(" <> s <> ")" else s
+
+  -- A case's alternatives run to the end of the expression, so a term that
+  -- ends in one is parenthesised where more text follows it: a let's
+  -- bound value, an if's condition and then-branch, a scrutinee, an
+  -- alternative before another. `let x = r.f in …` is such a term, since
+  -- a field access is a case.
+  unclosed :: Vec m Text -> Term m -> Text
+  unclosed ctx e = paren (endsInCase e) (go 0 ctx e)
+  endsInCase :: Term m -> Bool
+  endsInCase = \case
+    Case _ [Alt FalseC VNil el, Alt TrueC VNil _] -> endsInCase el
+    Case _ _ -> True
+    Let _ _ b -> endsInCase b
+    Lam _ b -> endsInCase b
+    _ -> False
 
   -- A chart's clauses (design §3.10, F10), each a list of none or one
   -- (the generators of any number), each running to the next clause word,

@@ -71,6 +71,7 @@ import Metron.Primitive.Types
 import Metron.Type.Match
 import Metron.Type
 import Metron.Unicode qualified as U
+import Astro (astroTests)
 import Gen (exprDepth, genProgram, instanceOf)
 import System.Directory (
   createDirectoryIfMissing,
@@ -136,6 +137,7 @@ main =
       , partUTests
       , partFTests
       , roleTests
+      , astroTests
       ]
 
 -- Term-building helpers -------------------------------------------------
@@ -1106,12 +1108,11 @@ codebaseTests =
           ls "--charts degC" @?= Right ["chart degC : Chart degC"]
           ls "--types"
             @?= Right
-              ( [ -- The library's types: a body's state, the joint covariance
-                  -- in blocks, the spaces and the charts' frames, then Bool,
-                  -- lists and pairs.
-                  astroState
-                , astroStateCon
-                , "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
+              ( -- The library's types: astro's records, the joint covariance
+                -- in blocks, the spaces and the charts' frames, then Bool,
+                -- lists and pairs.
+                astroTypes
+                  ++ [ "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
                 , "Cov2 : forall n d d1. Mat n n (d^2) -> Mat n n (d*d1) -> Mat n n (d1^2) -> Cov2 n d d1"
                 , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
                 , "Circle : Num m -> Shape"
@@ -3700,6 +3701,26 @@ partUTests =
           file <- editFileOf s [ns]
           (_, outs) <- edited (EditNamespace ns) file s
           (ns, outs) @?= (ns, ["nothing changed"])
+    , testCase "a case that more text follows prints in parentheses and reads back" $ do
+        -- A field access is a case, so `let x = r.mass in …` is one.
+        let defs =
+              [ "data B = B {mass :: Num kg}"
+              , "let f r = let x = r.mass in x * 2"
+              , "let g r = if (case r of B m -> m > 1 kg) then 1 else 2"
+              , "let k b = case b of B m -> (case m > 1 kg of true -> 1; false -> 2)"
+              ]
+        views <- either (assertFailure . T.unpack) pure (runLinesP (defs ++ [":view f", ":view g"]))
+        views
+          @?= [ "f = \\r -> let x = (case r of B mass -> mass) in x * 2"
+              , "g = \\r -> if (case r of B m -> m > 1 kg) then 1 else 2"
+              ]
+        -- Each printed body, entered again, is the same term.
+        forM_ ["f", "g", "k"] $ \n ->
+          expecting (runLinesP (defs ++ [":view " <> n, ":hash " <> n])) $ \case
+            [v, hsh] ->
+              expecting (runLinesP (take 1 defs ++ ["let " <> v, ":hash " <> n])) $ \outs ->
+                lastN 1 outs @?= [hsh]
+            other -> assertFailure (show other)
     ]
 
 roleTests :: TestTree
@@ -4755,10 +4776,10 @@ affineTests =
             , "  bound  f @0    1e-9          100% of bound"
             , "  bound  sqrt    1e-26         0% of bound"
             ]
-    , testCase "the prelude's G carries its σ and the derived masses inherit it" $ do
+    , testCase "the library's G carries its σ and a mass derived from it inherits it" $ do
         evalU ["astro"] "G" @?= Right ["6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
-        evalU ["astro"] "M_earth" @?= Right ["5.97217e24 ±σ 1.3e20 kg"]
-        case evalU ["astro"] ":budget M_earth" of
+        evalU ["astro"] "iau2015.earth.mu / G" @?= Right ["5.97217e24 ±σ 1.3e20 kg"]
+        case evalU ["astro"] ":budget iau2015.earth.mu / G" of
           Right (_ : _ : row : _) -> T.isInfixOf "σ      G" row && T.isInfixOf "100% of σ²" row @? T.unpack row
           other -> assertFailure (show other)
     , testCase "a unit is its own term: an amount of the same size is not one" $ do
@@ -5747,18 +5768,19 @@ storeTests =
             , ":ls --types"
             ]
             @?= withBuiltinTypes
-              [ "[1, 0; 0, 1] m^2"
-              , "[0, 0; 0, 0] m s"
-              , "Cov2 {rr = [1, 0; 0, 1] m^2, rv = [0, 0; 0, 0] m s, vv = [1, 0; 0, 1] s^2}"
-              , "rr [1, 0; 0, 1] m^2"
-              , "rv [0, 0; 0, 0] m s"
-              , "vv [1, 0; 0, 1] s^2"
-              , "bound box ([0, 0] m, [0, 0] s)"
-              , astroState
-              , astroStateCon
-              , "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
-              , "Cov2 : forall n d d1. Mat n n (d^2) -> Mat n n (d*d1) -> Mat n n (d1^2) -> Cov2 n d d1"
-              ]
+              ( [ "[1, 0; 0, 1] m^2"
+                , "[0, 0; 0, 0] m s"
+                , "Cov2 {rr = [1, 0; 0, 1] m^2, rv = [0, 0; 0, 0] m s, vv = [1, 0; 0, 1] s^2}"
+                , "rr [1, 0; 0, 1] m^2"
+                , "rv [0, 0; 0, 0] m s"
+                , "vv [1, 0; 0, 1] s^2"
+                , "bound box ([0, 0] m, [0, 0] s)"
+                ]
+                  ++ astroTypes
+                  ++ [ "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
+                     , "Cov2 : forall n d d1. Mat n n (d^2) -> Mat n n (d*d1) -> Mat n n (d1^2) -> Cov2 n d d1"
+                     ]
+              )
     , testCase
         "a root binding shadows the library's on reload; :use and :unuse persist"
         $ withTempStore
@@ -6926,9 +6948,12 @@ replTests =
                   ]
         completeAt s "b.ma" @?= Just ("b", [R.Completion ".mass" "mass" True])
         map (.display) (R.completions s "b" ".ma") @?= ["mass"]
-        -- Every field completes, the library's Cov2 and State fields among them.
+        -- Every field completes, the library's among them: Cov2's, and
+        -- astro's State, Body, Elements and Transfer.
         map (.display) (R.completions s "b" ".")
-          @?= ["epoch", "mass", "pos", "rr", "rv", "vel", "vv"]
+          @?= [ "a", "argp", "dv1", "dv2", "dv3", "e", "epoch", "flattening", "i", "j2", "mass"
+              , "mu", "nu", "pos", "raan", "radius", "rate", "rr", "rv", "tof", "vel", "vv"
+              ]
     , testCase ":load completes file names" $ do
         completeAt seeded ":load fo" @?= Nothing
         R.loadsFile " :load " @? ":load"
@@ -8186,14 +8211,31 @@ editTests =
         file' <-
           replaceOnce "unit km = kilo * 1 metre\n" "unit km = 1001 m\n" file
         (s', outs) <- edited (EditNamespace "si") file' s
-        -- The library's own users are in the file; the user's are propagated,
-        -- two independent ones in an order their hashes decide.
+        -- The library's own users in si are in the file; the others are
+        -- propagated, the user's and astro.de440's bodies (written in km),
+        -- independent ones in an order their hashes decide.
         take 1 outs @?= [T.replace "si.km" "km" (movedLine "updated" s s' "si.km")]
         sort (drop 1 outs)
           @?= sort
-            [ movedLine "upgraded" s s' "orbital.earth"
-            , movedLine "upgraded" s s' "trip"
-            ]
+            ( [ movedLine "upgraded" s s' "orbital.earth"
+              , movedLine "upgraded" s s' "trip"
+              ]
+                ++ [ movedLine "upgraded" s s' ("astro.de440." <> b)
+                   | b <-
+                      [ "sun"
+                      , "mercury"
+                      , "venus"
+                      , "earth"
+                      , "moon"
+                      , "mars"
+                      , "jupiter"
+                      , "saturn"
+                      , "uranus"
+                      , "neptune"
+                      , "pluto"
+                      ]
+                   ]
+            )
         snd <$> feed s' "trip to m" @?= Right ["2002 m"]
         -- The codebase without the library: nothing under si is removed.
         plain <- editFileOf s []
@@ -8430,7 +8472,9 @@ stdlibTests =
           length outs @?= librarySize "linalg" + 1 - 3
         expecting (runLinesP [":ls --all"]) $ \outs -> do
           ("unit si.km : Unit m" `elem` outs) @? "full paths with --all"
-          length outs @?= length stdlibNames + 3 - 6
+          -- six records (Cov2, Pair, and astro's State, Body, Elements and
+          -- Transfer) list two lines for one label, and their 21 fields none
+          length outs @?= length stdlibNames + 6 - 21
         runLinesP [":ls --units furl"] @?= Right ["nothing matches"]
     , testCase "a root name shadows the library's: c and physics.c" $ do
         runLinesP
@@ -8583,14 +8627,22 @@ stdlibTests =
           hashOf (lab ++ [":move lab.x field"]) "field.x"
             @?= hashOf [multiline ["namespace field", "  let x = 1 ± 0.1"], ":add"] "field.x"
           -- The library's G: its dependents follow it.
-          expecting (runLinesP [":rename astro.G astro.Gn", ":todo"]) $ \outs ->
-            map (T.unwords . take 2 . T.words) outs
-              @?= [ "renamed `astro.G`"
-                  , "re-hashed astro.Gn"
-                  , "upgraded astro.M_earth"
-                  , "upgraded astro.M_sun"
-                  , "nothing to"
-                  ]
+          expecting
+            ( runLinesP
+                [ "use astro"
+                , "let mEarth = iau2015.earth.mu / G"
+                , ":add"
+                , ":rename astro.G astro.Gn"
+                , ":todo"
+                ]
+            )
+            $ \outs ->
+              map (T.unwords . take 2 . T.words) (drop 1 outs)
+                @?= [ "renamed `astro.G`"
+                    , "re-hashed Gn"
+                    , "upgraded mEarth"
+                    , "nothing to"
+                    ]
     , testCase
         ":rename of a nominal type re-hashes it, its users and the types that use it"
         $ do
@@ -9472,11 +9524,20 @@ withBuiltinTypes ts =
     )
 
 -- | How @:ls --types@ lists the library's @astro.State@ (design §3.8).
-astroState, astroStateCon :: Text
-astroState =
-  "data astro.State c n = astro.State {epoch :: Point c, pos :: Vec n m, vel :: Vec n (m/s)}"
-astroStateCon =
-  "astro.State : forall c n. Point c -> Vec n m -> Vec n (m/s) -> astro.State c n"
+{- | The library's records in @astro@, as @:ls --types@ lists them: a body
+of a constant set, the classical elements, a transfer, a body's state.
+-}
+astroTypes :: [Text]
+astroTypes =
+  [ "data astro.Body = astro.Body {mu :: Num (m^3/s^2), radius :: Num m, flattening :: Num, j2 :: Num, rate :: Num (rad/s)}"
+  , "astro.Body : Num (m^3/s^2) -> Num m -> Num -> Num -> Num (rad/s) -> astro.Body"
+  , "data astro.kepler.Elements = astro.kepler.Elements {a :: Num m, e :: Num, i :: Num rad, raan :: Num rad, argp :: Num rad, nu :: Num rad}"
+  , "astro.kepler.Elements : Num m -> Num -> Num rad -> Num rad -> Num rad -> Num rad -> astro.kepler.Elements"
+  , "data astro.maneuver.Transfer = astro.maneuver.Transfer {dv1 :: Num (m/s), dv2 :: Num (m/s), dv3 :: Num (m/s), tof :: Num s}"
+  , "astro.maneuver.Transfer : Num (m/s) -> Num (m/s) -> Num (m/s) -> Num s -> astro.maneuver.Transfer"
+  , "data astro.State c n = astro.State {epoch :: Point c, pos :: Vec n m, vel :: Vec n (m/s)}"
+  , "astro.State : forall c n. Point c -> Vec n m -> Vec n (m/s) -> astro.State c n"
+  ]
 
 -- | The signatures a user wrote: the library's own (`linalg.vimap`) left out.
 userSignatures :: Codebase -> [Text]
