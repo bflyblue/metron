@@ -4,18 +4,21 @@ module Metron.Session.Preferences (
   refreshPreferences,
 ) where
 
-import Data.Text ( Text )
-import Metron.Codebase ( Codebase(preferences) )
-import Metron.Compile ( evalValue )
-import Metron.Dimension ( Dim )
-import Metron.UnitHint ( UnitHint(dim) )
-import Metron.Eval ( Config, Value(VTensor, VUnit) )
-import Metron.Parser ( parseExpr )
-import Metron.Session.Types ( Session(staging, preferred, config) )
-import Data.Map.Strict qualified as Map ( fromList )
-import Metron.Syntax qualified as S
-    ( rootScope, Expr(span, Expr), Node(UnitSyntax) )
-import Data.Set qualified as Set ( toList )
+import Data.Map.Strict qualified as Map (fromList)
+import Data.Set qualified as Set (toList)
+import Data.Text (Text)
+import Metron.Codebase (Codebase (preferences))
+import Metron.Compile (evalValue)
+import Metron.Dimension (Dim)
+import Metron.Eval (Config, ValueOf (VTensor, VUnit))
+import Metron.Parser (parseExpr)
+import Metron.Session.Types (Session (config, preferred, staging))
+import Metron.Syntax qualified as S (
+  Expr (Expr, span),
+  Node (UnitSyntax),
+  rootScope,
+ )
+import Metron.UnitHint (UnitHint (dim))
 
 {- | Evaluate a preference text (@km/h@) to the unit it names and the exact
 dimension it applies to. It must be a scalar with a display unit.

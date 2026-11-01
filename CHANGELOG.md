@@ -24,6 +24,34 @@
   radius reads 13% where it read 7%. The Kepler solvers no longer take
   the midpoint of their residual on the values, now marked; their
   definitions, and so their hashes, change.
+- Backends (design §8.2, as built). The evaluator is generic over its
+  scalar domain, and a second backend runs the same terms in IEEE doubles:
+  `:backend double` (or `metron --backend double`) evaluates in GHC's
+  `Double`, in the formula's order, literals rounded to the nearest double,
+  `1/0` infinite and `sqrt (-1)` a NaN that says where it came from. Each
+  number carries an error estimate: a running bound by default (`0.1 +
+  0.2` prints `0.30000000000000004 ± 5.0e-17 (bound)`), or with `:set
+  samples 3` three copies under random rounding (`(1 + 1e-15) - 1` prints
+  `1.1102230246251565e-15 ± 3.2e-16 (estimate, 3 samples)`), seeded by
+  `:set seed`; a branch the copies disagree on is a warning. New built-ins
+  `errorOf`, `digitsOf`, `ulps`, `eps`, `nextUp`, `fma`, `isNaN` and
+  `isInfinite` are the double backend's; `±`, `±σ`, `noise`, `gauss`,
+  `mid`, `sd`, `bound`, `covariance`, `crossCovariance`, `:exact`,
+  `:budget` and `:covariance` are the affine backend's. An input that
+  reaches a built-in the current backend lacks is refused before it runs,
+  with the path: "`orbitError` uses `sd` (through `budgetOf`), which the
+  double backend does not have". `:set` lists `samples` and `seed`.
+  Nothing changes under `affine`, the default.
+
+- A product's operand of unknown rank keeps the lengths it already has
+  when it is defaulted (design §4.2). Before, the whole operand became a
+  scalar for `*` or a vector for `·`, so `\x -> [[x]] · [2]` and `\x ->
+  [x] * [1]` were refused with "a tensor of rank at least 2 against a
+  vector", though each checks once `x`'s rank is known. Now only the
+  unknown part takes the least rank it can: they are `Num -> Vec 1` and
+  `Num -> Mat 1 1`. A bare operand defaults as before. Found by the typed
+  generator at a fixed seed, which is now a test.
+
 - Exact while small (design §3.2.8, as built): an exact result of `+`,
   `-`, `*`, `/` or an integer power stays exact while the shorter of its
   numerator and denominator is within eight times `p + 4` digits (224 at

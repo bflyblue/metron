@@ -56,6 +56,7 @@ library
     , Metron.Core
     , Metron.Desugar
     , Metron.Dimension
+    , Metron.Double
     , Metron.Encode
     , Metron.Driver
     , Metron.Eval
@@ -63,10 +64,12 @@ library
     , Metron.Infer
     , Metron.Lexer
     , Metron.Limits
+    , Metron.Needs
     , Metron.Parser
     , Metron.Prelude
     , Metron.Pretty
     , Metron.Repl
+    , Metron.Scalar
     , Metron.Resolve
     , Metron.Store
     , Metron.Strictness
@@ -114,6 +117,7 @@ test-suite metron-test
   main-is:        Main.hs
   ghc-options:    -rtsopts "-with-rtsopts=-T"
   other-modules:
+    , Backend
     , Astro
     , Gen
     , Limits

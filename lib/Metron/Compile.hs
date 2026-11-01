@@ -1,9 +1,12 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+
 -- | Check and evaluate expressions with source diagnostics, without mutating a session.
 module Metron.Compile (
   CheckedExpr (..),
   checkExpr,
   evalExpr,
   evalValue,
+  evalValueAs,
   evalChecked,
   openInValue,
   runtimeOf,
@@ -20,14 +23,15 @@ import Data.Map.Strict qualified as Map (
  )
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
-import Data.Text qualified as T (pack)
+import Data.Text qualified as T (intercalate, pack)
+import Metron.Affine (Magnitude)
 import Metron.Check (
   CheckError (CoreLintError, InferenceError),
   CheckedCore (inferred, linted, typed),
   checkCore,
  )
 import Metron.Codebase (
-  Codebase (derived),
+  Codebase (derived, terms),
   Reference (Reference),
   chartNameFor,
   lookupTypeDef,
@@ -42,11 +46,13 @@ import Metron.Desugar (
   fillOperands,
   provenanceAt,
  )
+import Metron.Double (Dbl)
 import Metron.Eval (
-  Config (limits, precision),
+  Config (backend, limits, precision),
   EvalError (..),
-  Runtime (..),
+  RuntimeOf (..),
   Value,
+  ValueOf,
   evalAt,
   evalDefinition,
   neededAtRuntime,
@@ -58,9 +64,10 @@ import Metron.Infer qualified as I (
   readingsOf,
   rewriteReadings,
  )
-import Metron.Limits (limitHint, newBudget)
+import Metron.Limits (limitHint, newBudget, remarksAfter)
 import Metron.NameResolution (resolverFor)
-import Metron.Pretty (renderValue)
+import Metron.Needs (Needs, checkBackend)
+import Metron.Pretty (Display, renderValue)
 import Metron.Resolve (
   annotationsWith,
   ascriptionsIn,
@@ -68,8 +75,9 @@ import Metron.Resolve (
   withHint,
  )
 import Metron.Resolve.Error (ResolveError (..), renderResolveError)
-import Metron.Session.Types (LastExpr (LastExpr))
-import Metron.Source (printerFor)
+import Metron.Scalar (Backend (..), Scalar)
+import Metron.Session.Types (LastExpr (..))
+import Metron.Source (printerFor, refNamer)
 import Metron.Strictness (signatureAt, signatures, strictify)
 import Metron.Syntax qualified as S (
   Expr (span),
@@ -122,17 +130,50 @@ evalExpr ::
   Preferences ->
   S.Scope ->
   Codebase ->
+  Needs ->
   Text ->
   S.Expr ->
-  Either Text (Text, LastExpr)
-evalExpr cfg prefs scope cb src e = do
-  (_, v, le) <- evalChecked cfg scope cb src e
+  Either Text (Text, LastExpr, Needs)
+evalExpr cfg prefs scope cb memo src e = do
+  (h, typed, le) <- prepared scope cb src e
+  -- Refused before running if it reaches a built-in the backend lacks (design §8.2).
+  let (verdict, memo') =
+        checkBackend
+          cfg.backend
+          (\(r, i) -> refNamer scope cb r i "")
+          cb.terms
+          memo
+          le.term
+  either (Left . ("error: " <>)) Right verdict
+  out <- case cfg.backend of
+    AffineBackend -> evalShown @Magnitude cfg prefs scope cb h typed
+    DoubleBackend -> evalShown @Dbl cfg prefs scope cb h typed
+  pure (out, le, memo')
+
+{- | Evaluate under the backend of the scalar type and print, with a line
+for each warning the evaluation made: a branch lost in rounding (design
+§8.2).
+-}
+evalShown ::
+  forall s.
+  (Display s) =>
+  Config ->
+  Preferences ->
+  S.Scope ->
+  Codebase ->
+  Hash ->
+  TTerm Z ->
+  Either Text Text
+evalShown cfg prefs scope cb h typed = do
+  let (rt, prepare) = runtimeWith @s cfg cb
+  v <- either (Left . renderEvalError) Right (evalAt cfg rt h (prepare typed))
   out <-
     either
       (Left . renderEvalError)
       Right
       (renderValue (printerFor cfg scope cb) cfg.precision prefs v)
-  pure (out, le)
+  pure
+    (T.intercalate "\n" (out : map ("warning: " <>) (remarksAfter out rt.budget)))
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design
@@ -141,6 +182,21 @@ definition; its own hash stands in as the site of any @±@ in it (design
 evalValue ::
   Config -> S.Scope -> Codebase -> Text -> S.Expr -> Either Text (Hash, Value)
 evalValue cfg scope cb src e = (\(h, v, _) -> (h, v)) <$> evalChecked cfg scope cb src e
+
+-- | 'evalValue' under the backend of a scalar type (design §8.2).
+evalValueAs ::
+  forall s.
+  (Scalar s) =>
+  Config ->
+  S.Scope ->
+  Codebase ->
+  Text ->
+  S.Expr ->
+  Either Text (Hash, ValueOf s)
+evalValueAs cfg scope cb src e = do
+  (h, typed, _) <- prepared scope cb src e
+  let (rt, prepare) = runtimeWith @s cfg cb
+  (h,) <$> either (Left . renderEvalError) Right (evalAt cfg rt h (prepare typed))
 
 -- | 'evalValue', keeping what was checked, to become @it@.
 evalChecked ::
@@ -151,6 +207,19 @@ evalChecked ::
   S.Expr ->
   Either Text (Hash, Value, LastExpr)
 evalChecked cfg scope cb src e = do
+  (h, typed, le) <- prepared scope cb src e
+  v <-
+    let (rt, prepare) = runtimeWith cfg cb
+     in either (Left . renderEvalError) Right (evalAt cfg rt h (prepare typed))
+  pure (h, v, le)
+
+{- | An expression checked for evaluation: its hash, its Typed Core and
+what it leaves as @it@. A value whose shape or dimension nothing fixes is
+refused here.
+-}
+prepared ::
+  S.Scope -> Codebase -> Text -> S.Expr -> Either Text (Hash, TTerm Z, LastExpr)
+prepared scope cb src e = do
   CheckedExpr term typed scheme linted <- checkExpr scope cb src e
   case scheme of
     Just sc
@@ -165,11 +234,7 @@ evalChecked cfg scope cb src e = do
                 )
             )
     _ -> Right ()
-  let h = hashTerm term
-  v <-
-    let (rt, prepare) = runtimeWith cfg cb
-     in either (Left . renderEvalError) Right (evalAt cfg rt h (prepare typed))
-  pure (h, v, LastExpr term linted typed cb)
+  pure (hashTerm term, typed, LastExpr term linted typed cb)
 
 {- | The length, shape and dimension variables an expression leaves open in
 its value, outside any function, that its evaluation needs (design §3.3).
@@ -198,7 +263,7 @@ table over the codebase, each entry evaluated when first used, so that a
 turned chart's rotation (design §3.8) is computed once and not once per
 mention of the chart.
 -}
-runtimeOf :: Config -> Codebase -> Runtime
+runtimeOf :: (Scalar s) => Config -> Codebase -> RuntimeOf s
 runtimeOf cfg cb = fst (runtimeWith cfg cb)
 
 {- | 'runtimeOf', and how a term to evaluate against it is prepared: every
@@ -206,7 +271,8 @@ definition's Typed Core, and the expression's, with the arguments its
 calls certainly evaluate marked ("Metron.Strictness"), each definition
 analysed once per evaluation, when first used.
 -}
-runtimeWith :: Config -> Codebase -> (Runtime, TTerm Z -> TTerm Z)
+runtimeWith ::
+  (Scalar s) => Config -> Codebase -> (RuntimeOf s, TTerm Z -> TTerm Z)
 runtimeWith cfg cb = (rt, strictify external)
  where
   rt =

@@ -14,6 +14,7 @@ module Metron.Driver (
   LastExpr (..),
   emptySession,
   seededSession,
+  startBackend,
   stdlibUpgrade,
   feed,
   feedFile,
@@ -152,9 +153,9 @@ import Metron.Edit (
   editorNote,
  )
 import Metron.Eval (
-  Config (Config, limits, nonlinear, precision, sigma, unicode),
+  Config (..),
   EvalError (Internal),
-  Value (VData, VTensor),
+  ValueOf (VData, VTensor),
   covarianceMatrix,
   precisionOf,
  )
@@ -190,6 +191,7 @@ import Metron.Pretty (
  )
 import Metron.Resolve (processGroup, typeLookupFor)
 import Metron.Resolve.Error (ResolveError (Desugar), renderResolveError)
+import Metron.Scalar (Backend (..), backendName, backendNamed)
 import Metron.Session.Names (
   argPath,
   argPaths,
@@ -266,6 +268,18 @@ entered by domain as one group and added, with its six stored default
 @use@s, as a new codebase starts and as @--no-codebase@ runs. Fails only if
 the library itself does not check, which is a build error.
 -}
+
+{- | A session under the named backend (design §8.2), as @:backend NAME@
+leaves it: what @metron --backend NAME@ starts with.
+-}
+startBackend :: Text -> Session -> Either Text Session
+startBackend name session = case backendNamed name of
+  Just b -> Right session{config = session.config{backend = b}}
+  Nothing -> Left (noBackend name)
+
+noBackend :: Text -> Text
+noBackend name = "no backend " <> name <> "; the backends are affine and double"
+
 seededSession :: Either Text Session
 seededSession = do
   cb <- stdlibCodebase
@@ -305,9 +319,10 @@ feed' session src
         if null decls then Right (session, []) else propose session src decls
       -- Each expression that evaluates becomes `it` for the next one.
       let step (s, outs) (scope, e) = do
-            (out, le) <- evalExpr s.config s.preferred scope (exprCodebase s) src e
+            (out, le, needs) <-
+              evalExpr s.config s.preferred scope (exprCodebase s) s.needs src e
             le' <- absorbLast s le
-            pure (s{lastExpr = Just le'}, out : outs)
+            pure (s{lastExpr = Just le', needs}, out : outs)
       (session'', outs) <- foldM step (session', []) exprs
       pure (session''{scope = scope'}, notes ++ reverse outs)
 
@@ -407,9 +422,21 @@ command session src = \case
             , "sigma " <> tshow cfg.sigma
             , "unicode " <> (if cfg.unicode then "on" else "off")
             , "nonlinear " <> T.pack (show (round (100 * cfg.nonlinear) :: Integer))
+            , "samples " <> tshow cfg.samples
+            , "seed " <> tshow cfg.seed
             ]
             ++ settingLines cfg.limits
       )
+  -- The double backend's estimate (design §8.2): 0 is the running bound,
+  -- N ≥ 2 copies under random rounding; one copy has no spread.
+  ["set", "samples", n] -> case reads (T.unpack n) of
+    [(k, "")]
+      | k == 0 || (k >= 2 && k <= 1000) ->
+          Right (session{config = cfg{samples = k}}, [])
+    _ ->
+      Left
+        "samples is 0 (a running error bound) or from 2 to 1000 copies under random rounding"
+  ["set", "seed", n] -> setting n (\k -> cfg{seed = k}) "seed must be a non-negative integer"
   ["set", "precision", n] ->
     setting n (\k -> cfg{precision = k}) "precision must be a non-negative integer"
   ["set", "sigma", n] -> setting n (\k -> cfg{sigma = k}) "sigma must be a non-negative integer"
@@ -425,6 +452,9 @@ command session src = \case
             , unicode = cfg.unicode
             , nonlinear = fromIntegral k / 100
             , limits = cfg.limits
+            , backend = cfg.backend
+            , samples = cfg.samples
+            , seed = cfg.seed
             }
       )
       "nonlinear must be a non-negative integer, a percentage"
@@ -482,6 +512,21 @@ command session src = \case
               , staging = removePreference text cb
               }
       else Left ("no preference " <> text <> "; :prefer lists them")
+  -- The evaluator of the scalars (design §8.2). A stored term names no
+  -- backend, so switching changes no hash, only what the next input runs on.
+  ["backend"] -> keep (Right [backendName cfg.backend])
+  ["backend", name] -> (,[]) <$> startBackend name session
+  -- The commands that read uncertainty are the affine backend's.
+  (c : _)
+    | cfg.backend /= AffineBackend
+    , c `elem` ["exact", "budget", "covariance"] ->
+        Left
+          ( ":"
+              <> c
+              <> " is the affine backend's; the "
+              <> backendName cfg.backend
+              <> " backend does not have it (:backend affine)"
+          )
   -- The raw magnitudes (design §3.2.10): midpoint, nudges, slack.
   ("exact" : rest) -> keep $ do
     (h, v) <- evalOf rest

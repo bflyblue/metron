@@ -19,20 +19,27 @@ and mapped results; display units affect printing only. Types are checked
 before evaluation.
 -}
 module Metron.Eval (
-  Value (..),
+  ValueOf (..),
+  Value,
   pattern VBool,
-  Closure (..),
+  ClosureOf (..),
+  Closure,
+  ElemOf,
   Elem,
+  ThunkOf,
   Thunk,
   EvalError (..),
   Config (..),
   defaultConfig,
   precisionOf,
-  Runtime (..),
+  settingsOf,
+  RuntimeOf (..),
+  Runtime,
   UnitAtom (..),
   UnitHint (..),
   UnitFactor (..),
-  Chart (..),
+  ChartOf (..),
+  Chart,
   Applied (..),
   coordinatesOn,
   Preferences,
@@ -55,7 +62,7 @@ import Data.Bifunctor (first)
 import Data.IntSet qualified as IntSet (IntSet, member)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map (empty, insert, null)
-import Data.Maybe (catMaybes, fromMaybe, isJust)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T (intercalate, pack)
@@ -81,45 +88,10 @@ import Data.Vector qualified as V (
  )
 import Metron.Affine (
   ArithError (..),
-  Collapsed (bound, variance),
   Decide (..),
   Magnitude (Exact),
   Origin (Declared, Tagged),
   Precision,
-  Skew (operation),
-  absM,
-  acosM,
-  addM,
-  asinM,
-  atan2M,
-  atanM,
-  boundRadius,
-  ceilM,
-  collapse,
-  compareM,
-  cosM,
-  coshM,
-  crossCovarianceRows,
-  divM,
-  equalM,
-  expM,
-  floorM,
-  logM,
-  midpoint,
-  mulM,
-  negM,
-  nonLinearAt,
-  piM,
-  powM,
-  roundM,
-  sinM,
-  sinhM,
-  sqrtM,
-  subM,
-  tanM,
-  tanhM,
-  uncertain,
-  unitNoise,
  )
 import Metron.Builtin (
   boolC,
@@ -160,6 +132,7 @@ import Metron.Dimension (
   dimPow,
   dimRoot,
  )
+import Metron.Double (Dbl)
 import Metron.Limits (
   Budget,
   Limit (..),
@@ -168,15 +141,22 @@ import Metron.Limits (
   defaultLimits,
   log10Abs,
   nested,
+  remark,
   spend,
  )
-import Metron.Numerical.Linear (
-  choleskyRows,
-  determinant,
-  invert,
-  matrixExp,
- )
 import Metron.Primitive (baseUnit, primArity, typedPrims)
+import Metron.Scalar (
+  Backend (..),
+  Decision (holds, lost),
+  Own (..),
+  Rel (..),
+  Scalar (..),
+  Settings (..),
+  affineCovariance,
+  lacks,
+  ownerOf,
+ )
+import Metron.Scalar qualified as Scalar (Shape (..))
 import Metron.Strictness (strictMarker)
 import Metron.TCore (TAlt (TAlt), TTerm (..))
 import Metron.Type (
@@ -232,6 +212,14 @@ data Config = Config
   -}
   , limits :: Limits
   -- ^ what an evaluation may ask of the machine (design §8.1)
+  , backend :: Backend
+  -- ^ which evaluator of the scalars runs (design §8.2, @:backend@)
+  , samples :: Int
+  {- ^ the double backend's estimate: 0 a running error bound, N copies
+  under random rounding (design §8.2, @:set samples@)
+  -}
+  , seed :: Int
+  -- ^ the seed of those copies' random choices (@:set seed@)
   }
   deriving stock (Show)
 
@@ -243,6 +231,9 @@ defaultConfig =
     , unicode = False
     , nonlinear = 1 / 100
     , limits = defaultLimits
+    , backend = AffineBackend
+    , samples = 0
+    , seed = 1
     }
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
@@ -253,10 +244,23 @@ precisionOf cfg = cfg.precision + 4
 decideOf :: Config -> Decide
 decideOf cfg = Decide{sigma = cfg.sigma, nonlinear = cfg.nonlinear}
 
+-- | What a backend's arithmetic needs from a configuration (design §8.2).
+settingsOf :: Config -> Settings
+settingsOf cfg =
+  Settings
+    { precision = precisionOf cfg
+    , decide = decideOf cfg
+    , samples = cfg.samples
+    , seed = cfg.seed
+    }
+
 {- | What the evaluator needs from the codebase: the Typed Core behind a
-reference, and whether a reference was declared a display unit.
+reference, and whether a reference was declared a display unit. Its
+values are a backend's ('Scalar'); 'Runtime' is the affine backend's.
 -}
-data Runtime = Runtime
+type Runtime = RuntimeOf Magnitude
+
+data RuntimeOf s = Runtime
   { typedOf :: Hash -> Maybe (TTerm Z)
   , unitName :: Hash -> Maybe Int -> Text -> Maybe Text
   -- ^ given a reference and the name written for it, the unit name it is a unit under, if any (design §3.2.12)
@@ -265,7 +269,7 @@ data Runtime = Runtime
   {- ^ the declared types, for a space's amounts and a frame's parameters
   (design §3.10, F2, F7), which a chart's declaration names by its tags
   -}
-  , shared :: Hash -> Maybe Thunk
+  , shared :: Hash -> Maybe (ThunkOf s)
   {- ^ the value of a definition (not a cycle member) evaluated once and
   shared by every reference to it, when the caller keeps such a table:
   @evalDefinition cfg rt h t@ under the same 'Config' and this runtime, so that an
@@ -297,13 +301,17 @@ data EvalError
     Internal Text
   deriving stock (Eq, Show)
 
-type Thunk = Either EvalError Value
+type ThunkOf s = Either EvalError (ValueOf s)
+
+type Thunk = ThunkOf Magnitude
 
 -- | A tensor element, lazily.
-type Elem = Either EvalError Magnitude
+type ElemOf s = Either EvalError s
+
+type Elem = ElemOf Magnitude
 
 -- | The environment for a term in scope @n@.
-type Env n = Vec n Thunk
+type Env s n = Vec n (ThunkOf s)
 
 {- | Where a node sits: the enclosing top-level definition and the path of
 child indices down to it, innermost first. Declared uncertainty takes its
@@ -317,61 +325,61 @@ parent. Points store frame coordinates with the step applied. Local
 offsets and generators let conversions stop at a shared configuration;
 absolute transforms and kinematics remain cached for the physics helpers.
 -}
-data Chart = Chart
+data ChartOf s = Chart
   { name :: Maybe UnitAtom
-  , step :: Magnitude
+  , step :: s
   , stepHint :: Maybe UnitHint
   -- ^ the step's own display unit, which differences inherit
-  , origin :: Vector Magnitude
+  , origin :: Vector s
   {- ^ the origin as an amount from the base origin along the base axes, one
   magnitude per component: the parent's origin plus the amount the chart
   was given at, which is along the parent's axes and so turned by the
   parent's rotation
   -}
-  , localOrigin :: Vector Magnitude
+  , localOrigin :: Vector s
   -- ^ the declared offset along the parent's axes, before any rotation
   , dims :: [Int]
   , dim :: Dim
-  , parent :: Maybe Chart
+  , parent :: Maybe (ChartOf s)
   {- ^ the chart the origin and the generators are given in; 'Nothing' is
   the base of its space (design §3.10, F2). The chart value itself, not a hash: a
   chart need not be named, and its definition's Core already refers to the
   parent's by hash
   -}
-  , generators :: [Vector Magnitude]
+  , generators :: [Vector s]
   {- ^ antisymmetric @n × n@ matrices, row-major, applied in order; none is
   axis-aligned with the parent
   -}
-  , rotation :: Maybe (Either EvalError (Vector Magnitude))
+  , rotation :: Maybe (Either EvalError (Vector s))
   {- ^ the absolute rotation, row-major: the parent's times @expm g₁ · expm
   g₂ · …@, whose columns are this chart's axes along the base axes.
   'Nothing' when neither this chart nor any above it is turned. A lazy
   field, so it is computed once, when first used, and shared by every use
   of the value
   -}
-  , rotationInverse :: Maybe (Either EvalError (Vector Magnitude))
+  , rotationInverse :: Maybe (Either EvalError (Vector s))
   {- ^ its inverse, from the generators negated in reverse order (@… · expm
   (−g₂) · expm (−g₁)@, then the parent's inverse), never by inverting an
   enclosure
   -}
-  , relativeRotation :: Maybe (Either EvalError (Vector Magnitude))
-  , relativeRotationInverse :: Maybe (Either EvalError (Vector Magnitude))
+  , relativeRotation :: Maybe (Either EvalError (Vector s))
+  , relativeRotationInverse :: Maybe (Either EvalError (Vector s))
   -- ^ cached local transforms, used by conversions below a shared ancestor
-  , spin :: Maybe (Vector Magnitude)
+  , spin :: Maybe (Vector s)
   {- ^ the angular velocity of a spinning chart relative to its parent,
   along its own axes, in s⁻¹ (the radian stripped); 'Nothing' is none
   -}
-  , spinAbs :: Maybe (Either EvalError (Vector Magnitude))
+  , spinAbs :: Maybe (Either EvalError (Vector s))
   {- ^ the absolute angular velocity along the base axes, @ω_abs = ω_parent
   + R_abs ω@; 'Nothing' when neither this chart nor any above it spins.
   Lazy, as the rotation is
   -}
-  , originVelocity :: Maybe (Either EvalError (Vector Magnitude))
+  , originVelocity :: Maybe (Either EvalError (Vector s))
   {- ^ the velocity of the origin along the base axes, @v_parent + ω_parent
   × (R_parent a)@ for the amount @a@ the origin is given at (an origin is
   fixed relative to its parent); 'Nothing' when nothing above spins
   -}
-  , applied :: Applied
+  , applied :: Applied s
   -- ^ the arguments of the moving chart this chart is an instant of, if it is one
   , frame :: Hash
   {- ^ the frame the chart is a chart of (design §3.10, F3): the one it
@@ -382,43 +390,51 @@ data Chart = Chart
   }
   deriving stock (Eq, Show)
 
+-- | A chart of the affine backend.
+type Chart = ChartOf Magnitude
+
 {- | The arguments a moving chart was applied to (design §3.8), kept so that
 the chart it gave prints as it is written, @(ecef (100 unix))@. They say
 how the chart prints, not what it is, so 'Eq' ignores them.
 -}
-newtype Applied = Applied [Thunk]
+newtype Applied s = Applied [ThunkOf s]
 
-instance Eq Applied where
+instance Eq (Applied s) where
   _ == _ = True
 
-instance Show Applied where
+instance Show (Applied s) where
   show (Applied xs) = "Applied <" ++ show (length xs) ++ " arguments>"
 
-data Value
+{- | A value whose numbers are a backend's scalars (design §8.2); 'Value' is
+the affine backend's.
+-}
+data ValueOf s
   = -- | lengths, dimension, display unit, flat row-major elements in SI base units
-    VTensor ![Int] !Dim !(Maybe UnitHint) (Vector Elem)
+    VTensor ![Int] !Dim !(Maybe UnitHint) (Vector (ElemOf s))
   | {- | a point on a frame (design §3.10, F6): lengths, dimension, the chart
     it was written on, for printing, and its coordinates on its frame with
     the step applied, an amount from the frame's origin along its axes
     -}
-    VPoint ![Int] !Dim Chart (Vector Elem)
-  | VChart Chart
+    VPoint ![Int] !Dim (ChartOf s) (Vector (ElemOf s))
+  | VChart (ChartOf s)
   | -- | a constructor with its fields as thunks (design §8); a boolean is one, 'VBool'
-    VData ConRef [Thunk]
-  | VClosure Closure
+    VData ConRef [ThunkOf s]
+  | VClosure (ClosureOf s)
   | {- | a unit (design §3.10, U1): a newtype around a number, its magnitude
     in base units with its display hint, which is the unit expression it
     prints as (U8); kept apart only so that it prints as a unit wherever
     it is, inside a tuple or a record as at the top
     -}
-    VUnit Value
+    VUnit (ValueOf s)
   | {- | a polymorphic value waiting for the argument of its type-level
     variable (design §8); only a type application consumes one
     -}
-    VTyAbs VarId Kind (Arg -> Thunk)
+    VTyAbs VarId Kind (Arg -> ThunkOf s)
+
+type Value = ValueOf Magnitude
 
 -- | A boolean: @True@ or @False@ of the built-in @Bool@ ("Metron.Builtin").
-pattern VBool :: Bool -> Value
+pattern VBool :: Bool -> ValueOf s
 pattern VBool b <- VData (asBool -> Just b) []
   where
     VBool b = VData (boolC b) []
@@ -432,7 +448,9 @@ asBool = \case
 {- | A function value: a body under one binder, closed over its environment
 and its site.
 -}
-data Closure = forall n. Closure TyEnv Site !(Env n) (TTerm (S n))
+data ClosureOf s = forall n. Closure TyEnv Site !(Env s n) (TTerm (S n))
+
+type Closure = ClosureOf Magnitude
 
 {- | The type-level arguments in force at a point of a term, by the
 variables of that term's abstractions (design §8). Types are erased except
@@ -443,7 +461,7 @@ with no argument here is unconstrained, and any instance is a valid one.
 type TyEnv = Map VarId Arg
 
 -- | Evaluate a closed term that belongs to no definition.
-evalClosed :: Config -> Runtime -> TTerm Z -> Thunk
+evalClosed :: (Scalar s) => Config -> RuntimeOf s -> TTerm Z -> ThunkOf s
 evalClosed cfg rt = evalAt cfg rt (Hash mempty)
 
 {- | Evaluate a closed term as the body of the definition with the given
@@ -451,7 +469,7 @@ hash, for its value: abstractions over type-level variables still
 unapplied at the top are applied to the variables themselves, which
 nothing constrains.
 -}
-evalAt :: Config -> Runtime -> Hash -> TTerm Z -> Thunk
+evalAt :: (Scalar s) => Config -> RuntimeOf s -> Hash -> TTerm Z -> ThunkOf s
 evalAt cfg rt h t = instantiated =<< evalDefinition cfg rt h t
  where
   instantiated = \case
@@ -462,16 +480,29 @@ evalAt cfg rt h t = instantiated =<< evalDefinition cfg rt h t
 reference to it sees it: polymorphic definitions stay abstractions, which
 each use applies to its type-level arguments.
 -}
-evalDefinition :: Config -> Runtime -> Hash -> TTerm Z -> Thunk
+evalDefinition ::
+  (Scalar s) => Config -> RuntimeOf s -> Hash -> TTerm Z -> ThunkOf s
 evalDefinition cfg rt h = eval cfg rt Map.empty (Site h []) VNil
 
-eval :: Config -> Runtime -> TyEnv -> Site -> Env n -> TTerm n -> Thunk
+eval ::
+  forall s n.
+  (Scalar s) =>
+  Config -> RuntimeOf s -> TyEnv -> Site -> Env s n -> TTerm n -> ThunkOf s
+-- Each backend's own copy of the evaluator, so that its hot path calls the
+-- arithmetic directly rather than through the class.
+{-# SPECIALIZE eval ::
+  Config -> Runtime -> TyEnv -> Site -> Env Magnitude n -> TTerm n -> Thunk
+  #-}
+{-# SPECIALIZE eval ::
+  Config -> RuntimeOf Dbl -> TyEnv -> Site -> Env Dbl n -> TTerm n -> ThunkOf Dbl
+  #-}
 eval cfg rt = go
  where
-  p = precisionOf cfg
+  p = settingsOf cfg
+  hp = precisionOf cfg
 
   -- One step of the evaluation (design §8.1): every reduction counts.
-  go :: TyEnv -> Site -> Env m -> TTerm m -> Thunk
+  go :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
   go tenv site env t
     | spend rt.budget t = reduce tenv site env t
     | otherwise =
@@ -484,7 +515,7 @@ eval cfg rt = go
   {- A value something waits for, so one level deeper (design §8.1): an
   operand, a scrutinee, the function of a call, a thunk when forced. A
   call in tail position waits for nothing and is no deeper. -}
-  inner :: TyEnv -> Site -> Env m -> TTerm m -> Thunk
+  inner :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
   inner tenv site env t = nested rt.budget tooDeep (go tenv site env t)
   tooDeep =
     Left
@@ -493,7 +524,7 @@ eval cfg rt = go
           ("the evaluation nested more than " <> tshow cfg.limits.depth <> " calls deep")
       )
 
-  reduce :: TyEnv -> Site -> Env m -> TTerm m -> Thunk
+  reduce :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
   reduce tenv site env = \case
     TVr i -> lookupEnv i env
     TRef h mi (Hint written) -> case rt.typedOf h of
@@ -526,7 +557,8 @@ eval cfg rt = go
         prim
         (resolveType tenv ty)
         (delays tenv site env args)
-    TLit (LTensor (dims, rs)) _ -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
+    TLit (LTensor (dims, rs)) _ ->
+      Right (VTensor dims dimOne Nothing (V.fromList (map (Right . literal p) rs)))
     -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
     -- A boolean is data like any other: @if@ is a case on its constructor.
     TCon c _ args -> Right (VData c (delays tenv site env args))
@@ -564,7 +596,7 @@ eval cfg rt = go
       v <- inner tenv (child 0) env t
       (x, d, hint) <- scalarFull v
       -- Its size is known before it is computed (design §8.1).
-      case beyond cfg.limits (fromInteger n * log10Abs (midpoint x)) of
+      case sizeOf x >>= \m -> beyond cfg.limits (fromInteger n * log10Abs m) of
         Just err -> Left (Exceeded Digits ("the power " <> err))
         Nothing -> Right ()
       r <- sized cfg.limits =<< arith (powM p x n)
@@ -572,8 +604,8 @@ eval cfg rt = go
         -- A power of a unit is a unit (design §3.10, U2).
         VUnit _ ->
           VUnit
-            (num (dimPow n d) (unitHintPow p n =<< hint) r)
-        _ -> num (dimPow n d) (hintPow p n =<< hint) r
+            (num (dimPow n d) (unitHintPow hp n =<< hint) r)
+        _ -> num (dimPow n d) (hintPow hp n =<< hint) r
     -- Fresh unit nudges, one per component (design §3.2.5).
     TNoise k l n -> do
       allocation cfg.limits [fromInteger n]
@@ -583,7 +615,7 @@ eval cfg rt = go
             [count]
             dimOne
             Nothing
-            (V.generate count (Right . unitNoise k . originOf site l))
+            (V.generate count (arith . noiseM p k . originOf site l))
         )
     -- One independent nudge per component, the component index in its
     -- identity (design §3.4); a scalar uncertainty applies to every component.
@@ -595,23 +627,12 @@ eval cfg rt = go
         -- component, identified by this site (design §3.5).
         ([n], [en, _]) | en == n -> do
           pRows <- chunksOf n <$> sequence (V.toList es)
-          lrows <-
-            arith
-              ( choleskyRows
-                  "±σ needs a symmetric covariance"
-                  (decideOf cfg)
-                  (precisionOf cfg)
-                  pRows
-              )
-          let noise j = unitNoise k (originOf site l j)
-              component i =
-                ( \vi ->
-                    foldl
-                      (addM p)
-                      vi
-                      [mulM (precisionOf cfg) lij (noise j) | (j, lij) <- zip [0 ..] (lrows !! i)]
-                )
-                  <$> (xs V.! i)
+          lrows <- arith (choleskyM p "±σ needs a symmetric covariance" pRows)
+          let noise j = arith (noiseM p k (originOf site l j))
+              component i = do
+                vi <- xs V.! i
+                terms <- sequence [mulM p lij <$> noise j | (j, lij) <- zip [0 ..] (lrows !! i)]
+                Right (foldl (addM p) vi terms)
           Right (VTensor dims d hint (V.generate n component))
         _ ->
           let errAt i = if null edims then es V.! 0 else es V.! i
@@ -620,7 +641,14 @@ eval cfg rt = go
                     dims
                     d
                     hint
-                    (V.imap (\i xm -> uncertain k (originOf site l i) <$> xm <*> errAt i) xs)
+                    ( V.imap
+                        ( \i xm -> do
+                            x' <- xm
+                            e' <- errAt i
+                            arith (uncertainM p k (originOf site l i) x' e')
+                        )
+                        xs
+                    )
                 )
     -- shape the other components have, so an error in one component is
     -- only raised when that component is used. The first component's
@@ -651,7 +679,7 @@ eval cfg rt = go
         VPoint dims d sc buf -> slice dims (\rest -> VTensor rest d sc.stepHint) buf
         _ -> Left (Internal "projection from a non-tensor")
      where
-      slice :: [Int] -> ([Int] -> Vector a -> Value) -> Vector a -> Thunk
+      slice :: [Int] -> ([Int] -> Vector a -> ValueOf s) -> Vector a -> ThunkOf s
       slice dims mk buf = case dims of
         k : rest
           | i < k ->
@@ -690,7 +718,7 @@ eval cfg rt = go
   now, a number's one component with it, so that an accumulator carries
   a value and not a chain of pending sums. The unboxed result lets the
   lookup run now while the thunk found stays unforced. -}
-  delay :: TyEnv -> Site -> Env m -> TTerm m -> (# Thunk #)
+  delay :: TyEnv -> Site -> Env s m -> TTerm m -> (# ThunkOf s #)
   delay tenv site env = \case
     TVr i -> lookupThunk i env
     t@TLit{} -> let !v = go tenv site env t in (# v #)
@@ -700,7 +728,7 @@ eval cfg rt = go
     t -> (# inner tenv site env t #)
 
   -- 'delay' over arguments in order, the i-th at child i.
-  delays :: TyEnv -> Site -> Env m -> [TTerm m] -> [Thunk]
+  delays :: TyEnv -> Site -> Env s m -> [TTerm m] -> [ThunkOf s]
   delays tenv site env = loop 0
    where
     loop i = \case
@@ -722,7 +750,7 @@ eval cfg rt = go
   -- Knot-tying: every member is evaluated in an environment that already
   -- contains all the members. 'vecMap' and 'vecAppend' inspect only the
   -- spine, so the recursion is productive.
-  cycleMembers :: TyEnv -> Hash -> Vec k (TTerm (Plus k Z)) -> Vec k Thunk
+  cycleMembers :: TyEnv -> Hash -> Vec k (TTerm (Plus k Z)) -> Vec k (ThunkOf s)
   cycleMembers tenv h bodies = members
    where
     members = vecMapIndexed (\i -> inner tenv (Site h [i]) (vecAppend members VNil)) bodies
@@ -732,7 +760,7 @@ eval cfg rt = go
   -- The members are evaluated once for every application only when some
   -- body needs the arguments at run time.
   cycleMember ::
-    Hash -> Int -> [(VarId, Kind)] -> Vec k (TTerm (Plus k Z)) -> Thunk
+    Hash -> Int -> [(VarId, Kind)] -> Vec k (TTerm (Plus k Z)) -> ThunkOf s
   cycleMember h i vars bodies = abstract vars Map.empty
    where
     needed = any (\(v, k) -> any (neededAtRuntime v k) (vecToList bodies)) vars
@@ -754,13 +782,13 @@ originOf site l i = case l of
 tshow :: (Show a) => a -> Text
 tshow = T.pack . show
 
-lookupEnv :: Fin n -> Env n -> Thunk
+lookupEnv :: Fin n -> Env s n -> ThunkOf s
 lookupEnv i env = case (i, env) of
   (FZ, VCons x _) -> x
   (FS j, VCons _ xs) -> lookupEnv j xs
 
 -- | 'lookupEnv' that walks the environment now and leaves the thunk unforced.
-lookupThunk :: Fin n -> Env n -> (# Thunk #)
+lookupThunk :: Fin n -> Env s n -> (# ThunkOf s #)
 lookupThunk i env = case (i, env) of
   (FZ, VCons x _) -> (# x #)
   (FS j, VCons _ xs) -> lookupThunk j xs
@@ -771,10 +799,10 @@ alive whatever it holds, so @\\n _ -> n + 1@ written inside @length xs@
 kept the head of @xs@, and with it the whole list, for the whole fold.
 The set is the body's free variables, the function's own argument at 0.
 -}
-keepFree :: IntSet.IntSet -> Env n -> Env n
+keepFree :: IntSet.IntSet -> Env s n -> Env s n
 keepFree used = go 1
  where
-  go :: Int -> Env k -> Env k
+  go :: Int -> Env s k -> Env s k
   go i = \case
     VNil -> VNil
     VCons x xs ->
@@ -849,7 +877,12 @@ runtimeDim :: Dim -> Dim
 runtimeDim d = dimFromAtoms [(a, k) | (a@(Base _), k) <- dimAtoms d]
 
 -- | Apply a function value to an argument thunk.
-apply :: Config -> Runtime -> Value -> Thunk -> Thunk
+apply ::
+  (Scalar s) => Config -> RuntimeOf s -> ValueOf s -> ThunkOf s -> ThunkOf s
+{-# SPECIALIZE apply :: Config -> Runtime -> Value -> Thunk -> Thunk #-}
+{-# SPECIALIZE apply ::
+  Config -> RuntimeOf Dbl -> ValueOf Dbl -> ThunkOf Dbl -> ThunkOf Dbl
+  #-}
 apply cfg rt f arg = case f of
   VClosure (Closure tenv site env body) -> eval cfg rt tenv site (VCons arg env) body
   _ -> Left (Internal "application of a non-function")
@@ -864,37 +897,39 @@ arith = either (Left . convert) Right
 
 -- Values ---------------------------------------------------------------------------
 
-num :: Dim -> Maybe UnitHint -> Magnitude -> Value
+num :: Dim -> Maybe UnitHint -> s -> ValueOf s
 num d hint r = VTensor [] d hint (V.singleton (Right r))
 
 -- | A tensor's parts; a unit's, which are a number's (design §3.10, U1).
-tensor :: Value -> Either EvalError ([Int], Dim, Maybe UnitHint, Vector Elem)
+tensor ::
+  ValueOf s -> Either EvalError ([Int], Dim, Maybe UnitHint, Vector (ElemOf s))
 tensor = \case
   VTensor dims d hint buf -> Right (dims, d, hint, buf)
   VUnit v -> tensor v
   _ -> Left (Internal "expected a tensor")
 
-point :: Value -> Either EvalError ([Int], Dim, Chart, Vector Elem)
+point ::
+  ValueOf s -> Either EvalError ([Int], Dim, ChartOf s, Vector (ElemOf s))
 point = \case
   VPoint dims d sc buf -> Right (dims, d, sc, buf)
   _ -> Left (Internal "expected a point")
 
-chartOf :: Value -> Either EvalError Chart
+chartOf :: ValueOf s -> Either EvalError (ChartOf s)
 chartOf = \case
   VChart s -> Right s
   _ -> Left (Internal "expected a chart")
 
 -- | A number or a point: what the comparisons order.
-ordered :: Value -> Either EvalError Magnitude
+ordered :: ValueOf s -> Either EvalError s
 ordered = \case
   VPoint [] _ _ buf | V.length buf == 1 -> V.head buf
   v -> scalar v
 
 -- | The one element of a rank-zero tensor.
-scalar :: Value -> Either EvalError Magnitude
+scalar :: ValueOf s -> Either EvalError s
 scalar v = (\(x, _, _) -> x) <$> scalarFull v
 
-scalarFull :: Value -> Either EvalError (Magnitude, Dim, Maybe UnitHint)
+scalarFull :: ValueOf s -> Either EvalError (s, Dim, Maybe UnitHint)
 scalarFull = \case
   VTensor [] d hint buf | V.length buf == 1 -> (,d,hint) <$> V.head buf
   VUnit v -> scalarFull v
@@ -912,7 +947,7 @@ so that an accumulator holds no chain of pending sums; a component that
 fails still fails only where used. A large tensor's stay lazy, so a
 function strict in it computes only the components it reads.
 -}
-evaluated :: Thunk -> Thunk
+evaluated :: ThunkOf s -> ThunkOf s
 evaluated = \case
   r@(Right v) -> small v `seq` r
   r -> r
@@ -927,7 +962,7 @@ evaluated = \case
 smallTensor :: Int
 smallTensor = 64
 
-forceValue :: Value -> ()
+forceValue :: ValueOf s -> ()
 forceValue = \case
   VTensor _ _ _ buf -> components buf
   VPoint _ _ _ buf -> components buf
@@ -936,7 +971,7 @@ forceValue = \case
  where
   components = V.foldl' (\() e -> either (const ()) (`seq` ()) e) ()
 
-bool :: Value -> Either EvalError Bool
+bool :: ValueOf s -> Either EvalError Bool
 bool = \case
   VBool b -> Right b
   _ -> Left (Internal "expected a boolean")
@@ -944,16 +979,17 @@ bool = \case
 {- | Make a scalar value its own display unit. Forces its magnitude, which
 for a unit definition is a constant.
 -}
-asUnit :: UnitAtom -> Value -> Thunk
+asUnit :: (Scalar s) => UnitAtom -> ValueOf s -> ThunkOf s
 asUnit atom = \case
   VTensor [] d _ buf | V.length buf == 1 -> do
     x <- V.head buf
-    Right (VTensor [] d (Just (UnitHint [UnitFactor atom 1 d x] x d False)) buf)
+    let f = hintFactor x
+    Right (VTensor [] d (Just (UnitHint [UnitFactor atom 1 d f] f d False)) buf)
   VUnit v -> VUnit <$> asUnit atom v
   v -> Right v
 
 -- | Name a chart value after the definition it came from.
-asChart :: UnitAtom -> Value -> Thunk
+asChart :: UnitAtom -> ValueOf s -> ThunkOf s
 asChart atom = \case
   VChart s -> Right (VChart s{name = Just atom})
   v -> Right v
@@ -971,12 +1007,12 @@ power, which drops the hint.
 as two numbers', their hints as written.
 -}
 unitOp ::
-  (Magnitude -> Magnitude -> Either EvalError Magnitude) ->
+  (s -> s -> Either EvalError s) ->
   (Dim -> Dim -> Dim) ->
   (UnitHint -> UnitHint -> Maybe UnitHint) ->
-  Value ->
-  Value ->
-  Thunk
+  ValueOf s ->
+  ValueOf s ->
+  ThunkOf s
 unitOp f dimF hintF x y = do
   (mx, dx, hx) <- scalarFull x
   (my, dy, hy) <- scalarFull y
@@ -991,7 +1027,15 @@ element. Dimensions follow the rules of design §4.3, display units those
 of §3.2.12, magnitudes those of §3.2. The type is the primitive's, as
 instantiated where it is used, under the type-level arguments in force.
 -}
-runPrim :: Config -> Runtime -> Text -> Type -> [Thunk] -> Thunk
+runPrim ::
+  forall s.
+  (Scalar s) => Config -> RuntimeOf s -> Text -> Type -> [ThunkOf s] -> ThunkOf s
+{-# SPECIALIZE runPrim ::
+  Config -> Runtime -> Text -> Type -> [Thunk] -> Thunk
+  #-}
+{-# SPECIALIZE runPrim ::
+  Config -> RuntimeOf Dbl -> Text -> Type -> [ThunkOf Dbl] -> ThunkOf Dbl
+  #-}
 runPrim cfg rt prim ty args = case (prim, args) of
   -- A base unit is a unit (design §3.10, U1).
   (unit, [])
@@ -1008,7 +1052,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
                           False
                       )
                   )
-                  (Exact 1)
+                  (literal p 1)
               )
           )
   -- A unit's declaration (U7): its size, or a unit, as a unit.
@@ -1026,7 +1070,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
       ( VTensor
           dims
           d
-          (h >>= \hh -> mkHint p hh.atoms)
+          (h >>= \hh -> mkHint hp hh.atoms)
           (V.map (fmap (\x -> mulM p x k)) xs)
       )
   -- Sum: the left operand's display unit wins.
@@ -1034,27 +1078,12 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("sub", [a, b]) -> elementwise2 (pureOp (subM p)) const (combine smallerUnit) a b
   ("neg", [a]) -> elementwise1 negM a
   ("abs", [a]) -> elementwise1 (absM p) a
-  -- The parts of an enclosure as the printer collapses it (design §3.2.9,
-  -- §3.2.10), each exact but sd: the midpoint, the bound radius
-  -- Σ_bound |cᵢ| + slack, and the standard deviation √(Σ_stat cᵢ²), exact
-  -- when the variance is a square and otherwise an enclosure of the root.
-  -- A value marked non-linear has no mean and σ that describe it (design
-  -- §3.2), so mid and sd refuse it; its bound is still rigorous.
-  ("mid", [a]) -> do
-    (dims, d, hint, buf) <- tensor =<< a
-    Right
-      (VTensor dims d hint (V.map (>>= described "mid" (Right . Exact . midpoint)) buf))
-  ("bound", [a]) -> elementwise1 (\x -> Exact (collapse x).bound) a
-  ("sd", [a]) -> do
-    (dims, d, hint, buf) <- tensor =<< a
-    let root x = arith (sqrtM p (Exact (collapse x).variance))
-    Right (VTensor dims d hint (V.map (>>= described "sd" root) buf))
-  ("emul", [a, b]) -> elementwise2 (pureOp (mulM p)) dimMul (combine (hintMul p)) a b
+  ("emul", [a, b]) -> elementwise2 (pureOp (mulM p)) dimMul (combine (hintMul hp)) a b
   ("ediv", [a, b]) ->
     elementwise2
       (\x y -> arith (divM p x y))
       dimDiv
-      (\h1 h2 -> combine (hintMul p) h1 (hintInv p =<< h2))
+      (\h1 h2 -> combine (hintMul hp) h1 (hintInv hp =<< h2))
       a
       b
   -- Tensor product: ranks add, dimensions multiply, every pair of elements
@@ -1064,7 +1093,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
     vb <- b
     case (va, vb) of
       -- Two units (design §3.10, U2).
-      (VUnit x, VUnit y) -> unitOp (\m n -> Right (mulM p m n)) dimMul (unitHintMul p) x y
+      (VUnit x, VUnit y) -> unitOp (\m n -> Right (mulM p m n)) dimMul (unitHintMul hp) x y
       _ -> do
         (d1, dim1, h1, xs) <- tensor va
         (d2, dim2, h2, ys) <- tensor vb
@@ -1073,7 +1102,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
           ( VTensor
               (d1 ++ d2)
               (dimMul dim1 dim2)
-              (combine (hintMul p) h1 h2)
+              (combine (hintMul hp) h1 h2)
               ( V.concatMap
                   (\x -> V.map (\y -> do x' <- x; y' <- y; sized cfg.limits (mulM p x' y')) ys)
                   xs
@@ -1102,7 +1131,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
               ( VTensor
                   (d1 ++ d2)
                   (dimMul dim1 dim2)
-                  (combine (hintMul p) h1 h2)
+                  (combine (hintMul hp) h1 h2)
                   (V.generate (rows * stride2) element)
               )
       _ -> Left (Internal "dot: operand shapes do not contract")
@@ -1111,7 +1140,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
     vb <- b
     case (va, vb) of
       -- Two units (design §3.10, U2).
-      (VUnit x, VUnit y) -> unitOp (\m n -> arith (divM p m n)) dimDiv (unitHintDiv p) x y
+      (VUnit x, VUnit y) -> unitOp (\m n -> arith (divM p m n)) dimDiv (unitHintDiv hp) x y
       _ -> do
         (dims, d1, h1, xs) <- tensor va
         (k, d2, h2) <- scalarFull vb
@@ -1119,15 +1148,15 @@ runPrim cfg rt prim ty args = case (prim, args) of
           ( VTensor
               dims
               (dimDiv d1 d2)
-              (combine (hintMul p) h1 (hintInv p =<< h2))
+              (combine (hintMul hp) h1 (hintInv hp =<< h2))
               (V.map (\x -> x >>= \x' -> sized cfg.limits =<< arith (divM p x' k)) xs)
           )
   ("eq", [a, b]) -> VBool <$> equal a b
   ("ne", [a, b]) -> VBool . not <$> equal a b
-  ("lt", [a, b]) -> compareWith (== LT) a b
-  ("le", [a, b]) -> compareWith (/= GT) a b
-  ("gt", [a, b]) -> compareWith (== GT) a b
-  ("ge", [a, b]) -> compareWith (/= LT) a b
+  ("lt", [a, b]) -> compareWith Lt a b
+  ("le", [a, b]) -> compareWith Le a b
+  ("gt", [a, b]) -> compareWith Gt a b
+  ("ge", [a, b]) -> compareWith Ge a b
   -- Lazy in the second argument.
   ("and", [a, b]) -> do
     x <- bool =<< a
@@ -1136,9 +1165,9 @@ runPrim cfg rt prim ty args = case (prim, args) of
     x <- bool =<< a
     if x then Right (VBool True) else VBool <$> (bool =<< b)
   ("not", [a]) -> VBool . not <$> (bool =<< a)
-  ("floor", [a]) -> dimensionless (arith . floorM (decideOf cfg) p) a
-  ("ceil", [a]) -> dimensionless (arith . ceilM (decideOf cfg) p) a
-  ("round", [a]) -> dimensionless (arith . roundM (decideOf cfg) p) a
+  ("floor", [a]) -> dimensionless (arith . floorM p) a
+  ("ceil", [a]) -> dimensionless (arith . ceilM p) a
+  ("round", [a]) -> dimensionless (arith . roundM p) a
   -- Elementary functions (design §3.2.2). Their arguments are dimensionless
   -- by type, except sqrt, which halves the dimension.
   ("sqrt", [a]) -> do
@@ -1177,7 +1206,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
     case dims of
       [n, n'] | n == n' -> do
         rows <- matrixRows n buf
-        num dimOne Nothing <$> arith (determinant p n rows)
+        num dimOne Nothing <$> arith (determinantM p n rows)
       _ -> Left (Internal "det of a non-square matrix")
   ("cholesky", [a]) -> do
     (dims, d, _, buf) <- tensor =<< a
@@ -1185,7 +1214,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
       [n, n'] | n == n' -> do
         rows <- matrixRows n buf
         l <-
-          arith (choleskyRows "cholesky needs a symmetric matrix" (decideOf cfg) p rows)
+          arith (choleskyM p "cholesky needs a symmetric matrix" rows)
         d2 <-
           maybe
             (Left (Internal "cholesky of a dimension that is not a square"))
@@ -1193,27 +1222,12 @@ runPrim cfg rt prim ty args = case (prim, args) of
             (dimRoot 2 d)
         Right (VTensor [n, n] d2 Nothing (V.fromList (map Right (concat l))))
       _ -> Left (Internal "cholesky of a non-square matrix")
-  -- Σ cᵢ cᵢᵀ over the statistical nudges (design §3.5): exact, from the
-  -- coefficients. The covariance is the cross-covariance of a vector with
-  -- itself, with no display unit of its own.
-  ("covariance", [a]) -> do
-    (_, d, _, buf) <- tensor =<< a
-    xs <- sequence (V.toList buf)
-    Right (covarianceMatrix cfg (dimPow 2 d) Nothing xs xs)
-  -- Σ cᵢ c'ⱼᵀ over the statistical nudges the two vectors share: exact, in
-  -- the product of their dimensions and display units, as for outer.
-  ("crossCovariance", [a, b]) -> do
-    (_, d1, h1, xs) <- tensor =<< a
-    (_, d2, h2, ys) <- tensor =<< b
-    as <- sequence (V.toList xs)
-    bs <- sequence (V.toList ys)
-    Right (covarianceMatrix cfg (dimMul d1 d2) (hintProduct p h1 h2) as bs)
   ("inverse", [a]) -> do
     (dims, d, _, buf) <- tensor =<< a
     case dims of
       [n, n'] | n == n' -> do
         rows <- matrixRows n buf
-        inv <- arith (invert p n rows)
+        inv <- arith (invertM p n rows)
         Right (VTensor [n, n] (dimInv d) Nothing (V.fromList (map Right (concat inv))))
       _ -> Left (Internal "inverse of a non-square matrix")
   -- Wedge product: the antisymmetrised outer product, (a ∧ b)ⱼₖ = aⱼbₖ − aₖbⱼ,
@@ -1229,7 +1243,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
             ( VTensor
                 [n, n]
                 (dimMul dim1 dim2)
-                (combine (hintMul p) h1 h2)
+                (combine (hintMul hp) h1 h2)
                 ( V.generate
                     (n * n)
                     ( \k ->
@@ -1268,7 +1282,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
     case dims of
       [n, n'] | n == n' -> do
         rows <- matrixRows n buf
-        r <- arith (matrixExp p n rows)
+        r <- arith (matrixExpM p n rows)
         Right (VTensor [n, n] dimOne Nothing (V.fromList (map Right (concat r))))
       _ -> Left (Internal "expm of a non-square matrix")
   -- R applied along every axis of a tensor (design §3.3): R v, R P Rᵀ, and
@@ -1376,7 +1390,8 @@ runPrim cfg rt prim ty args = case (prim, args) of
     (dims, _, _, _) <- tensor =<< a
     case dims of
       [k] ->
-        Right (VTensor [k] dimOne Nothing (V.generate k (Right . Exact . fromIntegral)))
+        Right
+          (VTensor [k] dimOne Nothing (V.generate k (Right . literal p . fromIntegral)))
       _ -> Left (Internal "indices of a non-vector")
   -- vmap over two tensors of one shape, with the same strictness.
   ("vzipWith", [f, a, b]) -> do
@@ -1403,7 +1418,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
             [rank]
             dimOne
             Nothing
-            (V.fromList (map (Right . Exact . fromIntegral) (unflatten dims q)))
+            (V.fromList (map (Right . literal p . fromIntegral) (unflatten dims q)))
         results =
           V.imap
             ( \q x ->
@@ -1422,7 +1437,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
     -- shows a plain number.
     let shown h =
           (\h' -> h'{pinned = True})
-            <$> mkHintAs PreserveExpression p (mergeAtoms [] h.atoms)
+            <$> mkHintAs PreserveExpression hp (mergeAtoms [] h.atoms)
     Right (VTensor dims d (shown =<< uh) buf)
   -- Charts (design §3.10, F3, F10). The frame and axes a chart mints are
   -- type-level tags with nothing to compute; every clause is a list of
@@ -1434,9 +1449,9 @@ runPrim cfg rt prim ty args = case (prim, args) of
     (lens, d) <- case rt.typeDefOf hs >>= spaceOf hs of
       Just sp -> Right ([k | LLit k <- fromMaybe [] (spaceLens sp)], sp.dim)
       Nothing -> Left (Internal "mkRoot: a space with no declaration")
-    stepI <- maybe (Right (Exact 1, d, Nothing)) scalarFull =<< optional st
+    stepI <- maybe (Right (literal p 1, d, Nothing)) scalarFull =<< optional st
     amount <-
-      maybe (Right (V.replicate (product lens) (Exact 0))) amountOf =<< optional o
+      maybe (Right (V.replicate (product lens) (literal p 0))) amountOf =<< optional o
     gens <- mapM antisymmetric =<< listElems =<< g
     spinM <- traverse amountOf =<< optional w
     mkChart hf (frameMoving hf) stepI lens amount Nothing gens spinM
@@ -1449,7 +1464,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
         scalarFull
         =<< optional st
     amount <-
-      maybe (Right (V.replicate (V.length parentChart.origin) (Exact 0))) amountOf
+      maybe (Right (V.replicate (V.length parentChart.origin) (literal p 0))) amountOf
         =<< optional o
     gens <- mapM antisymmetric =<< listElems =<< g
     spinM <- traverse amountOf =<< optional w
@@ -1521,7 +1536,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("rotationOf", [s]) -> do
     sc <- chartOf =<< s
     let n = V.length sc.origin
-    rm <- fromMaybe (Right (identityMatrix n)) sc.rotation
+    rm <- fromMaybe (Right (identityMatrix p n)) sc.rotation
     Right (VTensor [n, n] dimOne Nothing (V.map Right rm))
   -- A chart's absolute angular velocity and the velocity of its origin,
   -- along the base axes (design §3.8): exactly zero for a chart that does
@@ -1529,18 +1544,26 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("spinOf", [s]) -> do
     sc <- chartOf =<< s
     let n = V.length sc.origin
-    ws <- fromMaybe (Right (V.replicate n (Exact 0))) sc.spinAbs
+    ws <- fromMaybe (Right (V.replicate n (literal p 0))) sc.spinAbs
     Right (VTensor [n] (dimInv (dimBase T)) Nothing (V.map Right ws))
   ("originVelocityOf", [s]) -> do
     sc <- chartOf =<< s
     let n = V.length sc.origin
-    vs <- fromMaybe (Right (V.replicate n (Exact 0))) sc.originVelocity
+    vs <- fromMaybe (Right (V.replicate n (literal p 0))) sc.originVelocity
     Right (VTensor [n] (dimDiv sc.dim (dimBase T)) Nothing (V.map Right vs))
   -- Its origin, an amount from the space's base origin along the base
   -- axes (design §3.10, part F, as built).
   ("originOf", [s]) -> do
     sc <- chartOf =<< s
     Right (VTensor [V.length sc.origin] sc.dim Nothing (V.map Right sc.origin))
+  -- The backend's own built-ins (design §8.2): the shapes are shared, the
+  -- numbers the backend's.
+  _ | Just o <- own @s prim -> runOwn o
+  -- Another backend's: refused before running (design §8.2), so reached
+  -- only by an evaluation that skipped the check.
+  _
+    | Just _ <- ownerOf prim ->
+        Left (Metron.Eval.Domain (lacks (backendOf @s) prim))
   _
     | primArity prim == Just (length args) ->
         Left (Unsupported (prim <> ": not implemented yet"))
@@ -1553,19 +1576,52 @@ runPrim cfg rt prim ty args = case (prim, args) of
               )
           )
  where
-  p = precisionOf cfg
-  -- An accessor of a mean or a σ, refusing a value marked non-linear.
-  described what f x = case nonLinearAt cfg.nonlinear x of
-    Just sk ->
-      Left
-        ( Metron.Eval.Domain
-            ( what
-                <> " of a value marked non-linear by "
-                <> sk.operation
-                <> ": a mean and a σ do not describe it (design §3.2)"
-            )
-        )
-    Nothing -> f x
+  p = settingsOf cfg
+  hp = precisionOf cfg
+  wrongArity = Left (Internal (prim <> " applied to the wrong number of arguments"))
+  runOwn :: Own s -> ThunkOf s
+  runOwn = \case
+    Each shape checked f -> case args of
+      [a] -> do
+        (dims, d, hint, buf) <- tensor =<< a
+        let each x = arith (f p x) >>= if checked then sized cfg.limits else Right
+        Right $ case shape of
+          Scalar.Keep -> VTensor dims d hint (V.map (>>= each) buf)
+          Scalar.Bare -> VTensor dims dimOne Nothing (V.map (>>= each) buf)
+      _ -> wrongArity
+    -- Σ cᵢ cᵢᵀ over the statistical nudges (design §3.5). The covariance is
+    -- the cross-covariance of a vector with itself, with no display unit
+    -- of its own; of two vectors, in the product of their dimensions and
+    -- display units, as for outer.
+    Covariance f -> case args of
+      [a] -> do
+        (_, d, _, buf) <- tensor =<< a
+        xs <- sequence (V.toList buf)
+        Right (matrixValue (dimPow 2 d) Nothing (length xs) (length xs) (f p xs xs))
+      [a, b] -> do
+        (_, d1, h1, xs) <- tensor =<< a
+        (_, d2, h2, ys) <- tensor =<< b
+        as <- sequence (V.toList xs)
+        bs <- sequence (V.toList ys)
+        Right
+          ( matrixValue
+              (dimMul d1 d2)
+              (hintProduct hp h1 h2)
+              (length as)
+              (length bs)
+              (f p as bs)
+          )
+      _ -> wrongArity
+    Test f -> case args of
+      [a] -> VBool . f <$> (scalar =<< a)
+      _ -> wrongArity
+    Constant f -> case args of
+      [] -> Right (num dimOne Nothing (f p))
+      _ -> wrongArity
+    Combine dimF f -> do
+      parts <- mapM (scalarFull =<<) args
+      Right
+        (num (dimF [d | (_, d, _) <- parts]) Nothing (f p [x | (x, _, _) <- parts]))
   -- The dimension of the result the instantiated type gives.
   resultDim = case finalResult ty of
     TTensor _ d -> Right (runtimeDim d)
@@ -1696,21 +1752,26 @@ runPrim cfg rt prim ty args = case (prim, args) of
   -- e^x has about x·log₁₀ e digits: known before the series is summed
   -- (design §8.1), which for a large x would run for minutes. The
   -- exponent is the midpoint's, measured by the given sign rule.
-  exponential sign x =
-    let m = midpoint x
-        e = sign (fromRational m) * logBase 10 (exp 1) :: Double
-     in maybe
-          (Right ())
-          (Left . Exceeded Digits . ("the exponential " <>))
-          (beyond cfg.limits e)
+  exponential sign x = case sizeOf x of
+    Nothing -> Right ()
+    Just m ->
+      let e = sign (fromRational m) * logBase 10 (exp 1) :: Double
+       in maybe
+            (Right ())
+            (Left . Exceeded Digits . ("the exponential " <>))
+            (beyond cfg.limits e)
   -- A scalar function whose result is an angle in radians.
   angle f a = do
     x <- scalar =<< a
     num (dimBase Ang) Nothing <$> f x
-  compareWith decide a b = do
+  compareWith rel a b = do
     x <- ordered =<< a
     y <- ordered =<< b
-    VBool . decide <$> arith (compareM (decideOf cfg) p x y)
+    VBool . settle <$> arith (relate p rel x y)
+  equalAll xs ys = and <$> mapM (\(u, v) -> settle <$> arith (equalM p u v)) (zip xs ys)
+  -- A decision lost in rounding is the result all the same, with a warning
+  -- (design §8.2).
+  settle d = maybe d.holds (\why -> remark rt.budget why d.holds) d.lost
   -- Tensors of one shape (lint agrees), data or points: the equality
   -- instances of design §4.2. Tensors are equal when every component is
   -- decided equal (design §3.2.9).
@@ -1721,14 +1782,14 @@ runPrim cfg rt prim ty args = case (prim, args) of
       (VTensor _ _ _ xs, VTensor _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
-        and <$> mapM (\(u, v) -> arith (equalM (decideOf cfg) p u v)) (zip xs' ys')
+        equalAll xs' ys'
       (VData c xs, VData c' ys)
         | c == c' && length xs == length ys -> and <$> zipWithM equal xs ys
         | otherwise -> Right False
       (VPoint _ _ _ xs, VPoint _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
-        and <$> mapM (\(u, v) -> arith (equalM (decideOf cfg) p u v)) (zip xs' ys')
+        equalAll xs' ys'
       _ ->
         Left
           (Internal "==: operands are not both tensors, both data or both points")
@@ -1752,8 +1813,8 @@ runPrim cfg rt prim ty args = case (prim, args) of
                   ]
      in V.generate (product dims) element
 
-sumM :: Precision -> [Magnitude] -> Magnitude
-sumM p = foldl' (addM p) (Exact 0)
+sumM :: (Scalar s) => Settings -> [s] -> s
+sumM p = foldl' (addM p) (literal p 0)
 
 {- | Whether a tensor of these lengths may be built: at most the session's
 @components@ (design §8.1), counted without overflow. A product whose
@@ -1779,8 +1840,8 @@ allocation l dims
 allows (design §8.1). Only a magnitude is measured: an exact result's
 length is the precision's concern (design §3.2.8).
 -}
-sized :: Limits -> Magnitude -> Either EvalError Magnitude
-sized l x = case beyond l (log10Abs (midpoint x)) of
+sized :: (Scalar s) => Limits -> s -> Either EvalError s
+sized l x = case sizeOf x >>= beyond l . log10Abs of
   Nothing -> Right x
   Just err -> Left (Exceeded Digits ("the result " <> err))
 
@@ -1789,14 +1850,14 @@ sized l x = case beyond l (log10Abs (midpoint x)) of
 {- | The literal index positions of @contract@, @permute@ or @slice@: a number or a
 vector of exact naturals (the desugarer admits nothing else).
 -}
-positions :: Thunk -> Either EvalError [Int]
+positions :: (Scalar s) => ThunkOf s -> Either EvalError [Int]
 positions t = do
   (_, _, _, buf) <- tensor =<< t
   xs <- sequence (V.toList buf)
   mapM natural xs
  where
   natural = \case
-    Exact r
+    (exactly -> Just r)
       | denominator r == 1
       , r >= 0
       , numerator r < lengthLimit ->
@@ -1821,14 +1882,14 @@ the pose, not numerical equality of enclosures or equality of frame names.
 Different configurations of the same moving frame must not cancel. Steps
 and display names do not affect a pose; rescalings add no edge.
 -}
-chartRoute :: Chart -> Chart -> ([Chart], [Chart])
+chartRoute :: (Scalar s) => ChartOf s -> ChartOf s -> ([ChartOf s], [ChartOf s])
 chartRoute source target = shared (reverse (path source)) (reverse (path target))
  where
   path c = case c.parent of
     Just parent
       | c.frame == parent.frame
       , null c.generators
-      , V.all (== Exact 0) c.localOrigin ->
+      , V.all ((== Just 0) . exactly) c.localOrigin ->
           path parent
     parent -> c : maybe [] path parent
   shared (a : as) (b : bs)
@@ -1848,12 +1909,13 @@ never from inverting a matrix of enclosures. 'Nothing' is the identity: no
 generator here or above.
 -}
 chartFrame ::
-  Precision ->
+  (Scalar s) =>
+  Settings ->
   Int ->
-  Maybe Chart ->
-  [Vector Magnitude] ->
-  ( Maybe (Either EvalError (Vector Magnitude))
-  , Maybe (Either EvalError (Vector Magnitude))
+  Maybe (ChartOf s) ->
+  [Vector s] ->
+  ( Maybe (Either EvalError (Vector s))
+  , Maybe (Either EvalError (Vector s))
   )
 chartFrame p n parentChart gens =
   ( compose (parentChart >>= (.rotation)) (local id gens)
@@ -1863,7 +1925,7 @@ chartFrame p n parentChart gens =
   local _ [] = Nothing
   local sign gs = Just (foldr1 (\a b -> matrixProduct p n <$> a <*> b) (map (expOf . sign) gs))
   expOf g = do
-    rows <- arith (matrixExp p n (chunk (V.toList g)))
+    rows <- arith (matrixExpM p n (chunk (V.toList g)))
     Right (V.fromList (concat rows))
   chunk xs
     | null xs = []
@@ -1886,14 +1948,15 @@ the parent's frame. Both are lazy, and 'Nothing' is exactly zero: no
 chart here or above spins.
 -}
 chartMotion ::
-  Precision ->
+  (Scalar s) =>
+  Settings ->
   Int ->
-  Maybe Chart ->
-  Maybe (Either EvalError (Vector Magnitude)) ->
-  Vector Magnitude ->
-  Maybe (Vector Magnitude) ->
-  ( Maybe (Either EvalError (Vector Magnitude))
-  , Maybe (Either EvalError (Vector Magnitude))
+  Maybe (ChartOf s) ->
+  Maybe (Either EvalError (Vector s)) ->
+  Vector s ->
+  Maybe (Vector s) ->
+  ( Maybe (Either EvalError (Vector s))
+  , Maybe (Either EvalError (Vector s))
   )
 chartMotion p n parentChart rotationAbs along spinM =
   ( plus (parentChart >>= (.spinAbs)) (turn <$> spinM)
@@ -1908,7 +1971,7 @@ chartMotion p n parentChart rotationAbs along spinM =
             Right (V.zipWith (addM p) v transport)
   )
  where
-  zeros = V.replicate n (Exact 0)
+  zeros = V.replicate n (literal p 0)
   turn w = case rotationAbs of
     Nothing -> Right w
     Just r -> (\rm -> rotateVector p n rm w) <$> r
@@ -1918,10 +1981,11 @@ chartMotion p n parentChart rotationAbs along spinM =
 
 -- | The cross product of two three-vectors of magnitudes.
 cross3 ::
-  Precision ->
-  Vector Magnitude ->
-  Vector Magnitude ->
-  Either EvalError (Vector Magnitude)
+  (Scalar s) =>
+  Settings ->
+  Vector s ->
+  Vector s ->
+  Either EvalError (Vector s)
 cross3 p a b
   | V.length a == 3 && V.length b == 3 =
       let x i j = subM p (mulM p (a V.! i) (b V.! j)) (mulM p (a V.! j) (b V.! i))
@@ -1932,12 +1996,8 @@ cross3 p a b
 §3.10, F6), so the step must be invertible: its enclosure must exclude
 zero. A negative step reverses the chart's direction and is allowed.
 -}
-invertibleStep :: Magnitude -> Either EvalError ()
-invertibleStep step
-  | step == Exact 0 = Left (ChartStep Nothing "its step is zero")
-  | abs (midpoint step) <= boundRadius step =
-      Left (ChartStep Nothing "its step's enclosure reaches zero")
-  | otherwise = Right ()
+invertibleStep :: (Scalar s) => s -> Either EvalError ()
+invertibleStep step = maybe (Right ()) (Left . ChartStep Nothing) (stepProblem step)
 
 -- | Name a chart whose step may be zero after the reference that reached it.
 namedChart :: Maybe Text -> EvalError -> EvalError
@@ -1949,24 +2009,28 @@ namedChart name = \case
 §3.10, F6): its coordinates on its frame, the step divided out.
 -}
 coordinatesOn ::
-  Precision -> Chart -> [Magnitude] -> Either EvalError [Magnitude]
+  (Scalar s) =>
+  Settings -> ChartOf s -> [s] -> Either EvalError [s]
 coordinatesOn p c = arith . mapM (\x -> divM p x c.step)
 
 -- | The elements of a list value, as thunks.
-listElems :: Value -> Either EvalError [Thunk]
+listElems :: ValueOf s -> Either EvalError [ThunkOf s]
 listElems = \case
   VData NilC [] -> Right []
   VData ConsC [x, xs] -> (x :) <$> (listElems =<< xs)
   _ -> Left (Internal "expected a list")
 
 -- | The @n × n@ identity, row-major and exact.
-identityMatrix :: Int -> Vector Magnitude
-identityMatrix n =
-  V.generate (n * n) (\k -> if k `div` n == k `mod` n then Exact 1 else Exact 0)
+identityMatrix :: (Scalar s) => Settings -> Int -> Vector s
+identityMatrix p n =
+  V.generate
+    (n * n)
+    (\k -> if k `div` n == k `mod` n then literal p 1 else literal p 0)
 
 -- | The product of two row-major @n × n@ matrices.
 matrixProduct ::
-  Precision -> Int -> Vector Magnitude -> Vector Magnitude -> Vector Magnitude
+  (Scalar s) =>
+  Settings -> Int -> Vector s -> Vector s -> Vector s
 matrixProduct p n a b =
   V.generate
     (n * n)
@@ -1977,7 +2041,8 @@ matrixProduct p n a b =
 
 -- | A row-major @n × n@ matrix applied to a vector.
 rotateVector ::
-  Precision -> Int -> Vector Magnitude -> Vector Magnitude -> Vector Magnitude
+  (Scalar s) =>
+  Settings -> Int -> Vector s -> Vector s -> Vector s
 rotateVector p n r v =
   V.generate
     n
@@ -1995,27 +2060,23 @@ by @covariance@, @crossCovariance@ and the REPL's @:covariance@.
 covarianceMatrix ::
   Config -> Dim -> Maybe UnitHint -> [Magnitude] -> [Magnitude] -> Value
 covarianceMatrix cfg d hint as bs =
-  VTensor
-    [length as, length bs]
+  matrixValue
     d
     hint
-    ( V.fromList
-        [ entry a b c
-        | (a, row) <- zip as (crossCovarianceRows as bs)
-        , (b, c) <- zip bs row
-        ]
-    )
- where
-  entry a b c
-    | any (isJust . nonLinearAt cfg.nonlinear) [a, b] =
-        Left
-          (Metron.Eval.Domain "covariance of a value marked non-linear is not supported")
-    | otherwise = Right (Exact c)
+    (length as)
+    (length bs)
+    (affineCovariance cfg.nonlinear as bs)
+
+-- | An @m × n@ matrix from its rows, each entry evaluated on its own.
+matrixValue ::
+  Dim -> Maybe UnitHint -> Int -> Int -> [[Either ArithError s]] -> ValueOf s
+matrixValue d hint m n rows =
+  VTensor [m, n] d hint (V.fromList (map arith (concat rows)))
 
 {- | Pair the fields of a constructor with an alternative's binders; the
 counts agree by lint.
 -}
-attach :: Vec k a -> [Thunk] -> Vec k Thunk
+attach :: Vec k a -> [ThunkOf s] -> Vec k (ThunkOf s)
 attach bs fields = case bs of
   VNil -> VNil
   VCons _ rest -> case fields of
@@ -2026,7 +2087,7 @@ attach bs fields = case bs of
 @from@, when no type said so (design §3.10, F7): refused, never read off
 the chart it was written on.
 -}
-takesArguments :: Chart -> Text
+takesArguments :: ChartOf s -> Text
 takesArguments c =
   n <> " takes arguments: write p from (" <> n <> " …) to c"
  where
