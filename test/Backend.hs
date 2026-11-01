@@ -32,7 +32,68 @@ backendTests =
     , printingTests
     , boundTests
     , samplesTests
+    , switchingTests
     ]
+
+-- Choosing a backend -----------------------------------------------------------------------
+
+switchingTests :: TestTree
+switchingTests =
+  testGroup
+    ":backend chooses the evaluator of the scalars"
+    [ testCase ":backend names the current one and switches"
+        $ runWith
+          defaultConfig
+          [":backend", "0.5 + 0.25", ":backend double", ":backend", "0.1 + 0.2 == 0.3"]
+          @?= Right ["affine", "0.75", "double", "false"]
+    , testCase "the same expression under each"
+        $ runWith
+          defaultConfig
+          [ "0.1 + 0.2 == 0.3"
+          , ":backend double"
+          , "0.1 + 0.2 == 0.3"
+          , ":backend affine"
+          , "0.1 + 0.2 == 0.3"
+          ]
+          @?= Right ["true", "false", "true"]
+    , testCase "an unknown backend is refused"
+        $ expectLeft
+          "no backend single; the backends are affine and double"
+          (runWith defaultConfig [":backend single"])
+    , testCase ":exact, :budget and :covariance are the affine backend's"
+        $ mapM_
+          ( \c ->
+              expectLeft
+                (":" <> c <> " is the affine backend's; the double backend does not have it")
+                (runDouble [":" <> c <> " 1"])
+          )
+          ["exact", "budget", "covariance"]
+    , testCase "the affine backend's built-ins are refused under double" $ do
+        expectLeft
+          "`sd` is the affine backend's; the double backend does not have it"
+          (runDouble ["sd 1"])
+        expectLeft
+          "`±` is the affine backend's; the double backend does not have it"
+          (runDouble ["1 ± 0.1"])
+        expectLeft "`gauss` is the affine backend's" (runDouble ["gauss 2"])
+    , testCase "the double backend's are refused under affine" $ do
+        expectLeft
+          "`errorOf` is the double backend's; the affine backend does not have it"
+          (runWith defaultConfig ["errorOf 1"])
+        expectLeft "`eps` is the double backend's" (runWith defaultConfig ["eps"])
+    , testCase ":set samples takes 0 or at least two copies" $ do
+        expectLeft "samples is 0" (runWith defaultConfig [":set samples 1"])
+        runWith
+          defaultConfig
+          [":set samples 5", ":set seed 9", ":backend double", "1 / 4"]
+          @?= Right ["0.25"]
+    ]
+ where
+  expectLeft needle = \case
+    Left err -> T.isInfixOf needle err @? T.unpack err
+    Right out ->
+      assertFailure
+        ("expected an error containing " <> T.unpack needle <> ", got " <> show out)
 
 -- Running --------------------------------------------------------------------------------
 

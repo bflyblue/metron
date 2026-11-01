@@ -32,56 +32,66 @@ module Metron.Repl (
   needsMore,
 ) where
 
-import Control.Applicative ( (<|>) )
-import Control.Monad ( guard )
-import Data.Char ( isAlphaNum, isDigit, isLetter, isSpace )
-import Data.List ( isPrefixOf, nub, sort, sortOn )
-import Data.Maybe ( fromMaybe, isJust )
-import Data.Set ( Set )
-import Data.Text ( Text )
-import Metron.Codebase ( Codebase(..) )
-import Metron.Command ( commands )
-import Metron.Dimension ( baseSymbol )
-import Metron.Driver ( Session(..) )
-import Metron.Lexer
-    ( Keyword(..),
-      Located(..),
-      Token(..),
-      prepare,
-      showToken,
-      tokenize )
-import Metron.NameResolution ( LabelKind(..), shortestName, shortestNameOf )
-import Metron.Syntax ( Pos(..), Span(..), lastSegment )
-import Data.Map.Strict qualified as Map ( keys )
-import Data.List.NonEmpty qualified as NE
-    ( groupWith, last, toList )
-import Data.Set qualified as Set
-    ( member, notMember, empty, fromList, toList )
-import Data.Text qualified as T
-    ( concat,
-      all,
-      any,
-      breakOn,
-      drop,
-      dropWhile,
-      intercalate,
-      isInfixOf,
-      isPrefixOf,
-      isSuffixOf,
-      length,
-      null,
-      splitAt,
-      splitOn,
-      stripPrefix,
-      stripStart,
-      take,
-      takeWhile,
-      takeWhileEnd,
-      uncons,
-      unsnoc,
-      pack,
-      unpack )
-import Metron.Unicode qualified as U ( matching )
+import Control.Applicative ((<|>))
+import Control.Monad (guard)
+import Data.Char (isAlphaNum, isDigit, isLetter, isSpace)
+import Data.List (isPrefixOf, nub, sort, sortOn)
+import Data.List.NonEmpty qualified as NE (
+  groupWith,
+  last,
+  toList,
+ )
+import Data.Map.Strict qualified as Map (keys)
+import Data.Maybe (fromMaybe, isJust)
+import Data.Set (Set)
+import Data.Set qualified as Set (
+  empty,
+  fromList,
+  member,
+  notMember,
+  toList,
+ )
+import Data.Text (Text)
+import Data.Text qualified as T (
+  all,
+  any,
+  breakOn,
+  concat,
+  drop,
+  dropWhile,
+  intercalate,
+  isInfixOf,
+  isPrefixOf,
+  isSuffixOf,
+  length,
+  null,
+  pack,
+  splitAt,
+  splitOn,
+  stripPrefix,
+  stripStart,
+  take,
+  takeWhile,
+  takeWhileEnd,
+  uncons,
+  unpack,
+  unsnoc,
+ )
+import Metron.Codebase (Codebase (..))
+import Metron.Command (commands)
+import Metron.Dimension (baseSymbol)
+import Metron.Driver (Session (..))
+import Metron.Lexer (
+  Keyword (..),
+  Located (..),
+  Token (..),
+  prepare,
+  showToken,
+  tokenize,
+ )
+import Metron.NameResolution (LabelKind (..), shortestName, shortestNameOf)
+import Metron.Syntax (Pos (..), Span (..), lastSegment)
+import Metron.Unicode qualified as U (matching)
 
 -- Completion ------------------------------------------------------------------
 
@@ -192,6 +202,7 @@ completions session prev word = case word of
   _ -> case words (reverse prev) of
     [":set"] -> plain ["precision", "sigma", "unicode"]
     [":set", "unicode"] -> plain ["on", "off"]
+    [":backend"] -> plain ["affine", "double"]
     [c] | c `elem` [":colour", ":color"] -> plain ["on", "off"]
     _
       | null word -> []

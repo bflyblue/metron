@@ -1,3 +1,5 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+
 {- | The scalar domain the evaluator is generic over (design §8.2): what a
 backend plugs in. Everything else the evaluator does, tensors, units and
 dimensions, charts, data, closures and the resource limits, is shared and
@@ -23,6 +25,9 @@ module Metron.Scalar (
   Backend (..),
   backendName,
   backendNamed,
+  backendOwn,
+  ownerOf,
+  lacks,
   Settings (..),
   settingsAt,
   Decision (..),
@@ -69,6 +74,45 @@ backendName = \case
 
 backendNamed :: Text -> Maybe Backend
 backendNamed t = lookup t [(backendName b, b) | b <- [minBound .. maxBound]]
+
+{- | The built-ins only one backend has (design §8.2), as a program names
+them: the affine backend's read or make uncertainty, the double
+backend's describe the format and its error estimate. Each is in its
+backend's 'own' table, or, for @±@, @±σ@, @noise@ and @gauss@, a form of
+Core.
+-}
+backendOwn :: Backend -> [Text]
+backendOwn = \case
+  AffineBackend ->
+    [ "±"
+    , "±σ"
+    , "noise"
+    , "gauss"
+    , "mid"
+    , "sd"
+    , "bound"
+    , "covariance"
+    , "crossCovariance"
+    ]
+  DoubleBackend ->
+    ["errorOf", "digitsOf", "ulps", "eps", "nextUp", "fma", "isNaN", "isInfinite"]
+
+-- | The backend a built-in belongs to, when only one has it.
+ownerOf :: Text -> Maybe Backend
+ownerOf name = case [b | b <- [minBound .. maxBound], name `elem` backendOwn b] of
+  b : _ -> Just b
+  [] -> Nothing
+
+-- | Why a backend refuses another's built-in.
+lacks :: Backend -> Text -> Text
+lacks b name =
+  "`"
+    <> name
+    <> "` is the "
+    <> maybe "other" backendName (ownerOf name)
+    <> " backend's; the "
+    <> backendName b
+    <> " backend does not have it"
 
 {- | What a backend's arithmetic needs from the session, fixed for one
 evaluation.
@@ -140,6 +184,9 @@ shape of the "Metron.Affine" function it generalises, with 'Settings'
 where that takes the precision.
 -}
 class (Eq s) => Scalar s where
+  -- | Which backend this is.
+  backendOf :: Backend
+
   -- | A literal, an exact rational, at the boundary into the backend.
   literal :: Settings -> Rational -> s
 
@@ -194,6 +241,7 @@ class (Eq s) => Scalar s where
 -- The affine backend -----------------------------------------------------------------
 
 instance Scalar Magnitude where
+  backendOf = AffineBackend
   literal _ = Exact
   exactly = \case
     Exact r -> Just r

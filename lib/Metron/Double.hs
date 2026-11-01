@@ -64,12 +64,14 @@ import Metron.Affine (ArithError (Domain), Magnitude (Exact))
 import Metron.Core (NudgeKind (..))
 import Metron.Dimension (dimMul, dimOne)
 import Metron.Scalar (
+  Backend (..),
   Decision (..),
   Own (..),
   Rel (..),
   Scalar (..),
   Settings (..),
   Shape (..),
+  lacks,
  )
 
 -- The numbers ------------------------------------------------------------------------
@@ -936,11 +938,10 @@ choleskyD s what a
 -- The instance --------------------------------------------------------------------------
 
 refused :: Text -> Either ArithError a
-refused what =
-  Left
-    (Domain (what <> " is the affine backend's; the double backend does not have it"))
+refused what = Left (Domain (lacks DoubleBackend what))
 
 instance Scalar Dbl where
+  backendOf = DoubleBackend
   literal = literalD
   exactly x
     | finite x.value && estimateOf x == 0 = Just (toRational x.value)

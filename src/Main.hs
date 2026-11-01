@@ -36,7 +36,8 @@ the store at OTHER into that codebase and exits.
 
 @--set NAME VALUE@, any number of times, starts the session with a
 resource limit changed as @:set NAME VALUE@ would (design §8.1): @memory@,
-@steps@, @depth@, @digits@, @components@ or @time@.
+@steps@, @depth@, @digits@, @components@ or @time@. @--backend NAME@ starts it
+under a backend, as @:backend NAME@ would (design §8.2): @affine@ or @double@.
 -}
 main :: IO ()
 main = do
@@ -59,7 +60,7 @@ main = do
   usage = do
     hPutStrLn
       stderr
-      "usage: metron [--codebase DIR | --no-codebase] [--set NAME VALUE]… ['expr' | -f file | -i]\n\
+      "usage: metron [--codebase DIR | --no-codebase] [--set NAME VALUE]… [--backend NAME] ['expr' | -f file | -i]\n\
       \       metron [--codebase DIR] --merge OTHER"
     exitFailure
 
@@ -69,6 +70,8 @@ data Options = Options
   , mergeFrom :: Maybe FilePath
   , settings :: [(Text, Text)]
   -- ^ limits to set at the start, in order
+  , startBackend :: Maybe Text
+  -- ^ the backend to start under (design §8.2)
   }
 
 options :: [String] -> (Options, [String])
@@ -82,8 +85,9 @@ options args =
     "--merge" : d : more -> let (o, r) = go more in (o{mergeFrom = Just d}, r)
     "--set" : n : v : more ->
       let (o, r) = go more in (o{settings = (T.pack n, T.pack v) : o.settings}, r)
+    "--backend" : b : more -> let (o, r) = go more in (o{startBackend = Just (T.pack b)}, r)
     a : more -> let (o, r) = go more in (o, a : r)
-    [] -> (Options Nothing False Nothing [], [])
+    [] -> (Options Nothing False Nothing [] Nothing, [])
 
 {- | Merge the store at OTHER into this codebase (design §7.4) and say what
 came across. OTHER is only read, and a store of an older format is
@@ -126,7 +130,16 @@ startSession opts = do
         opts.settings
   applyMemory limits
   let cfg = live.session.config
-  pure live{session = live.session{config = cfg{limits = limits}}}
+      limited = live.session{config = cfg{limits = limits}}
+  -- The backend, as :backend chooses it (design §8.2).
+  chosen <- case opts.startBackend of
+    Nothing -> pure limited
+    Just b ->
+      either
+        (\err -> TIO.hPutStrLn stderr ("--backend: " <> err) >> exitFailure)
+        (pure . fst)
+        $ feed limited (":backend " <> b)
+  pure live{session = chosen}
 
 openSession :: Options -> IO Live
 openSession opts =

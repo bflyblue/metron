@@ -190,6 +190,7 @@ import Metron.Pretty (
  )
 import Metron.Resolve (processGroup, typeLookupFor)
 import Metron.Resolve.Error (ResolveError (Desugar), renderResolveError)
+import Metron.Scalar (Backend (..), backendName, backendNamed)
 import Metron.Session.Names (
   argPath,
   argPaths,
@@ -497,6 +498,23 @@ command session src = \case
               , staging = removePreference text cb
               }
       else Left ("no preference " <> text <> "; :prefer lists them")
+  -- The evaluator of the scalars (design §8.2). A stored term names no
+  -- backend, so switching changes no hash, only what the next input runs on.
+  ["backend"] -> keep (Right [backendName cfg.backend])
+  ["backend", name] -> case backendNamed name of
+    Just b -> Right (session{config = cfg{backend = b}}, [])
+    Nothing -> Left ("no backend " <> name <> "; the backends are affine and double")
+  -- The commands that read uncertainty are the affine backend's.
+  (c : _)
+    | cfg.backend /= AffineBackend
+    , c `elem` ["exact", "budget", "covariance"] ->
+        Left
+          ( ":"
+              <> c
+              <> " is the affine backend's; the "
+              <> backendName cfg.backend
+              <> " backend does not have it (:backend affine)"
+          )
   -- The raw magnitudes (design §3.2.10): midpoint, nudges, slack.
   ("exact" : rest) -> keep $ do
     (h, v) <- evalOf rest

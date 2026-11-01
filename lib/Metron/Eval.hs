@@ -152,6 +152,8 @@ import Metron.Scalar (
   Scalar (..),
   Settings (..),
   affineCovariance,
+  lacks,
+  ownerOf,
  )
 import Metron.Scalar qualified as Scalar (Shape (..))
 import Metron.Strictness (strictMarker)
@@ -1547,6 +1549,11 @@ runPrim cfg rt prim ty args = case (prim, args) of
   -- The backend's own built-ins (design §8.2): the shapes are shared, the
   -- numbers the backend's.
   _ | Just o <- own @s prim -> runOwn o
+  -- Another backend's: refused before running (design §8.2), so reached
+  -- only by an evaluation that skipped the check.
+  _
+    | Just _ <- ownerOf prim ->
+        Left (Metron.Eval.Domain (lacks (backendOf @s) prim))
   _
     | primArity prim == Just (length args) ->
         Left (Unsupported (prim <> ": not implemented yet"))
