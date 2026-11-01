@@ -23,6 +23,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T (
   isPrefixOf,
+  null,
   pack,
   replicate,
   unlines,
@@ -1008,25 +1009,36 @@ stdlibDefaultUses = ["std", "linalg", "si", "time", "angle", "temperature"]
 isLibraryPath :: Text -> Bool
 isLibraryPath n = any (\ns -> (ns <> ".") `T.isPrefixOf` n) stdlibNamespaces
 
+{- | Every statement of the library in source order, with its depth and the
+full path of the block it is in: each domain is a @namespace@ block at
+depth 0, and a nested block comes before its body (design §7.6).
+-}
+libraryStatements :: [(Int, Text, Statement)]
+libraryStatements = walk 0 "" [Namespace ns stmts | (ns, stmts) <- stdlibLayout]
+ where
+  walk depth path = concatMap $ \s ->
+    (depth, path, s) : case s of
+      Namespace inner body -> walk (depth + 1) (within path inner) body
+      _ -> []
+  within path inner = if T.null path then inner else path <> "." <> inner
+
 -- | The standard library as source: one @namespace@ block per domain.
 stdlibSource :: Text
 stdlibSource =
-  T.unlines (concat [block 0 ns stmts | (ns, stmts) <- stdlibLayout])
- where
   -- A block's statements are indented one step further than its header,
   -- and a nested block's further still (design §7.6).
-  block depth ns stmts =
-    (indent depth <> "namespace " <> ns) : concatMap (render (depth + 1)) stmts
-  indent depth = T.replicate depth "  "
-  render depth = \case
-    Namespace ns stmts -> block depth ns stmts
-    Let n e -> [indent depth <> "let " <> n <> " = " <> e]
-    Sig n t -> [indent depth <> n <> " :: " <> t]
-    Unit n e -> [indent depth <> "unit " <> n <> " = " <> e]
-    Chart n e -> [indent depth <> "chart " <> n <> " " <> e]
-    SpaceDecl n t -> [indent depth <> "space " <> n <> " = " <> t]
-    UseNs p -> [indent depth <> "use " <> p]
-    Data src _ -> [indent depth <> src]
+  T.unlines
+    [T.replicate depth "  " <> line s | (depth, _, s) <- libraryStatements]
+ where
+  line = \case
+    Namespace ns _ -> "namespace " <> ns
+    Let n e -> "let " <> n <> " = " <> e
+    Sig n t -> n <> " :: " <> t
+    Unit n e -> "unit " <> n <> " = " <> e
+    Chart n e -> "chart " <> n <> " " <> e
+    SpaceDecl n t -> "space " <> n <> " = " <> t
+    UseNs p -> "use " <> p
+    Data src _ -> src
 
 {- | Every label the library defines, by its full path (@si.km@,
 @astro.wgs84.earth@), spelled as the lexer reads it, aliases included:
@@ -1036,18 +1048,18 @@ but does not list.
 -}
 stdlibNames :: [Text]
 stdlibNames =
-  map prepare (concat [labels ns stmts | (ns, stmts) <- stdlibLayout])
+  map prepare (concat [labels path s | (_, path, s) <- libraryStatements])
     ++ map (prepare . fst) stdlibAliases
  where
-  labels ns = concatMap $ \case
-    Namespace inner stmts -> labels (ns <> "." <> inner) stmts
-    Let n _ -> [ns <> "." <> n]
+  labels path = \case
+    Namespace _ _ -> []
+    Let n _ -> [path <> "." <> n]
     Sig _ _ -> []
-    Unit n _ -> [ns <> "." <> n]
-    Chart n _ -> [ns <> "." <> n]
-    SpaceDecl n _ -> [ns <> "." <> n]
+    Unit n _ -> [path <> "." <> n]
+    Chart n _ -> [path <> "." <> n]
+    SpaceDecl n _ -> [path <> "." <> n]
     UseNs _ -> []
-    Data _ ls -> map ((ns <> ".") <>) ls
+    Data _ ls -> map ((path <> ".") <>) ls
 
 {- | A codebase seeded with the library (design §7.7): 'stdlibSource'
 entered into the empty codebase as one binding group, as @:add@ enters

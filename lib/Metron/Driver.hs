@@ -32,6 +32,7 @@ module Metron.Driver (
 
 import Control.Applicative ((<|>))
 import Control.Monad (foldM)
+import Data.Bifunctor (first)
 import Data.Containers.ListUtils (nubOrd)
 import Data.Either (fromRight)
 import Data.List (partition, sortOn)
@@ -586,17 +587,7 @@ command session src = \case
   -- The raw magnitudes (design §3.2.10): midpoint, nudges, slack.
   ("exact" : rest) -> keep $ do
     (h, v) <- evalOf rest
-    (: [])
-      <$> either
-        (Left . renderEvalError)
-        Right
-        ( renderValueWith
-            (inputPrinter h)
-            cfg.precision
-            session.preferred
-            (map (renderExact (inputNamer h) cfg.precision))
-            v
-        )
+    (: []) <$> printedWith h (map (renderExact (inputNamer h) cfg.precision)) v
   -- The error budget (design §3.2.6) of a scalar, or of the sum of a
   -- tensor's components.
   ("budget" : rest) -> keep $ do
@@ -620,16 +611,10 @@ command session src = \case
   ("covariance" : rest) -> keep $ do
     (h, v) <- evalOf rest
     let shown =
-          either (Left . renderEvalError) Right
+          first renderEvalError
             . renderValue (inputPrinter h) cfg.precision session.preferred
-        rough =
-          either (Left . renderEvalError) Right
-            . renderValueWith
-              (inputPrinter h)
-              cfg.precision
-              session.preferred
-              (map renderRough)
-        components buf = either (Left . renderEvalError) Right (sequence (V.toList buf))
+        rough = printedWith h (map renderRough)
+        components buf = first renderEvalError (sequence (V.toList buf))
         unpinned = fmap (\hh -> hh{pinned = False})
         -- One vector's bound radii, in its own shape and unit.
         boundsOf dims d hint xs = VTensor dims d hint (V.fromList [Right (Exact (collapse x).bound) | x <- xs])
@@ -894,6 +879,11 @@ command session src = \case
   -- Nudges declared in the expression itself are labelled "input".
   inputNamer h h' i written = if h' == h then "input" else refNamer scope ecb h' i written
   inputPrinter h = (printerFor cfg scope ecb){refName = inputNamer h}
+  -- The input's value with its numbers printed by a view's own function,
+  -- an evaluation error as its message.
+  printedWith h numbers =
+    first renderEvalError
+      . renderValueWith (inputPrinter h) cfg.precision session.preferred numbers
   preferenceOf = preferenceHint cfg cb
   commit cb' outs = Right (session{codebase = cb', staging = cb'}, outs)
   -- What a relabelling re-hashed (design §7.2): the stamped definitions and
