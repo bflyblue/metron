@@ -126,6 +126,22 @@ test-suite metron-test
     , Backend
     , Astro
     , Gen
+    , Lang.Affine
+    , Lang.Charts
+    , Lang.Codebase
+    , Lang.Common
+    , Lang.Core
+    , Lang.Data
+    , Lang.EndToEnd
+    , Lang.Frames
+    , Lang.Library
+    , Lang.Properties
+    , Lang.Repl
+    , Lang.Store
+    , Lang.Syntax
+    , Lang.Tensors
+    , Lang.Types
+    , Lang.Units
     , Limits
     , Operators
     , Precision
