@@ -486,12 +486,19 @@ kepler =
       "data Elements = Elements {a :: Num m, e :: Num, i :: Num rad, raan :: Num rad, argp :: Num rad, nu :: Num rad}"
       ["Elements", "a", "e", "i", "raan", "argp", "nu"]
   , -- Relations (Vallado §1.3, §2.2): a is negative for a hyperbola.
-    Let "period" "\\body a -> 2 * pi * sqrt (a^3 / body.mu)"
+    Sig "period" "Body -> Num m -> Num s"
+  , Let "period" "\\body a -> 2 * pi * sqrt (a^3 / body.mu)"
+  , Sig "meanMotion" "Body -> Num m -> Num (rad/s)"
   , Let "meanMotion" "\\body a -> sqrt (body.mu / (abs a)^3) * 1 rad"
+  , Sig "visViva" "Body -> Num m -> Num m -> Num (m/s)"
   , Let "visViva" "\\body r a -> sqrt (body.mu * (2 / r - 1 / a))"
+  , Sig "energy" "Body -> Num m -> Num (m^2/s^2)"
   , Let "energy" "\\body a -> -(body.mu / (2 * a))"
+  , Sig "momentum" "Body -> Num m -> Num (m^2/s)"
   , Let "momentum" "\\body p -> sqrt (body.mu * p)"
+  , Sig "circular" "Body -> Num m -> Num (m/s)"
   , Let "circular" "\\body r -> sqrt (body.mu / r)"
+  , Sig "escape" "Body -> Num m -> Num (m/s)"
   , Let "escape" "\\body r -> sqrt (2 * body.mu / r)"
   , Let "semilatus" "\\el -> el.a * (1 - el.e^2)"
   , -- The angle of (x, y) in [0, 2π): exactly zero on the positive x axis.
@@ -594,6 +601,7 @@ kepler =
     Let
       "meanToParabolic"
       "\\mp -> let c = exp (log (3 * mp / 2 + sqrt (1 + 9 * mp^2 / 4)) / 3) in c - 1 / c"
+  , Sig "barker" "Body -> Num m -> Num s -> Num"
   , Let "barker" "\\body p dt -> meanToParabolic (2 * sqrt (body.mu / p^3) * dt)"
   , Let
       "trueToMean"
@@ -672,7 +680,8 @@ maneuver =
       )
   , -- An inclination change at speed v and flight-path angle fpa
     -- (Vallado eq. 6-27).
-    Let "planeChange" "\\v fpa di -> 2 * v * cos fpa * sin (di / 2)"
+    Sig "planeChange" "forall d. Num d -> Num rad -> Num rad -> Num d"
+  , Let "planeChange" "\\v fpa di -> 2 * v * cos fpa * sin (di / 2)"
   , -- A burn that changes the speed from v1 to v2 and turns the plane by
     -- di (Vallado eq. 6-30, the law of cosines).
     Let "combinedChange" "\\v1 v2 di -> sqrt (v1^2 + v2^2 - 2 * v1 * v2 * cos di)"
