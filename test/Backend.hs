@@ -48,7 +48,7 @@ backendTests =
     , printingTests
     , boundTests
     , samplesTests
-    , warningTests
+    , tableTests
     , switchingTests
     , checkTests
     , settingTests
@@ -551,71 +551,55 @@ samplesTests =
             -- The value is the IEEE result whatever the seed; the estimate is not.
             length (filter (/= "0") values) @?= 0
             (length (Set.fromList estimates) > 1) @? show estimates
-    , testCase "at samples 3, the unstable branch of the default seed is flagged"
+    , testCase "at samples 3, the unstable branch of the default seed has its table"
         $ runWith
           defaultConfig
           [":set samples 3", ":backend double", "if 1 + 1e-16 > 1 then 1 else 2"]
           @?= Right
-            [ "2\nwarning: the comparison 1 > 1 goes both ways (true in 1 of 3 samples): the condition is lost in rounding"
+            [ "2\n"
+                <> ifTable "warning" "1 + 1e-16 > 1" "3 samples (lost in rounding" (1, 2) False
             ]
     , testCase
-        "a branch the copies disagree on is flagged, and the IEEE result decides"
+        "a branch the copies disagree on has its table, and the nominal result decides"
         $ runWith doubleConfig{samples = 10} ["if 1 + 1e-16 > 1 then 1 else 2"]
           @?= Right
-            [ "2\nwarning: the comparison 1 > 1 goes both ways (true in 7 of 10 samples): the condition is lost in rounding"
+            [ "2\n"
+                <> ifTable "warning" "1 + 1e-16 > 1" "10 samples (lost in rounding" (7, 3) False
             ]
-    , testCase "a stable branch is not"
+    , testCase "a stable branch has none"
         $ runWith doubleConfig{samples = 10} ["if 1 + 1e-3 > 1 then 1 else 2"]
           @?= Right ["1"]
-    , testCase "under the running bound nothing is flagged"
+    , testCase "under the running bound nothing has a table"
         $ runDouble ["if 1 + 1e-16 > 1 then 1 else 2"] @?= Right ["2"]
-    , testCase
-        "a branch the draws disagree on names the declared uncertainty, not rounding"
-        $ case runWith
-          doubleConfig{samples = 1000}
-          [":set rounding nearest", "let x = 1 ±σ 0.1", "if x > 0.9 then 1 else 2"] of
-          Right [out] -> do
-            let start = "1\nwarning: the comparison 1 > 0.9 goes both ways (true in "
-                end =
-                  " of 1000 samples): the condition depends on the declared uncertainty"
-            (start `T.isPrefixOf` out) @? T.unpack out
-            (end `T.isSuffixOf` out) @? T.unpack out
-          other -> assertFailure (show other)
-    , testCase "a case that compares with draws names them too"
-        $ case runWith
-          doubleConfig{samples = 1000}
-          [ ":set rounding nearest"
-          , "let x = 1 ±σ 0.1"
-          , "case x > 0.9 of true -> 1; false -> 2"
-          ] of
-          Right [out] ->
-            ("the condition depends on the declared uncertainty" `T.isInfixOf` out)
-              @? T.unpack out
-          other -> assertFailure (show other)
     ]
 
--- The count in the warning ------------------------------------------------------------------
+-- The table at a branch point ------------------------------------------------------------
 
-{- | The unstable-branch warning counts the copies the condition held for,
-over every batch (design §8.2): the same text, counts and order at every
-@cores@.
+{- | A branch point whose copies would choose otherwise than the branch
+taken has a table (design §8.2, "Branches under copies"): a row for each
+alternative counting the copies whose own scrutinee selects it, summed
+over every batch, so the same at every @cores@.
 -}
-warningTests :: TestTree
-warningTests =
+tableTests :: TestTree
+tableTests =
   testGroup
-    "a branch the copies disagree on: the count over all the copies"
-    [ testCase "the count is the copies the condition held for" $ do
+    "the table at a branch point"
+    [ testCase "a row counts the copies whose own scrutinee selects its alternative" $ do
         cs <- copiesAfter batchedConfig defs "x"
         let held = VU.length (VU.filter (> 0.9) cs)
         (held > 0 && held < 1000) @? show held
         runWith batchedConfig (defs <> ["if x > 0.9 then 1 else 2"])
-          @?= Right ["1\n" <> drawn "1 > 0.9" held 1000]
+          @?= Right ["1\n" <> drawn "x > 0.9" "1000 samples" (held, 1000 - held) True]
+    , testCase "an if and a case on its condition give the same table" $ do
+        let at k e = runWith batchedConfig{cores = k} (defs <> [e])
+        at 1 "case x > 0.9 of true -> 1; false -> 2" @?= at 1 "if x > 0.9 then 1 else 2"
+        at 4 "case x > 0.9 of true -> 1; false -> 2" @?= at 1 "if x > 0.9 then 1 else 2"
     , testCase
         "the same at 1, 2 and 4 cores, with batches whose copies all agree"
         $ do
           cs <- copiesAfter batchedConfig defs "x"
-          -- Only the smallest copy fails x > m, so at 4 cores three batches
-          -- record nothing: their copies count all the same.
+          -- Only the smallest copy fails x > m, so at 4 cores three batches'
+          -- copies all agree with the nominal branch: they count all the same.
           let m = VU.minimum cs
               held = VU.length (VU.filter (> 0.9) cs)
               slices = [VU.slice b.first b.count cs | b <- batchesOf 1000 4]
@@ -632,39 +616,43 @@ warningTests =
               [ T.intercalate
                   "\n"
                   [ "[1, 1]"
-                  , drawn ("1 > " <> showDouble m) 999 1000
-                  , drawn "1 > 0.9" held 1000
+                  , drawn ("x > " <> showDouble m) "1000 samples" (999, 1) True
+                  , drawn "x > 0.9" "1000 samples" (held, 1000 - held) True
                   ]
               ]
           at 2 @?= at 1
           at 4 @?= at 1
-    , testCase "two comparisons with the same operands are two warnings" $ do
+    , testCase "two branch points with the same condition are two tables" $ do
         cs <- copiesAfter batchedConfig defs "x"
         let held = VU.length (VU.filter (> 0.9) cs)
             at k =
               runWith
                 batchedConfig{cores = k}
                 (defs <> ["[if x > 0.9 then 1 else 2, if x > 0.9 then 3 else 4]"])
-        at 1
-          @?= Right
-            [ T.intercalate
-                "\n"
-                ["[1, 3]", drawn "1 > 0.9" held 1000, drawn "1 > 0.9" held 1000]
-            ]
+            table = drawn "x > 0.9" "1000 samples" (held, 1000 - held) True
+        at 1 @?= Right [T.intercalate "\n" ["[1, 3]", table, table]]
         at 4 @?= at 1
-    , testCase "one comparison made twice with the same operands sums its copies" $ do
+    , testCase "a branch point reached twice counts both evaluations" $ do
         cs <- copiesAfter batchedConfig defs "x"
         let held = VU.length (VU.filter (> 0.9) cs)
             at k =
               runWith
                 batchedConfig{cores = k}
                 (defs <> ["let f z = if z > 0.9 then 1 else 0", "f x + f x"])
-        at 1 @?= Right ["2\n" <> drawn "1 > 0.9" (2 * held) 2000]
+        at 1
+          @?= Right
+            [ "2\n"
+                <> drawn
+                  "z > 0.9"
+                  "2 evaluations × 1000 samples"
+                  (2 * held, 2 * (1000 - held))
+                  True
+            ]
         at 4 @?= at 1
-    , testCase "a comparison in a loop warns for each set of operands" $ do
+    , testCase "a branch point in a loop: one table over its evaluations" $ do
         cs <- copiesAfter batchedConfig defs "x"
-        let held n = VU.length (VU.filter (\c -> c * n > 0.9 * n) cs)
-            line n = drawn (showDouble n <> " > " <> showDouble (0.9 * n)) (held n) 1000
+        let below n = VU.length (VU.filter (\c -> c * n <= 0.9 * n) cs)
+            elses = sum (map below [3, 2, 1])
             at k =
               runWith
                 batchedConfig{cores = k}
@@ -673,8 +661,68 @@ warningTests =
                        , "go 3 0"
                        ]
                 )
-        at 1 @?= Right [T.intercalate "\n" ("3" : map line [3, 2, 1])]
+        at 1
+          @?= Right
+            [ "3\n"
+                <> drawn
+                  "x * n > 0.9 * n"
+                  "3 evaluations × 1000 samples"
+                  (3000 - elses, elses)
+                  True
+            ]
         at 2 @?= at 1
+        at 4 @?= at 1
+    , testCase
+        "a branch point inside another counts the copies that left at the outer one" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        let count f = VU.length (VU.filter f cs)
+            at k =
+              runWith
+                batchedConfig{cores = k}
+                (defs <> ["if x > 0.9 then (if x > 1.05 then 1 else 3) else 2"])
+            outer = count (> 0.9)
+            inner = count (> 1.05)
+        at 1
+          @?= Right
+            [ T.intercalate
+                "\n"
+                [ "3"
+                , drawn "x > 0.9" "1000 samples" (outer, 1000 - outer) True
+                , ifTable
+                    "warning"
+                    "x > 1.05"
+                    ( "1000 samples (by the declared uncertainty; "
+                        <> tshow (1000 - outer)
+                        <> " had left the evaluated path at an earlier branch point"
+                    )
+                    (inner, 1000 - inner)
+                    False
+                ]
+            ]
+        at 4 @?= at 1
+    , testCase
+        "a short circuit: the copies that would have gone on have left the path" $ do
+        cs <- copiesAfter batchedConfig defs "x"
+        let count f = VU.length (VU.filter f cs)
+            gone = count (> 1.05)
+            inner = count (> 0.9)
+            at k =
+              runWith
+                batchedConfig{cores = k}
+                (defs <> ["if x > 1.05 && x < 1.1 then 1 else (if x > 0.9 then 2 else 3)"])
+        at 1
+          @?= Right
+            [ "2\n"
+                <> ifTable
+                  "warning"
+                  "x > 0.9"
+                  ( "1000 samples (by the declared uncertainty; "
+                      <> tshow gone
+                      <> " had left the evaluated path at an earlier branch point"
+                  )
+                  (inner, 1000 - inner)
+                  True
+            ]
         at 4 @?= at 1
     , testCase "copies that differ by rounding alone say so, with their count" $ do
         let cfg = doubleConfig{samples = 10}
@@ -684,37 +732,60 @@ warningTests =
           other -> assertFailure (show other) >> pure 0
         (held > 0 && held < 10) @? show held
         let at k = runWith cfg{cores = k} ["if 1 + 1e-16 > 1 then 1 else 2"]
-            line =
-              "2\nwarning: the comparison 1 > 1 goes both ways (true in "
-                <> tshow held
-                <> " of 10 samples): the condition is lost in rounding"
-        at 1 @?= Right [line]
+        at 1
+          @?= Right
+            [ "2\n"
+                <> ifTable
+                  "warning"
+                  "1 + 1e-16 > 1"
+                  "10 samples (lost in rounding"
+                  (held, 10 - held)
+                  False
+            ]
         at 2 @?= at 1
         at 4 @?= at 1
-    , testCase "an if and a case on the comparison warn alike" $ do
-        cs <- copiesAfter batchedConfig defs "x"
-        let held = VU.length (VU.filter (> 0.9) cs)
-            at k e = runWith batchedConfig{cores = k} (defs <> [e])
-        at 1 "if x > 0.9 then 1 else 2"
-          @?= Right ["1\n" <> drawn "1 > 0.9" held 1000]
-        at 1 "case x > 0.9 of true -> 1; false -> 2"
-          @?= at 1 "if x > 0.9 then 1 else 2"
-        at 4 "case x > 0.9 of true -> 1; false -> 2"
-          @?= at 1 "if x > 0.9 then 1 else 2"
+    , testCase "`/=` reads as written, and a row of 0 needs no special wording"
+        $ runWith batchedConfig (defs <> ["if x /= 1 then 1 else 2"])
+          @?= Right ["2\n" <> drawn "x /= 1" "1000 samples" (1000, 0) False]
+    , testCase "a case on data whose copies choose nothing has no table"
+        $ runWith batchedConfig (defs <> ["case {x, 2} of {} -> 0; y : ys -> y"])
+          @?= runWith batchedConfig (defs <> ["x"])
     ]
  where
   defs = ["let x = 1 ±σ 0.1"]
-  drawn :: Text -> Int -> Int -> Text
-  drawn cmp held n =
-    "warning: the comparison "
-      <> cmp
-      <> " goes both ways (true in "
-      <> tshow held
-      <> " of "
-      <> tshow n
-      <> " samples): the condition depends on the declared uncertainty"
-  tshow :: (Show a) => a -> Text
-  tshow = T.pack . show
+  -- A table where the copies carry draws, after the condition and the
+  -- copies it is across.
+  drawn :: Text -> Text -> (Int, Int) -> Bool -> Text
+  drawn cond across = ifTable "warning" cond (across <> " (by the declared uncertainty")
+
+{- | The table of an @if@: its kind, condition, what it is across (the
+samples, the cause and anything more, without the closing parenthesis),
+its rows and whether the nominal branch is @then@.
+-}
+ifTable :: Text -> Text -> Text -> (Int, Int) -> Bool -> Text
+ifTable kind cond across (thenN, elseN) takenThen =
+  T.intercalate
+    "\n"
+    [ kind
+        <> ": the branch at `if "
+        <> cond
+        <> "` goes both ways across "
+        <> across
+        <> "):"
+    , row "then" thenN takenThen
+    , row "else" elseN (not takenThen)
+    ]
+ where
+  w = T.length (tshow (max thenN elseN))
+  row l n t =
+    "  "
+      <> l
+      <> "   "
+      <> T.justifyRight w ' ' (tshow n)
+      <> (if t then "   ← taken (the nominal branch)" else "")
+
+tshow :: (Show a) => a -> Text
+tshow = T.pack . show
 
 -- | The copies of a number, evaluated after some lines.
 copiesAfter :: Config -> [Text] -> Text -> IO (VU.Vector Double)
@@ -1154,22 +1225,33 @@ coresTests =
           let ls = ["let x = 1 ±σ 0.1", "[mid (x * x), sd (x * x), errorOf (0.1 + 0.2)]"]
           runWith batchedConfig{cores = 4} ls @?= runWith batchedConfig{cores = 1} ls
           (length <$> runWith batchedConfig{cores = 4} ls) @?= Right 1
-    , testCase "the batches' warnings come together" $ do
+    , testCase "the batches' tables come together" $ do
         let ls = ["if 1 + 1e-16 > 1 then 1 else 2"]
             outs k = runWith doubleConfig{samples = 10, cores = k} ls
         outs 4 @?= outs 1
-        -- Two, in the order one evaluation makes them, whichever batch
-        -- makes each first.
-        let two k =
+        -- Three, in the order one evaluation reaches them, whichever batch
+        -- reaches each first.
+        let three k =
               runWith
                 doubleConfig{samples = 6, cores = k}
                 [ "[if 2 + 3e-16 > 2 then 1 else 2, if 1 + 1e-16 > 1 then 1 else 2, if 4 - 4e-16 < 4 then 1 else 2]"
                 ]
-        two 3 @?= two 1
-        two 2 @?= two 1
+        three 3 @?= three 1
+        three 2 @?= three 1
+        three 1
+          @?= Right
+            [ T.intercalate
+                "\n"
+                [ "[1, 2, 1]"
+                , ifTable "warning" "2 + 3e-16 > 2" "6 samples (lost in rounding" (2, 4) True
+                , ifTable "warning" "1 + 1e-16 > 1" "6 samples (lost in rounding" (4, 2) False
+                , ifTable "warning" "4 - 4e-16 < 4" "6 samples (lost in rounding" (2, 4) True
+                ]
+            ]
         outs 4
           @?= Right
-            [ "2\nwarning: the comparison 1 > 1 goes both ways (true in 7 of 10 samples): the condition is lost in rounding"
+            [ "2\n"
+                <> ifTable "warning" "1 + 1e-16 > 1" "10 samples (lost in rounding" (7, 3) False
             ]
     , testCase "steps applies to each batch: accepted alike at every K" $ do
         let ls k steps =

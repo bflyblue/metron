@@ -56,7 +56,7 @@ import Metron.Infer (
  )
 import Metron.Lexer hiding (TNum, TProj)
 import Metron.Lexer qualified as L
-import Metron.Limits (defaultLimits, newBudget, settingLines)
+import Metron.Limits (defaultLimits, newBudget, newContext, settingLines)
 import Metron.NameResolution (LabelKind (..), Qualified (..), qualifyName)
 import Metron.Numerical.Approx (isqrt)
 import Metron.Parser
@@ -70,6 +70,7 @@ import Metron.Prelude (
 import Metron.Pretty
 import Metron.Primitive.Types
 import Metron.Repl qualified as R
+import Metron.Scalar (Members (Range))
 import Metron.Store
 import Metron.Syntax qualified as S
 import Metron.TCore
@@ -231,6 +232,7 @@ run defs t = do
               (const Nothing)
               (const Nothing)
               (newBudget defaultLimits typed)
+              (newContext (Range 0 0) True True [] typed)
           )
           typed
       )
@@ -3190,6 +3192,7 @@ pipelineProperties src =
                 (const Nothing)
                 (const Nothing)
                 (newBudget defaultLimits typed)
+                (newContext (Range 0 0) True True [] typed)
             )
             typed
             >>= render of

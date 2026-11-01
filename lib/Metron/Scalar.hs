@@ -37,19 +37,26 @@ module Metron.Scalar (
   Settings (..),
   Rounding (..),
   Batch (..),
+  Members (..),
+  memberCount,
+  memberAt,
+  memberVector,
   wholeBatch,
   roundingName,
   roundingNamed,
   settingsAt,
   Decision (..),
+  Outcomes (..),
   Rel (..),
   Own (..),
   Shape (..),
   affineCovariance,
 ) where
 
+import Data.IntSet (IntSet)
 import Data.Maybe (isJust)
 import Data.Text (Text)
+import Data.Vector.Unboxed qualified as VU
 import Metron.Affine (
   ArithError (..),
   Collapsed (bound, variance),
@@ -68,7 +75,7 @@ import Metron.Affine qualified as A
 import Metron.Core (NudgeKind)
 import Metron.Dimension (Dim)
 import Metron.Numerical.Linear qualified as L
-import Metron.Remark (Split)
+import Metron.Remark (Cause)
 
 -- | The evaluators of the scalars a session can choose (@:backend@).
 data Backend
@@ -187,7 +194,7 @@ data Settings = Settings
   -- ^ the seed of those copies' random choices (@:set seed@)
   , rounding :: Rounding
   -- ^ how each copy rounds (@:set rounding@)
-  , batch :: Batch
+  , copies :: Members
   -- ^ which of the copies this evaluation carries
   }
   deriving stock (Eq, Show)
@@ -204,6 +211,34 @@ data Batch = Batch {first :: Int, count :: Int, batches :: Int}
 -- | All the copies in one evaluation.
 wholeBatch :: Int -> Batch
 wholeBatch n = Batch{first = 0, count = n, batches = 1}
+
+{- | The copies an evaluation carries, by their global numbers, ascending
+(design §8.2): a batch's run of them, or the group of them a branch
+point sent down one alternative. A number's copies are in this order.
+-}
+data Members
+  = -- | the copies from the first, so many
+    Range !Int !Int
+  | -- | the copies listed
+    Listed !(VU.Vector Int)
+  deriving stock (Eq, Show)
+
+memberCount :: Members -> Int
+memberCount = \case
+  Range _ n -> n
+  Listed v -> VU.length v
+
+-- | The global number of the copy at a place.
+memberAt :: Members -> Int -> Int
+memberAt m i = case m of
+  Range first _ -> first + i
+  Listed v -> VU.unsafeIndex v i
+{-# INLINE memberAt #-}
+
+memberVector :: Members -> VU.Vector Int
+memberVector = \case
+  Range first n -> VU.enumFromN first n
+  Listed v -> v
 
 {- | How the double backend's copies round (design §8.2, @:set
 rounding@): each to nearest, so that they differ only in their draws of
@@ -233,18 +268,27 @@ settingsAt p =
     , samples = 0
     , seed = 0
     , rounding = RoundRandom
-    , batch = wholeBatch 0
+    , copies = Range 0 0
     }
 
 -- | An order relation, as the comparisons ask it.
 data Rel = Lt | Le | Gt | Ge
   deriving stock (Eq, Show)
 
-{- | A decided comparison, and, when the operands have copies, how the
-copies split on it (design §8.2). The result alone decides the branch;
-copies that disagree with it are a warning.
+{- | A decided comparison, and, when the operands have copies, what each
+copy's own operands say (design §8.2). The result is the nominal one; a
+branch point on it counts the copies by their own.
 -}
-data Decision = Decision {holds :: Bool, split :: Maybe Split}
+data Decision = Decision {holds :: Bool, copies :: Maybe Outcomes}
+  deriving stock (Eq, Show)
+
+{- | A condition copy by copy, in the order of the evaluation's copies,
+what the copies spread by, and the copies, by global number, already off
+their own path where the condition was decided: a short circuit the
+nominal value took, where a copy's own operand would have gone on (design
+§8.2). A comparison's are none.
+-}
+data Outcomes = Outcomes {cause :: Cause, left :: IntSet, each :: VU.Vector Bool}
   deriving stock (Eq, Show)
 
 -- | Where an elementwise built-in's result lives.
@@ -409,7 +453,7 @@ instance Scalar Magnitude where
     _ -> Nothing
 
 decided :: Bool -> Decision
-decided b = Decision{holds = b, split = Nothing}
+decided b = Decision{holds = b, copies = Nothing}
 
 -- | An accessor of a mean or a σ, refusing a value marked non-linear.
 described ::

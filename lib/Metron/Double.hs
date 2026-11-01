@@ -65,11 +65,11 @@ module Metron.Double (
   nextDownDouble,
   libmUlps,
   studentT,
-  warningText,
 ) where
 
 import Data.Bits (shiftR, testBit, xor)
 import Data.ByteString qualified as BS
+import Data.IntSet qualified as IntSet
 import Data.List (transpose)
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
@@ -87,11 +87,11 @@ import Metron.Affine (
  )
 import Metron.Core (NudgeKind (..))
 import Metron.Dimension (dimMul, dimOne)
-import Metron.Remark (Cause (..), Split (..), Warning (..))
+import Metron.Remark (Cause (..))
 import Metron.Scalar (
   Backend (..),
-  Batch (..),
   Decision (..),
+  Outcomes (..),
   Own (..),
   Rel (..),
   Rounding (..),
@@ -99,6 +99,8 @@ import Metron.Scalar (
   Settings (..),
   Shape (..),
   lacks,
+  memberAt,
+  memberCount,
   needsSamples,
  )
 
@@ -244,11 +246,11 @@ the neighbour its coin picks.
 constantCopies ::
   Settings -> Word64 -> [Double] -> Double -> Ordering -> VU.Vector Double
 constantCopies s op xs r side = case s.rounding of
-  RoundNearest -> VU.replicate s.batch.count r
+  RoundNearest -> VU.replicate (memberCount s.copies) r
   RoundRandom ->
     VU.generate
-      s.batch.count
-      (\i -> roundTo (coin s (s.batch.first + i) op xs) r side)
+      (memberCount s.copies)
+      (\i -> roundTo (coin s (memberAt s.copies i) op xs) r side)
 
 {- | The neighbour a random rounding chooses: the nearest double @r@ and the
 side the exact result lies on.
@@ -337,7 +339,7 @@ operation s op say fv fb fc xs =
                 let ys = map (VU.! i) columns
                  in case s.rounding of
                       RoundNearest -> fv ys
-                      RoundRandom -> fc (coin s (s.batch.first + i) op ys) ys
+                      RoundRandom -> fc (coin s (memberAt s.copies i) op ys) ys
            in Copies (foldMap spreadOf xs) (VU.generate n copy)
       -- Nothing to add is an exact result, which stays exact.
       boundOf bs
@@ -719,7 +721,7 @@ drawn s k o m =
         0
         ( Copies
             Drawn
-            (VU.generate s.batch.count (standardNormal s key . (s.batch.first +)))
+            (VU.generate (memberCount s.copies) (standardNormal s key . memberAt s.copies))
         )
         Nothing
 
@@ -794,61 +796,19 @@ relation = \case
   Gt -> (>)
   Ge -> (>=)
 
-relText :: Rel -> Text
-relText = \case
-  Lt -> "<"
-  Le -> "<="
-  Gt -> ">"
-  Ge -> ">="
-
-{- | The IEEE result decides; with copies, how they split on the comparison
-goes with it, and copies that disagree with the result are a warning
-('warningText'): the split is this evaluation's, which under parallel
-batches is one batch's, and the batches' splits are combined before the
-value is shown (design §8.2).
+{- | The nominal result decides; with copies, each copy's own comparison
+goes with it, for the branch point the condition reaches (design §8.2).
 -}
-decide ::
-  Settings -> Text -> (Double -> Double -> Bool) -> Dbl -> Dbl -> Decision
-decide s what holds x y =
-  Decision{holds = result, split = splitOf <$> copyCount [x, y]}
+decide :: (Double -> Double -> Bool) -> Dbl -> Dbl -> Decision
+decide holds x y =
+  Decision{holds = holds x.value y.value, copies = outcomes <$> copyCount [x, y]}
  where
-  result = holds x.value y.value
-  splitOf n =
-    Split
-      { relation = what
-      , left = x.value
-      , right = y.value
-      , result
-      , cause = if carriesDraws x || carriesDraws y then Draws else Rounding
-      , held =
-          VU.foldl'
-            (\k b -> if b then k + 1 else k)
-            0
-            (VU.zipWith holds (copiesOf n x) (copiesOf n y))
-      , copies = n
-      , samples = s.samples
+  outcomes n =
+    Outcomes
+      { cause = if carriesDraws x || carriesDraws y then Draws else Rounding
+      , left = IntSet.empty
+      , each = VU.zipWith holds (copiesOf n x) (copiesOf n y)
       }
-
-{- | A comparison the copies disagree about, as a line after the value: how
-many of all the copies the condition held for, and what the copies spread
-by, rounding alone or draws of a declared σ (a Monte Carlo sample).
--}
-warningText :: Warning -> Text
-warningText w =
-  "the comparison "
-    <> showDouble w.left
-    <> " "
-    <> w.relation
-    <> " "
-    <> showDouble w.right
-    <> " goes both ways (true in "
-    <> T.pack (show w.held)
-    <> " of "
-    <> T.pack (show w.copies)
-    <> " samples): "
-    <> case w.cause of
-      Draws -> "the condition depends on the declared uncertainty"
-      Rounding -> "the condition is lost in rounding"
 
 -- Estimates ----------------------------------------------------------------------------
 
@@ -1261,8 +1221,8 @@ instance Scalar Dbl where
   floorM s = Right . rounding s 20 "floor" floor
   ceilM s = Right . rounding s 21 "ceil" ceiling
   roundM s = Right . rounding s 22 "round" round
-  relate s rel x y = Right (decide s (relText rel) (relation rel) x y)
-  equalM s x y = Right (decide s "==" (==) x y)
+  relate _ rel x y = Right (decide (relation rel) x y)
+  equalM _ x y = Right (decide (==) x y)
   sizeOf _ = Nothing
   stepProblem step
     | step.value == 0 = Just "its step is zero"

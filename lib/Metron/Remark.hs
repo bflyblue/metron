@@ -1,40 +1,44 @@
-{- | The warnings an evaluation makes along the way (design §8.2): a
-comparison the double backend's copies disagree about. A warning is kept
-as data, not text, until the value is shown: the double backend's
-parallel batches each see only their own copies, so each records what its
-copies said, and only the batches' records together give the count over
-all the copies.
+{- | What an evaluation notes along the way (design §8.2, "Branches under
+copies"): each time it reaches a branch point, an @if@ or a @case@, whose
+scrutinee carries the double backend's copies, how those copies' own
+scrutinees choose among its alternatives.
+
+A note is data, not text, until the value is shown: the parallel batches
+each see only their own copies, so each records what its copies said, and
+only the batches' records together give the table over all the copies.
+Every count here is a sum over copies, and a copy's path is the same in
+whichever batch carries it, so the merged tables are the same for every
+@cores@.
 -}
 module Metron.Remark (
   Site (..),
   Cause (..),
-  Split (..),
+  Reach (..),
+  Pending,
+  pend,
   Remarks,
-  noted,
-  Warning (..),
-  warnings,
+  remarksOf,
+  Table (..),
+  tables,
 ) where
 
-import Data.IntSet (IntSet)
-import Data.IntSet qualified as IntSet (singleton, size, union)
+import Data.IntMap.Strict (IntMap)
+import Data.IntMap.Strict qualified as IntMap
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map (elems, insertWith, unionWith)
-import Data.Text (Text)
-import Data.Word (Word64)
-import GHC.Float (castDoubleToWord64)
+import Data.Map.Strict qualified as Map
 import Metron.Core (Hash)
 
 {- | Where a node sits: the enclosing top-level definition and the path of
 child indices down to it, innermost first. Declared uncertainty takes its
-identity from here (design §3.2.4), and a comparison's warning its
-place. Erased type nodes do not count, so the path is the Core path and
-survives re-elaboration.
+identity from here (design §3.2.4), and a branch point its table. Erased
+type nodes do not count, so the path is the Core path and survives
+re-elaboration.
 -}
 data Site = Site {definition :: Hash, path :: [Int]}
   deriving stock (Eq, Ord, Show)
 
-{- | What a comparison's copies spread by: rounding alone, or draws of a
+{- | What a scrutinee's copies spread by: rounding alone, or draws of a
 declared σ as well. Draws win when both meet.
 -}
 data Cause = Rounding | Draws
@@ -43,132 +47,169 @@ data Cause = Rounding | Draws
 instance Semigroup Cause where
   (<>) = max
 
-{- | How a comparison's copies split, as one evaluation sees it: the
-relation and its operands' IEEE values, the IEEE result (which alone
-decides the branch), what the copies spread by, how many of this
-evaluation's copies the condition held for, of how many, and how many
-copies there are in all, over every batch.
+{- | One time an evaluation reached a branch point with copies, as one
+batch sees it.
 -}
-data Split = Split
-  { relation :: !Text
-  , left :: !Double
-  , right :: !Double
-  , result :: !Bool
-  , cause :: !Cause
-  , held :: !Int
-  , copies :: !Int
-  , samples :: !Int
-  }
-  deriving stock (Eq, Show)
-
-{- | A comparison by its place in the term and its operands' bits: a
-comparison in a loop is a warning for each set of operands it meets, and
-two comparisons with the same operands are two.
--}
-data Key = Key
-  { site :: !Site
-  , relation :: !Text
-  , left :: !Word64
-  , right :: !Word64
-  }
-  deriving stock (Eq, Ord, Show)
-
-{- | One comparison's record: the first time any of its copies disagreed
-with the IEEE result, each such time (the comparison's number in the
-evaluation, the same in every batch), how many copies disagreed in all,
-and what they spread by. A batch whose copies all agree records nothing,
-so a time is counted once with all the copies whichever batches disagreed
-at it. The split is the first one seen, for what every one shares: the
-relation, the operands, the result and the number of copies in all.
--}
-data Tally = Tally
-  { first :: !Int
-  , times :: !IntSet
-  , differing :: !Int
-  , cause :: !Cause
-  , split :: !Split
+data Reach = Reach
+  { position :: [Int]
+  {- ^ where in the evaluation's order: the branch points reached before
+  it in the same evaluation, below the branch points and alternatives
+  of the split it is in, the same in every batch
+  -}
+  , nominal :: Maybe Int
+  {- ^ the alternative the nominal value selects, when the evaluation is
+  on the nominal path
+  -}
+  , cause :: Cause
+  , rows :: IntMap Int
+  -- ^ copies, by the alternative their own scrutinee selects
+  , departed :: Int
+  -- ^ of those, copies already off their own path, left behind by rounding
+  , split :: Bool
+  -- ^ whether the copies split here, each group down its own alternative
+  , counted :: Maybe [Int]
+  -- ^ the copies counted, by global number; 'Nothing' when all the batch's were
   }
 
--- | Two records of one comparison: in two batches, or at two times.
-instance Semigroup Tally where
-  a <> b =
-    Tally
-      { first = min a.first b.first
-      , times = IntSet.union a.times b.times
-      , differing = a.differing + b.differing
-      , cause = a.cause <> b.cause
-      , split = a.split
+{- | One batch's record of a branch point, reach by reach. A copy's number
+of reaches is kept only where not every copy was there, so that a table
+can say how many times the point was reached.
+-}
+data Pending = Pending
+  { first :: [Int]
+  , rows :: IntMap Int
+  , taken :: IntMap Int
+  , departed :: Int
+  , differing :: Int
+  , cause :: Cause
+  , split :: Bool
+  , full :: Int
+  , partial :: IntMap Int
+  }
+
+-- | Add a reach to a batch's records.
+pend :: Site -> Reach -> Map Site Pending -> Map Site Pending
+pend site r = Map.insertWith after site this
+ where
+  after new old =
+    Pending
+      { first = min old.first new.first
+      , rows = IntMap.unionWith (+) old.rows new.rows
+      , taken = IntMap.unionWith (+) old.taken new.taken
+      , departed = old.departed + new.departed
+      , differing = old.differing + new.differing
+      , cause = old.cause <> new.cause
+      , split = old.split || new.split
+      , full = old.full + new.full
+      , partial = IntMap.unionWith (+) old.partial new.partial
+      }
+  total = sum (IntMap.elems r.rows)
+  this =
+    Pending
+      { first = r.position
+      , rows = r.rows
+      , taken = maybe IntMap.empty (`IntMap.singleton` 1) r.nominal
+      , departed = r.departed
+      , differing = case r.nominal of
+          Just a -> total - IntMap.findWithDefault 0 a r.rows
+          Nothing -> total - maximum (0 : IntMap.elems r.rows)
+      , cause = r.cause
+      , split = r.split
+      , full = maybe 1 (const 0) r.counted
+      , partial = maybe IntMap.empty (IntMap.fromList . map (,1)) r.counted
       }
 
-{- | An evaluation's warnings, or several batches' together: '<>' combines
-the records of each comparison.
+{- | Branch points as one or more batches recorded them: '<>' combines the
+batches' records of each point.
 -}
-newtype Remarks = Remarks (Map Key Tally)
+newtype Remarks = Remarks (Map Site Tally)
+
+{- | A branch point over one or more batches. Its evaluations are the most
+times any one copy reached it, which every batch counts alike for its own
+copies; the rest are sums.
+-}
+data Tally = Tally
+  { first :: [Int]
+  , rows :: IntMap Int
+  , taken :: IntMap Int
+  , departed :: Int
+  , differing :: Int
+  , cause :: Cause
+  , split :: Bool
+  , evaluations :: Int
+  }
 
 instance Semigroup Remarks where
-  Remarks a <> Remarks b = Remarks (Map.unionWith (<>) a b)
+  Remarks a <> Remarks b = Remarks (Map.unionWith merge a b)
+   where
+    merge x y =
+      Tally
+        { first = min x.first y.first
+        , rows = IntMap.unionWith (+) x.rows y.rows
+        , taken = IntMap.unionWith max x.taken y.taken
+        , departed = x.departed + y.departed
+        , differing = x.differing + y.differing
+        , cause = x.cause <> y.cause
+        , split = x.split || y.split
+        , evaluations = max x.evaluations y.evaluations
+        }
 
 instance Monoid Remarks where
   mempty = Remarks mempty
 
-{- | Note a comparison made at a site, the given number in its evaluation:
-kept when any of its copies disagrees with the IEEE result.
--}
-noted :: Int -> Site -> Split -> Remarks -> Remarks
-noted time site sp rs@(Remarks m)
-  | d == 0 = rs
-  | otherwise =
-      Remarks
-        ( Map.insertWith
-            (<>)
-            Key
-              { site
-              , relation = sp.relation
-              , left = castDoubleToWord64 sp.left
-              , right = castDoubleToWord64 sp.right
-              }
-            Tally
-              { first = time
-              , times = IntSet.singleton time
-              , differing = d
-              , cause = sp.cause
-              , split = sp
-              }
-            m
-        )
+-- | A batch's records, done.
+remarksOf :: Map Site Pending -> Remarks
+remarksOf = Remarks . Map.map done
  where
-  d = if sp.result then sp.copies - sp.held else sp.held
+  done p =
+    Tally
+      { first = p.first
+      , rows = p.rows
+      , taken = p.taken
+      , departed = p.departed
+      , differing = p.differing
+      , cause = p.cause
+      , split = p.split
+      , evaluations = p.full + maximum (0 : IntMap.elems p.partial)
+      }
 
-{- | A comparison the copies disagree about, over all of them: the relation
-and its operands, what the copies spread by, and how many copies the
-condition held for, of how many.
+{- | A branch point some copies would leave by another alternative, over
+all the copies: what its table says.
 -}
-data Warning = Warning
-  { relation :: Text
-  , left :: Double
-  , right :: Double
+data Table = Table
+  { site :: Site
+  , rows :: IntMap Int
+  -- ^ copies by the alternative their own scrutinee selects; an absent one is 0
+  , taken :: IntMap Int
+  -- ^ how many evaluations on the nominal path took each alternative
+  , evaluations :: Int
+  , counted :: Int
+  -- ^ the copies counted, over every evaluation
+  , departed :: Int
+  -- ^ of those, copies already off their own path
   , cause :: Cause
-  , held :: Int
-  , copies :: Int
+  , split :: Bool
   }
   deriving stock (Eq, Show)
 
-{- | The warnings, in the order one evaluation first made them. A time some
-batch did not record, its copies all held what the IEEE result says.
+{- | The tables to show, in the order the evaluation first reached their
+branch points: those where some copy's own scrutinee chose otherwise than
+the branch taken.
 -}
-warnings :: Remarks -> [Warning]
-warnings (Remarks m) = map snd (sortOn fst (map warning (Map.elems m)))
+tables :: Remarks -> [Table]
+tables (Remarks m) =
+  map
+    snd
+    (sortOn fst [(t.first, table s t) | (s, t) <- Map.toList m, t.differing > 0])
  where
-  warning t =
-    let sp = t.split
-        total = IntSet.size t.times * sp.samples
-     in ( t.first
-        , Warning
-            { relation = sp.relation
-            , left = sp.left
-            , right = sp.right
-            , cause = t.cause
-            , held = if sp.result then total - t.differing else t.differing
-            , copies = total
-            }
-        )
+  table s t =
+    Table
+      { site = s
+      , rows = t.rows
+      , taken = t.taken
+      , evaluations = t.evaluations
+      , counted = sum (IntMap.elems t.rows)
+      , departed = t.departed
+      , cause = t.cause
+      , split = t.split
+      }

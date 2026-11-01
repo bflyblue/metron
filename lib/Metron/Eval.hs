@@ -19,9 +19,11 @@ and mapped results; display units affect printing only. Types are checked
 before evaluation.
 -}
 module Metron.Eval (
-  ValueOf (..),
+  ValueOf (.., VData),
+  Choice (..),
   Value,
   pattern VBool,
+  conIndex,
   ClosureOf (..),
   Closure,
   ElemOf,
@@ -33,6 +35,7 @@ module Metron.Eval (
   defaultConfig,
   precisionOf,
   settingsOf,
+  batchMembers,
   RuntimeOf (..),
   Runtime,
   UnitAtom (..),
@@ -59,7 +62,14 @@ module Metron.Eval (
 
 import Control.Monad (foldM, when, zipWithM)
 import Data.Bifunctor (first)
-import Data.IntSet qualified as IntSet (IntSet, member)
+import Data.IntSet qualified as IntSet (
+  IntSet,
+  empty,
+  fromList,
+  member,
+  size,
+  union,
+ )
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map (empty, insert, null)
 import Data.Maybe (catMaybes, fromMaybe)
@@ -86,6 +96,7 @@ import Data.Vector qualified as V (
   zipWith,
   (!),
  )
+import Data.Vector.Unboxed qualified as VU
 import Metron.Affine (
   ArithError (..),
   Decide (..),
@@ -135,21 +146,24 @@ import Metron.Dimension (
 import Metron.Double (Dbl)
 import Metron.Limits (
   Budget,
+  Context (..),
   Limit (..),
   Limits (..),
   beyond,
   defaultLimits,
   log10Abs,
   nested,
-  remark,
+  reach,
   spend,
  )
 import Metron.Primitive (baseUnit, primArity, typedPrims)
-import Metron.Remark (Site (..))
+import Metron.Remark (Cause (..), Site (..))
 import Metron.Scalar (
   Backend (..),
-  Batch,
-  Decision (holds, split),
+  Batch (..),
+  Decision (..),
+  Members (..),
+  Outcomes (..),
   Own (..),
   Rel (..),
   Rounding (..),
@@ -157,8 +171,9 @@ import Metron.Scalar (
   Settings (..),
   affineCovariance,
   lacks,
+  memberAt,
+  memberCount,
   ownerOf,
-  wholeBatch,
  )
 import Metron.Scalar qualified as Scalar (Shape (..))
 import Metron.Strictness (strictMarker)
@@ -271,8 +286,14 @@ settingsOf cfg =
     , samples = cfg.samples
     , seed = cfg.seed
     , rounding = cfg.rounding
-    , batch = fromMaybe (wholeBatch cfg.samples) cfg.batch
+    , copies = batchMembers cfg
     }
+
+-- | The copies an evaluation of the whole batch carries (design §8.2).
+batchMembers :: Config -> Members
+batchMembers cfg = case cfg.batch of
+  Just b -> Range b.first b.count
+  Nothing -> Range 0 cfg.samples
 
 {- | What the evaluator needs from the codebase: the Typed Core behind a
 reference, and whether a reference was declared a display unit. Its
@@ -299,6 +320,11 @@ data RuntimeOf s = Runtime
   -}
   , budget :: Budget
   -- ^ the steps and nesting this evaluation has spent (design §8.1), its own
+  , context :: Context
+  {- ^ where the evaluation is among the double backend's copies (design
+  §8.2): the copies it carries and its place below the branch points
+  that split them
+  -}
   }
 
 data EvalError
@@ -430,8 +456,11 @@ data ValueOf s
     -}
     VPoint ![Int] !Dim (ChartOf s) (Vector (ElemOf s))
   | VChart (ChartOf s)
-  | -- | a constructor with its fields as thunks (design §8); a boolean is one, 'VBool'
-    VData ConRef [ThunkOf s]
+  | {- | a constructor with its fields as thunks (design §8), and what the
+    copies choose, when they carry their own (design §8.2); a boolean is
+    one, 'VBool'. 'VData' is one whose copies say nothing
+    -}
+    VCon ConRef [ThunkOf s] !Choice
   | VClosure (ClosureOf s)
   | {- | a unit (design §3.10, U1): a newtype around a number, its magnitude
     in base units with its display hint, which is the unit expression it
@@ -446,17 +475,78 @@ data ValueOf s
 
 type Value = ValueOf Magnitude
 
+{- | What a data value's copies choose (design §8.2, "Branches under
+copies"): nothing of their own, or each copy's own constructor, by its
+number in its type, in the order of the evaluation's copies, what the
+copies spread by, and which of them, by global number, were already off
+their own path when it was decided. A comparison's copies each have their
+own result, which an @if@ on it counts; the value is still the nominal
+one.
+-}
+data Choice
+  = NoCopies
+  | Copied !Cause !IntSet.IntSet !(VU.Vector Int)
+  deriving stock (Eq, Show)
+
+-- | A constructor whose copies choose nothing of their own.
+pattern VData :: ConRef -> [ThunkOf s] -> ValueOf s
+pattern VData c fields <- VCon c fields _
+  where
+    VData c fields = VCon c fields NoCopies
+
+{-# COMPLETE VTensor, VPoint, VChart, VData, VClosure, VUnit, VTyAbs #-}
+
 -- | A boolean: @True@ or @False@ of the built-in @Bool@ ("Metron.Builtin").
 pattern VBool :: Bool -> ValueOf s
 pattern VBool b <- VData (asBool -> Just b) []
   where
     VBool b = VData (boolC b) []
 
+{- | A condition with its copies' own results: the comparison's decision as
+a boolean value.
+-}
+condition :: Bool -> Maybe Outcomes -> ValueOf s
+condition b =
+  VCon (boolC b) []
+    . maybe NoCopies (\o -> Copied o.cause o.left (VU.map fromEnum o.each))
+
+-- | A boolean's copies' own results, if it has copies.
+outcomesOf :: ValueOf s -> Maybe Outcomes
+outcomesOf = \case
+  VCon _ [] (Copied cause left alts) -> Just (Outcomes cause left (VU.map (/= 0) alts))
+  _ -> Nothing
+
+{- | Two conditions combined copy by copy; a condition without copies is its
+nominal result in every copy.
+-}
+combined ::
+  (Bool -> Bool -> Bool) ->
+  (Bool, Maybe Outcomes) ->
+  (Bool, Maybe Outcomes) ->
+  (Bool, Maybe Outcomes)
+combined f (a, oa) (b, ob) = (f a b, both)
+ where
+  both = case (oa, ob) of
+    (Just x, Just y) ->
+      Just
+        ( Outcomes
+            (x.cause <> y.cause)
+            (IntSet.union x.left y.left)
+            (VU.zipWith f x.each y.each)
+        )
+    (Just x, Nothing) -> Just x{each = VU.map (`f` b) x.each}
+    (Nothing, Just y) -> Just y{each = VU.map (f a) y.each}
+    (Nothing, Nothing) -> Nothing
+
 asBool :: ConRef -> Maybe Bool
 asBool = \case
   TrueC -> Just True
   FalseC -> Just False
   _ -> Nothing
+
+-- | A constructor's number in its type, which is its alternative's in a case.
+conIndex :: ConRef -> Int
+conIndex (UserCon _ k) = k
 
 {- | A function value: a body under one binder, closed over its environment
 and its site.
@@ -567,7 +657,6 @@ eval cfg rt = go
       runPrim
         cfg
         rt
-        site
         prim
         (resolveType tenv ty)
         (delays tenv site env args)
@@ -576,11 +665,30 @@ eval cfg rt = go
     -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
     -- A boolean is data like any other: @if@ is a case on its constructor.
     TCon c _ args -> Right (VData c (delays tenv site env args))
+    -- A scrutinee whose copies choose for themselves is a branch point
+    -- (design §8.2): the copies are counted by their own alternative,
+    -- and those taken along by the nominal one are off their path inside
+    -- it.
     TCase sc _ alts ->
       inner tenv (child 0) env sc >>= \case
-        VData c fields ->
+        VCon c fields choice ->
           case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] alts, c' == c] of
-            (i, TAlt _ bs body) : _ -> go tenv (child i) (vecAppend (attach bs fields) env) body
+            (i, TAlt _ bs body) : _ ->
+              let env' = vecAppend (attach bs fields) env
+               in case choice of
+                    NoCopies -> go tenv (child i) env' body
+                    Copied cause left chosen ->
+                      let off = reach rt.budget rt.context site (conIndex c) cause False left chosen
+                       in if IntSet.size off == IntSet.size rt.context.departed
+                            then go tenv (child i) env' body
+                            else
+                              eval
+                                cfg
+                                rt{context = rt.context{departed = off}}
+                                tenv
+                                (child i)
+                                env'
+                                body
             [] -> Left (Internal ("case: no alternative for " <> conText c))
         _ -> Left (Internal "case: the scrutinee is not data")
     TLamWith _ _ body free -> Right (VClosure (Closure tenv (child 0) (keepFree free env) body))
@@ -1040,20 +1148,18 @@ only as the primitive needs them; elementwise operations stay lazy per
 element. Dimensions follow the rules of design §4.3, display units those
 of §3.2.12, magnitudes those of §3.2. The type is the primitive's, as
 instantiated where it is used, under the type-level arguments in force.
-The site is the primitive's place in the term, which a comparison's
-warning is kept by (design §8.2).
 -}
 runPrim ::
   forall s.
   (Scalar s) =>
-  Config -> RuntimeOf s -> Site -> Text -> Type -> [ThunkOf s] -> ThunkOf s
+  Config -> RuntimeOf s -> Text -> Type -> [ThunkOf s] -> ThunkOf s
 {-# SPECIALIZE runPrim ::
-  Config -> Runtime -> Site -> Text -> Type -> [Thunk] -> Thunk
+  Config -> Runtime -> Text -> Type -> [Thunk] -> Thunk
   #-}
 {-# SPECIALIZE runPrim ::
-  Config -> RuntimeOf Dbl -> Site -> Text -> Type -> [ThunkOf Dbl] -> ThunkOf Dbl
+  Config -> RuntimeOf Dbl -> Text -> Type -> [ThunkOf Dbl] -> ThunkOf Dbl
   #-}
-runPrim cfg rt site prim ty args = case (prim, args) of
+runPrim cfg rt prim ty args = case (prim, args) of
   -- A base unit is a unit (design §3.10, U1).
   (unit, [])
     | Just b <- baseUnit unit ->
@@ -1168,20 +1274,17 @@ runPrim cfg rt site prim ty args = case (prim, args) of
               (combine (hintMul hp) h1 (hintInv hp =<< h2))
               (V.map (\x -> x >>= \x' -> sized cfg.limits =<< arith (divM p x' k)) xs)
           )
-  ("eq", [a, b]) -> VBool <$> equal a b
-  ("ne", [a, b]) -> VBool . not <$> equal a b
+  -- A condition keeps its copies' own results (design §8.2).
+  ("eq", [a, b]) -> uncurry condition <$> equal a b
+  ("ne", [a, b]) -> uncurry condition . negated <$> equal a b
   ("lt", [a, b]) -> compareWith Lt a b
   ("le", [a, b]) -> compareWith Le a b
   ("gt", [a, b]) -> compareWith Gt a b
   ("ge", [a, b]) -> compareWith Ge a b
   -- Lazy in the second argument.
-  ("and", [a, b]) -> do
-    x <- bool =<< a
-    if x then VBool <$> (bool =<< b) else Right (VBool False)
-  ("or", [a, b]) -> do
-    x <- bool =<< a
-    if x then Right (VBool True) else VBool <$> (bool =<< b)
-  ("not", [a]) -> VBool . not <$> (bool =<< a)
+  ("and", [a, b]) -> shortCircuit True a b
+  ("or", [a, b]) -> shortCircuit False a b
+  ("not", [a]) -> uncurry condition . negated <$> (conditionOf =<< a)
   ("floor", [a]) -> dimensionless (arith . floorM p) a
   ("ceil", [a]) -> dimensionless (arith . ceilM p) a
   ("round", [a]) -> dimensionless (arith . roundM p) a
@@ -1784,14 +1887,43 @@ runPrim cfg rt site prim ty args = case (prim, args) of
   compareWith rel a b = do
     x <- ordered =<< a
     y <- ordered =<< b
-    VBool . settle <$> arith (relate p rel x y)
-  equalAll xs ys = and <$> mapM (\(u, v) -> settle <$> arith (equalM p u v)) (zip xs ys)
-  -- The result decides; how the copies split on it is noted at this site,
-  -- a warning when some disagree (design §8.2).
-  settle d = maybe d.holds (\sp -> remark rt.budget site sp d.holds) d.split
+    (\d -> condition d.holds d.copies) <$> arith (relate p rel x y)
+  equalAll xs ys =
+    foldl' (combined (&&)) (True, Nothing)
+      <$> mapM
+        (\(u, v) -> (\d -> (d.holds, d.copies)) <$> arith (equalM p u v))
+        (zip xs ys)
+  negated (h, o) = (not h, (\x -> x{each = VU.map not x.each}) <$> o)
+  conditionOf v = (,outcomesOf v) <$> bool v
+  {- @a && b@ and @a || b@ (design §8.2): when the first decides, the
+  second is not evaluated, and a copy whose own first operand would have
+  gone on to it leaves the evaluated path here; its result is taken to
+  be the nominal one. -}
+  shortCircuit isAnd a b = do
+    (x, ox) <- conditionOf =<< a
+    if x == isAnd
+      then do
+        (y, oy) <- conditionOf =<< b
+        Right
+          (uncurry condition (combined (if isAnd then (&&) else (||)) (x, ox) (y, oy)))
+      else case ox of
+        Just o
+          | VU.any (== isAnd) o.each ->
+              let leaving =
+                    IntSet.fromList
+                      [ memberAt p.copies i
+                      | (i, goesOn) <- zip [0 ..] (VU.toList o.each)
+                      , goesOn == isAnd
+                      ]
+               in Right
+                    ( condition
+                        x
+                        (Just o{left = IntSet.union o.left leaving, each = VU.map (const x) o.each})
+                    )
+        _ -> Right (condition x ox)
   -- Tensors of one shape (lint agrees), data or points: the equality
   -- instances of design §4.2. Tensors are equal when every component is
-  -- decided equal (design §3.2.9).
+  -- decided equal (design §3.2.9). Copy by copy, so are their copies.
   equal a b = do
     x <- a
     y <- b
@@ -1800,9 +1932,10 @@ runPrim cfg rt site prim ty args = case (prim, args) of
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
         equalAll xs' ys'
-      (VData c xs, VData c' ys)
-        | c == c' && length xs == length ys -> and <$> zipWithM equal xs ys
-        | otherwise -> Right False
+      (VCon c xs cx, VCon c' ys cy)
+        | c == c' && length xs == length ys ->
+            foldl' (combined (&&)) (sameCon c c' cx cy) <$> zipWithM equal xs ys
+        | otherwise -> Right (sameCon c c' cx cy)
       (VPoint _ _ _ xs, VPoint _ _ _ ys) -> do
         xs' <- sequence (V.toList xs)
         ys' <- sequence (V.toList ys)
@@ -1810,6 +1943,27 @@ runPrim cfg rt site prim ty args = case (prim, args) of
       _ ->
         Left
           (Internal "==: operands are not both tensors, both data or both points")
+  -- Whether two constructors are the same, copy by copy when either's
+  -- copies choose their own.
+  sameCon c c' cx cy =
+    let mine = \case
+          NoCopies -> Nothing
+          Copied cause left alts -> Just (cause, left, alts)
+        alike = VU.replicate (memberCount p.copies)
+        causeOf = maybe Rounding (\(cause, _, _) -> cause)
+        leftOf = maybe IntSet.empty (\(_, left, _) -> left)
+        altsOr k = maybe (alike k) (\(_, _, alts) -> alts)
+     in ( c == c'
+        , case (mine cx, mine cy) of
+            (Nothing, Nothing) -> Nothing
+            (l, r) ->
+              Just
+                ( Outcomes
+                    (causeOf l <> causeOf r)
+                    (IntSet.union (leftOf l) (leftOf r))
+                    (VU.zipWith (==) (altsOr (conIndex c) l) (altsOr (conIndex c') r))
+                )
+        )
   matrixRows n buf = do
     xs <- sequence (V.toList buf)
     pure (chunks n xs)

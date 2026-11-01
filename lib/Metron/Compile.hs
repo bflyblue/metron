@@ -30,6 +30,7 @@ import Data.Text (Text)
 import Data.Text qualified as T (intercalate, pack)
 import Metron.Affine (Magnitude)
 import Metron.Batch (acrossCopies, batchesOf, failure, forced, merged)
+import Metron.Branch (tableLines)
 import Metron.Check (
   CheckError (CoreLintError, InferenceError),
   CheckedCore (inferred, linted, typed),
@@ -51,13 +52,14 @@ import Metron.Desugar (
   fillOperands,
   provenanceAt,
  )
-import Metron.Double (Dbl, warningText)
+import Metron.Double (Dbl)
 import Metron.Eval (
   Config (backend, batch, cores, limits, precision, samples),
   EvalError (..),
   RuntimeOf (..),
   Value,
   ValueOf,
+  batchMembers,
   evalAt,
   evalDefinition,
   neededAtRuntime,
@@ -69,11 +71,11 @@ import Metron.Infer qualified as I (
   readingsOf,
   rewriteReadings,
  )
-import Metron.Limits (limitHint, newBudget, remarksAfter)
+import Metron.Limits (limitHint, newBudget, newContext, remarksAfter)
 import Metron.NameResolution (resolverFor)
 import Metron.Needs (Needs, checkBackend, reachedBy)
 import Metron.Pretty (Display, renderValue)
-import Metron.Remark (Remarks, warnings)
+import Metron.Remark (Remarks, tables)
 import Metron.Resolve (
   annotationsWith,
   ascriptionsIn,
@@ -83,7 +85,7 @@ import Metron.Resolve (
 import Metron.Resolve.Error (ResolveError (..), renderResolveError)
 import Metron.Scalar (Backend (..), Batch (..), Scalar)
 import Metron.Session.Types (LastExpr (..))
-import Metron.Source (printerFor, refNamer)
+import Metron.Source (nameTypes, printerFor, refNamer, spellingOf)
 import Metron.Strictness (signatureAt, signatures, strictify)
 import Metron.Syntax qualified as S (
   Expr (span),
@@ -154,7 +156,7 @@ evalExpr cfg prefs scope cb memo src e = do
           le.term
   either (Left . ("error: " <>)) Right verdict
   out <- case cfg.backend of
-    AffineBackend -> evalShown @Magnitude cfg prefs scope cb h typed
+    AffineBackend -> evalShown @Magnitude cfg prefs scope cb (h, le.term) typed
     DoubleBackend
       -- The copies in parallel batches (design §8.2), unless the input reads
       -- across them or its batches do not merge.
@@ -164,38 +166,52 @@ evalExpr cfg prefs scope cb memo src e = do
       , Just batched <- batchedValue cfg cb h typed ->
           either
             (Left . renderEvalError)
-            (uncurry (shown cfg scope cb prefs))
+            (uncurry (shown cfg scope cb prefs (h, le.term)))
             batched
-      | otherwise -> evalShown @Dbl cfg prefs scope cb h typed
+      | otherwise -> evalShown @Dbl cfg prefs scope cb (h, le.term) typed
   pure (out, le, memo')
 
--- | A value printed, with a line for each warning its evaluation made.
+-- | A value printed, with the table of each branch point its copies split at.
 shown ::
   (Display s) =>
   Config ->
   S.Scope ->
   Codebase ->
   Preferences ->
+  (Hash, Term Z) ->
   ValueOf s ->
   Remarks ->
   Either Text Text
-shown cfg scope cb prefs v remarks = do
+shown cfg scope cb prefs input v remarks = do
   out <-
     either
       (Left . renderEvalError)
       Right
       (renderValue (printerFor cfg scope cb) cfg.precision prefs v)
-  pure (withWarnings out remarks)
+  pure (withTables cfg scope cb input out remarks)
 
-{- | A printed value and a line for each warning its evaluation made, in the
-order one evaluation first made them: text only now, once every batch's
-remarks are in (design §8.2).
+{- | A printed value and the table of each branch point whose copies would
+choose otherwise than the branch taken (design §8.2), in the order the
+evaluation first reached them: text only now, once every batch's
+records are in.
 -}
-withWarnings :: Text -> Remarks -> Text
-withWarnings out remarks =
+withTables ::
+  Config -> S.Scope -> Codebase -> (Hash, Term Z) -> Text -> Remarks -> Text
+withTables cfg scope cb input out remarks =
   T.intercalate
     "\n"
-    (out : map (("warning: " <>) . warningText) (warnings remarks))
+    ( out
+        : concatMap
+          ( tableLines
+              (spellingOf cfg)
+              (refNamer scope cb)
+              (nameTypes scope cb)
+              cb
+              input
+              cfg.samples
+          )
+          (tables remarks)
+    )
 
 {- | The double backend's value with its copies evaluated in parallel
 batches (design §8.2, "Metron.Batch"), each batch in its own thread and
@@ -257,10 +273,10 @@ evalShown ::
   Preferences ->
   S.Scope ->
   Codebase ->
-  Hash ->
+  (Hash, Term Z) ->
   TTerm Z ->
   Either Text Text
-evalShown cfg prefs scope cb h typed = do
+evalShown cfg prefs scope cb input@(h, _) typed = do
   let (rt, prepare) = runtimeWith @s cfg cb
   v <- either (Left . renderEvalError) Right (evalAt cfg rt h (prepare typed))
   out <-
@@ -268,8 +284,8 @@ evalShown cfg prefs scope cb h typed = do
       (Left . renderEvalError)
       Right
       (renderValue (printerFor cfg scope cb) cfg.precision prefs v)
-  -- The warnings are read once the printing has evaluated the value.
-  pure (withWarnings out (remarksAfter out rt.budget))
+  -- The tables are read once the printing has evaluated the value.
+  pure (withTables cfg scope cb input out (remarksAfter out rt.budget))
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design
@@ -380,6 +396,8 @@ runtimeWith cfg cb = (rt, strictify external)
       , shared = (`Map.lookup` values)
       , budget =
           newBudget cfg.limits (cb, fmap (.first) cfg.batch)
+      , context =
+          newContext (batchMembers cfg) True True [] (cb, fmap (.first) cfg.batch)
       }
   analysed = LazyMap.map (strictify external . snd) cb.derived
   known = LazyMap.map (signatures external . snd) cb.derived

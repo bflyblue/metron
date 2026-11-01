@@ -23,7 +23,10 @@ module Metron.Limits (
   newBudget,
   spend,
   nested,
-  remark,
+  Context (..),
+  newContext,
+  reach,
+  within,
   remarksAfter,
 
   -- * Sizes of numbers
@@ -43,17 +46,33 @@ import Control.Exception (
   throwIO,
   try,
  )
+import Control.Monad (unless)
 import Data.Bits (shiftR, unsafeShiftL)
 import Data.Char (isDigit)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IntMap.Strict qualified as IntMap
+import Data.IntSet (IntSet)
+import Data.IntSet qualified as IntSet
+import Data.Map.Strict (Map)
+import Data.Maybe (isNothing)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Vector.Unboxed qualified as VU
 import Data.Word (Word64)
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrArray, withForeignPtr)
 import Foreign.Storable (peekElemOff, pokeElemOff)
 import GHC.Num.Integer (integerLog2)
-import Metron.Remark (Remarks, Site, Split, noted)
+import Metron.Remark (
+  Cause,
+  Pending,
+  Reach (..),
+  Remarks,
+  Site,
+  pend,
+  remarksOf,
+ )
+import Metron.Scalar (Members, memberVector)
 import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import System.Mem (performMajorGC)
 import System.Timeout (timeout)
@@ -173,59 +192,171 @@ tshow = T.pack . show
 
 -- The budget ------------------------------------------------------------------------
 
-{- | What one evaluation has spent: the steps it took, how deeply it is
-nested now, and how many comparisons with copies it has made. Counted in
-place: the evaluator is pure, and threading a counter through every
-thunk would make every value a computation. The count changes no value:
-an evaluation either finishes with the value it would have had, or fails
-with the limit it hit.
+{- | What one evaluation has spent: the steps it took and how deeply it is
+nested now; and what it noted on the way, the branch points its copies
+reached (design §8.2). Counted in place: the evaluator is pure, and
+threading a counter through every thunk would make every value a
+computation. The count changes no value: an evaluation either finishes
+with the value it would have had, or fails with the limit it hit.
 -}
 data Budget = Budget
   { limits :: Limits
   , counters :: ForeignPtr Int
-  , remarks :: IORef Remarks
-  {- ^ warnings the evaluation made along the way: a comparison the double
-  backend's copies disagree about (design §8.2). Kept in place for the
-  reason the counters are
+  , branches :: IORef (Map Site Pending)
+  -- ^ the branch points reached with copies, kept in place as the counters are
+  , current :: IORef (Maybe (VU.Vector Int))
+  {- ^ the group of copies, by global number, whose alternative is being
+  evaluated, when a branch point has split them: a value shared with the
+  evaluation around the split, when forced for the group, counts only the
+  group's copies at its branch points
   -}
   }
 
 {- | A fresh budget, for one evaluation. Each of the double backend's
-parallel batches (design §8.2) is one, with the whole @steps@ limit:
-every batch takes the same steps, so an input is accepted or refused
-alike however many batches run it. Its last argument keeps two
-evaluations from sharing one: each passes what it evaluates.
+parallel batches (design §8.2) is one, with the whole @steps@ limit. Its
+last argument keeps two evaluations from sharing one: each passes what it
+evaluates.
 -}
 newBudget :: Limits -> a -> Budget
 newBudget l x = unsafeDupablePerformIO $ do
   _ <- evaluate (x `seq` ())
-  cs <- mallocForeignPtrArray 3
-  withForeignPtr cs $ \p -> mapM_ (\i -> pokeElemOff p i 0) [0, 1, 2]
-  rs <- newIORef mempty
-  pure (Budget l cs rs)
+  cs <- mallocForeignPtrArray 2
+  withForeignPtr cs $ \p -> mapM_ (\i -> pokeElemOff p i 0) [0, 1]
+  Budget l cs <$> newIORef mempty <*> newIORef Nothing
 {-# NOINLINE newBudget #-}
 
-{- | Note a comparison with copies, made at a site, and go on with the
-value. Comparisons are numbered in the order the evaluation makes them,
-which every batch of the double backend makes alike (design §8.2), and
-one is kept when a copy disagrees with the result. Not dupable, since a
-number must be taken once. The value makes every call its own.
+{- | Where an evaluation is, among the double backend's copies (design
+§8.2): the copies it carries, whether it is the evaluation of the whole
+batch, whether it follows the nominal path, and its place below the
+branch points that split the copies, with a count of the branch points
+it has reached itself. The count is the evaluation's own, so a branch
+point has the same place in every batch, whatever the other groups of a
+split do. And the copies, by global number, that an earlier branch point
+this evaluation is inside took along although their own scrutinee
+chose another alternative: they have left the evaluated path.
 -}
-remark :: Budget -> Site -> Split -> a -> a
-remark b site sp x = unsafePerformIO $ withForeignPtr b.counters $ \p -> do
-  n <- peekElemOff p 2
-  pokeElemOff p 2 (n + 1)
-  modifyIORef' b.remarks (noted n site sp)
-  pure x
-{-# NOINLINE remark #-}
+data Context = Context
+  { members :: Members
+  , whole :: Bool
+  , nominal :: Bool
+  , place :: [Int]
+  , counter :: IORef Int
+  , departed :: IntSet
+  }
 
-{- | The warnings so far: read after the value they came from has been
+{- | A context with its own count and no copy departed. Its last argument
+keeps two from sharing one.
+-}
+newContext :: Members -> Bool -> Bool -> [Int] -> a -> Context
+newContext m whole nominal place x = unsafePerformIO $ do
+  _ <- evaluate (x `seq` ())
+  counter <- newIORef 0
+  pure (Context m whole nominal place counter IntSet.empty)
+{-# NOINLINE newContext #-}
+
+{- | Note that an evaluation reached a branch point with copies: their own
+alternatives, in the order of the context's copies, the copies the
+scrutinee already says are off their path, the alternative the
+evaluation takes, and whether the copies split there. Only the copies of
+the group being evaluated count, if any is. The result is the copies off
+their path in the alternative taken: those before, and, unless the copies
+split, those whose own alternative is another. Not dupable, since the
+context's count is taken once; the alternatives make every call its own.
+-}
+reach ::
+  Budget ->
+  Context ->
+  Site ->
+  Int ->
+  Cause ->
+  Bool ->
+  IntSet ->
+  VU.Vector Int ->
+  IntSet
+reach b ctx site taken cause split left alts = unsafePerformIO $ do
+  n <- readIORef ctx.counter
+  writeIORef ctx.counter (n + 1)
+  group <- readIORef b.current
+  let everyone = memberVector ctx.members
+      places = case group of
+        Nothing -> Nothing
+        Just g -> Just (VU.findIndices (inSorted g) everyone)
+      counted = maybe alts (VU.backpermute alts) places
+      globals = maybe everyone (VU.backpermute everyone) places
+      rows =
+        IntMap.fromList
+          [ (a, k)
+          | (a, k) <- zip [0 ..] (VU.toList (alternativeCounts counted))
+          , k > 0
+          ]
+      off = IntSet.union ctx.departed left
+      already
+        | IntSet.null off = 0
+        | otherwise = VU.length (VU.filter (`IntSet.member` off) globals)
+      leaving
+        | split = IntSet.empty
+        | otherwise =
+            IntSet.fromList
+              (VU.toList (VU.ifilter (\i _ -> VU.unsafeIndex alts i /= taken) everyone))
+  unless (VU.null counted)
+    $ modifyIORef'
+      b.branches
+      ( pend
+          site
+          Reach
+            { position = ctx.place ++ [n]
+            , nominal = if ctx.nominal then Just taken else Nothing
+            , cause
+            , rows
+            , departed = already
+            , split
+            , counted =
+                if ctx.whole && isNothing group then Nothing else Just (VU.toList globals)
+            }
+      )
+  pure (IntSet.union off leaving)
+{-# NOINLINE reach #-}
+
+{- | Evaluate a value for a group of copies, by global number: its branch
+points count only them. The group in force before is restored after.
+-}
+within :: Budget -> VU.Vector Int -> a -> a
+within b g x = unsafePerformIO $ do
+  before <- readIORef b.current
+  writeIORef b.current (Just g)
+  r <- evaluate x
+  writeIORef b.current before
+  pure r
+{-# NOINLINE within #-}
+
+-- | Whether a number is in an ascending vector.
+inSorted :: VU.Vector Int -> Int -> Bool
+inSorted v x = go 0 (VU.length v)
+ where
+  go lo hi
+    | lo >= hi = False
+    | otherwise =
+        let mid = (lo + hi) `div` 2
+            y = VU.unsafeIndex v mid
+         in case compare x y of
+              EQ -> True
+              LT -> go lo mid
+              GT -> go (mid + 1) hi
+
+-- | How many of the alternatives are each number, from 0 to the largest.
+alternativeCounts :: VU.Vector Int -> VU.Vector Int
+alternativeCounts as
+  | VU.null as = VU.empty
+  | otherwise =
+      VU.accumulate (+) (VU.replicate (VU.maximum as + 1) 0) (VU.map (,1) as)
+
+{- | The branch points so far: read after the value they came from has been
 evaluated, which the first argument forces.
 -}
 remarksAfter :: a -> Budget -> Remarks
 remarksAfter x b = unsafeDupablePerformIO $ do
   _ <- evaluate x
-  readIORef b.remarks
+  remarksOf <$> readIORef b.branches
 {-# NOINLINE remarksAfter #-}
 
 {- | Count one step of the evaluation of the given term: 'False' once the

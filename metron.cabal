@@ -52,6 +52,7 @@ library
     , Metron.Primitive.Types
     , Metron.Primitive
     , Metron.Batch
+    , Metron.Branch
     , Metron.Builtin
     , Metron.Codebase
     , Metron.Core
