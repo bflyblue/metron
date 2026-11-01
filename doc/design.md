@@ -6095,6 +6095,19 @@ the same term runs under any backend that has the built-ins it uses.
     assumption the language never makes elsewhere, so `±` stays refused
     under `double`. A computation that mixes `±` and `±σ` runs under
     `affine`.
+  - **The copies run in parallel batches** (decided by the owner,
+    2026-11-01), for `double` with `samples N > 0` only. With `:set cores
+    K` (default: the machine's cores), the expression is evaluated K times
+    in parallel, each evaluation carrying its batch of about N/K copies in
+    lockstep; parallelising each operation across copies would cost a
+    synchronisation per operation, too fine at about 0.1 µs a copy. Since a
+    copy's draws and roundings are keyed by its global copy number, not by
+    evaluation order, a result is identical for every K. The nominal IEEE
+    value is computed once. Batches combine exactly: means and variances
+    by the parallel update (Chan et al.), samples concatenated for
+    quantiles, unstable-branch flags by union. The `steps` limit counts all
+    batches together; the `memory` limit is the process's and covers them.
+    `affine` and `samples 0` are unaffected.
 - **`double`'s built-ins are the same under every setting,** so the
   before-running check depends only on `:backend`. `errorOf x` is the
   absolute error estimate (the bound under `samples 0`, the scaled spread
