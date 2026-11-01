@@ -146,10 +146,14 @@ logApprox :: Precision -> Rational -> Approx
 logApprox p x
   | x == 1 = (0, 0)
   | otherwise =
-      let (k, y) = reduce (0 :: Integer) x
+      let (k, y) = reduce k0 (x / 2 ^^ k0)
           z = (y - 1) / (y + 1)
        in addA (scaleA (fromInteger k) (ln2Approx (p + 4))) (scaleA 2 (atanhApprox p z))
  where
+  -- The power of two, to within one, from the sizes of x's parts: halving
+  -- one step at a time took 330000 steps of a 100000-digit rational for
+  -- @log 1e-99999@.
+  k0 = toInteger (integerLog2 (numerator x)) - toInteger (integerLog2 (denominator x))
   reduce k y
     | y >= 2 = reduce (k + 1) (y / 2)
     | y < 1 = reduce (k - 1) (y * 2)

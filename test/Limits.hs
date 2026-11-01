@@ -9,6 +9,7 @@ more than the margin fails with a heap overflow instead of finishing.
 module Limits (Measured, measure, limitTests) where
 
 import Control.Exception (bracket_, evaluate)
+import Control.Monad (join)
 import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Stats (GCDetails (..), RTSStats (..), getRTSStats)
@@ -58,7 +59,7 @@ inside them, as the executable runs an input.
 runIO :: Limits -> [Text] -> IO (Either Text [Text])
 runIO l ls = do
   r <- runLimited l (evaluate (forced (run ls)))
-  pure (r >>= id)
+  pure (join r)
  where
   forced r = case r of
     Left err -> T.length err `seq` r

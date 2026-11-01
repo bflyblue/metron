@@ -1037,7 +1037,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
               (d1 ++ d2)
               (dimMul dim1 dim2)
               (combine (hintMul p) h1 h2)
-              (V.concatMap (\x -> V.map (\y -> sized cfg.limits =<< mulM p <$> x <*> y) ys) xs)
+              (V.concatMap (\x -> V.map (\y -> do x' <- x; y' <- y; sized cfg.limits (mulM p x' y')) ys) xs)
           )
   -- Contracting product: the left operand's last index against the right
   -- operand's first.
