@@ -6108,6 +6108,67 @@ the same term runs under any backend that has the built-ins it uses.
     quantiles, unstable-branch flags by union. The `steps` limit counts all
     batches together; the `memory` limit is the process's and covers them.
     `affine` and `samples 0` are unaffected.
+
+  *As built (2026-11-01): Monte Carlo.* `Metron.Double`'s `noiseM` and
+  `uncertainM`. A unit unknown is a number whose value is 0 and whose
+  copies are standard normal draws; `x ±σ e` is then `x + |e|·z` by the
+  backend's own `+` and `*`, so the shown value is `x`'s IEEE value, the
+  sum and the product round as the copies do (`:set rounding`), and the
+  `v ±σ P` form, which goes through `gauss` and Cholesky, gets correlated
+  draws for nothing. `|e|` as affine sizes the nudge, so a label reused
+  with a negative `e` is not anti-correlated.
+  - *The key* of an unknown is the first eight bytes of the SHA-256 that
+    names the same nudge under `affine` (`Affine.originId`: kind, owner
+    stamp, path, component, and the midpoint, here `x`'s IEEE value; the
+    label alone for `#label`), one hash per declared component.
+  - *The generator* (chosen here): Box–Muller on two uniforms. From the
+    key, the seed and the copy number, SplitMix's finaliser gives a base
+    word, then two words by finalising `base + 1` and `base + 2`; each
+    gives a uniform `u = (⌊w / 2¹¹⌋ + 1)·2⁻⁵³` in `(0, 1]`, so `log u₁` is
+    finite; `z = √(−2 ln u₁)·cos(2π u₂)`. Only the cosine of the pair is
+    used, so a draw depends on its key, seed and copy and on nothing else:
+    not on order, not on how many other unknowns there are. The largest
+    `|z|` it can give is `√(2·53 ln 2) ≈ 8.6`, a tail cut far beyond
+    anything 10⁵ samples resolve. Checked: `gauss 2` at 10⁴ copies has
+    mean, deviation and correlation within five standard errors of 0, 1
+    and 0.
+  - *`mid` and `sd`* are the copies' mean and their deviation with `N −
+    1`, each a number known exactly. A number with no copies under samples
+    (an exact constant such as `errorOf x`) has its value as its mean and
+    0 as its deviation.
+  - *The check* depends on `:set samples` for `±σ`, `gauss` and `noise` as
+    well as `mid` and `sd`: the three forms must pass it under `N > 0`
+    too, so "these two only" above is loose. `Metron.Scalar.refusalOf`
+    answers per backend, samples and name: available, lacked, or needing
+    samples; the memo still holds names only. Under `samples 0`: "`` `sd`
+    needs `:set samples N` under the double backend ``", or, through
+    definitions, "`` `orbitError` uses `sd` (through `budgetOf`), which
+    needs `:set samples N` under the double backend ``". `±`, `bound`,
+    `covariance` and `crossCovariance` are refused under every setting.
+  - *Checked against `affine`.* The orbital period `2π√(a³/(G·M))` with
+    CODATA's `astro.G` and `M = 5.9722e24 kg ±σ 6e20 kg` at 10⁴ copies,
+    rounding to nearest: `sd` 0.30270 s against affine's first-order
+    0.30002 s (0.9 %, within five standard errors of a normal sample's
+    deviation, `5/√(2(N − 1))` ≈ 3.5 %); the same for a product of two
+    small-σ values. `n * n` for `n = 0 ±σ 1`, which affine marks
+    non-linear and refuses `sd` of: mean 1.015 and deviation 1.441, within
+    five standard errors (`√2/√N` for the mean; `√(56/N)/(2√2)` for the
+    deviation, n²'s fourth central moment being 60).
+  - *Cost.* The copies stay one unboxed vector per number, computed in
+    lockstep. The orbital period above with its `mid` and `sd`, a seeded
+    session started each time, single core, rounding at random: 0.07 s
+    and 33 MB at 10³ copies, 0.11 s and 34 MB at 10⁴, 0.40 s and 58 MB at
+    10⁵. A heavier workload, 100 positions each from ten Newton steps of
+    Kepler's equation, at 10⁴ copies: 16 s, 38 MB, about 25 ns a copy per
+    operation.
+  - *Open, for the owner.* (1) `noise` is drawn as a standard normal, as
+    written, but it is `±`'s primitive (`x ± e` is `x + e * noise 1`), so
+    `x + e * noise 1` runs where `x ± e` is refused, and gives a bound a
+    σ. Refusing `noise` with `±` would close it. (2) The printed `± e`,
+    `errorOf` and `digitsOf` are still CESTAC's `τ·s/√N`, the error of
+    the copies' mean, not the spread of the input: at 10⁴ copies `1 ±σ
+    0.1` prints `1 ± 0.0020 (estimate, 10000 samples)`, and `sd` is the
+    way to read its σ.
 - **`double`'s built-ins are the same under every setting,** so the
   before-running check depends only on `:backend`. `errorOf x` is the
   absolute error estimate (the bound under `samples 0`, the scaled spread
@@ -6236,7 +6297,8 @@ operation and its operands, so an estimate does not depend on the order
 lazy values are forced in. The estimate is `τ·s/√N`, the copies' sample
 deviation scaled by Student's t at 97.5 % for `N − 1` degrees of freedom
 (a table to 30, then its expansion about the normal). `:set samples`
-takes 0 or 2 to 1000: one copy has no spread. `:set seed` defaults to 1.
+takes 0 or 2 to 100000 (10⁵, for Monte Carlo; one copy has no spread).
+`:set seed` defaults to 1.
 Few copies can all agree by chance, and the value then prints as exact:
 `0.1 + 0.2 + 0.3 + 0.4 + 0.7 - 1.7` at three samples is `0 ± 6.4e-16`
 at seed 1 and `0` at seed 3, the method's known weakness at small N.
@@ -6294,8 +6356,9 @@ bodies' measured constants, `astro.kepler`'s solvers (which use `mid`,
 `linalg.jointCovariance`. They are refused under double, as the design
 intends; a double port of them is a separate decision.
 
-**Not built.** `:trace`, open above. `samplesOf`. `--set` still takes the
-limits only; `samples` and `seed` are `:set`'s.
+**Not built.** `:trace`, open above. `samplesOf`. (`--set` now takes
+every setting `:set` does, `samples`, `seed` and `rounding` included: see
+the as-built note under "Declared σ is sampled".)
 
 ## 9. Module layout and libraries
 
