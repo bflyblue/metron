@@ -16,30 +16,36 @@ module Metron.Encode (
   encType,
 ) where
 
-import Data.Bits ( shiftR, (.&.), (.|.) )
-import Data.ByteString ( ByteString )
-import Data.ByteString.Builder
-    ( Builder, word8, byteString, toLazyByteString )
-import Data.Text ( Text )
-import Metron.Core ( Hash(..), Label(..) )
-import Metron.Dimension ( dimAtoms, Dim, DimAtom(DVar, Base) )
-import Metron.Type.Base
-    ( Arg(..),
-      Axis(..),
-      Frame(space, slot, axes),
-      FrameSlot(..),
-      Kind(..),
-      Len(..),
-      Role(..),
-      Shape(..),
-      Space(base, slot, shape, dim),
-      SpaceSlot(..),
-      Type(..),
-      TypeDef(label, params, constructors) )
-import Data.ByteString.Lazy qualified as BL ( toStrict )
-import Data.ByteString qualified as BS ( length, pack, empty )
-import Crypto.Hash.SHA256 qualified as SHA256 ( hash )
-import Data.Text.Encoding qualified as TE ( encodeUtf8 )
+import Crypto.Hash.SHA256 qualified as SHA256 (hash)
+import Data.Bits (bit, shiftR, (.&.), (.|.))
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS (length)
+import Data.ByteString.Builder (
+  Builder,
+  byteString,
+  toLazyByteString,
+  word8,
+ )
+import Data.ByteString.Lazy qualified as BL (toStrict)
+import Data.Text (Text)
+import Data.Text.Encoding qualified as TE (encodeUtf8)
+import GHC.Num (integerLog2)
+import Metron.Core (Hash (..), Label (..))
+import Metron.Dimension (Dim, DimAtom (Base, DVar), dimAtoms)
+import Metron.Type.Base (
+  Arg (..),
+  Axis (..),
+  Frame (axes, slot, space),
+  FrameSlot (..),
+  Kind (..),
+  Len (..),
+  Role (..),
+  Shape (..),
+  Space (base, dim, shape, slot),
+  SpaceSlot (..),
+  Type (..),
+  TypeDef (constructors, label, params),
+ )
 
 -- | Length-prefixed UTF-8.
 text :: Text -> Builder
@@ -58,15 +64,28 @@ varint n
 -- | Sign byte, then the magnitude as a length-prefixed big-endian byte string.
 sint :: Integer -> Builder
 sint n =
-  let mag = magnitude (abs n)
+  let m = abs n
+      len = if m == 0 then 0 else fromIntegral (integerLog2 m) `div` 8 + 1
    in word8 (if n < 0 then 1 else 0)
-        <> varint (fromIntegral (BS.length mag))
-        <> byteString mag
- where
-  magnitude 0 = BS.empty
-  magnitude m = BS.pack (reverse (go m))
-  go 0 = []
-  go m = fromIntegral (m .&. 0xFF) : go (m `shiftR` 8)
+        <> varint (toInteger len)
+        <> bigEndian len m
+
+{- | The @len@ low bytes of a non-negative integer, most significant first.
+A long integer is split in halves, so that it costs @n log n@: shifting
+it by one byte at a time copied it once per byte, and the encoding of a
+100000-digit operand (an exact @1e-99999@ in a nudge's identity) took a
+gigabyte.
+-}
+bigEndian :: Int -> Integer -> Builder
+bigEndian len m
+  | len <= 32 =
+      foldMap
+        (\i -> word8 (fromIntegral (m `shiftR` (8 * i))))
+        [len - 1, len - 2 .. 0]
+  | otherwise =
+      let low = len `div` 2
+       in bigEndian (len - low) (m `shiftR` (8 * low))
+            <> bigEndian low (m .&. (bit (8 * low) - 1))
 
 {- | The canonical encoding of a declared type (design §6.1): parameter kinds,
 constructors' field types, label. Names are not part of it.

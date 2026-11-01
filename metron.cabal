@@ -117,6 +117,8 @@ test-suite metron-test
     , Astro
     , Gen
     , Limits
+    , Precision
+    , Support.ExactApprox
     , Support.Render
   build-depends:
     , base ^>=4.21.0.0

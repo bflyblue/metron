@@ -20,8 +20,10 @@ import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Gen (exprDepth, genProgram, instanceOf)
 import Limits (limitTests, measure)
+import Precision (precisionTests)
 import Metron.Affine hiding (Builtin, DivideByZero)
 import Metron.Affine qualified as A
+import Metron.Numerical.Approx (isqrt)
 import Metron.Builtin
 import Metron.Codebase (
   Codebase (..),
@@ -143,6 +145,7 @@ main = do
       , partFTests
       , roleTests
       , astroTests
+      , precisionTests
       ]
 
 -- Term-building helpers -------------------------------------------------
@@ -4871,7 +4874,7 @@ affineTests =
             [ "1.4142135624 ± 1.4e-9"
             , "  kind   source  contribution  share"
             , "  bound  f @0    1e-9          100% of bound"
-            , "  bound  sqrt    1e-26         0% of bound"
+            , "  bound  sqrt    9.3e-28       0% of bound"
             ]
     , testCase "the library's G carries its σ and a mass derived from it inherits it" $ do
         evalU ["astro"] "G" @?= Right ["6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
@@ -4993,7 +4996,7 @@ affineTests =
         evalP "cholesky [4, 2 ± 0.1; 2, 3]"
           @?= Left
             "error: cholesky needs a symmetric matrix: symmetry of entries .0.1 and .1.0 cannot be established"
-        evalP "[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2" @?= Right ["[0 ±σ 1, 0.0 ±σ 1.0] m"]
+        evalP "[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2" @?= Right ["[0 ±σ 1, 0 ±σ 1] m"]
     , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
         runLinesP
           [ "let w = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"
@@ -5608,7 +5611,7 @@ affineTests =
         $ \(Positive a) (NonNegative k) ->
           -- a long integer, as an uncertain value's endpoints become
           let n = (a :: Integer) * 7 ^ (k `mod` 400 :: Int)
-              s = floor (fst (sqrtApprox 0 (fromInteger n))) :: Integer
+              s = isqrt n
            in within caseLimit (s * s <= n && n < (s + 1) * (s + 1))
     , -- A generated case that once took ten seconds: the integer square
       -- root started Newton's method from n itself, one step per halving
