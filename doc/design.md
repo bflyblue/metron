@@ -717,7 +717,10 @@ A magnitude is one of two things.
 
 **`Exact Rational`.** Produced by literals, units, `+ - * /`, integer `^`, `abs`,
 `floor`, `ceil`, `round`, and by any operation whose inputs are all exact. Exact
-values stay exact forever and compare exactly.
+values compare exactly, and stay exact while they are short: an exact result
+of `+ - * /` or `^` longer than a size tied to the precision is rounded to
+working precision instead, the rounding a bound nudge (§3.2.8, "exact while
+small").
 
 **`Affine { mid, nudges, slack }`.** An approximate value, written
 
@@ -797,8 +800,13 @@ apart (decided by the owner).
   enclosure, then unbounded. The measure is kept squared and exact, rounded
   up to three digits, and a value keeps the largest measure, with its
   operation, of everything it was computed from (`Skew`). Functions with a
-  global second-derivative bound also use that bound across σ, so equal
-  endpoint derivatives cannot hide oscillation. A zero first-order model
+  second-derivative bound (`sin`, `cos`, `tan`, `atan`, `tanh`) also use
+  that bound across σ, so equal endpoint derivatives cannot hide
+  oscillation: the largest `|f''|` over the bound enclosure widened by σ on
+  each side, against `|f'(m)|` (as built in §3.2.8: once the bound over the
+  whole line, which overstated `atan (75 ±σ 0.075)` a hundred-thousandfold;
+  `atan2` also divides by the larger operand, and `tan` and `tanh` are
+  lifted themselves rather than as quotients). A zero first-order model
   does not establish equality if it has discarded a statistical remainder,
   even below the warning threshold. In particular `n*n == n*n` is currently
   undecidable: discarded remainders have no identity. Linear cancellation
@@ -903,9 +911,11 @@ from `x`; only the small nonlinear leftover became an anonymous-looking `e₂`.
 #### 3.2.3 Where approximation enters
 
 Exact values become affine only at the nonlinear builtins above, at the constants
-`pi` and `e`, at `sqrt` of a non-square, and at `±`, `±σ`, `noise`, `gauss`.
+`pi` and `e`, at `sqrt` of a non-square, at `±`, `±σ`, `noise`, `gauss`, and
+at an exact result too long to keep (§3.2.8, "exact while small").
 Approximation is
-contagious through arithmetic. A program that never touches those stays exact.
+contagious through arithmetic. A program that never touches those, and whose
+exact numbers stay short, stays exact.
 
 #### 3.2.4 Nudge identity is content-addressed
 
@@ -1034,8 +1044,9 @@ any operation.
 Midpoints are rounded to `p` digits after every nonlinear operation, with the
 rounding error accounted for (§3.2.7). This is the approach of the Arb library.
 `p` is the `precision` setting plus guard digits (default `precision + 4`). A
-value is therefore a pure function of the term and `p`. Exact values are never
-rounded, and linear operations (`+`, `-`, scaling by an exact value) never round,
+value is therefore a pure function of the term and `p`. Exact values are not
+rounded while they are short ("exact while small", below), and linear operations
+on forms (`+`, `-`, scaling by an exact value) never round,
 which is what keeps cancellation exact.
 
 Every other rational a nonlinear operation produces is kept short too, at
@@ -1089,6 +1100,177 @@ and function is held to this: a non-linear function's result is always at
 working precision (its value is rarely an exact rational), and no built-in
 returns a rational longer than the precision allows unless it is exact and
 short.
+
+**§3.2.8 exact while small, as built (2026-11-01).**
+
+*The rule* (`Metron.Affine.exactResult`). An exact result's length is the
+shorter of its numerator and denominator. Its size is the `digits` limit's
+concern (§8.1), so `2^100000`, `1e-99999` and `1/3^300` are short, and the
+cost of exact arithmetic is bounded by the size and twice the length
+together. The limit is **eight times `p + 4` digits**, 224 at the default
+precision (`exactLimit`). It was chosen by measurement: the longest exact
+result of ordinary arithmetic in the test suite is 122 digits at the default
+precision, the products of a spinning chart's exact rotation, which a test
+then cancels in a finite difference, so the limit is about twice that; the
+tutorial's output is unchanged. A product of eight values at working
+precision stays exact, an exact operation at the limit costs about
+sixty-four times one at working precision (microseconds), and an iteration
+that doubles its length reaches the limit within `log₂ (8 (p + 4))` steps.
+Past the limit the result is rounded to `p + 4` significant digits, and the
+rounding is a fresh bound nudge named `add`, `mul` or `div` with the
+operands (in order for a sum or a product, so `a + b` and `b + a` are one
+unknown) and the precision. An integer power squares through `mul`, so
+`(2/3)^1000` is exact until a square passes the limit and at working
+precision after. `addM`, `subM`, `scaleM` and `sumM` take the precision.
+Linear operations on forms never round: `x - x` is `0` and `(x + 1/3) - x`
+is `1/3`. A comparison takes the exact difference of its operands, never
+rounded. What changes: a long exact value is now an enclosure, so
+`(1/3)^500 + 1 - 1` prints `0.0000000000000000000…` (within one unit of the
+true `2.7e-239`) where it printed the exact value.
+
+*The logistic map*, `iter (1/3) N` for `x ↦ 3.7 x (1 − x)`: exact through its
+seventh step, then at working precision, every step the same cost,
+about 0.4 ms at precision 20 and 5 ms at 200. Twenty steps took 13.4 s and
+now take 0.10 s; 250 steps at precision 200 agree with bc to every printed
+digit. The map is chaotic: the enclosure grows at its Lyapunov rate, about
+e^0.35 a step, until the 64-nudge cap folds nudges into slack, which then
+grows by up to 3.7 a step. It is meaningful for about 100 steps at precision
+20 and 250 at precision 200; beyond, it covers more than `[0, 1]`, the
+square diverges, and the `digits` limit stops it. That is the rigorous
+answer, not a cost.
+
+*Series at working precision* (`Metron.Numerical.Approx`). Every series is
+summed in fixed point, an integer counting units of `2^-b`, each step's
+rounding counted in the bound (`fixedSum`, `oddPowerSeries`); in exact
+rationals each term was longer than the last. π and `ln 2` are computed once
+per precision bucket (64, 128, 256, … digits) and kept, rounded to the
+precision asked. `sin` and `cos` reduce modulo `π/2` with π to as many more
+digits as the angle has before its point, and again as many as the reduced
+angle has zeros after it. `log` puts its reduced argument in fixed point at
+once. `sqrt` takes the root of a number of about `2p` digits, whatever the
+argument's length. `tan` and `tanh` are new approximations, with their
+slopes. `decimalExponent` estimates from bit lengths and corrects, where it
+counted by tens. `Metron.Encode.sint` encoded a long integer a byte at a
+time, copying it once per byte: a nudge id over `1e-99999` took 1.25 GB; it
+splits in halves now, byte for byte the same encoding. The old
+exact-rational series are kept as a test oracle (`test/Support/ExactApprox.hs`):
+for random arguments the two enclosures overlap.
+
+*Results that kept long rationals.* A product whose every linear coefficient
+fell below the grid (§3.2.7) left its base without nudges, and `withFresh`
+then skipped rounding the midpoint: a step of the logistic map kept a
+115-digit midpoint. Such a midpoint is shortened to `p + 4` digits now.
+`enclose` shortens its value as any operation's result is, so `expm`'s
+series, scaled by `1/k` and summed, no longer keeps the digits of
+`lcm (1, …, K)`. `inverse`, whose last step is linear, settles its
+non-exact entries the same way, each with a nudge named by its position.
+
+*The second-order estimate for `atan2`* (§3.2) was wrong. For `y = 1 ±σ
+0.001`, `x = 0.03 ±σ 0.001` the angle's Hessian is about `[[0.06, 1], [1,
+−0.06]]` and its gradient about `(−1, 0.03)`, so the second-order term's
+standard deviation, `σ² √(½ tr H²)`, is `1e-6` against a first-order σ of
+`1e-3`: 0.1%. It reported "second-order term 120000%", for two reasons.
+`atan2` took `atan (y/x)` whenever `x > 0`, a quotient near 33 whose own
+curvature (7%, real) the arctangent then undoes; and `atan`'s measure used
+its bound over the whole line, `|atan''| ≤ 0.65`, against its slope
+`1/(1 + 33²)`. `atan2` now takes the arctangent of the smaller operand over
+the larger by midpoint, falling back to the other when the divisor's
+enclosure may be zero. Every function lifted with a curvature bound (`sin`,
+`cos`, `atan`, and now `tan` and `tanh`) bounds `|f''|` over the bound
+enclosure widened by σ on each side. `tan` and `tanh` are lifted themselves:
+as quotients, `tanh (5 ±σ 0.1)` was marked 78000% where its term is 20%
+(the numerator's and denominator's σ cancel in the quotient to first order
+but not in the product's measure). The product's measure,
+`√((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²)`, is exact for a product of two linear forms
+(Isserlis), so `*` was right; `/`, `*` of a reciprocal, overstates by about
+√2; a composition takes the largest of its steps' measures, so `asin (0.99
+±σ 0.001)` reads 12% against 5%, and `atan2` at 45° with σ a thirtieth of
+the radius 7% against 2.4%. Measured after, against `|f''| σ / |f'|`:
+
+| value | before | after | `\|f''\| σ / \|f'\|` |
+|---|---|---|---|
+| `atan2 (1 ±σ 0.001) (0.03 ±σ 0.001)` (lengths in m) | 120000% | not marked | 0.1% |
+| the inclination of a near-polar orbit from `fromState` on a `±σ` state | 43000% | not marked | about 0.002% |
+| `atan (75 ±σ 0.075)` | 42000% | not marked | 0.2% |
+| `tanh (5 ±σ 0.1)` | 78000% | 24% | 20% |
+| `asin (0.99 ±σ 0.001)` | 1800% | 12% | 5% |
+| `sin ((0.01 ±σ 0.02) rad)`, `cos ((1.5 ±σ 0.02) rad)` | 2%, 2% | not marked | 0.02%, 0.14% |
+| `tan ((1.5 ±σ 0.001) rad)` | 2.9% | 2.9% | 2.8% |
+| `exp`, `log`, `sqrt`, `sinh`, `cosh` at `5 ±σ 0.1` | 11%, 2%, 1%, 11%, 11% | the same | 10%, 2%, 1%, 10%, 10% |
+
+`tan` of an enclosure that reaches a pole is a domain error ("reaches a pole,
+an odd multiple of π/2"), where it was a division by zero; a σ that reaches
+one makes the value unbounded.
+
+*The audit.* Each built-in: whether its result is at working precision (no
+rational longer than `p + 5` digits unless exact and short), whether every
+rounding is in its bound, how its internals run, and its cost: the wall
+time of the executable at precisions 20, 50 and 200, including about 0.09 s
+to start, before → after where it changed. "0.1 s" is the start alone.
+Tested at those precisions against bc to 260 digits (every printed digit
+within one unit of the last, as many digits as the precision), and at
+working precisions 24, 54 and 204 for the length of every rational, from an
+exact argument, one with a bound and one with a σ (`test/Precision.hs`).
+
+| built-in | result | roundings | internals | cost at 20, 50, 200 | fix |
+|---|---|---|---|---|---|
+| `+`, `-`, `neg` | exact while short; forms linear | an exact result's rounding is a nudge, `add` | — | 0.1 s | exact while small |
+| `*`, `emul`, `scale`, `outer` | exact while short; a product of forms shortened | `mul`; the product's remainder | — | 0.1 s | exact while small |
+| `/`, `ediv`, `to` | exact while short; otherwise `*` and `recip` | `div`; `recip` | — | 0.1 s | exact while small |
+| `^` (integer) | squaring through `*` | each square's | `log₂ n` products | 0.1 s (`(2/3)^1000`) | exact while small |
+| `sqrt` | working precision; exact for squares | yes | integer root of `2p` digits | 0.1 s; `sqrt 1e-99999` 24 s, 924 MB → 0.14 s, 19 MB | root at relative precision |
+| `exp` | working precision | yes | fixed point; squares rounded at their own digit | 0.1 s | fixed point |
+| `log` | working precision | yes | fixed point; `ln 2` kept | 0.1 s; `log 1e-99999` 28 s, 104 s, past 120 s → 0.1 s | argument in fixed point; encoder |
+| `sin`, `cos` | working precision | yes | reduction mod `π/2`, π kept; fixed point | 0.1 s; `sin 1e10` at 200, 1.5 s → 0.1 s | fixed point, π kept, local curvature |
+| `tan` | working precision | yes | sine over cosine, at more digits near a pole | 0.1 s | lifted itself |
+| `asin`, `acos` | `atan (x / √(1 − x²))` | yes | as `sqrt`, `/`, `atan` | at 200, 4.7 s → 0.1 s | through `atan` |
+| `atan` | working precision | yes | fixed-point halvings and series | at 200, 1.0 s → 0.1 s | local curvature |
+| `atan2` | working precision | yes | as `/` and `atan` | at 200, 1.5 s → 0.1 s | the larger operand divides |
+| `sinh`, `cosh` | working precision | yes | series near zero, `exp` beyond | 0.1 s | fixed point |
+| `tanh` | working precision | yes | sine over cosine near zero, `(1 − q)/(1 + q)` beyond | 0.1 s | lifted itself |
+| `pi` | working precision | yes | Machin in fixed point, kept per bucket | 0.1 s | kept |
+| `abs` | linear, or one nudge across zero | yes | — | 0.1 s | — |
+| `floor`, `ceil`, `round` | exact integers | decided as comparisons | — | 0.1 s | — |
+| `==`, `/=`, `<`, `<=`, `>`, `>=` | booleans | the exact difference, never rounded | — | 0.1 s | exact difference |
+| `norm` | `sqrt` of a sum of products | yes | — | 0.1 s | — |
+| `dot` (`·`, `@`), `contract`, `transformBy` | sums of products | yes | — | 0.1 s | — |
+| `wedge`, `cross` (`star (a ∧ b)`), `star` | differences of products | yes | — | 0.1 s | — |
+| `inverse` | working precision | yes, and a settling nudge per entry | Gauss–Jordan | 0.1 s | entries settled |
+| `det` | working precision | yes | elimination, product of pivots | 0.1 s | — |
+| `cholesky` | working precision | yes | Cholesky–Banachiewicz | 0.1 s | — |
+| `expm` | working precision | yes | Rodrigues for one plane; else the series in affine arithmetic, each term a matrix product of forms with up to 64 nudges | exact 2 × 2 0.1 s; 2 × 2 of `sqrt`s 0.13, 0.23, 3.5 s; 3 × 3 0.23, 0.65, 13 s (unchanged) | `enclose` shortens |
+| `covariance`, `crossCovariance` | exact by definition: products of coefficients of `p + 4` digits | none | — | 0.1 s | — |
+| `mid`, `bound`, `sd` | exact; `sd` a root at working precision unless the variance is a square | `sd`'s root | — | 0.1 s | — |
+| `noise`, `gauss`, `±`, `±σ` | unit or declared coefficients | — | — | 0.1 s | — |
+| `seq`, `vmap`, `vzipWith`, `timap`, `indices`, `transpose`, `permute`, `slice`, the chart primitives | structural, or sums and products above | inherited | — | 0.1 s | — |
+
+There is no `min` or `max` function (`min` is the minute); the library's
+functions (`cross`, `trace`, `asinh`, …) are compositions of these.
+
+*Left open.*
+
+- **A linear loop on a form grows.** The owner's rule keeps linear operations
+  on forms unrounded, so `x + 1/k` for an affine `x` collects the
+  denominators: `H₃₀₀₀₀` summed exactly, which rounds once past the limit
+  and is a form after, takes 13 s before and after, its midpoint's
+  denominator about `lcm (1, …, k)`. A series written in the language from
+  exact terms, `Σ xᵏ/k!`, takes the same path. A proposal for the owner:
+  hold a linear result's midpoint and coefficients to the same limit,
+  rounding past it with a fresh nudge named by the operation and its
+  operands. `x - x` stays `0`, and `(x + c) - x` stays `c` whenever the
+  midpoints are short.
+- **`expm` with uncertain entries is slow at high precision**: 13 s for a
+  3 × 3 at precision 200, as before. A product of forms with 64 nudges costs
+  milliseconds there, and the series takes about a hundred terms. Evaluating
+  the polynomial with fewer matrix products (Paterson–Stockmeyer) would
+  cut it about fivefold.
+- **A product of two zero-mean statistical values is marked unbounded**, and
+  the mark survives a sum in which that product is negligible (a value keeps
+  the largest measure of everything it was computed from, §3.2): `fromState`
+  on a state with `0 ±σ 1` components marks the eccentricity and refuses its
+  comparisons. The product's estimate is right; carrying the second-order
+  term's absolute size, scaled by each later slope, and comparing it with
+  the final σ would be the change. A question for the owner.
 
 #### 3.2.9 Comparison
 
@@ -5619,14 +5801,14 @@ RSS, outcome); the numbers in the cause column are the fixes above:
 | `length (range 0 1e8)` | killed at 6 GB, 5.6 s | 4.3 s, 32 MB: `steps` | 4, 6; ten million elements need `:set steps 1e9` |
 | `foldl (\n x -> n + x) 0 (range 0 1e6)` | 3.8 s, 3.3 GB | 2.1 s, 1.4 GB: `depth` | lazy by definition: forcing the result walks a million-deep chain; `foldl'` runs in 32 MB |
 | `reverse (range 0 1e8)` | killed at 6 GB, 5.6 s | 11 s, 3.9 GB: `steps` | the list is kept whole by design; `memory` is next |
-| `iter (1/3) 20`, exact logistic map | 12.9 s, 39 MB | 12.9 s, 40 MB | rationals that double their digits; see below |
+| `iter (1/3) 20`, exact logistic map | 12.9 s, 39 MB | 12.9 s, 40 MB | rationals that double their digits; since exact while small (§3.2.8, as built), 0.10 s, 19 MB |
 | `norm (noise 1000000)` | 60 s timeout, 0.49 GB | 6.8 s, 1.7 GB | 7 |
 | `norm (gauss 1000000)` | 3.4 s, 1.8 GB | 3.1 s, 1.5 GB | a million statistical nudges, about 1.5 KB each, are real |
 | `noise 9000000` | killed at 6 GB, 27 s | 24 s, 4.3 GB: `memory` | within `components`; nine million nudges are real |
 | `(outer (noise 3000) (noise 3000)).0.0` | 0.7 s, 0.67 GB | 0.9 s, 0.80 GB | nine million lazy components, each now checked for `digits` |
 | `(outer (noise 4000) (noise 4000)).0.0` | refused, fixed limit | 0.07 s: refused, `components` | |
 | `2^100000`, `exp 200`, printed | 0.09 s, 32 MB | the same | printing a long exact value is cheap |
-| `log 1e-99999` | 33 s, 0.96 GB | 28 s, 0.97 GB | its series in exact rationals; see below |
+| `log 1e-99999` | 33 s, 0.96 GB | 28 s, 0.97 GB | its series in exact rationals; since its series run in fixed point (§3.2.8, as built), 0.10 s, 19 MB |
 | a cycle's member referenced from outside it, `ev 2` 300000 times in a loop | not measured | 0.81 s, 32 MB (0.46 s for a function that is no cycle's) | a reference re-ties the cycle each time: a constant cost, not a leak |
 
 The test suite, run with every QuickCheck property at 2000 cases under a
@@ -5651,17 +5833,19 @@ stays at 10⁷: the suite builds a 3000 × 3000 outer product, which needs
 
 **What the limits do not stop.**
 
-- *Exact rationals that grow without growing in size.* `iter x k = …
-  iter (x * (1 - x) * 37/10) (k - 1)` from `1/3` doubles the digits of
-  its numerator and denominator each step while `x` stays near 0.7: 20
-  steps take 13 s at 36 MB, 24 steps more than a minute at 142 MB. Few
-  steps, little memory and an ordinary magnitude: only `:set time` stops
-  it, until exact results round past a size tied to the precision
-  (§3.2.8), which a separate task builds.
-- *`log` of a number with many digits*, `log 1e-99999`: its series runs
-  in exact rationals of that length (28 s, 0.97 GB). It belongs to the
-  same precision audit; finding the argument's power of two at once
-  instead of halving it 330000 times took 5 s off.
+- *Exact rationals that grow without growing in size* ~~only `:set time`
+  stops~~: as built, an exact result past a size tied to the precision is
+  rounded (§3.2.8, exact while small, as built). `iter (1/3) 20`, the
+  exact logistic map, took 13 s and takes 0.10 s; `log 1e-99999` took
+  28 s and 0.97 GB and takes 0.10 s and 19 MB, its series in fixed point
+  and its operand's encoding linear. What remains is a *linear* loop on a
+  value that is already an enclosure, `x + 1/k` collecting the
+  denominators of its exact terms (§3.2.8, as built, left open): `H₃₀₀₀₀`
+  takes 13 s.
+- *A chaotic iteration's enclosure grows until it is useless*: the
+  logistic map at working precision is meaningful for about 100 steps at
+  precision 20, then its enclosure covers more than `[0, 1]`, its square
+  diverges, and `digits` stops it. That is the rigorous answer.
 - *Many independent nudges*: each costs about 2 KB, so `norm (gauss
   1000000)` holds 1.5 GB, and `noise 9000000` reaches the 4 GB heap only
   after about 24 s of collections near the limit.

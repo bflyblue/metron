@@ -20,10 +20,8 @@ import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Gen (exprDepth, genProgram, instanceOf)
 import Limits (limitTests, measure)
-import Precision (precisionTests)
 import Metron.Affine hiding (Builtin, DivideByZero)
 import Metron.Affine qualified as A
-import Metron.Numerical.Approx (isqrt)
 import Metron.Builtin
 import Metron.Codebase (
   Codebase (..),
@@ -59,6 +57,7 @@ import Metron.Lexer hiding (TNum, TProj)
 import Metron.Lexer qualified as L
 import Metron.Limits (defaultLimits, newBudget, settingLines)
 import Metron.NameResolution (LabelKind (..), Qualified (..), qualifyName)
+import Metron.Numerical.Approx (isqrt)
 import Metron.Parser
 import Metron.Prelude (
   isLibraryPath,
@@ -77,6 +76,7 @@ import Metron.Type
 import Metron.Type.Match
 import Metron.Type.Syntax (queryScheme)
 import Metron.Unicode qualified as U
+import Precision (precisionTests)
 import System.Directory (
   createDirectoryIfMissing,
   doesDirectoryExist,

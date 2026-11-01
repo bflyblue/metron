@@ -357,9 +357,10 @@ exactLength r = min (bits (abs (numerator r))) (bits (denominator r))
 {- | The longest exact result kept exact, in bits: eight times
 'shortDigits' decimal digits, 224 digits at the default precision
 (design §3.2.8). Measured, the longest exact result of ordinary
-arithmetic in the test suite and the tutorial is 122 digits at the
-default precision (the products of a spinning chart's exact rotation),
-which a finite difference then cancels; the limit is about twice that.
+arithmetic in the test suite is 122 digits at the default precision (the
+products of a spinning chart's exact rotation), which a finite
+difference then cancels; the limit is about twice that, and the
+tutorial's output is unchanged by it.
 A product of eight values at working precision stays exact, and an
 exact operation at the limit costs at most about sixty-four times one
 at working precision, microseconds. An exact iteration that doubles its

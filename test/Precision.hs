@@ -10,9 +10,9 @@ of one number must overlap.
 module Precision (precisionTests) where
 
 import Data.Bits qualified as Bits (shiftR, (.&.))
-import Data.Either (fromRight)
 import Data.ByteString qualified as BS (empty, length, pack)
 import Data.ByteString.Builder (Builder, byteString, toLazyByteString, word8)
+import Data.Either (fromRight)
 import Data.Map.Strict qualified as Map (size)
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)

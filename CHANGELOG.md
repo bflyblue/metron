@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- Exact while small (design §3.2.8, as built): an exact result of `+`,
+  `-`, `*`, `/` or an integer power stays exact while the shorter of its
+  numerator and denominator is within eight times `p + 4` digits (224 at
+  the default precision), and past that is rounded to `p + 4` significant
+  digits, the rounding a bound nudge named `add`, `mul` or `div`. `1/3 +
+  1/6` is still exactly `0.5`, `x - x` still `0`; the exact logistic map's
+  twenty steps took 13 s and take 0.10 s. A long exact value is now an
+  enclosure: `(1/3)^500 + 1 - 1` prints `0.0000000000000000000…` where it
+  printed `2.7…e-239`.
+- Every built-in at working precision: every series is summed in fixed
+  point rather than in exact rationals; π and `ln 2` are computed once per
+  precision and kept; `sqrt` and `log` reduce a long argument at once.
+  `log 1e-99999` took 28 s and 0.97 GB and takes 0.10 s; `sqrt 1e-99999`
+  took 24 s and 0.92 GB and takes 0.14 s; `asin (1/3)` at precision 200
+  took 4.7 s and takes 0.1 s. A nudge's identity no longer costs a copy
+  of a long operand per byte. `inverse` and `expm` no longer return
+  rationals longer than the precision. An audit table of every built-in
+  is in the design.
+- The second-order estimate follows each function's own curvature:
+  `atan2 ((1 ±σ 0.001) * 1 m) ((0.03 ±σ 0.001) * 1 m)` was marked
+  "non-linear, 120000%" where its true second-order term is 0.1%, and a
+  near-polar orbit's inclination from `astro.kepler.fromState` on a `±σ`
+  state with it; neither is marked now. `atan2` divides by the larger
+  operand, and `sin`, `cos`, `tan`, `atan` and `tanh` bound their
+  curvature over the interval, not the whole line. `tan` and `tanh` are
+  lifted themselves (`tanh (5 ±σ 0.1)` read 78000%, now 24%, true 20%).
+  `tan` of an enclosure that reaches a pole is a domain error naming the
+  pole, where it was a division by zero.
+- Small printed changes from tighter bounds: `:budget f 2` for `f x =
+  sqrt x ± 1e-9` lists `sqrt`'s nudge as `9.3e-28` where it was `1e-26`,
+  and `[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2` prints its second σ as `1`
+  rather than `1.0`. The `time` limit's test uses a countdown, the
+  logistic map no longer being slow.
 - Resource limits (design §8.1): a program that asks for more than the
   machine has fails with an ordinary error naming the setting it hit, and
   the session goes on. `:set` lists them; `:set NAME VALUE`, and `--set
