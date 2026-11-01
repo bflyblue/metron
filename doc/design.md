@@ -796,7 +796,10 @@ apart (decided by the owner).
   `mid`, `sd`, the covariances), the sum of its terms is compared with its
   own first-order σ (`skewOf`), unbounded when that σ is zero, and the
   mark names the operation whose term is largest. A term below the
-  precision floor at the value's midpoint is dropped at every operation.
+  precision floor where it is made is not recorded, as before; a carried
+  term is never dropped, only re-judged. Dropping carried terms against
+  the floor of a later midpoint would hide a real one: at `1e30` the floor
+  is about `1e6`, and `(n*n + 1e30) - 1e30` would print an exact `0`.
 
   *Why it does not under-mark a real non-linearity in the cases tested.*
   Two rules. Sizes add: by Minkowski's inequality the standard deviation
@@ -1191,8 +1194,11 @@ Past `exactLimit`, 224 digits at the default precision, all of them are
 rounded as a non-linear result's are (`shortenLinear`): the midpoint to
 `p + 4` significant digits, the bound coefficients to a grid of `p + 4`
 digits of the value's size and the slack up onto it, the statistical
-coefficients to `p + 4` digits of their own, their rounding a mixed
-correction measured against the σ (§3.2), never a bound. The bound
+coefficients to `p + 4` digits of their own, away from zero: the σ is
+never understated nor made a bound, and no correction is left to carry
+(§3.2), which at a midpoint of zero, where there is no floor, would have
+kept a held `0 ±σ 1` scaled a hundred times from cancelling with itself.
+The bound
 rounding is a fresh nudge named `add: rounding` or `mul: rounding`,
 addressed by the operation, its operands (a sum's in the order of their
 encodings, so `a + b` and `b + a` are one unknown) and the precision.

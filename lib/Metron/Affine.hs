@@ -235,19 +235,6 @@ secondOf = \case
   Exact _ -> mempty
   Affine _ _ _ sk -> sk
 
-{- | Terms within the precision floor at the value's midpoint dropped
-('belowFloor'): arithmetic noise never marks a value, wherever it is
-judged.
--}
-floored :: Precision -> Magnitude -> Magnitude
-floored p = \case
-  Affine m ts s (SecondOrder sk)
-    | any noise sk ->
-        affine m ts s (SecondOrder (Map.filter (not . noise) sk))
-   where
-    noise = maybe False (\q -> belowFloor p m (q * q))
-  x -> x
-
 {- | How far from linear a value's statistical part is (design §3.2): the
 second-order statistical terms it carries over its first-order σ,
 squared, with 'Nothing' for terms over a σ of zero or unbounded terms;
@@ -463,7 +450,7 @@ terms, and is held to the length limit only after they have cancelled
 -}
 addM :: Precision -> Magnitude -> Magnitude -> Magnitude
 addM p (Exact a) (Exact b) = exactResult "add" p (sort [a, b]) (a + b)
-addM p x y = floored p (heldLinear "add" p (inOrder [x, y]) (addLinear x y))
+addM p x y = heldLinear "add" p (inOrder [x, y]) (addLinear x y)
 
 {- | A linear result held to the length limit (design §3.2.8, linear
 results are held to the same length): while its midpoint, coefficients
@@ -491,11 +478,19 @@ heldLinear name p operands x = case x of
               (sum (map (abs . fst) (Map.elems earlier)))
               0
               mempty
-              (Affine m kept s sk)
+              (Affine m (Map.map away kept) s sk)
   _ -> x
  where
   long r = exactLength r > exactLimit p
   rounding = name <> ": rounding"
+  -- A statistical coefficient is rounded away from zero, to 'shortDigits'
+  -- digits of its own: its σ is never understated nor made a bound, and
+  -- no correction is left to carry, which at a midpoint of zero (no
+  -- floor) would have stayed on the value and kept y - y from cancelling.
+  away (c, n)
+    | n.kind == Stat =
+        (signum c * roundUpAt (precisionExponent (shortDigits p) (abs c)) (abs c), n)
+    | otherwise = (c, n)
   -- The earlier roundings of linear results the value carries join the
   -- new one, a sound enclosure that forgets only their correlation with
   -- other values. A loop that rounds every few dozen steps would
@@ -555,7 +550,7 @@ limit ('heldLinear').
 scaleM :: Precision -> Rational -> Magnitude -> Magnitude
 scaleM p k = \case
   Exact a -> exactResult "mul" p (sort [k, a]) (k * a)
-  x -> floored p (heldLinear "mul" p [Exact k, x] (scaleLinear k x))
+  x -> heldLinear "mul" p [Exact k, x] (scaleLinear k x)
 
 scaleLinear :: Rational -> Magnitude -> Magnitude
 scaleLinear k = \case
@@ -675,7 +670,8 @@ independent statistical nudge. Its size is carried, just like a
 discarded statistical quadratic term ('SecondOrder'). The linear part's
 coefficients are shortened first ('shortenLinear'): the bound ones'
 rounding joins the fresh nudge, the statistical ones' the mixed
-correction. Terms within the precision floor are dropped ('floored').
+correction. A term within the precision floor where it is made is not
+recorded ('belowFloor'); a carried one is never dropped, only re-judged.
 -}
 opResult ::
   Text ->
@@ -705,22 +701,20 @@ settle ::
 settle rounding name p operands boundSize statSize sk base =
   finish
     p
-    ( floored
+    ( withFreshRounded
+        rounding
+        name
         p
-        ( withFreshRounded
-            rounding
-            name
-            p
-            operands
-            (boundSize + short.boundError)
-            (markedBy (sk <> mixed) short.value)
-        )
+        operands
+        (boundSize + short.boundError)
+        (markedBy (sk <> mixed) short.value)
     )
  where
   short = shortenLinear p base
   statSize' = statSize + short.statError
   mixed
-    | statSize' == 0 = mempty
+    | statSize' == 0 || belowFloor p (midpoint base) (statSize' * statSize') =
+        mempty
     -- Named for what it is against a σ: with none, the operation alone.
     | statSigma p short.value == 0 = secondTerm name (Just statSize')
     | otherwise =

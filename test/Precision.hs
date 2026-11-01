@@ -239,7 +239,17 @@ heldLinearTests =
         map ((.kind) . snd) (nudges y) @?= [Stat]
         let c' = coefficientOf (Tagged "s" 0) y
         abs (c' - 2 * c) <= 2 * c * 10 ^^ negate (p24 + 3) @? show c'
+        -- rounded away from zero: the σ is never understated
+        c' >= 2 * c @? show c'
         longest y <= p24 + 5 @? show y
+        -- and nothing is left to carry, so it cancels with itself
+        subM p24 y y @?= Exact 0
+        run
+          [ "let g t k n = if k > n then t else g (t * (999/1000)) (k + 1) n"
+          , "let h = g (0 ±σ 1) 1 100"
+          , "h - h"
+          ]
+          @?= Right ["0"]
     , testCase "the rounding is content-addressed: a + b and b + a are one unknown" $ do
         let long = 1 / 7 ^ (300 :: Int) + 1
             a = uncertain Bound (Tagged "a" 0) (Exact long) (Exact (1 / 100))
@@ -942,6 +952,13 @@ rejudgedTests =
         -- a first-order σ that cancels leaves the term the whole value
         marked "let x = 2 ±σ 1e-3 in x * (4 - x)" "unbounded"
         marked "let n = 0 ±σ 1 in let m = 0 ±σ 1000 in (n * n + m) - m" "unbounded"
+    , testCase "a carried term is never dropped by a large midpoint" $ do
+        -- at 1e30 the precision floor is about 1e6, far above the term,
+        -- which is real where it was made and must survive the sum
+        marked "let n = 0 ±σ 1 in (n * n + 1e30) - 1e30" "unbounded"
+        case run ["let n = 0 ±σ 1 in (n * n + 1e30) == 1e30"] of
+          Left err -> T.isInfixOf "marked non-linear" err @? T.unpack err
+          Right out -> assertFailure (show out)
     , testProperty
         "a product of two zero-mean values in a sum marks iff σa σb / σc passes 1%"
         $ forAll size
