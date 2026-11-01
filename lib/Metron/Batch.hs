@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 {- | The double backend's copies in parallel batches (design §8.2, @:set
 cores@): with @samples N@, an expression is evaluated K times, each
 evaluation carrying about N/K of the copies in lockstep, and the K values
@@ -26,7 +28,7 @@ module Metron.Batch (
 ) where
 
 import Control.Exception (evaluate)
-import Control.Monad (void)
+
 import Data.Either (lefts)
 import Data.List (transpose)
 import Data.Set (Set)
@@ -35,6 +37,7 @@ import Data.Text (Text)
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import GHC.Float (castDoubleToWord64)
+import Metron.Builtin (pattern ConsC, pattern NilC)
 import Metron.Double (Dbl (..), Estimate (..))
 import Metron.Eval (EvalError (Exceeded), ValueOf (..))
 import Metron.Limits (Limit (Steps))
@@ -61,23 +64,43 @@ batchesOf n k0 =
 acrossCopies :: Set Text
 acrossCopies = Set.fromList ["mid", "sd", "errorOf", "digitsOf"]
 
-{- | Force what a value will print: every element of a tensor, every
-field of a constructor, down to the copies. Run in the thread that
+{- | Force what a value will print, in the order the printer forces it
+("Metron.Pretty"), down to the copies, and no further: the elements of
+a tensor in order and the fields of a constructor in order, each in full,
+up to the first error, where printing stops; a list's spine and items
+first, then each item. So a batch does the reductions the single
+evaluation's printing does, and no others. Run in the thread that
 evaluates its batch, so that each batch is forced in one thread only.
+'False' once an error is met.
 -}
-forced :: ValueOf Dbl -> IO ()
+forced :: ValueOf Dbl -> IO Bool
 forced = \case
-  VTensor _ _ _ xs -> mapM_ forcedElement xs
-  VPoint _ _ _ xs -> mapM_ forcedElement xs
-  VData _ fs -> mapM_ (either (\_ -> pure ()) forced) fs
+  VTensor _ _ _ xs -> allM forcedElement (V.toList xs)
+  VPoint _ _ _ xs -> allM forcedElement (V.toList xs)
+  v@(VData c _) | c == ConsC || c == NilC -> case items v of
+    Just vs -> allM forced vs
+    Nothing -> pure False
+  VData _ fs -> allM (either (const (pure False)) forced) fs
   VUnit v -> forced v
-  VChart _ -> pure ()
-  VClosure _ -> pure ()
-  VTyAbs{} -> pure ()
+  VChart _ -> pure True
+  VClosure _ -> pure True
+  VTyAbs{} -> pure True
  where
   forcedElement = \case
-    Right x -> void (evaluate x)
-    Left _ -> pure ()
+    Right x -> True <$ evaluate x
+    Left _ -> pure False
+  -- The spine and each item to its constructor, as the printer walks a
+  -- list before it prints any item.
+  items = \case
+    VData NilC [] -> Just []
+    VData ConsC [Right x, Right xs] -> (x :) <$> items xs
+    _ -> Nothing
+
+-- | Each action in turn, while they succeed.
+allM :: (a -> IO Bool) -> [a] -> IO Bool
+allM f = \case
+  [] -> pure True
+  x : rest -> f x >>= \ok -> if ok then allM f rest else pure False
 
 {- | The batches' values as one: the same shape in each, the copies of each
 number concatenated in batch order. 'Nothing' when they differ in any

@@ -17,13 +17,15 @@ module Metron.Compile (
 
 import Control.Concurrent.Async (forConcurrently)
 import Control.Exception (evaluate)
-import Data.Containers.ListUtils (nubOrd)
+import Data.List (sortOn)
 import Data.Map.Lazy qualified as LazyMap (map, mapWithKey)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map (
   empty,
   findWithDefault,
+  fromListWith,
   lookup,
+  toList,
  )
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Set qualified as Set (disjoint)
@@ -70,7 +72,7 @@ import Metron.Infer qualified as I (
   readingsOf,
   rewriteReadings,
  )
-import Metron.Limits (limitHint, newBudgetOf, remarksAfter)
+import Metron.Limits (limitHint, newBudgetOf, remarksAfter, timedRemarksAfter)
 import Metron.NameResolution (resolverFor)
 import Metron.Needs (Needs, checkBackend, reachedBy)
 import Metron.Pretty (Display, renderValue)
@@ -201,21 +203,27 @@ batchedValue ::
   TTerm Z ->
   Maybe (Either EvalError (ValueOf Dbl, [Text]))
 batchedValue cfg cb h typed = unsafePerformIO $ do
+  -- A heap overflow or a timeout reaches this thread, and forConcurrently
+  -- stops the batches; the further overflows they cause while stopping are
+  -- taken in by runLimited.
   results <- forConcurrently (batchesOf cfg.samples cfg.cores) $ \b -> do
     let cfg' = cfg{batch = Just b}
         (rt, prepare) = runtimeWith @Dbl cfg' cb
     case evalAt cfg' rt h (prepare typed) of
       Left err -> pure (Left err)
       Right v -> do
-        forced v
-        remarks <- evaluate (remarksAfter v rt.budget)
-        _ <- evaluate (sum (map T.length remarks))
+        _ <- forced v
+        remarks <- evaluate (timedRemarksAfter v rt.budget)
+        _ <- evaluate (sum (map (T.length . snd) remarks))
         pure (Right (v, remarks))
   pure $ case sequence results of
     Left _ -> Left <$> failure results
     Right batches -> do
       v <- merged (map fst batches)
-      Just (Right (v, nubOrd (concatMap snd batches)))
+      -- Each warning at the first step any batch made it at: the order one
+      -- evaluation makes them in.
+      let firsts = Map.fromListWith min [(t, n) | (n, t) <- concatMap snd batches]
+      Just (Right (v, map snd (sortOn fst [(n, t) | (t, n) <- Map.toList firsts])))
 {-# NOINLINE batchedValue #-}
 
 {- | 'evalValueAs' for the double backend with its copies in parallel

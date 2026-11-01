@@ -810,44 +810,56 @@ coresTests =
   testGroup
     ":set cores: the copies in parallel batches"
     [ testCase
-        "batches of the copies: in order, sizes within one, at least two copies each" $ do
-        map (\b -> (b.first, b.count)) (batchesOf 10 4)
-          @?= [(0, 3), (3, 3), (6, 2), (8, 2)]
-        length (batchesOf 10 32) @?= 5
-        batchesOf 7 1 @?= [Batch{first = 0, count = 7, batches = 1}]
+        "batches of the copies: in order, sizes within one, at least two copies each"
+        $ do
+          map (\b -> (b.first, b.count)) (batchesOf 10 4)
+            @?= [(0, 3), (3, 3), (6, 2), (8, 2)]
+          length (batchesOf 10 32) @?= 5
+          batchesOf 7 1 @?= [Batch{first = 0, count = 7, batches = 1}]
     , testProperty "the batches cover the copies exactly, in order"
         $ \(Positive n) (Positive k) ->
           let bs = batchesOf n k
            in concatMap (\b -> [b.first .. b.first + b.count - 1]) bs == [0 .. n - 1]
                 && all (\b -> b.batches == length bs) bs
     , testCase
-        "K = 1, 2 and 4 give the same copies, bit for bit, and the same statistics" $ do
-        let src =
-              "let x = 1 ±σ 0.1 in let y = 2 ±σ 0.3 in [x * y / 3, sin (x * 1 rad) + y, if x > 0.9 then x else y]"
-            at k = case copiesBatched batchedConfig{cores = k} src of
-              Right (Just cs) -> pure cs
-              other -> assertFailure (show other) >> pure []
-        one <- at 1
-        two <- at 2
-        four <- at 4
-        two @?= one
-        four @?= one
-        map stats four @?= map stats one
-        -- and the same as the evaluation that never batches
-        (map (.estimate) <$> numbersIn batchedConfig src) @?= Right (map Copies one)
+        "K = 1, 2 and 4 give the same copies, bit for bit, and the same statistics"
+        $ do
+          let src =
+                "let x = 1 ±σ 0.1 in let y = 2 ±σ 0.3 in [x * y / 3, sin (x * 1 rad) + y, if x > 0.9 then x else y]"
+              at k = case copiesBatched batchedConfig{cores = k} src of
+                Right (Just cs) -> pure cs
+                other -> assertFailure (show other) >> pure []
+          one <- at 1
+          two <- at 2
+          four <- at 4
+          two @?= one
+          four @?= one
+          map stats four @?= map stats one
+          -- and the same as the evaluation that never batches
+          (map (.estimate) <$> numbersIn batchedConfig src) @?= Right (map Copies one)
     , testCase "under random rounding too, with no declared σ" $ do
         let src = "[0.1 + 0.2 * 3, sqrt 2 / 3, exp 0.3]"
             at k = copiesBatched batchedConfig{cores = k, rounding = RoundRandom} src
         at 4 @?= at 1
         (isJust <$> at 4) @?= Right True
     , testCase
-        "an input that reads across the copies runs as one, with the same result" $ do
-        let ls = ["let x = 1 ±σ 0.1", "[mid (x * x), sd (x * x), errorOf x]"]
-        runWith batchedConfig{cores = 4} ls @?= runWith batchedConfig{cores = 1} ls
+        "an input that reads across the copies runs as one, with the same result"
+        $ do
+          let ls = ["let x = 1 ±σ 0.1", "[mid (x * x), sd (x * x), errorOf x]"]
+          runWith batchedConfig{cores = 4} ls @?= runWith batchedConfig{cores = 1} ls
     , testCase "the batches' warnings come together" $ do
         let ls = ["if 1 + 1e-16 > 1 then 1 else 2"]
             outs k = runWith doubleConfig{samples = 10, cores = k} ls
         outs 4 @?= outs 1
+        -- Two, in the order one evaluation makes them, whichever batch
+        -- makes each first.
+        let two k =
+              runWith
+                doubleConfig{samples = 6, cores = k}
+                [ "[if 2 + 3e-16 > 2 then 1 else 2, if 1 + 1e-16 > 1 then 1 else 2, if 4 - 4e-16 < 4 then 1 else 2]"
+                ]
+        two 3 @?= two 1
+        two 2 @?= two 1
         case outs 4 of
           Right [out] ->
             ( "warning: the comparison 1 > 1 goes both ways across the 10 samples"

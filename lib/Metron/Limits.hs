@@ -26,6 +26,7 @@ module Metron.Limits (
   nested,
   remark,
   remarksAfter,
+  timedRemarksAfter,
 
   -- * Sizes of numbers
   log10Abs,
@@ -40,6 +41,7 @@ module Metron.Limits (
 import Control.Exception (
   AsyncException (HeapOverflow, StackOverflow),
   evaluate,
+  mask,
   throwIO,
   try,
  )
@@ -188,10 +190,10 @@ data Budget = Budget
   between threads
   -}
   , counters :: ForeignPtr Int
-  , remarks :: IORef [Text]
-  {- ^ warnings the evaluation made along the way, newest first: a branch
-  the double backend's samples disagree about (design §8.2). Kept in
-  place for the reason the counters are
+  , remarks :: IORef [(Int, Text)]
+  {- ^ warnings the evaluation made along the way, newest first, each with
+  the step it was made at: a branch the double backend's samples disagree
+  about (design §8.2). Kept in place for the reason the counters are
   -}
   }
 
@@ -219,7 +221,8 @@ call its own.
 -}
 remark :: Budget -> Text -> a -> a
 remark b t x = unsafeDupablePerformIO $ do
-  modifyIORef' b.remarks (\rs -> if t `elem` rs then rs else t : rs)
+  n <- withForeignPtr b.counters (`peekElemOff` 0)
+  modifyIORef' b.remarks (\rs -> if t `elem` map snd rs then rs else (n, t) : rs)
   pure x
 {-# NOINLINE remark #-}
 
@@ -227,10 +230,17 @@ remark b t x = unsafeDupablePerformIO $ do
 has been evaluated, which the first argument forces.
 -}
 remarksAfter :: a -> Budget -> [Text]
-remarksAfter x b = unsafeDupablePerformIO $ do
+remarksAfter x b = map snd (timedRemarksAfter x b)
+
+{- | The warnings so far, oldest first, each with the step it was made at:
+the double backend's batches each take the same steps, so a warning
+several make is ordered by the first step any made it at.
+-}
+timedRemarksAfter :: a -> Budget -> [(Int, Text)]
+timedRemarksAfter x b = unsafeDupablePerformIO $ do
   _ <- evaluate x
   reverse <$> readIORef b.remarks
-{-# NOINLINE remarksAfter #-}
+{-# NOINLINE timedRemarksAfter #-}
 
 {- | Count one step of the evaluation of the given term: 'False' once the
 evaluation has taken more than its steps. The term makes every call its
@@ -297,8 +307,10 @@ session goes on; so does a Haskell stack overflow, which only nesting
 deeper than the evaluator counts can cause.
 -}
 runLimited :: Limits -> IO a -> IO (Either Text a)
-runLimited l work = do
-  r <- try (maybe (Just <$> work) (\s -> timeout (s * 1_000_000) work) l.time)
+runLimited l work = mask $ \restore -> do
+  r <-
+    try
+      (restore (maybe (Just <$> work) (\s -> timeout (s * 1_000_000) work) l.time))
   case r of
     Right (Just x) -> pure (Right x)
     Right Nothing ->
@@ -307,7 +319,7 @@ runLimited l work = do
             ("error: the input took more than " <> plural l.time "second" <> limitHint Time)
         )
     Left HeapOverflow -> do
-      performMajorGC
+      settle restore
       pure
         ( Left
             ( "error: the evaluation needed more than "
@@ -320,6 +332,17 @@ runLimited l work = do
       pure (Left ("error: the evaluation nested too deeply" <> limitHint Depth))
     Left e -> throwIO e
  where
+  -- Collect, taking in any further heap overflow the runtime throws for
+  -- the same work: while the double backend's parallel batches are being
+  -- stopped (design §8.2) they go on allocating, and the runtime throws
+  -- again. Masked, those wait here instead of reaching the top level and
+  -- ending the session.
+  settle restore = do
+    again <- try (restore performMajorGC)
+    case again of
+      Left HeapOverflow -> settle restore
+      Left e -> throwIO e
+      Right () -> pure ()
   plural n w = case n of
     Just 1 -> "1 " <> w
     Just k -> tshow k <> " " <> w <> "s"
