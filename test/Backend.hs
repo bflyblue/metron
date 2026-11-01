@@ -888,6 +888,24 @@ splitTests =
               <> ["let loop n = loop n", ":set steps 100000", "if x > 0.5 then 1 else loop 0"]
           )
           @?= Right ["1"]
+    , testCase "a loop whose condition carries draws: 10⁵ steps, each sample its own" $ do
+        -- Each copy stops at the first n with n · x > 10⁵ in its own
+        -- doubles, up to 1.4 · 10⁵ steps, past the default depth: the
+        -- split in tail position is a tail call (design §8.2).
+        let cfg = batchedConfig{samples = 10}
+            ls =
+              [ "let x = 1 ±σ 0.1"
+              , "let count n = if n * x > 100000 then n else count (n + 1)"
+              ]
+            firstAbove c =
+              let n0 = floor (100000 / c) - 2 :: Int
+               in head'
+                    [fromIntegral n | n <- [max 0 n0 ..], fromIntegral n * c > (100000 :: Double)]
+            head' = foldr const 0
+        cs <- copiesAfter cfg ls "x"
+        out <- copiesAfter cfg ls "count 0"
+        out @?= VU.map firstAbove cs
+        (VU.maximum out > 100000) @? show out
     , testCase "steps counts each path: a split's groups are not added together" $ do
         let run x =
               runWith

@@ -80,15 +80,15 @@ of reaches is kept only where not every copy was there, so that a table
 can say how many times the point was reached.
 -}
 data Pending = Pending
-  { first :: (Int, Int)
-  , rows :: IntMap Int
-  , taken :: IntMap Int
-  , departed :: Int
-  , differing :: Int
-  , cause :: Cause
-  , split :: Bool
-  , full :: Int
-  , partial :: IntMap (VU.Vector Int, Int)
+  { first :: !(Int, Int)
+  , rows :: !(IntMap Int)
+  , taken :: !(IntMap Int)
+  , departed :: !Int
+  , differing :: !Int
+  , cause :: !Cause
+  , split :: !Bool
+  , full :: !Int
+  , partial :: !(IntMap (VU.Vector Int, Int))
   }
 
 -- | Add a reach to a batch's records.
@@ -106,7 +106,10 @@ pend site r = Map.insertWith after site this
       , split = old.split || new.split
       , full = old.full + new.full
       , partial =
-          IntMap.unionWith (\(_, j) (cs, k) -> (cs, j + k)) new.partial old.partial
+          IntMap.unionWith
+            (\(_, j) (cs, k) -> let !n = j + k in (cs, n))
+            new.partial
+            old.partial
       }
   total = sum (IntMap.elems r.rows)
   this =

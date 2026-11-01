@@ -157,6 +157,29 @@ depthTests =
         $ run
           [":set depth 100", "let hh n = if n == 0 then 0 else hh (n - 1)", "hh 100000"]
           @?= Right ["0"]
+    , testCase "a tail call through a split is no deeper (design §8.2)"
+        -- 2000 samples stop at their own steps, so the copies split at
+        -- most of the loop's steps; put together one inside another, the
+        -- groups nested more than 30 deep.
+        $ case run
+          ( drawn 10
+              <> ["let count n = if n * x > 1000 then n else count (n + 1)", "count 0"]
+          ) of
+          Right outs -> any ("1001 (Monte Carlo" `T.isPrefixOf`) outs @? show outs
+          Left err -> assertFailure (T.unpack err)
+    , testCase "a split whose value something waits for nests"
+        $ refused
+          "the evaluation nested more than 1000 calls deep (`:set depth`)"
+          (drawn 1000 <> ["let g n = if n * x > 10000 then 0 else 1 + g (n + 1)", "g 0"])
+    ]
+ where
+  -- 2000 samples of a declared σ, under a depth limit.
+  drawn :: Int -> [Text]
+  drawn d =
+    [ ":backend double"
+    , ":set samples 2000"
+    , ":set depth " <> T.pack (show d)
+    , "let x = 1 ±σ 0.1"
     ]
 
 -- Digits -----------------------------------------------------------------------------
@@ -317,6 +340,22 @@ leakPrograms =
           T.isPrefixOf "0.92481968045107953044160642097568835177392693028574" out
             @? T.unpack out
         other -> assertFailure (show other)
+    )
+  , -- A loop whose condition carries draws splits the copies at every
+    -- step, each sample stopping at its own (design §8.2): once one level
+    -- of recombination per step, 470 MB at this size.
+
+    ( "a loop whose condition carries draws, each sample stopping at its own step"
+    ,
+      [ ":backend double"
+      , ":set samples 100"
+      , "let x = 1 ±σ 0.1"
+      , "let count n = if n * x > 100000 then n else count (n + 1)"
+      , "count 0"
+      ]
+    , \case
+        Right outs -> any ("100001 (Monte Carlo" `T.isPrefixOf`) outs @? show outs
+        Left err -> assertFailure (T.unpack err)
     )
   ,
     ( "the margin is tight enough to see growth: a list kept whole overflows it"

@@ -55,7 +55,6 @@ module Metron.Eval (
   hintProduct,
   covarianceMatrix,
   Site (..),
-  eval,
   evalClosed,
   evalAt,
   evalDefinition,
@@ -496,6 +495,13 @@ data ValueOf s
     outcome each has, a constructor or a function, never a number
     -}
     VMixture (Mixture s)
+  | {- | the groups of a split in tail position, not yet put back together
+    (design §8.2): only the evaluator's own tail calls pass one on, and
+    whatever waits for the value puts the groups together ('settle'), so
+    that a loop through a split runs in constant stack. Never seen outside
+    "Metron.Eval"
+    -}
+    VSplit (Split s)
 
 type Value = ValueOf Magnitude
 
@@ -610,9 +616,14 @@ conIndex :: ConRef -> Int
 conIndex (UserCon _ k) = k
 
 {- | A function value: a body under one binder, closed over its environment
-and its site.
+and its site; and, for a function narrowed to a group of the double
+backend's copies (design §8.2), how its environment is narrowed when it
+is applied. Narrowing it again composes the two, so a function passed
+down through a loop that splits at every step stays one closure, not a
+chain of them.
 -}
-data ClosureOf s = forall n. Closure TyEnv Site !(Env s n) (TTerm (S n))
+data ClosureOf s
+  = forall n. Closure TyEnv Site !(Env s n) (TTerm (S n)) !(Maybe Narrowing)
 
 type Closure = ClosureOf Magnitude
 
@@ -623,6 +634,13 @@ empty tensor literal, and the result of a mapping primitive. A variable
 with no argument here is unconstrained, and any instance is a valid one.
 -}
 type TyEnv = Map VarId Arg
+
+-- | The error for nesting deeper than the @depth@ limit (design §8.1).
+deepError :: Limits -> EvalError
+deepError l =
+  Exceeded
+    Depth
+    ("the evaluation nested more than " <> tshow l.depth <> " calls deep")
 
 -- | Evaluate a closed term that belongs to no definition.
 evalClosed :: (Scalar s) => Config -> RuntimeOf s -> TTerm Z -> ThunkOf s
@@ -646,7 +664,7 @@ each use applies to its type-level arguments.
 -}
 evalDefinition ::
   (Scalar s) => Config -> RuntimeOf s -> Hash -> TTerm Z -> ThunkOf s
-evalDefinition cfg rt h = eval cfg rt Map.empty (Site h []) VNil
+evalDefinition cfg rt h = settle . eval cfg rt Map.empty (Site h []) VNil
 
 eval ::
   forall s n.
@@ -668,6 +686,16 @@ eval cfg rt = go
   -- (design §8.2).
   copied = cfg.samples > 0 && backendOf @s == DoubleBackend
 
+  -- A definition the batch shares, for this evaluation's copies: in a
+  -- group of them (design §8.2), narrowed from the batch's copies to the
+  -- group's at once, not once for every split between them.
+  sharedValue h = case cfg.group of
+    Nothing -> rt.shared h
+    Just g ->
+      let gs = memberVector g
+          fromBatch = Narrowing (placesIn (batchMembers cfg) gs) gs rt.context.nominal
+       in fmap (narrow fromBatch) <$> rt.shared h
+
   -- One step of the evaluation (design §8.1): every reduction counts.
   go :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
   go tenv site env t
@@ -681,15 +709,12 @@ eval cfg rt = go
 
   {- A value something waits for, so one level deeper (design §8.1): an
   operand, a scrutinee, the function of a call, a thunk when forced. A
-  call in tail position waits for nothing and is no deeper. -}
+  call in tail position waits for nothing and is no deeper. A split in
+  tail position is put together here, where its value is waited for
+  (design §8.2). -}
   inner :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
-  inner tenv site env t = nested rt.budget tooDeep (go tenv site env t)
-  tooDeep =
-    Left
-      ( Exceeded
-          Depth
-          ("the evaluation nested more than " <> tshow cfg.limits.depth <> " calls deep")
-      )
+  inner tenv site env t = nested rt.budget tooDeep (settle (go tenv site env t))
+  tooDeep = Left (deepError cfg.limits)
 
   reduce :: TyEnv -> Site -> Env s m -> TTerm m -> ThunkOf s
   reduce tenv site env = \case
@@ -700,7 +725,7 @@ eval cfg rt = go
         -- A chart whose step may be zero is named by its reference. A
         -- definition is its own term: its type-level variables are its own.
         v <- first (namedChart (rt.chartName h mi written)) $ case mi of
-          Nothing -> fromMaybe (inner Map.empty (Site h []) VNil t) (rt.shared h)
+          Nothing -> fromMaybe (inner Map.empty (Site h []) VNil t) (sharedValue h)
           Just i -> case t of
             TCycle vars _ bodies -> cycleMember h i vars bodies
             _ -> Left (BadCycleIndex i)
@@ -761,7 +786,8 @@ eval cfg rt = go
         _ -> Left (Internal "case: the scrutinee is not data")
      where
       alternative = alternativeFor alts
-    TLamWith _ _ body free -> Right (VClosure (Closure tenv (child 0) (keepFree free env) body))
+    TLamWith _ _ body free ->
+      Right (VClosure (Closure tenv (child 0) (keepFree free env) body Nothing))
     TApp f a -> do
       fv <- inner tenv (child 0) env f
       -- A moving chart applied is an instant of it (design §3.8), named
@@ -770,7 +796,7 @@ eval cfg rt = go
       -- the call is made in each branch, not shared as a thunk.
       case delay tenv (child 1) env a of
         (# arg #) -> case instantOf site [] (TApp f a) of
-          Nothing -> apply cfg rt fv arg
+          Nothing -> applyTail cfg rt fv arg
           Just (n, args) ->
             apply cfg rt fv arg >>= \case
               VChart c ->
@@ -778,7 +804,7 @@ eval cfg rt = go
                   ( VChart
                       c
                         { name = Just (UnitNamed n)
-                        , applied = Applied [go tenv s env x | (s, x) <- args]
+                        , applied = Applied [settle (go tenv s env x) | (s, x) <- args]
                         }
                   )
               v -> Right v
@@ -888,7 +914,7 @@ eval cfg rt = go
                 v
                 k
                 ( if neededAtRuntime v k b
-                    then \a -> go (Map.insert v a tenv) site env b
+                    then \a -> settle (go (Map.insert v a tenv) site env b)
                     else const erased
                 )
             )
@@ -1072,17 +1098,32 @@ runtimeShape = \case
 runtimeDim :: Dim -> Dim
 runtimeDim d = dimFromAtoms [(a, k) | (a@(Base _), k) <- dimAtoms d]
 
--- | Apply a function value to an argument thunk.
+-- | Apply a function value to an argument thunk, for its value.
 apply ::
   (Scalar s) => Config -> RuntimeOf s -> ValueOf s -> ThunkOf s -> ThunkOf s
-{-# SPECIALIZE apply :: Config -> Runtime -> Value -> Thunk -> Thunk #-}
-{-# SPECIALIZE apply ::
+apply cfg rt f arg = settle (applyTail cfg rt f arg)
+
+{- | Apply a function value to an argument thunk in tail position: a split
+the call ends in is passed on, not put together (design §8.2).
+-}
+applyTail ::
+  (Scalar s) => Config -> RuntimeOf s -> ValueOf s -> ThunkOf s -> ThunkOf s
+{-# SPECIALIZE applyTail :: Config -> Runtime -> Value -> Thunk -> Thunk #-}
+{-# SPECIALIZE applyTail ::
   Config -> RuntimeOf Dbl -> ValueOf Dbl -> ThunkOf Dbl -> ThunkOf Dbl
   #-}
-apply cfg rt f arg = case f of
-  VClosure (Closure tenv site env body) -> eval cfg rt tenv site (VCons arg env) body
+applyTail cfg rt f arg = case f of
+  VClosure (Closure tenv site env body narrowing) ->
+    eval
+      cfg
+      rt
+      tenv
+      site
+      (VCons arg (maybe env (\r -> vecMap (fmap (narrow r)) env) narrowing))
+      body
   -- A mixture of functions (design §8.2): each applied for its own copies.
-  VMixture m -> perOption cfg rt m (\cfg' rt' r g -> apply cfg' rt' g (narrow r <$> arg))
+  VMixture m ->
+    perOption cfg rt m (\cfg' rt' r g -> applyTail cfg' rt' g (narrow r <$> arg))
   _ -> Left (Internal "application of a non-function")
 
 -- Splitting the copies ----------------------------------------------------------------
@@ -1095,7 +1136,10 @@ alternativeFor alts c = case [(i, alt) | (i, alt@(TAlt c' _ _)) <- zip [1 ..] al
 
 {- | A case on a mixture (design §8.2): a branch point where the copies
 split, noted, and each option sent down its own alternative in a group of
-its own, the groups' results put back together.
+its own. The case is in tail position, so the groups are passed on to be
+put together where the value is waited for ('settle'): a loop whose
+condition splits the copies then runs in constant stack, each group
+going on with its own iterations.
 -}
 caseOnMixture ::
   (Scalar s) =>
@@ -1110,7 +1154,7 @@ caseOnMixture ::
 caseOnMixture cfg rt tenv site env alts m =
   case reach rt.budget ctx site taken Draws True IntSet.empty (Just chosen) of
     !_ ->
-      perOption cfg rt m $ \cfg' rt' r -> \case
+      splitOver cfg rt m $ \cfg' rt' r -> \case
         VCon c fields _
           | Just (i, TAlt _ bs body) <- alternativeFor alts c ->
               eval
@@ -1140,6 +1184,12 @@ is on the nominal path.
 -}
 data Narrowing = Narrowing {places :: VU.Vector Int, copies :: VU.Vector Int, nominal :: Bool}
 
+{- | Two narrowings, the second to a group of the first's: one narrowing
+that does both.
+-}
+andThen :: Narrowing -> Narrowing -> Narrowing
+andThen outer r = Narrowing (VU.backpermute outer.places r.places) r.copies r.nominal
+
 {- | The places, among an evaluation's copies, of a group of them, by
 global number; both ascending.
 -}
@@ -1165,10 +1215,13 @@ narrow r = \case
           NoCopies -> NoCopies
           Copied cause left alts -> Copied cause left (VU.backpermute alts r.places)
       )
-  VClosure (Closure tenv site env body) ->
-    VClosure (Closure tenv site (vecMap (fmap (narrow r)) env) body)
+  VClosure (Closure tenv site env body narrowing) ->
+    VClosure (Closure tenv site env body (Just (maybe r (`andThen` r) narrowing)))
   VUnit v -> VUnit (narrow r v)
   VTyAbs v k f -> VTyAbs v k (fmap (narrow r) . f)
+  -- Never held where a group narrows it: whatever holds a value waited
+  -- for it, and a split is put together where it is waited for.
+  VSplit sp -> VSplit sp
   VMixture m ->
     let kept =
           [ ( nominal
@@ -1216,8 +1269,8 @@ narrowChart r c =
 
 {- | The evaluation of a group of the copies (design §8.2): its settings
 carry the group's copies, its context is new, and every value it takes
-from the evaluation around it, its environment and the definitions
-shared by the batch, is narrowed to the group.
+from the evaluation around it, its environment, is narrowed to the group;
+a definition the batch shares is narrowed where it is referenced.
 -}
 groupOf ::
   (Scalar s) =>
@@ -1229,11 +1282,7 @@ groupOf ::
 groupOf cfg rt group nominal = (cfg{group = Just (Listed group)}, rt', r)
  where
   r = Narrowing (placesIn rt.context.members group) group nominal
-  rt' =
-    rt
-      { context = enter rt.budget rt.context (Listed group) nominal
-      , shared = fmap (fmap (narrow r)) . rt.shared
-      }
+  rt' = rt{context = enter rt.budget rt.context (Listed group) nominal}
 
 {- | An operation on a mixture (design §8.2): done for each option, in a
 group of its own with the option's copies, given the option's value and
@@ -1248,12 +1297,32 @@ perOption ::
   Mixture s ->
   (Config -> RuntimeOf s -> Narrowing -> ValueOf s -> ThunkOf s) ->
   ThunkOf s
-perOption cfg rt m k =
+perOption cfg rt m k = settle (splitOver cfg rt m k)
+
+{- | 'perOption' with the groups' results not yet put together: a split
+(design §8.2), for a case in tail position to pass on.
+-}
+splitOver ::
+  (Scalar s) =>
+  Config ->
+  RuntimeOf s ->
+  Mixture s ->
+  (Config -> RuntimeOf s -> Narrowing -> ValueOf s -> ThunkOf s) ->
+  ThunkOf s
+splitOver cfg rt m k =
   -- Every group is entered before any evaluates, so that each path
   -- starts from the steps taken before the split (design §8.1).
   foldr
     (\(Part ctx _ _) rest -> ctx `seq` rest)
-    (recombine rt cfg.limits.outcomes parts)
+    ( Right
+        ( VSplit
+            ( Split
+                (Join rt.budget rt.context (deepError cfg.limits))
+                cfg.limits.outcomes
+                parts
+            )
+        )
+    )
     parts
  where
   parts =
@@ -1269,22 +1338,38 @@ the value, for the group's copies.
 -}
 data Part s = Part Context Bool (ThunkOf s)
 
+{- | A split's groups, not yet put together: where they join, the
+@outcomes@ limit, and their results.
+-}
+data Split s = Split Join Int [Part s]
+
+{- | A value as something waiting for it sees it: a split put together
+(design §8.2), any other value as it is.
+-}
+settle :: (Scalar s) => ThunkOf s -> ThunkOf s
+settle = \case
+  Right (VSplit sp) -> recombine sp
+  t -> t
+
 {- | The groups' results put back together, copy by copy (design §8.2):
 numbers, tensors and units as one, each copy from its own group, the
 nominal value from the nominal group; data by outcome, a constructor's
 groups merged field by field, and where the groups give different
 constructors, or functions, a mixture with an option for each. More
-options than the @outcomes@ limit stop the evaluation.
+options than the @outcomes@ limit stop the evaluation. A group whose
+result is a split of its own gives its groups instead, in its place, so
+a split in tail position, however deep, is put together once.
 -}
-recombine :: (Scalar s) => RuntimeOf s -> Int -> [Part s] -> ThunkOf s
-recombine rt limit parts =
-  assemble
-    (Join rt.budget rt.context)
-    limit
-    (memberVector rt.context.members)
-    [ Piece ctx (memberVector ctx.members) nominal t
-    | Part ctx nominal t <- filter isNominal parts ++ filter (not . isNominal) parts
-    ]
+recombine :: (Scalar s) => Split s -> ThunkOf s
+recombine (Split j@(Join _ ctx _) limit parts) =
+  assemble j limit (memberVector ctx.members) (piecesOf parts)
+
+-- | A split's groups as pieces, the nominal one first.
+piecesOf :: [Part s] -> [Piece s]
+piecesOf parts =
+  [ Piece ctx (memberVector ctx.members) nominal t
+  | Part ctx nominal t <- filter isNominal parts ++ filter (not . isNominal) parts
+  ]
  where
   isNominal (Part _ n _) = n
 
@@ -1293,11 +1378,12 @@ copies by global number, whether it is the nominal value, and the value.
 -}
 data Piece s = Piece Context (VU.Vector Int) Bool (ThunkOf s)
 
-{- | Where groups' results are put back together: the budget, and the
+{- | Where groups' results are put back together: the budget, the
 evaluation they were split from, whose path continues from theirs
-(design §8.1).
+(design §8.1), and the error for nesting too deeply, since forcing a
+group's part is waiting for it.
 -}
-data Join = Join Budget Context
+data Join = Join Budget Context EvalError
 
 {- | Pieces that together are a value for the given copies, put together:
 'recombine', for a value or for one field of the data its groups share.
@@ -1306,10 +1392,7 @@ The nominal piece, if any, first.
 assemble ::
   (Scalar s) => Join -> Int -> VU.Vector Int -> [Piece s] -> ThunkOf s
 assemble b limit target pieces = do
-  values <-
-    traverse
-      (\(Piece ctx ms nominal t) -> (ctx,ms,nominal,) <$> forcedFor b ctx t)
-      pieces
+  values <- leaves [] pieces
   let flat = concatMap explode values
   case flat of
     [] -> Left (Internal "a split with no group")
@@ -1319,6 +1402,18 @@ assemble b limit target pieces = do
             [(ctx, placesWithin target ms, nominal, v) | (ctx, ms, nominal, v) <- flat]
       | otherwise -> outcomesFrom (classes flat)
  where
+  -- Each piece forced, nominal first, in turn; a piece that is a split
+  -- of its own is replaced by its groups, so the groups of a loop that
+  -- splits at every step are forced one after another, not one inside
+  -- another. The groups go in front of the rest strictly: a lazy append
+  -- would wrap the rest in one more thunk at every step.
+  leaves acc = \case
+    [] -> Right (reverse acc)
+    Piece ctx ms nominal t : rest ->
+      forcedFor b ctx t >>= \case
+        VSplit (Split _ _ parts) ->
+          leaves acc (foldl' (flip (:)) rest (reverse (piecesOf parts)))
+        v -> leaves ((ctx, ms, nominal, v) : acc) rest
   explode (ctx, ms, nominal, v) = case v of
     VMixture m ->
       [ (ctx, o.members, nominal && m.nominal == Just i, o.value)
@@ -1338,9 +1433,11 @@ assemble b limit target pieces = do
     (_, _, _, VPoint dims d c buf) : _ ->
       Right (VPoint dims d c (V.generate (V.length buf) (element ps)))
     _ -> Left (Internal "a split's groups give numbers of different kinds")
+  -- A loop that splits at every step leaves a group for each, so the
+  -- groups are taken in turn, in constant stack.
   element ps k = do
     xs <-
-      traverse (\(c, pl, n, v) -> (pl,n,) <$> forcedElement b c (bufferOf v V.! k)) ps
+      inTurn (\(c, pl, n, v) -> (pl,n,) <$> forcedElement b c (bufferOf v V.! k)) ps
     Right
       ( scatterM
           (VU.length target)
@@ -1433,20 +1530,33 @@ fieldAt fields j = case drop j fields of
   f : _ -> f
   [] -> Left (Internal "a missing field")
 
+{- | 'traverse' for 'Either' in constant stack, for the long lists of
+groups a loop that splits at every step leaves.
+-}
+inTurn :: (a -> Either e b) -> [a] -> Either e [b]
+inTurn f = go []
+ where
+  go acc = \case
+    [] -> Right (reverse acc)
+    x : xs -> f x >>= \y -> go (y : acc) xs
+
 -- | The places of some copies among others, both by global number, ascending.
 placesWithin :: VU.Vector Int -> VU.Vector Int -> VU.Vector Int
 placesWithin outer group = VU.findIndices (inSorted group) outer
 
 {- | A value forced for a group's copies, so that a branch point it
 reaches counts only them (design §8.2), and the path of the evaluation
-they were split from continues from the group's (design §8.1).
+they were split from continues from the group's (design §8.1). Whatever
+forces it waits for it, one level deeper.
 -}
 forcedFor :: Join -> Context -> ThunkOf s -> ThunkOf s
-forcedFor (Join b outer) ctx t = within b outer ctx (either (const t) (`seq` t) t)
+forcedFor (Join b outer deep) ctx t =
+  within b outer ctx (nested b (Left deep) (either (const t) (`seq` t) t))
 
 -- | A tensor element forced for a group's copies.
 forcedElement :: Join -> Context -> ElemOf s -> ElemOf s
-forcedElement (Join b outer) ctx e = within b outer ctx (either (const e) (`seq` e) e)
+forcedElement (Join b outer deep) ctx e =
+  within b outer ctx (nested b (Left deep) (either (const e) (`seq` e) e))
 
 {- | A group's value passed on whole, its parts forced, whenever they are,
 for the group's copies: its branch points count them, not those of
