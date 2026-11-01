@@ -663,6 +663,17 @@ parserTests =
         $ parseShape "1 + 2 * 3" @?= Right (O S.Add (N 1) (O S.Outer (N 2) (N 3)))
     , testCase "left associativity of -"
         $ parseShape "10 - 3 - 2" @?= Right (O S.Sub (O S.Sub (N 10) (N 3)) (N 2))
+    , testCase "conversions chain from the left: x to a to b is (x to a) to b" $ do
+        parseShape "x to a to b" @?= Right (O S.To (O S.To (V "x") (V "a")) (V "b"))
+        parseShape "x to a to b to c"
+          @?= Right (O S.To (O S.To (O S.To (V "x") (V "a")) (V "b")) (V "c"))
+        parseShape "x + 1 to a to b"
+          @?= Right (O S.To (O S.To (O S.Add (V "x") (N 1)) (V "a")) (V "b"))
+        -- After a conversion from a configuration, or a subtraction in a frame.
+        parseShape "v from c to c1 to km"
+          @?= Right (O S.To (A (A (V "v") (V "c")) (V "c1")) (V "km"))
+        parseShape "b .- a on c to km"
+          @?= Right (O S.To (O S.On (O S.PSub (V "b") (V "a")) (V "c")) (V "km"))
     , testCase "application binds tighter than operators"
         $ parseShape "f x + g y"
           @?= Right (O S.Add (A (V "f") (V "x")) (A (V "g") (V "y")))
@@ -4141,6 +4152,12 @@ preludeTests =
         evalP "1 L to m^3" @?= Right ["0.001 m^3"]
         evalU ["astro", "physics"] "1 AU / c to s"
           @?= Right ["499.00478383615641191… s"]
+    , testCase "conversions chain from the left, and print back so" $ do
+        evalP "1 km to m to km" @?= Right ["1 km"]
+        evalP "20 degC to degF to kelvin" @?= Right ["293.15 kelvin"]
+        evalP "1.5 h to min to s" @?= Right ["5400 s"]
+        runLinesP ["let f x = x to m to km", ":view f", "f (1500 m)"]
+          @?= Right ["f = \\x -> x to m to km", "1.5 km"]
     , testCase "constants are exact where SI defines them so"
         $ evalU ["physics"] "c" @?= Right ["299792458 m s^-1"]
     , testCase "the hour is hr, with h an alias; Planck's h needs use physics" $ do

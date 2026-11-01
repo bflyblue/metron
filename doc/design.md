@@ -386,7 +386,7 @@ From tightest to loosest:
 | 4 | `==` `/=` `<` `<=` `>` `>=` | none | ordering on Num only |
 | 3 | `&&` | right | |
 | 2 | `\|\|` | right | |
-| 1 | `to`, `from … to`, `on` | none | conversion (a unit, a point to a chart, an amount along a chart's axes; `from` names a configuration) and subtraction in a frame, `b .- a on c` (§3.10, F7, F10); lowest so `5 km / h to m/s` reads naturally |
+| 1 | `to`, `from … to`, `on` | left, through `to` | conversion (a unit, a point to a chart, an amount along a chart's axes; `from` names a configuration) and subtraction in a frame, `b .- a on c` (§3.10, F7, F10); lowest so `5 km / h to m/s` reads naturally. Any of them may be followed by more `to`s, which chain from the left: `x to a to b` is `(x to a) to b`, and `v from c to c1 to km/s` converts, then displays |
 
 `#label` is not an operator but a postfix on a `±`, `noise` or `gauss`
 expression (§3.2.4). It is parsed after level 5 and before level 4, so it
@@ -493,7 +493,8 @@ param      ::= name
 expr       ::= 'let' name param* '=' expr 'in' expr
              | '\' param+ '->' expr
              | 'if' expr 'then' expr 'else' expr
-             | binary
+             | binary [ conversion ( 'to' binary )* ]   -- level 1 of 2.5: further 'to's chain from the left
+conversion ::= 'to' binary | 'from' binary 'to' binary | 'on' binary
 binary     ::= operator-precedence parse over 'unary' using the table in 2.5,
                with `name` as an infix operator at level 9, and
                '#'label as a postfix just below ± (§3.2.4)

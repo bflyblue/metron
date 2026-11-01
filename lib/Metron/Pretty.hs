@@ -914,10 +914,11 @@ binary = \case
   "ge" -> Just (">=", 4, N)
   "and" -> Just ("&&", 3, R)
   "or" -> Just ("||", 2, R)
-  "to" -> Just ("to", 1, N)
-  -- A point or an amount to a chart (design §3.10, F5, F10).
-  "toChart" -> Just ("to", 1, N)
-  "toAxes" -> Just ("to", 1, N)
+  "to" -> Just ("to", 1, L)
+  -- A point or an amount to a chart (design §3.10, F5, F10). Conversions
+  -- chain from the left (design §2.5): `x to a to b` is `(x to a) to b`.
+  "toChart" -> Just ("to", 1, L)
+  "toAxes" -> Just ("to", 1, L)
   _ -> Nothing
 
 -- | A magnitude to two significant digits, for radii and bias boxes.

@@ -664,24 +664,29 @@ ifExpr = do
   e <- expr
   pure (Expr (spanUnion s e.span) (If c t e))
 
-{- | The operators, and last a conversion (design §3.10, F7, F10): @x to
-c@, @x from c to c1@, or a subtraction in a frame, @b .- a on c@, none of
-which chain.
+{- | The operators, and last a conversion (design §2.5, §3.10, F7, F10):
+@x to c@, @x from c to c1@, or a subtraction in a frame, @b .- a on c@,
+any of them followed by further @to@s, which chain from the left: @x to a
+to b@ is @(x to a) to b@.
 -}
 opExpr :: Parser Expr
 opExpr = do
   x <- inner
-  P.option x
-    $ P.choice
-      [ binop To x <$> (kw KTo *> inner)
-      , binop On x <$> (kw KOn *> inner)
-      , do
-          _ <- kw KFrom
-          c <- inner
-          _ <- kw KTo
-          c1 <- inner
-          pure (Expr (spanUnion x.span c1.span) (FromTo x c c1))
-      ]
+  conversion <-
+    P.optional
+      $ P.choice
+        [ binop To x <$> (kw KTo *> inner)
+        , binop On x <$> (kw KOn *> inner)
+        , do
+            _ <- kw KFrom
+            c <- inner
+            _ <- kw KTo
+            c1 <- inner
+            pure (Expr (spanUnion x.span c1.span) (FromTo x c c1))
+        ]
+  case conversion of
+    Nothing -> pure x
+    Just c -> foldl (binop To) c <$> P.many (kw KTo *> inner)
  where
   inner = makeExprParser term table
   table =
