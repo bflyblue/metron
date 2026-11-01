@@ -7133,7 +7133,7 @@ For example, `count n = if n * x > 100000 then n else count (n + 1)` with
 **Open.** The limits of branch tables (a value shared around a split, control-based "left the path" counts, the memory of stopped groups in a loop, NaN off the nominal path) and a readable summary for a branch point inside a loop are listed in §10.1.
 
 **Implemented in:** `Metron.Remark` (`pend`, `remarksOf`, `tables`), `Metron.Limits` (`reach`, `enter`, `within`), `Metron.Branch` (`tableLines`), `Metron.Eval` (`narrow`, `andThen`, `perOption`, `recombine`, `settle`), `Metron.Scalar` (`scatterM`).
-**Tested by:** "backends (design §8.2)" › "the table at a branch point", "splitting: each sample follows its own branch", "samples N: copies under random rounding"; "limits (design §8.1)" › "depth" › "a tail call through a split is no deeper (design §8.2)", "a split whose value something waits for nests"; "limits (design §8.1)" › "constant memory" › "a loop whose condition carries draws, each sample stopping at its own step".
+**Tested by:** "backends (design §8.2)" › "the table at a branch point", "splitting: each sample follows its own branch", "samples N: copies under random rounding"; "limits (design §8.1)" › "depth" › "a tail call through a split is no deeper (design §8.2)", "a loop through a split runs in a 1 MB Haskell stack (design §8.2)", "a split whose value something waits for nests"; "limits (design §8.1)" › "constant memory" › "a loop whose condition carries draws, each sample stopping at its own step".
 
 #### 8.2.6 Mixtures
 

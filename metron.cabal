@@ -121,6 +121,7 @@ test-suite metron-test
   hs-source-dirs: test
   main-is:        Main.hs
   ghc-options:    -rtsopts "-with-rtsopts=-T"
+  build-tool-depends: metron:metron
   other-modules:
     , Backend
     , Astro
@@ -139,6 +140,7 @@ test-suite metron-test
     , metron
     , directory
     , filepath
+    , process
     , QuickCheck
     , tasty
     , tasty-hunit
