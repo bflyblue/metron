@@ -751,6 +751,13 @@ curvatureTests =
         $ unmarked "tan ((0.01 ±σ 0.001) * 1 rad)"
     , testCase "tanh at 5: 20%, marked, where the quotient said 78000%"
         $ markedWithin 40 "tanh (5 ±σ 0.1)"
+    , localOption (mkTimeout 5_000_000)
+        $ testCase "tanh far out is ±1 to every digit, unmarked, at once"
+        $ do
+          run ["tanh 1e6"] @?= Right ["1.0000000000000000000…"]
+          run ["tanh ((-1e6 ±σ 1))"] @?= Right ["-1.0000000000000000000…"]
+          -- its σ and second-order term are both below the last digit
+          unmarked "tanh ((40 ±σ 1))"
     , testCase "asin near one: 5%, marked"
         $ markedWithin 15 "asin (0.99 ±σ 0.001)"
     , testCase "tan refuses an enclosure that reaches a pole"

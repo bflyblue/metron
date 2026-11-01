@@ -969,14 +969,22 @@ rises to @4/(3√3) < 0.77@ at @|t| = 1/√3@ and falls after; @t@ is
 increasing in @x@, so the interval's @t@ runs between its ends' enclosures.
 -}
 tanhCurvature :: Rational -> Rational -> Rational
-tanhCurvature a b =
-  let (ta, ea) = tanhApprox 10 a
-      (tb, eb) = tanhApprox 10 b
-   in peaked
-        (77 % 100)
-        (\t -> 2 * t * (1 - t * t))
-        (max (-1) (ta - ea))
-        (min 1 (tb + eb))
+tanhCurvature a b
+  -- Far out, where ten digits of tanh only bound it near ±1:
+  -- 2|t| sech² x ≤ 8 e^(−2|x|) ≤ 8 · 2^(−⌊2.885 |x|⌋), falling with |x|, so
+  -- largest at the end nearest zero. From ten-digit ends it was 1e-19,
+  -- and tanh (−1e6 ±σ 1), −1 to every digit, was marked unbounded.
+  | near > 20 = 8 / 2 ^ (floor (2885 * near / 1000) :: Integer)
+  | otherwise =
+      let (ta, ea) = tanhApprox 10 a
+          (tb, eb) = tanhApprox 10 b
+       in peaked
+            (77 % 100)
+            (\t -> 2 * t * (1 - t * t))
+            (max (-1) (ta - ea))
+            (min 1 (tb + eb))
+ where
+  near = if a <= 0 && b >= 0 then 0 else min (abs a) (abs b)
 
 {- | The largest value over @[a, b]@ of a function of @|t|@ that rises to its
 peak at @|t| = 1/√3@ and falls after: the peak's bound if the interval's

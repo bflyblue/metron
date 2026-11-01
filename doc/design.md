@@ -1261,9 +1261,9 @@ functions (`cross`, `trace`, `asinh`, …) are compositions of these.
   midpoints are short.
 - **`expm` with uncertain entries is slow at high precision**: 13 s for a
   3 × 3 at precision 200, as before. A product of forms with 64 nudges costs
-  milliseconds there, and the series takes about a hundred terms. Evaluating
-  the polynomial with fewer matrix products (Paterson–Stockmeyer) would
-  cut it about fivefold.
+  milliseconds there, and the series takes about a hundred terms, a matrix
+  product each. Evaluating the polynomial with about `2√K` matrix products
+  instead of `K` (Paterson–Stockmeyer) is the likely fix; not measured.
 - **A product of two zero-mean statistical values is marked unbounded**, and
   the mark survives a sum in which that product is negligible (a value keeps
   the largest measure of everything it was computed from, §3.2): `fromState`
