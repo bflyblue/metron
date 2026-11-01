@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- The `astro` library, first build (design §7.7): the record `Body {mu,
+  radius, flattening, j2, rate}` and nested constant sets chosen with a
+  `use`: `astro.wgs84` (TR8350.2 with the EGM96 J2), `astro.iers2010` (IERS
+  TN36), `astro.iau2015` (Resolution B3, exact) and `astro.de440` (Park et
+  al. 2021 and the DE440 header), each constant cited, measured ones with
+  their published `±σ`. `astro.kepler` has the conic's relations, the
+  classical `Elements` and their conversions to and from a position and a
+  velocity (circular and equatorial cases included, every angle from
+  `atan2`), the anomalies of each conic, Kepler solvers whose result
+  declares its truncation error with `±`, Barker's equation, two-body
+  propagation and the J2 secular rates with the sun-synchronous
+  inclination. `astro.maneuver` has `Transfer`, Hohmann, bi-elliptic,
+  plane changes and phasing. Each function is tested against Vallado's or
+  Curtis's worked examples. `astro.GM_earth`, `GM_sun`, `R_earth`,
+  `M_earth` and `M_sun` are removed; the sets replace them.
+- Conversions chain from the left: `x to a to b` is `(x to a) to b`.
+- `pointAt c v` places an amount on a chart from its origin along its axes,
+  for scalar and vector charts, in place of `[0, 0, 0] c .+ withAxes c v`.
+- A term that ends in a `case` (a field access is one) prints in
+  parentheses where more text follows it, so `let x = r.f in …` reads back.
+
 - A second-order statistical term within the precision floor at a value's
   midpoint is arithmetic noise and no longer marks the value non-linear,
   even when the first-order σ it was compared with cancelled to noise too:

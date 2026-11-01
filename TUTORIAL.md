@@ -18,7 +18,7 @@ This opens the interactive calculator without a saved database. Enter the exampl
 
 Blocks marked `text` contain Metron input unless they are introduced as output. Blocks marked `sh` contain shell commands. Definitions normally produce no output, while expressions print their results.
 
-Continue in the same session through sections 2–7. Section 8 starts a separate session with a saved database.
+Continue in the same session through sections 2–8. Section 9 starts a separate session with a saved database.
 
 Useful commands include:
 
@@ -305,6 +305,8 @@ The result is `68 degF`. Find a temperature change with `.-`, or add a change to
 
 These give `5 K` and `25 degC`. A temperature point and a temperature change have different roles. Adding two Celsius points with ordinary `+` is rejected.
 
+Conversions chain from left to right. `20 degC to degF to kelvin` converts to Fahrenheit first and then to kelvin, and gives `293.15 kelvin`.
+
 ### Place objects in a workshop
 
 A space identifies the physical setting that points belong to. A chart supplies coordinates within that space. Define a three-dimensional workshop measured in meters:
@@ -325,6 +327,15 @@ tool to room
 ```
 
 The result is `[3, 1, 0] room`. The conversion includes the bench's origin offset.
+
+To place a calculated amount, use `pointAt`. It measures the amount from the chart's origin, along the chart's axes:
+
+```text
+pointAt bench ([0.5, 0, 0] m * 2)
+pointAt bench ([0.5, 0, 0] m * 2) to room
+```
+
+These give `[1, 0, 0] bench` and `[3, 1, 0] room`. A named vector, such as `let reach = [1, 0, 0] m`, has no axes of its own. Give it the bench's axes first: `pointAt bench (withAxes bench reach)`.
 
 Find a displacement in bench coordinates and use it to move a point:
 
@@ -433,7 +444,92 @@ The result is `45 min`. Commands such as `:ls cycling` and `:view cycling.travel
 
 You can use `:use cycling` to make its names available without the prefix; Metron confirms with `stored use cycling`. Existing local names can affect lookup, so full names remain useful when names overlap.
 
-## 8. Start a saved database
+## 8. Compute an orbit
+
+The `astro` library holds orbital mechanics. It is not in use by default. Make its names available, choose a set of constants for the Earth, and add the two-body functions:
+
+```text
+:use astro
+:use astro.wgs84
+:use astro.kepler
+earth.mu
+```
+
+Each `:use` prints a confirmation, such as `stored use astro`. The last line prints `398600441800000 m^3 s^-2`. This is the Earth's gravitational parameter, GM, in the WGS 84 system that GPS uses. A set of constants is a namespace. `astro.iers2010`, `astro.iau2015` and `astro.de440` define the same names from other sources.
+
+### Find the orbit of a satellite
+
+A position and a velocity describe a satellite at one moment. This example is from Vallado's *Fundamentals of Astrodynamics and Applications*, example 2-5:
+
+```text
+let r0 = [6524.834, 6862.875, 6448.296] km
+let v0 = [4.901327, 5.533756, -1.976341] km/s
+let orbit = fromState earth r0 v0
+orbit.e
+orbit.i to deg
+period earth orbit.a to h
+```
+
+The eccentricity `orbit.e` is `0.83285339848752133549…`, so the orbit is a long ellipse. The inclination is `87.869126177026452698… deg`, nearly over the poles. One revolution takes `18.982893721345285847… h`. The function names the Earth as its first argument, so the constants come from one place.
+
+Move the satellite 40 minutes along its orbit, and convert it back to a position:
+
+```text
+let later = propagate earth orbit (40 min)
+later.nu to deg
+fst (toState earth later) to km
+```
+
+The angle from the closest point of the orbit grows from about 92° to `127.19430471529450586… deg`. The new position is `[14937.721530124251323…, 16543.392236976731964…, -225.18839913716800185…] km`.
+
+### See how far a solver went
+
+`propagate` solves Kepler's equation with a fixed number of Newton steps. The solver adds its remaining error as a bound, so the result is as reliable as any other. Vallado's example 2-1 asks for the eccentric anomaly:
+
+```text
+meanToEccentric 0.4 (235.4 deg) to deg
+bound (meanToEccentric 0.4 (235.4 deg))
+```
+
+The first result is `220.51207476752206740… deg`. Every printed digit is correct. The bound is `3.0886579188079114749…e-23 deg`.
+
+A measured input passes its uncertainty through the solver:
+
+```text
+meanToEccentric 0.4 ((235.4 ±σ 0.01) * 1 deg) to deg
+```
+
+The result is `220.5121 ±σ 0.0077 deg`.
+
+### Plan a transfer
+
+A Hohmann transfer moves a satellite between two circular orbits with two burns. Vallado's example 6-1 goes from a low orbit to the geostationary altitude:
+
+```text
+:use astro.maneuver
+let leo = earth.radius + 191.34411 km
+let geo = earth.radius + 35781.34857 km
+let climb = hohmann earth leo geo
+climb.dv1 to km/s
+climb.dv2 to km/s
+total climb to km/s
+climb.tof to h
+```
+
+The burns are `2.4570375641775748610… km s^-1` and `1.4781866251255600022… km s^-1`, `3.9352241893031348632… km s^-1` in total. The transfer takes `5.2567133281852289025… h`.
+
+### Change the constants
+
+A full name selects another set without a new `:use`:
+
+```text
+period iau2015.earth (7000 km) to min
+period earth (7000 km) to min
+```
+
+These give `97.141949054922148437… min` with the IAU 2015 value and `97.141943961433593065… min` with WGS 84. If you enter `:use astro.iau2015` instead, Metron refuses it: `earth` would then name two bodies, and the pending definitions use `earth`.
+
+## 9. Start a saved database
 
 Quit the practice session with `:quit`. From the project directory, start a separate store at a new path:
 
@@ -463,7 +559,7 @@ The scratch is a temporary workspace for pending definitions. You can already us
 
 `:add` saves new definitions. If a saved name already has a different definition, Metron asks you to use `:update`. This separates experimenting with a definition from accepting its replacement.
 
-## 9. Understand content-based identity
+## 10. Understand content-based identity
 
 A hash is an identifier calculated from a definition's content. Metron uses hashes to identify definitions and their dependencies. Names are labels that point to those identities.
 
@@ -517,7 +613,7 @@ Save the new definition before continuing:
 
 A hash also includes the identities of referenced definitions. Changing a dependency creates a new identity for an upgraded dependent, even when its displayed source still uses the same names.
 
-## 10. Upgrade a function deliberately
+## 11. Upgrade a function deliberately
 
 Create a travel-time function and a saved calculation that uses it:
 
@@ -623,7 +719,7 @@ The result is `40 min`. Plain `:update` also attempts to upgrade dependents, so 
 
 Changes that make dependent definitions ill-typed can leave unresolved work. Use `:todo` after an update to inspect what remains. Successful propagation in this example does not mean every possible replacement is compatible.
 
-## 11. Reopen and inspect the store
+## 12. Reopen and inspect the store
 
 Quit the session, then run this shell command with the same directory:
 
