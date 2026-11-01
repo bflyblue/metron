@@ -13,7 +13,6 @@ module Metron.Encode (
   -- * Declared types
   encodeTypeDef,
   hashTypeDef,
-  encType,
 ) where
 
 import Crypto.Hash.SHA256 qualified as SHA256 (hash)

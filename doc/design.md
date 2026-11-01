@@ -846,7 +846,7 @@ accesses, and the desugarer decides what it is:
   definition `orbital.period`, cannot arise, because a name is never both a
   label and a namespace (§7.6).
 
-**Implemented in:** `Metron.Lexer` (`projection`, `wildcard`, `field`), `Metron.Parser` (`atom`, `primary`), `Metron.Desugar` (`qualifiedChain`, `indexedForm`, `fieldVar`), `Metron.NameResolution` (`resolveName`).
+**Implemented in:** `Metron.Lexer` (`projection`, `wildcard`, `field`), `Metron.Parser` (`atom`, `primary`), `Metron.Desugar` (`qualifiedChain`, `indexedForm`, `fieldVar`), `Metron.NameResolution` (`resolverFor`, `qualifyName`).
 **Tested by:** "slicing along an axis"; "namespaces" › "an absolute .name picks the root's"; "namespaces" › "lexing: a dot not glued to a value is an absolute name"; "data".
 
 ## 3. Values, numbers and units
@@ -3823,7 +3823,7 @@ desugared `to` is refused as F7 says, and the subtraction is written out.
 
 **Open.** A frame per item of data (§11.3), constraints over `Diff` beyond the pending one, printing values with `·`, a `data` declaration that names a chart's axes in one group with the chart (§10.3), and whether `astro.State` holds a point (§11.3).
 
-**Implemented in:** `Metron.Parser` (`chartStatement`), `Metron.Desugar` (`desugar`, `spaceNamed`, `refuseMoving`), `Metron.Infer` (`unifyFrame`, `unifyFrameSlot`, `unifySpace`, `overTensor`, `decide`), `Metron.Type.Syntax` (`enterSpace`, `tyFrame`, `chartTypeFrame`), `Metron.Builtin` (`spaceDef`, `spaceHash`, `spaceOf`, `frameDef`, `frameHash`, `frameTag`, `frameDefMoving`), `Metron.Resolve` (`mintedBy`, `mintTypes`, `labelFrames`), `Metron.Eval` (`runPrim`, `chartRoute`, `takesArguments`), `Metron.Primitive.Types` (`primScheme`), `Metron.Pretty` (`renderTermUnits`).
+**Implemented in:** `Metron.Parser` (`chartStatement`), `Metron.Desugar` (`desugar`, `spaceNamed`, `refuseMoving`), `Metron.Infer` (`unifyFrame`, `unifyFrameSlot`, `unifySpace`, `overTensor`, `decide`), `Metron.Type.Syntax` (`enterSpace`, `tyFrame`, `chartTypeFrame`), `Metron.Builtin` (`spaceDef`, `spaceOf`, `frameDef`, `frameHash`, `frameTag`, `frameDefMoving`), `Metron.Resolve` (`mintedBy`, `mintTypes`, `labelFrames`), `Metron.Eval` (`runPrim`, `chartRoute`, `takesArguments`), `Metron.Primitive.Types` (`primScheme`), `Metron.Pretty` (`renderTermUnits`).
 **Tested by:** "spaces and frames (design §3.10, part F)"; "named axes"; "dimension syntax" › "a point or chart takes a frame"; "turnedCharts"; "movingCharts".
 
 ## 4. Type system
@@ -6127,7 +6127,7 @@ block, for pasting at the root.
 **Open.** How much of the tree `:ls` shows, and whether a field can be
 reached by path from outside its namespace (§11).
 
-**Implemented in:** `Metron.NameResolution` (`resolveName`, `shortestName`, `qualifyName`, `namespaceLabels`, `isNamespace`, `disjointness`), `Metron.Session.Names` (`relabel`, `removeLabel`, `argPath`), `Metron.Desugar` (`desugarDefinition`), `Metron.Update` (`restamp`).
+**Implemented in:** `Metron.NameResolution` (`resolverFor`, `shortestName`, `qualifyName`, `namespaceLabels`, `isNamespace`, `disjointness`), `Metron.Session.Names` (`relabel`, `removeLabel`, `argPath`), `Metron.Desugar` (`desugarDefinition`), `Metron.Update` (`restamp`).
 **Tested by:** "namespaces"; "standard library" › "units resolve through the stored uses and print bare", "a root name shadows the library's: c and physics.c".
 
 ### 7.7 The standard library

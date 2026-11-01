@@ -26,7 +26,6 @@ module Metron.Desugar (
   isFromMarker,
   spaceQuery,
   fillOperands,
-  readingMarkerName,
   unmarked,
   Resolution (..),
   Resolved (..),

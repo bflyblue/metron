@@ -5,7 +5,6 @@ module Metron.NameResolution (
   isLabel,
   qualifyWith,
   qualifyName,
-  resolveName,
   shortestName,
   shortestNameOf,
   namespaceLabels,
@@ -124,15 +123,6 @@ qualifyWith stored exists scope written
 -- | 'qualifyWith' over the labels of one kind in a codebase.
 qualifyName :: LabelKind -> S.Scope -> Codebase -> Text -> Qualified
 qualifyName kind scope cb = qualifyWith cb.uses (isLabel kind cb) scope
-
-{- | A free name in an expression, resolved through the scope: its full path
-and what it names. Two @use@s that both offer it give 'AAmbiguous'.
--}
-resolveName :: S.Scope -> Codebase -> Text -> Maybe (Text, Resolved)
-resolveName scope cb written = case qualifyName TermLabel scope cb written of
-  Found full -> (full,) <$> resolvedAt cb full
-  Ambiguous fulls -> Just (written, AAmbiguous fulls)
-  NotFound -> Nothing
 
 -- | What a full path labels among definitions and constructors.
 resolvedAt :: Codebase -> Text -> Maybe Resolved

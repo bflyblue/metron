@@ -5,7 +5,6 @@ Core terms back to surface syntax for @:view@.
 -}
 module Metron.Pretty (
   renderRational,
-  renderMagnitude,
   renderRough,
   renderValue,
   renderValueWith,
@@ -22,7 +21,6 @@ module Metron.Pretty (
   RefNamer,
   FieldNamer,
   Printer (..),
-  plainPrinter,
   respell,
 ) where
 
@@ -343,22 +341,6 @@ data Printer = Printer
   , typeNames :: Text -> Text
   -- ^ declared types and constructors written by hash, named (design §7.2)
   }
-
-{- | A printer that knows no field names, for callers without a codebase:
-records print positionally, in ASCII, with the default threshold.
--}
-plainPrinter :: RefNamer -> Printer
-plainPrinter namer =
-  Printer
-    { refName = namer
-    , fieldNames = \_ _ n -> replicate n Nothing
-    , spelling = Ascii
-    , unitName = id
-    , nonlinear = 1 / 100
-    , samples = 0
-    , outcomes = 1000
-    , typeNames = id
-    }
 
 {- | A measure of non-linearity (design §3.2): the operation, and its
 second-order statistical term as a percentage of the first-order σ.

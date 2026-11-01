@@ -14,7 +14,6 @@ module Metron.UnitHint (
   unitHintMul,
   unitHintDiv,
   unitHintPow,
-  unitHint,
   smallerUnit,
   combine,
   hintProduct,

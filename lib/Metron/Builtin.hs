@@ -25,7 +25,6 @@ module Metron.Builtin (
   boolDef,
   pairDef,
   listDef,
-  tupleDef,
   maxTupleArity,
   builtinDefs,
   axesDef,
@@ -33,11 +32,9 @@ module Metron.Builtin (
   axesTag,
   isAxesDef,
   spaceDef,
-  spaceHash,
   isSpaceDef,
   spaceOf,
   frameDef,
-  frameHash,
   frameTag,
   frameDefMoving,
   mintedPath,
@@ -49,7 +46,6 @@ module Metron.Builtin (
   tupleHash,
   tupleArity,
   boolT,
-  pairT,
   tupleT,
   listT,
   pattern BoolT,
@@ -165,9 +161,6 @@ spaceDef path lens d =
  where
   baseAxes = if null lens then AAnon else ANamed (axesHash path)
 
-spaceHash :: Text -> [Int] -> Dim -> Hash
-spaceHash path lens d = hashTypeDef (spaceDef path lens d)
-
 -- | Whether a declaration is a space's.
 isSpaceDef :: TypeDef -> Bool
 isSpaceDef def = case def.label of
@@ -257,9 +250,6 @@ tupleArity h = Map.lookup h tupleArities
 
 boolT :: Type
 boolT = TData boolHash []
-
-pairT :: Type -> Type -> Type
-pairT a b = tupleT [a, b]
 
 -- | The tuple of the given component types (two or more).
 tupleT :: [Type] -> Type

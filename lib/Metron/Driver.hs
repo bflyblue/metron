@@ -15,7 +15,6 @@ module Metron.Driver (
   emptySession,
   seededSession,
   startBackend,
-  setSetting,
   startSettings,
   stdlibUpgrade,
   feed,

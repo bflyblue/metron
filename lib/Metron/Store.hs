@@ -30,7 +30,6 @@ module Metron.Store (
   formatVersion,
   locateStore,
   openStore,
-  seedStore,
   loadStore,
   sync,
   MergeReport (..),

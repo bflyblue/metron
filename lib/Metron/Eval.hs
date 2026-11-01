@@ -32,14 +32,12 @@ module Metron.Eval (
   ClosureOf (..),
   Closure,
   ElemOf,
-  Elem,
   ThunkOf,
   Thunk,
   EvalError (..),
   Config (..),
   defaultConfig,
   precisionOf,
-  settingsOf,
   batchMembers,
   RuntimeOf (..),
   Runtime,
@@ -371,8 +369,6 @@ type Thunk = ThunkOf Magnitude
 
 -- | A tensor element, lazily.
 type ElemOf s = Either EvalError s
-
-type Elem = ElemOf Magnitude
 
 -- | The environment for a term in scope @n@.
 type Env s n = Vec n (ThunkOf s)

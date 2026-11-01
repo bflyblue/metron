@@ -12,7 +12,6 @@ module Metron.Limits (
   Limits (..),
   Limit (..),
   defaultLimits,
-  limitName,
   limitHint,
   settingLines,
   setLimit,

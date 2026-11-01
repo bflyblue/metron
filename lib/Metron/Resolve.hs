@@ -5,10 +5,8 @@ codebase. Nothing from a group is stored unless the whole group checks.
 module Metron.Resolve (
   typeLookupFor,
   processGroup,
-  annotationsFor,
   annotationsWith,
   ascriptionsIn,
-  usesSignatures,
   storeTerm,
   withHint,
 ) where

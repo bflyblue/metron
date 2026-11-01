@@ -1,13 +1,9 @@
 -- | Render stored definitions and dependency-ordered exports as source text.
 module Metron.Source (
   editSource,
-  definitionSource,
-  signatureSource,
   viewData,
-  viewReference,
   definitionLine,
   viewTyped,
-  unitRef,
   refNamer,
   printerFor,
   spellingOf,

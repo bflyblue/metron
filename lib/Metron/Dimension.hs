@@ -23,7 +23,6 @@ module Metron.Dimension (
   renderDimIn,
   renderDimArgIn,
   productText,
-  renderUnits,
   renderUnitsIn,
   Spelling (..),
   exponentText,
@@ -190,12 +189,8 @@ productText = \case
   Unicode -> "·"
 
 {- | The base units of a concrete dimension as they follow a printed value:
-@m s^-2@; empty when dimensionless.
+@m s^-2@, or @m s⁻²@ in unicode; empty when dimensionless.
 -}
-renderUnits :: Dim -> Text
-renderUnits = renderUnitsIn Ascii
-
--- | 'renderUnits' in a chosen spelling: @m s⁻²@ in unicode.
 renderUnitsIn :: Spelling -> Dim -> Text
 renderUnitsIn spelling d
   | isDimOne d = ""

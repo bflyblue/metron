@@ -5,9 +5,8 @@ module Metron.Type.Syntax (
   queryScheme,
   signatureScheme,
   explicitScheme,
-  typeVariable,
   Bound,
-  BoundVar (..),
+  BoundVar,
   renumberBound,
   tyNames,
 ) where

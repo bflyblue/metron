@@ -10,8 +10,6 @@ of 'stdlibDefaultUses'. Labels that name a definition twice (@newton@ and
 binds them. The prefix table is generated here rather than typed by hand.
 -}
 module Metron.Prelude (
-  stdlibSource,
-  stdlibAliases,
   stdlibNames,
   stdlibNamespaces,
   stdlibDefaultUses,
