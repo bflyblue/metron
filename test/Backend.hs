@@ -190,7 +190,22 @@ switchingTests =
           expectLeft
             "`covariance` is the affine backend's"
             (runWith doubleConfig{samples = 10} ["covariance [1, 2]"])
-    , testCase "the declared σ, mid and sd need samples under double" $ do
+    , testCase
+        "noise is refused under double at every setting, as ± is; gauss is drawn"
+        $ do
+          let lacking = "`noise` is the affine backend's; the double backend does not have it"
+          expectLeft lacking (runDouble ["noise 2"])
+          expectLeft lacking (runWith doubleConfig{samples = 10} ["noise 2"])
+          expectLeft lacking (runWith monteCarlo ["1 + 0.1 * (noise 1).0"])
+          -- before running, through a definition
+          expectLeft
+            "`spread` uses `noise`, which the double backend does not have"
+            ( runWith
+                doubleConfig{samples = 10}
+                ["let spread x = x + (noise 1).0", "spread 1"]
+            )
+          (length <$> runWith doubleConfig{samples = 10} ["gauss 2"]) @?= Right 1
+    , testCase "the declared σ, gauss, mid and sd need samples under double" $ do
         expectLeft
           "`sd` needs `:set samples N` under the double backend"
           (runDouble ["sd 1"])
@@ -201,7 +216,6 @@ switchingTests =
           "`±σ` needs `:set samples N` under the double backend"
           (runDouble ["1 ±σ 0.1"])
         expectLeft "`gauss` needs `:set samples N`" (runDouble ["gauss 2"])
-        expectLeft "`noise` needs `:set samples N`" (runDouble ["noise 2"])
         runWith doubleConfig{samples = 10} ["sd 1", "mid 0.5"] @?= Right ["0", "0.5"]
     , testCase "the double backend's are refused under affine" $ do
         expectLeft

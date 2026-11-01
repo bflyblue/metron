@@ -117,10 +117,12 @@ ownerOf name = case [b | b <- [minBound .. maxBound], name `elem` backendOwn b] 
 {- | The affine backend's built-ins the double backend has too when it
 carries copies (design §8.2): a declared σ is drawn in each copy, and
 @mid@ and @sd@ are the copies' mean and deviation. With no copies, under
-@samples 0@, it has none of them.
+@samples 0@, it has none of them. @noise@ is not among them: it makes a
+bound unknown, which has no distribution to draw, so it is refused at
+every setting, as @±@ is.
 -}
 sampledOwn :: [Text]
-sampledOwn = ["±σ", "gauss", "noise", "mid", "sd"]
+sampledOwn = ["±σ", "gauss", "mid", "sd"]
 
 -- | Why a backend, at a setting, cannot run a built-in.
 data Refusal

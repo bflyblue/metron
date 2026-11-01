@@ -39,8 +39,10 @@ its error, chosen by @:set samples@:
 With copies, a declared standard uncertainty is drawn (Monte Carlo, the
 GUM's Supplement 1): @x ±σ e@ is @x + |e|·z@ in each copy, @z@ a standard
 normal keyed by the nudge's identity, the copy and the seed, and @gauss@
-and @noise@ are drawn likewise; @mid@ and @sd@ read the copies' mean and
-deviation. Without copies they are refused, and @±@ always is.
+is drawn likewise; @mid@ and @sd@ read the copies' mean and deviation.
+Without copies they are refused. @±@ and @noise@, which make a bound
+unknown, are refused at every setting: a bound has no distribution to
+draw.
 -}
 module Metron.Double (
   Dbl (..),
@@ -684,18 +686,17 @@ drawn s k o m =
         (Copies (VU.generate s.batch.count (standardNormal s key . (s.batch.first +))))
         Nothing
 
-{- | @noise n@ / @gauss n@, one component: drawn in each copy, as the
-design has it for both (design §8.2), with copies; refused without.
+{- | @gauss n@, one component: drawn in each copy, with copies; refused
+without. @noise n@ makes a bound unknown (@x ± e@ is @x + e * noise 1@),
+which has no distribution: drawing it as a normal would let a bound in as
+a σ, so it is refused at every setting, as @±@ is (design §8.2).
 -}
 noiseD :: Settings -> NudgeKind -> Origin -> Either ArithError Dbl
-noiseD s k o
-  | s.samples > 0 = Right (drawn s k o 0)
-  | otherwise = Left (Domain (needsSamples (noiseName k)))
-
-noiseName :: NudgeKind -> Text
-noiseName = \case
-  Bound -> "noise"
-  Stat -> "gauss"
+noiseD s k o = case k of
+  Bound -> refused "noise"
+  Stat
+    | s.samples > 0 -> Right (drawn s k o 0)
+    | otherwise -> Left (Domain (needsSamples "gauss"))
 
 {- | @x ±σ e@: @x + |e|·z@ in each copy, @z@ drawn under the identity the
 affine backend gives the nudge, so the same unknown has the same draw
