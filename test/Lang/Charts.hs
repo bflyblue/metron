@@ -13,12 +13,13 @@ import Data.Text qualified as T (
   unwords,
  )
 import Lang.Common (
+  eciChart,
   encloses,
   evalP,
   expectError,
   expecting,
   linesIn,
-  multiline,
+  lvlhCharts,
   persistLines,
   reload,
   runLinesP,
@@ -40,7 +41,7 @@ turnedChartTests =
     "turnedCharts"
     [ testCase "one level: lvlh's x axis is eci's y, and back" $ do
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ encloses "1e-20" (fromEci "[1, 0, 0] lvlh") "[7000000, 1, 0]"
                  , -- reading back, by the generator negated
                    encloses
@@ -68,7 +69,7 @@ turnedChartTests =
           -- [6999998, 0, 5], so [1, 2, 3] arm is [6999998, 0, 5] + [3, 1, 2].
           -- The product reversed would give [-2, -3, 1] for R [1, 2, 3], and
           -- the origin not turned [7000000, 2, 5].
-          let arm = frame ++ ["chart arm on lvlh at [0, 2, 5] m by rotx (90 deg)"]
+          let arm = lvlhCharts ++ ["chart arm on lvlh at [0, 2, 5] m by rotx (90 deg)"]
           runLinesP
             ( arm
                 ++ [ encloses "1e-20" (fromEci "[1, 2, 3] arm") "[7000001, 1, 7]"
@@ -92,7 +93,7 @@ turnedChartTests =
         "an origin is an amount along the parent's axes, not steps of the parent"
         $ do
           runLinesP
-            [ eci
+            [ eciChart
             , "chart kmc on eci step km"
             , "chart sub on kmc at [1, 0, 0] km step m"
             , "[0, 0, 0] sub to eci"
@@ -105,7 +106,9 @@ turnedChartTests =
             @?= Right ["[1000, 0, 0] eci", "true", "true"]
     , testCase "a sequence with then is the Euler product, applied in order" $ do
         let pf =
-              [eci, "chart pf on eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"]
+              [ eciChart
+              , "chart pf on eci by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"
+              ]
         runLinesP
           ( pf
               ++ [ -- rows along eci and columns along pf, against a rotation
@@ -123,7 +126,7 @@ turnedChartTests =
           @?= Right ["true", "true"]
     , testCase "displacements within a frame are along its axes, exactly" $ do
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ -- chart coordinates (design §3.10, F6): no rotation applies
                    "[1, 2, 3] lvlh .- [0, 5, 0] lvlh"
                  , ":type [1, 2, 3] lvlh .- [0, 5, 0] lvlh"
@@ -170,7 +173,7 @@ turnedChartTests =
         -- Two frames' amounts do not mix unconverted.
         expectError
           ( runLinesP
-              ( frame
+              ( lvlhCharts
                   ++ ["([1, 2, 3] lvlh .- [0, 0, 0] lvlh) + ([1, 2, 3] eci .- [0, 0, 0] eci)"]
               )
           )
@@ -183,7 +186,7 @@ turnedChartTests =
           @?= Right
             "forall n m d s d1. Mat n m d -> Tensor (m : s) d1 -> Tensor (n : s) (d*d1)"
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ encloses
                      "1e-20"
                      ("rotateCov (rotationOf lvlh) " <> pm)
@@ -213,7 +216,7 @@ turnedChartTests =
           @?= Right ["true", "true", "true", "true", "true", "true"]
     , testCase "an uncertain angle: the coordinates carry it, correlated" $ do
         runLinesP
-          [ eci
+          [ eciChart
           , "chart tilt on eci by rotz (30 deg ± 0.001 rad)"
           , "let v = (([1000, 0, 0] tilt to eci) .- [0, 0, 0] eci) / 1 m"
           , -- x = 1000 cos θ, y = 1000 sin θ: bounds near 0.5 and 0.87
@@ -229,7 +232,7 @@ turnedChartTests =
     , testCase "a chart used in 100 conversions computes its rotation once" $ do
         -- Each mention of lvlh shares one value, and so one rotation.
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ encloses
                      "1e-15"
                      "foldl (\\acc k -> acc + (([k, 0, 0] lvlh to eci) .- ([0, 0, 0] lvlh to eci)).1 / 1 m) 0 (range 1 100)"
@@ -239,9 +242,9 @@ turnedChartTests =
           @?= Right ["true"]
     , testCase ":view and :edit of a sequence read back to the same hash" $ do
         let pf = "chart pf on eci at [0, 2, 0] km by rotz (30 deg) then rotx (45 deg)"
-        runLinesP [eci, pf, ":view pf"] @?= Right [pf]
-        let hashAfter def = runLinesP [eci, def, ":hash pf"]
-        expecting (runLinesP [eci, pf, ":edit pf"]) $ \outs ->
+        runLinesP [eciChart, pf, ":view pf"] @?= Right [pf]
+        let hashAfter def = runLinesP [eciChart, def, ":hash pf"]
+        expecting (runLinesP [eciChart, pf, ":edit pf"]) $ \outs ->
           hashAfter (T.strip (last outs)) @?= hashAfter pf
     , testCase "design §12: a perifocal chart" $ do
         runLinesP perifocalSession
@@ -257,7 +260,7 @@ turnedChartTests =
         s <-
           persistLines
             dir
-            [ eci
+            [ eciChart
             , "chart lvlh on eci at [7000, 0, 0] km by rotz (90 deg)"
             , "chart pf on lvlh by rotz (30 deg) then rotx (45 deg)"
             , ":add"
@@ -271,8 +274,6 @@ turnedChartTests =
         linesIn loaded ["[1, 2, 3] pf to eci"] @?= linesIn s ["[1, 2, 3] pf to eci"]
     ]
  where
-  eci = multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
-  frame = [eci, "chart lvlh on eci at [7000, 0, 0] km by rotz (90 deg)"]
   fromEci p = "(((" <> p <> ") to eci) .- [0, 0, 0] eci) / 1 m"
 
 {- | The session of design §12, "A perifocal chart": a chart turned by the
@@ -540,7 +541,7 @@ movingChartTests =
     ]
  where
   spinning =
-    [ multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
+    [ eciChart
     , "let w = 7.2921159e-5 rad/s"
     , "let t0 = 0 unix"
     , "let t1 = 1000 unix"
@@ -553,7 +554,7 @@ station's velocity, which is the Earth's rotation alone.
 -}
 spinningEarthSession :: [Text]
 spinningEarthSession =
-  [ multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
+  [ eciChart
   , "let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)"
   , "chart earth t on eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg/day"
   , ":view earth"

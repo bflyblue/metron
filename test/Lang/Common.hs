@@ -68,6 +68,10 @@ module Lang.Common (
   sessionOf,
   builtinTypeListing,
   astroTypes,
+  eciChart,
+  lvlhCharts,
+  shapeDecl,
+  shapeArea,
 ) where
 
 import Data.Bifunctor (first)
@@ -690,3 +694,23 @@ astroTypes =
   , "data astro.State c n = astro.State {epoch :: Point c, pos :: Vec n m, vel :: Vec n (m/s)}"
   , "astro.State : forall c n. Point c -> Vec n m -> Vec n (m/s) -> astro.State c n"
   ]
+
+-- Fixtures ----------------------------------------------------------------------------
+
+{- | The inertial space and its chart, entered as one input: points on
+@eci@, a chart of @GCRS@.
+-}
+eciChart :: Text
+eciChart = multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
+
+-- | 'eciChart' and a chart in orbit on it, @lvlh@, turned a quarter.
+lvlhCharts :: [Text]
+lvlhCharts = [eciChart, "chart lvlh on eci at [7000, 0, 0] km by rotz (90 deg)"]
+
+-- | A sum type with fields of a unit.
+shapeDecl :: Text
+shapeDecl = "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
+
+-- | A function by cases on 'shapeDecl'.
+shapeArea :: Text
+shapeArea = "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"

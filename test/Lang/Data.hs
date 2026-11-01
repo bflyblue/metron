@@ -5,12 +5,15 @@ module Lang.Data (
 
 import Data.Map.Strict qualified as Map (lookup, size)
 import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import Data.Text qualified as T (isInfixOf, isPrefixOf, unpack)
 import Lang.Common (
   evalP,
   runLinesP,
   seeded,
   sessionP,
+  shapeArea,
+  shapeDecl,
   typeOfTextP,
  )
 import Metron.Builtin (
@@ -116,8 +119,8 @@ dataTests =
           @?= Right ["7.5 km s^-1", "(Vec 3 m, Vec 3 (m/s))"]
     , testCase "declared types: constructors, case, types, printing" $ do
         runLinesP
-          [ "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
-          , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+          [ shapeDecl
+          , shapeArea
           , "area (Rect (3 m) (4 m))"
           , ":type Circle"
           , ":type area"
@@ -142,7 +145,7 @@ dataTests =
             ]
         -- A constructor is a function: partial application and bare use.
         runLinesP
-          [ "data Maybe a = Nothing | Just a"
+          [ maybeDecl
           , "map Just {1, 2}"
           , "let fromMaybe d m = case m of Nothing -> d; Just x -> x"
           , "fromMaybe 0 (Just 5)"
@@ -190,7 +193,7 @@ dataTests =
             ]
     , testCase "declared types: == and /= when every field compares" $ do
         runLinesP
-          [ "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
+          [ shapeDecl
           , "Circle (1 m) == Circle (1 m)"
           , "Circle (1 m) == Circle (100 cm)"
           , "Circle (1 m) == Circle (2 m)"
@@ -198,7 +201,7 @@ dataTests =
           , "Rect (1 m) (2 m) /= Rect (1 m) (2 m)"
           , "{Circle (1 m)} == {Circle (1 m)}"
           , "(Circle (1 m), true) == (Circle (1 m), false)"
-          , "data Maybe a = Nothing | Just a"
+          , maybeDecl
           , "Just 1 == Just 1"
           , "Nothing == Just 1"
           , "Just (Circle (1 m)) == Just (Circle (1 m))"
@@ -269,7 +272,7 @@ dataTests =
           ["data H = H Num | G (Num, Num -> Num)", "H 1 == H 1"]
           "no equality on H"
         refused
-          ["data Maybe a = Nothing | Just a", "Just (\\x -> x + 1) == Nothing"]
+          [maybeDecl, "Just (\\x -> x + 1) == Nothing"]
           "no equality on Num -> Num"
     , testCase "records: named fields, construction, access, update, printing" $ do
         runLinesP
@@ -355,8 +358,8 @@ dataTests =
         let decls =
               [ "data Body = Body {mass :: Num kg, pos :: Vec 3 m}"
               , "data Pair a b = Pair {first :: a, second :: b}"
-              , "data Maybe a = Nothing | Just a"
-              , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
+              , maybeDecl
+              , shapeDecl
               ]
             -- each value as it prints, and as the printed text prints again
             cases =
@@ -490,7 +493,7 @@ dataTests =
         refused ["data Dup a a = D a"] "parameter `a` appears twice"
         refused ["data W = W Nope"] "unknown type `Nope`"
         refused
-          ["data Maybe a = Nothing | Just a", "data W = W Maybe"]
+          [maybeDecl, "data W = W Maybe"]
           "`Maybe` takes 1 argument, given 0"
         refused
           ["data W = W (Num furlong)"]
@@ -502,10 +505,10 @@ dataTests =
           ["data W = W (Vec m)"]
           "`m` is a unit, not a length: a vector's length comes first, Vec 3 m"
         refused
-          ["data Maybe a = Nothing | Just a", "case Just 1 of Nothing -> 0"]
+          [maybeDecl, "case Just 1 of Nothing -> 0"]
           "does not cover Just"
         refused
-          ["data Maybe a = Nothing | Just a", "case Just 1 of Nothing -> 0; Just -> 1"]
+          [maybeDecl, "case Just 1 of Nothing -> 0; Just -> 1"]
           "has 1 fields"
         refused
           ["data Shape = Circle (Num m)", "Circle 1"]
@@ -537,7 +540,7 @@ dataTests =
     , testCase "declared types: names are labels" $ do
         let outs =
               runLinesP
-                [ "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
+                [ shapeDecl
                 , ":add"
                 , ":unname Circle"
                 , "Rect (1 m) (2 m)"
@@ -592,3 +595,7 @@ dataTests =
             d.structural @?= True
           other -> assertFailure (show other)
     ]
+
+-- | A parameterised sum type with a nullary and a unary constructor.
+maybeDecl :: Text
+maybeDecl = "data Maybe a = Nothing | Just a"

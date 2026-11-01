@@ -11,12 +11,14 @@ import Data.ByteString qualified as BS (pack, replicate)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text qualified as T (isInfixOf, unpack)
 import Lang.Common (
+  eciChart,
   encloses,
   evalP,
   expectError,
   expecting,
   lastN,
   linesIn,
+  lvlhCharts,
   multiline,
   persistLines,
   prim2,
@@ -81,16 +83,16 @@ namedAxesTests =
   testGroup
     "named axes"
     [ testCase "a chart mints a frame, named as the chart" $ do
-        runLinesP [eci, ":ls --types eci", ":type eci"]
+        runLinesP [eciChart, ":ls --types eci", ":type eci"]
           @?= Right ["frame eci", "Chart eci"]
         -- Two charts of one body: two frames, two hashes.
-        s <- sessionOf [eci, "chart lab on GCRS"]
+        s <- sessionOf [eciChart, "chart lab on GCRS"]
         lookupTypeName "eci" s.staging /= lookupTypeName "lab" s.staging
           @? "one frame for two charts"
         isJust (lookupTypeName "eci" s.staging) @? "no frame for eci"
         linesIn s [":hash eci"] /= linesIn s [":hash lab"] @? "one hash for two charts"
         -- No source declaration has the frame's label kind.
-        u <- sessionOf [eci, "data Eci = Eci"]
+        u <- sessionOf [eciChart, "data Eci = Eci"]
         lookupTypeName "Eci" u.staging /= lookupTypeName "eci" u.staging
           @? "a data type is a chart's frame"
         hashTypeDef (frameDef "eci" False)
@@ -108,18 +110,18 @@ namedAxesTests =
           "mkChart takes the frame a chart declaration mints first"
         -- A rescaling shares its parent's frame and mints none; a scalar
         -- chart's frame is named too.
-        t <- sessionOf [eci, "chart ekm on eci step km"]
+        t <- sessionOf [eciChart, "chart ekm on eci step km"]
         lookupTypeName "ekm" t.staging @?= Nothing
         isJust (lookupTypeName "temperature.degC" t.staging) @? "no frame for degC"
         linesIn t [":type [1, 2, 3] ekm", "[1, 2, 3] ekm .- [0, 0, 0] eci"]
           @?= Right ["Point eci", "[1000, 2000, 3000] m"]
         -- The frame of a renamed chart follows it.
-        r <- sessionOf [eci, ":add", ":rename eci frame"]
+        r <- sessionOf [eciChart, ":add", ":rename eci frame"]
         linesIn r [":ls --types frame", ":type [1, 2, 3] frame"]
           @?= Right ["frame frame", "Point frame"]
     , testCase "a point is on its frame; rotationOf is Mat space frame" $ do
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ ":type [1, 2, 3] lvlh"
                  , ":type [1, 2, 3] lvlh .- [0, 0, 0] lvlh"
                  , ":type rotationOf lvlh"
@@ -139,7 +141,7 @@ namedAxesTests =
             , "Vec GCRS m"
             ]
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ encloses "1e-20" "(([1, 2, 3] m to lvlh) from lvlh to eci) / 1 m" "[1, 2, 3]"
                  , encloses "1e-20" "det (rotationOf lvlh)" "1"
                  ]
@@ -147,16 +149,18 @@ namedAxesTests =
           @?= Right ["true", "true"]
         -- A chart parameter writes a point on any frame.
         runLinesP
-          (frame ++ ["let place c x = pointOn c x", ":type place", "place lvlh [1, 2, 3]"])
+          ( lvlhCharts
+              ++ ["let place c x = pointOn c x", ":type place", "place lvlh [1, 2, 3]"]
+          )
           @?= Right ["forall c. Chart c -> Coords c -> Point c", "[1, 2, 3] lvlh"]
         -- The wrong rotation is a type error.
         expectError
           ( runLinesP
-              (frame ++ ["let v = [1, 2, 3] eci .- [0, 0, 0] eci", "rotationOf lvlh @ v"])
+              (lvlhCharts ++ ["let v = [1, 2, 3] eci .- [0, 0, 0] eci", "rotationOf lvlh @ v"])
           )
           "the axes of lvlh against the axes of GCRS"
     , testCase "a literal takes its frame from use; a named value is anonymous" $ do
-        let setup = frame ++ ["let p = [1, 2, 3] eci", "let off = [0, 0, 2] m"]
+        let setup = lvlhCharts ++ ["let p = [1, 2, 3] eci", "let off = [0, 0, 2] m"]
         runLinesP
           (setup ++ ["p .+ [1, 0, 0] m", ":type off", ":type withAxes lvlh off"])
           @?= Right ["[2, 2, 3] eci", "Vec 3 m", "Vec lvlh m"]
@@ -190,11 +194,16 @@ namedAxesTests =
             , "Vec 3 m"
             ]
     , testCase "roots on one space convert; two spaces never meet" $ do
-        let setup = [eci, "chart lab on GCRS", "let p = [1, 2, 3] eci"]
+        let setup = [eciChart, "chart lab on GCRS", "let p = [1, 2, 3] eci"]
         runLinesP
           (setup ++ ["p to lab", "(p .- [0, 0, 0] eci) + ([1, 0, 0] lab .- [0, 0, 0] lab)"])
           @?= Right ["[1, 2, 3] lab", "[2, 2, 3] m"]
-        let apart = [eci, "space Bench = Vec 3 m", "chart lab on Bench", "let p = [1, 2, 3] eci"]
+        let apart =
+              [ eciChart
+              , "space Bench = Vec 3 m"
+              , "chart lab on Bench"
+              , "let p = [1, 2, 3] eci"
+              ]
         expectError
           (runLinesP (apart ++ ["p to lab"]))
           "frames of two spaces, GCRS and Bench"
@@ -213,7 +222,7 @@ namedAxesTests =
           @?= Right ["68 degF", "9 deltaF", "Point degC", "Chart degC", "1 K"]
     , testCase "a moving chart has one frame for every time" $ do
         let spinning =
-              [ eci
+              [ eciChart
               , "let w = 7.2921159e-5 rad/s"
               , "let t0 = 0 unix"
               , "chart spinner t on eci by rotz (w * (t .- t0)) spinning [0, 0, 1] * w"
@@ -234,7 +243,7 @@ namedAxesTests =
             ]
     , testCase "a written type names a frame, its axes and a space's" $ do
         let signed =
-              frame
+              lvlhCharts
                 ++ [ multiline ["v :: Vec lvlh m", "let v = [1, 0, 0] m"]
                    , multiline ["c :: Chart lvlh", "let c = lvlh"]
                    ]
@@ -255,10 +264,10 @@ namedAxesTests =
             , "Mat GCRS lvlh"
             ]
         expectError
-          (runLinesP (frame ++ [":type (rotationOf lvlh :: Mat lvlh GCRS)"]))
+          (runLinesP (lvlhCharts ++ [":type (rotationOf lvlh :: Mat lvlh GCRS)"]))
           "the axes of"
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ multiline ["v :: Vec lvlh m", "let v = [1, 0, 0] lvlh .- [0, 0, 0] lvlh"]
                  , ":type v"
                  ]
@@ -268,7 +277,7 @@ namedAxesTests =
         -- origin, and a data declaration over a chart's axes.
         runLinesP
           [ multiline
-              [ eci
+              [ eciChart
               , "r0 :: Vec eci m"
               , "let r0 = [7000, 0, 0] km"
               , "chart lvlh on eci at r0 by rotz (90 deg)"
@@ -283,7 +292,7 @@ namedAxesTests =
         -- redefinition they depend on breaks is still checked.
         expectError
           ( runLinesP
-              [ eci
+              [ eciChart
               , multiline ["k :: Num m", "let k = 3 m"]
               , ":add"
               , multiline
@@ -294,10 +303,10 @@ namedAxesTests =
         -- A root chart's origin is along its space's base axes, so a named
         -- value there needs a signature that keeps it polymorphic.
         expectError
-          (runLinesP [eci, "let o = [100, 200, 0] m", "chart site on GCRS at o"])
+          (runLinesP [eciChart, "let o = [100, 200, 0] m", "chart site on GCRS at o"])
           "anonymous axes"
         runLinesP
-          [ eci
+          [ eciChart
           , multiline ["o :: forall (a : 3). Vec a m", "let o = [100, 200, 0] m"]
           , "chart site on GCRS at o"
           , "[1, 2, 3] site"
@@ -306,7 +315,7 @@ namedAxesTests =
         -- Named slots follow a chart's axes when it is renamed, in a
         -- signature and in a data field, and across a reload.
         let renamed =
-              frame
+              lvlhCharts
                 ++ [ multiline ["v :: Vec lvlh m", "let v = [1, 0, 0] m"]
                    , "data Obs = Obs (Vec lvlh m) (Point lvlh)"
                    , ":add"
@@ -325,7 +334,7 @@ namedAxesTests =
         -- A chart redefined as no chart leaves no frame behind.
         fmap
           (lastN 1)
-          (runLinesP [eci, ":add", "let eci = 3", ":update", ":ls --types eci"])
+          (runLinesP [eciChart, ":add", "let eci = 3", ":update", ":ls --types eci"])
           @?= Right ["nothing matches"]
         -- A signature that names a chart's axes reads back in one group
         -- with the chart: through :export and :load, and across a reload.
@@ -352,7 +361,7 @@ namedAxesTests =
             , "forall (s1 : Space (Vec 3 m)) (c : s1) c1. Chart c -> Point c1 -> Vec c m -> Vec c (m/s) -> State c1 s1"
             ]
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ ":use astro"
                  , "let st = stateFrom lvlh (0 unix) ([1, 0, 0] m) ([0, 1, 0] m/s)"
                  , ":type st"
@@ -363,9 +372,6 @@ namedAxesTests =
           @?= Right
             ["stored use astro", "State unix GCRS", "Vec GCRS m", "true"]
     ]
- where
-  eci = multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]
-  frame = [eci, "chart lvlh on eci at [7000, 0, 0] km by rotz (90 deg)"]
 
 {- | The name slot of a shape position (design §3.9, stage 1). These read
 definitions whose stored types carry a named set by hash, with no chart
@@ -684,13 +690,13 @@ partFTests =
         -- A frame of one space is not a frame of another: a kind error.
         expectError
           ( runLinesP
-              ( inertial
-                  ++ [ multiline
-                         [ "conv :: forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1"
-                         , "let conv p c = p to c"
-                         ]
-                     , "conv (20 degC) eci"
-                     ]
+              ( eciChart
+                  : [ multiline
+                        [ "conv :: forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1"
+                        , "let conv p c = p to c"
+                        ]
+                    , "conv (20 degC) eci"
+                    ]
               )
           )
           "frames of two spaces, ITS90 and GCRS"
@@ -699,17 +705,17 @@ partFTests =
           "`Kelvin` is not a space"
     , testCase "F2: spaces are declared and nominal; a chart names its space" $ do
         runLinesP
-          ( inertial
-              ++ [ ":view ITS90"
-                 , -- TT is also si.TT, the teratesla: both show
-                   ":view TT"
-                 , ":view UTC"
-                 , ":view GCRS"
-                 , ":type [1, 2, 3] eci .- [0, 0, 0] eci"
-                 , "space Other = Num K"
-                 , "chart oC on Other at 273.15 K"
-                 , "20 oC .- 0 oC"
-                 ]
+          ( eciChart
+              : [ ":view ITS90"
+                , -- TT is also si.TT, the teratesla: both show
+                  ":view TT"
+                , ":view UTC"
+                , ":view GCRS"
+                , ":type [1, 2, 3] eci .- [0, 0, 0] eci"
+                , "space Other = Num K"
+                , "chart oC on Other at 273.15 K"
+                , "20 oC .- 0 oC"
+                ]
           )
           @?= Right
             [ "space ITS90 = Num K"
@@ -727,7 +733,7 @@ partFTests =
           (runLinesP ["space Other = Num K", "chart oC on Other", "20 degC to oC"])
           "frames of two spaces, ITS90 and Other"
         expectError
-          (runLinesP (inertial ++ ["20 degC to eci"]))
+          (runLinesP [eciChart, "20 degC to eci"])
           "frames of two spaces, ITS90 and GCRS"
         -- TT and UTC are two spaces with no chart between them (design
         -- §3.10, F2): a unix instant and a J2000 one never meet.
@@ -743,24 +749,24 @@ partFTests =
           "a space is of numbers or of vectors"
     , testCase "F3: what a chart declaration says decides whether it mints a frame" $ do
         runLinesP
-          ( inertial
-              ++ [ -- a root, an origin, turned axes: each a frame
-                   ":type 0 kelvin"
-                 , "chart warm on degC at 10 K"
-                 , ":type 0 warm"
-                 , "0 warm .- (10 degC to warm)"
-                 , "chart turned on eci by rotz (30 deg)"
-                 , ":type [1, 2, 3] turned .- [0, 0, 0] turned"
-                 , -- a step alone is a rescaling: its parent's frame
-                   "chart mdegC on degC step mK"
-                 , ":type 20 mdegC"
-                 , "20000 mdegC .- 20 degC"
-                 , "20000 mdegC"
-                 , -- Rankine is kelvin rescaled: no `to` between them
-                   ":type 491.67 degR"
-                 , "491.67 degR .- 0 kelvin"
-                 , "(0 kelvin .+ 1 K) to degR"
-                 ]
+          ( eciChart
+              : [ -- a root, an origin, turned axes: each a frame
+                  ":type 0 kelvin"
+                , "chart warm on degC at 10 K"
+                , ":type 0 warm"
+                , "0 warm .- (10 degC to warm)"
+                , "chart turned on eci by rotz (30 deg)"
+                , ":type [1, 2, 3] turned .- [0, 0, 0] turned"
+                , -- a step alone is a rescaling: its parent's frame
+                  "chart mdegC on degC step mK"
+                , ":type 20 mdegC"
+                , "20000 mdegC .- 20 degC"
+                , "20000 mdegC"
+                , -- Rankine is kelvin rescaled: no `to` between them
+                  ":type 491.67 degR"
+                , "491.67 degR .- 0 kelvin"
+                , "(0 kelvin .+ 1 K) to degR"
+                ]
           )
           @?= Right
             [ "Point kelvin"
@@ -789,16 +795,16 @@ partFTests =
           @?= Right ["Point J2000 -> Chart ecef", "Chart ecef", "Vec ecef m"]
     , testCase "F3: two bodies are two declarations; what they share is a function" $ do
         let siblings =
-              inertial
-                ++ [ "let posA t = withAxes eci ([7000, 0, 0] km)"
-                   , "let posB t = withAxes eci ([0, 7000, 0] km)"
-                   , "let lvlhTurn r = rotz (atan2 r.1 r.0)"
-                   , "chart lvlhA t on eci at posA t by lvlhTurn (posA t)"
-                   , "chart lvlhB t on eci at posB t by lvlhTurn (posB t)"
-                   , "let t0 = 0 unix"
-                   , "let a = [1, 0, 0] (lvlhA t0)"
-                   , "let b = [0, 1, 0] (lvlhB t0)"
-                   ]
+              eciChart
+                : [ "let posA t = withAxes eci ([7000, 0, 0] km)"
+                  , "let posB t = withAxes eci ([0, 7000, 0] km)"
+                  , "let lvlhTurn r = rotz (atan2 r.1 r.0)"
+                  , "chart lvlhA t on eci at posA t by lvlhTurn (posA t)"
+                  , "chart lvlhB t on eci at posB t by lvlhTurn (posB t)"
+                  , "let t0 = 0 unix"
+                  , "let a = [1, 0, 0] (lvlhA t0)"
+                  , "let b = [0, 1, 0] (lvlhB t0)"
+                  ]
         runLinesP (siblings ++ [":type a", ":type b", "b .- b"])
           @?= Right ["Point lvlhA", "Point lvlhB", "[0, 0, 0] m"]
         expectError
@@ -819,7 +825,7 @@ partFTests =
           @?= Right ["true"]
     , testCase "F4: Point, Chart, Diff and Axes; Diff reduces once the space is known" $ do
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ ":type 20 degC .- 10 degC"
                  , ":type 20 degF .- 10 degF"
                  , ":type [1, 2, 3] lvlh .- [0, 0, 0] lvlh"
@@ -856,7 +862,7 @@ partFTests =
           "the amount between points on a frame of a space not known here: give a signature naming the space"
     , testCase "F5: the primitives over frames; another frame is reported as one" $ do
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ ":type pointOn"
                  , ":type toChart"
                  , ":type rotationOf"
@@ -879,7 +885,7 @@ partFTests =
         expectError (evalP "20 degC .+ (5 degC)") "an amount and a point"
     , testCase "F6: a point holds its coordinates on its frame, the step applied" $ do
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ "20 degC .- 0 degC"
                  , -- printed on the chart it was written on, the step divided out
                    "chart ground on eci at [100, 200, 0] m step km"
@@ -1024,7 +1030,7 @@ partFTests =
             "not as general as its signature"
     , testCase "F9: printing and encoding" $ do
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ ":type 20 degC"
                  , ":type degC"
                  , ":type [1, 2, 3] lvlh"
@@ -1061,14 +1067,14 @@ partFTests =
         expectError (runLinesP ["let from = 3"]) "unexpected"
         -- along and inChart are retired into to; withAxes stays.
         expectError
-          (runLinesP (frame ++ ["inChart lvlh ([1, 0, 0] m)"]))
+          (runLinesP (lvlhCharts ++ ["inChart lvlh ([1, 0, 0] m)"]))
           "unknown name `inChart`"
         expectError
-          (runLinesP (frame ++ ["along lvlh ([1, 0, 0] m)"]))
+          (runLinesP (lvlhCharts ++ ["along lvlh ([1, 0, 0] m)"]))
           "unknown name `along`"
         -- on subtracts in a frame, and only a subtraction.
         runLinesP
-          ( frame
+          ( lvlhCharts
               ++ [ encloses
                      "1e-15"
                      "(([1, 2, 3] eci .- [4, 5, 6] eci on lvlh) - (([1, 2, 3] eci to lvlh) .- ([4, 5, 6] eci to lvlh))) / 1 m"
@@ -1078,11 +1084,11 @@ partFTests =
           )
           @?= Right ["true", "Vec lvlh m"]
         expectError
-          (runLinesP (frame ++ ["[1, 2, 3] eci on lvlh"]))
+          (runLinesP (lvlhCharts ++ ["[1, 2, 3] eci on lvlh"]))
           "`on` subtracts two points in a frame: write b .- a on c"
     , testCase "F10: conversions and on read back to their hashes" $ do
         let stored =
-              frame
+              lvlhCharts
                 ++ [ "let viaOn a b = b .- a on lvlh"
                    , multiline
                        ["fromPt :: Point lvlh -> Point eci", "let fromPt p = p from lvlh to eci"]
@@ -1094,7 +1100,7 @@ partFTests =
                    ]
         forM_ ["viaOn", "fromPt", "fromAmt", "toAmt"] $ \n ->
           expecting (runLinesP (stored ++ [":edit " <> n])) $ \outs ->
-            runLinesP (frame ++ [multiline outs, ":hash " <> n])
+            runLinesP (lvlhCharts ++ [multiline outs, ":hash " <> n])
               @?= runLinesP (stored ++ [":hash " <> n])
     , testCase
         "F7: with no type to say so, a frame with parameters is refused when converting"
@@ -1113,11 +1119,9 @@ partFTests =
             "ecef takes arguments: write p from (ecef …) to c"
     ]
  where
-  inertial = [multiline ["space GCRS = Vec 3 m", "chart eci on GCRS"]]
-  frame = inertial ++ ["chart lvlh on eci at [7000, 0, 0] km by rotz (90 deg)"]
   earth =
-    inertial
-      ++ [ "let ω_e = 7.2921159e-5 rad/s"
-         , "let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)"
-         , "chart ecef t on eci by rotz (gmst t) spinning [0, 0, 1] * ω_e"
-         ]
+    eciChart
+      : [ "let ω_e = 7.2921159e-5 rad/s"
+        , "let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)"
+        , "chart ecef t on eci by rotz (gmst t) spinning [0, 0, 1] * ω_e"
+        ]

@@ -44,6 +44,8 @@ import Lang.Common (
   seeded,
   sessionOf,
   sessionP,
+  shapeArea,
+  shapeDecl,
   startsWith,
   theSeed,
   timedForAll,
@@ -539,13 +541,6 @@ lintRegressionTests =
 
 -- Type annotations (design §4.8) ---------------------------------------------------
 
--- | A data type and a definition over it, for the signature tests.
-shapeSetup :: Text
-shapeSetup = "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
-
-areaDef :: Text
-areaDef = "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
-
 -- | The output of lines after a setup, without the setup's.
 afterSetup :: [Text] -> [Text] -> Either Text [Text]
 afterSetup setup ls = do
@@ -588,7 +583,7 @@ annotationTests =
         runLinesP ["let double x = x + x", ":type double"]
           @?= Right ["forall s d. Tensor s d -> Tensor s d"]
         runLinesP
-          [shapeSetup, multiline ["area :: Shape -> Num (m^2)", areaDef], ":type area"]
+          [shapeDecl, multiline ["area :: Shape -> Num (m^2)", shapeArea], ":type area"]
           @?= Right ["Shape -> Num (m^2)"]
         -- :ls : type matches the signature, the narrower type.
         afterSetup
@@ -662,7 +657,7 @@ annotationTests =
                 @? T.unpack err
             Right outs -> assertFailure (show outs)
           expectError
-            (runLinesP [shapeSetup, multiline ["area :: forall d. Shape -> Num d", areaDef]])
+            (runLinesP [shapeDecl, multiline ["area :: forall d. Shape -> Num d", shapeArea]])
             "`area`'s definition has type `Shape -> Num (m^2)`, not as general as its signature `Shape -> Num d`"
     , testCase "an unknown type, a signature without a definition, two signatures" $ do
         expectError
@@ -714,7 +709,7 @@ annotationTests =
                   [ "namespace geo"
                   , "  data Shape = Circle (Num m) | Rect (Num m) (Num m)"
                   , "  area :: Shape -> Num (m^2)"
-                  , "  " <> areaDef
+                  , "  " <> shapeArea
                   ]
               , ":add"
               ]
@@ -816,7 +811,7 @@ annotationTests =
     , testCase ":export and :load round-trip a signature" $ do
         s <-
           sessionOf
-            [shapeSetup, multiline ["area :: Shape -> Num (m^2)", areaDef], ":add"]
+            [shapeDecl, multiline ["area :: Shape -> Num (m^2)", shapeArea], ":add"]
         source <- either (assertFailure . T.unpack) pure (exportSource s Nothing)
         ("area :: Shape -> Num (m^2)\nlet area = " `T.isInfixOf` source)
           @? T.unpack source
@@ -831,10 +826,10 @@ annotationTests =
         s <-
           persistLines
             dir
-            [ shapeSetup
+            [ shapeDecl
             , multiline
                 [ "area :: Shape -> Num (m^2)"
-                , areaDef
+                , shapeArea
                 , "double :: Num m -> Num m"
                 , "let double x = x + x"
                 ]

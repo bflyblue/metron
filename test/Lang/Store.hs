@@ -64,6 +64,8 @@ import Lang.Common (
   runLinesP,
   seeded,
   sessionP,
+  shapeArea,
+  shapeDecl,
   theSeed,
   timedForAll,
   withTempStore,
@@ -321,9 +323,9 @@ storeTests =
           s <-
             persistLines
               dir
-              [ "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
+              [ shapeDecl
               , "data Wrap a = Wrap {shape :: Shape, extra :: a}"
-              , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+              , shapeArea
               , ":add"
               , ":unname Circle"
               ]
@@ -488,7 +490,7 @@ storeTests =
           s <-
             persistLines
               b
-              [ "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
+              [ shapeDecl
               , "data Body = Body {mass :: Num kg}"
               , ":add"
               ]

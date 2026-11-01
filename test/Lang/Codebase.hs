@@ -43,6 +43,8 @@ import Lang.Common (
   runLinesP,
   seeded,
   sessionP,
+  shapeArea,
+  shapeDecl,
   startsWith,
   toks,
   withTempStore,
@@ -103,8 +105,8 @@ codebaseTests =
                 runLinesP
                   ( [ "let speed = 7.5 km/s"
                     , "unit furlong = 201.168 m"
-                    , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
-                    , "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+                    , shapeDecl
+                    , shapeArea
                     ]
                       ++ [":ls " <> args]
                   )

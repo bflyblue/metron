@@ -27,6 +27,8 @@ import Lang.Common (
   runLinesP,
   seeded,
   sessionP,
+  shapeArea,
+  shapeDecl,
   toks,
   type',
   unit',
@@ -134,7 +136,7 @@ replTests =
         replacements seeded "f x " @?= []
         let s =
               either (error . T.unpack) id
-                $ sessionP ["data Shape = Circle (Num m) | Rect (Num m) (Num m)"]
+                $ sessionP [shapeDecl]
         replacements s "area (Ci" @?= ["Circle"]
         "Shape" `elem` replacements s ":view Sh" @? "Shape"
     , testCase "fields complete after a dot" $ do
@@ -307,7 +309,7 @@ replTests =
         R.needsMore "let f x = y * 2 where\n  y = x + 1" @?= True
         -- The joined text parses as one input under the layout rule.
         runLinesP
-          [ "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
+          [ shapeDecl
           , three
           , ":type area"
           , "area (Rect (2 m) (3 m))"
@@ -436,7 +438,7 @@ replTests =
     , testCase "highlight: a variable named like a unit is plain where it is bound" $ do
         R.highlight
           (R.namesOf shapes)
-          "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+          shapeArea
           @?= keyword' "let"
             <> " area s = "
             <> keyword' "case"
@@ -527,7 +529,7 @@ replTests =
   names = R.namesOf seeded
   shapes =
     either (error . T.unpack) id
-      $ sessionP ["data Shape = Circle (Num m) | Rect (Num m) (Num m)"]
+      $ sessionP [shapeDecl]
   bodies =
     either (error . T.unpack) id
       $ sessionP ["data Body = Body {mass :: Num kg, pos :: Vec 3 km}"]
