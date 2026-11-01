@@ -6119,7 +6119,7 @@ the same term runs under any backend that has the built-ins it uses.
 
     ```
     warning: the branch at `if x > 0.9` goes both ways across 1000 samples (lost in rounding):
-      then   856   ← taken (the IEEE result)
+      then   856   ← taken (the nominal branch)
       else   144
     ```
 
@@ -6140,16 +6140,39 @@ the same term runs under any backend that has the built-ins it uses.
     probability 0.856 and 2 with 0.144, mean 1.144, not mean 1, sd 0). So
     the copies split: each alternative is evaluated with the group of
     copies that selects it, in lockstep, and the results are put back
-    together copy by copy, the IEEE value coming from the IEEE branch.
+    together copy by copy, the nominal value coming from the nominal branch.
     Groups split again at later branch points. Numbers and tensors
     recombine directly (the type fixes shape and dimension); a constructor
     recombines field by field when every group gives the same
-    constructor. When the groups give different constructors, the copies
-    cannot be one value: the evaluation falls back to the IEEE branch for
-    all of them, and the value carries a mark, "the sample follows the
-    IEEE branch at …", which `mid` and `sd` refuse, as they refuse a
-    non-linear mark. The table at a split branch point is printed as a
-    note, not a warning, since the sample is right.
+    constructor.
+    When the groups give different constructors, the result is a
+    **mixture** (decided by the owner): a value whose options are groups of
+    copies, each with its own value. Options are grouped by outcome, not by
+    path, so two paths that give `Pos` merge into one option. An operation
+    on a mixture applies per option with that option's copies, in lockstep;
+    two mixtures combine by pairing copies by their global number, so the
+    groups are the intersections, empty ones dropped; a `case` on a mixture
+    sends each option down its own alternative, and numbers always
+    recombine, so `case classify x of Neg -> -1; Pos -> 1` is one numeric
+    sample with the true mean. A mixture prints its nominal value with a
+    table of outcomes, each with its count, its share and, for numeric
+    fields, the summary of its own cluster:
+
+    ```
+    Hit {at = 12.40 s} (Monte Carlo over 10000 samples, 2 outcomes):
+      outcome   samples   share   fields
+      Hit          8120   81.2%   at: mean 12.43 s, sd 0.21 s   ← nominal
+      Miss         1880   18.8%
+    ```
+
+    The table shows the ten commonest outcomes and "and k others". A
+    mixture keeps at most `:set outcomes K` options (default 1000), past
+    which the evaluation stops with the usual limit error naming the
+    setting. Options are keyed by global copy number and merged by outcome
+    after batches, so a mixture is identical for every `cores`. Nothing is
+    forced down the nominal branch, so no value carries a mark and `mid`
+    and `sd` never refuse for this reason. The table at a split branch
+    point prints as a note, not a warning, since the sample is right.
   - *Rounding alone does not split.* With copies that differ only by
     rounding, the IEEE branch is what a ported formula takes, so every
     copy follows it and the table is the warning that the branch is
