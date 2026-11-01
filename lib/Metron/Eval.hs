@@ -1,4 +1,5 @@
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE ViewPatterns #-}
 
 {- | A direct, environment-passing, call-by-need evaluator over Typed Core
@@ -352,12 +353,12 @@ instance Show Applied where
 
 data Value
   = -- | lengths, dimension, display unit, flat row-major elements in SI base units
-    VTensor [Int] Dim (Maybe UnitHint) (Vector Elem)
+    VTensor ![Int] !Dim !(Maybe UnitHint) (Vector Elem)
   | {- | a point on a frame (design §3.10, F6): lengths, dimension, the chart
     it was written on, for printing, and its coordinates on its frame with
     the step applied, an amount from the frame's origin along its axes
     -}
-    VPoint [Int] Dim Chart (Vector Elem)
+    VPoint ![Int] !Dim Chart (Vector Elem)
   | VChart Chart
   | -- | a constructor with its fields as thunks (design §8); a boolean is one, 'VBool'
     VData ConRef [Thunk]
@@ -450,11 +451,11 @@ eval cfg rt = go
         rt
         prim
         (resolveType tenv ty)
-        (zipWith (\i a -> go tenv (child i) env a) [0 ..] args)
+        (delays tenv site env args)
     TLit (LTensor (dims, rs)) _ -> Right (VTensor dims dimOne Nothing (V.fromList (map (Right . Exact) rs)))
     -- Data (design §8): fields stay thunks; a case forces only the scrutinee.
     -- A boolean is data like any other: @if@ is a case on its constructor.
-    TCon c _ args -> Right (VData c (zipWith (\i a -> go tenv (child i) env a) [0 ..] args))
+    TCon c _ args -> Right (VData c (delays tenv site env args))
     TCase sc _ alts ->
       go tenv (child 0) env sc >>= \case
         VData c fields ->
@@ -465,25 +466,26 @@ eval cfg rt = go
     TLam _ _ body -> Right (VClosure (Closure tenv (child 0) env body))
     TApp f a -> do
       fv <- go tenv (child 0) env f
-      let arg = go tenv (child 1) env a
       -- A moving chart applied is an instant of it (design §3.8), named
       -- after it with the arguments it was applied to. Any other
       -- application is a tail call, so a loop runs in constant stack:
       -- the call is made in each branch, not shared as a thunk.
-      case instantOf site [] (TApp f a) of
-        Nothing -> apply cfg rt fv arg
-        Just (n, args) ->
-          apply cfg rt fv arg >>= \case
-            VChart c ->
-              Right
-                ( VChart
-                    c
-                      { name = Just (UnitNamed n)
-                      , applied = Applied [go tenv s env x | (s, x) <- args]
-                      }
-                )
-            v -> Right v
-    TLet _ _ e body -> go tenv (child 1) (VCons (go tenv (child 0) env e) env) body
+      case delay tenv (child 1) env a of
+        (# arg #) -> case instantOf site [] (TApp f a) of
+          Nothing -> apply cfg rt fv arg
+          Just (n, args) ->
+            apply cfg rt fv arg >>= \case
+              VChart c ->
+                Right
+                  ( VChart
+                      c
+                        { name = Just (UnitNamed n)
+                        , applied = Applied [go tenv s env x | (s, x) <- args]
+                        }
+                  )
+              v -> Right v
+    TLet _ _ e body -> case delay tenv (child 0) env e of
+      (# x #) -> go tenv (child 1) (VCons x env) body
     TPow t n -> do
       v <- go tenv (child 0) env t
       (x, d, hint) <- scalarFull v
@@ -599,6 +601,28 @@ eval cfg rt = go
    where
     child i = site{path = i : site.path}
 
+  {- A subterm as a thunk, without forcing it. A variable is the thunk it
+  is bound to, not a new one around the environment: a new one would keep
+  the whole environment alive until forced, so a loop that passes a
+  variable on (@loop n = loop n@) would chain every environment it went
+  through. A literal is built at once: it costs nothing and cannot fail.
+  The unboxed result lets the lookup run now while the thunk found stays
+  unforced. -}
+  delay :: TyEnv -> Site -> Env m -> TTerm m -> (# Thunk #)
+  delay tenv site env = \case
+    TVr i -> lookupThunk i env
+    t@TLit{} -> let !v = go tenv site env t in (# v #)
+    t -> (# go tenv site env t #)
+
+  -- 'delay' over arguments in order, the i-th at child i.
+  delays :: TyEnv -> Site -> Env m -> [TTerm m] -> [Thunk]
+  delays tenv site env = loop 0
+   where
+    loop i = \case
+      [] -> []
+      t : ts -> case delay tenv site{path = i : site.path} env t of
+        (# x #) -> let !rest = loop (i + 1) ts in x : rest
+
   -- The chart name at the head of an application spine, and the arguments
   -- with their sites.
   instantOf ::
@@ -649,6 +673,12 @@ lookupEnv :: Fin n -> Env n -> Thunk
 lookupEnv i env = case (i, env) of
   (FZ, VCons x _) -> x
   (FS j, VCons _ xs) -> lookupEnv j xs
+
+-- | 'lookupEnv' that walks the environment now and leaves the thunk unforced.
+lookupThunk :: Fin n -> Env n -> (# Thunk #)
+lookupThunk i env = case (i, env) of
+  (FZ, VCons x _) -> (# x #)
+  (FS j, VCons _ xs) -> lookupThunk j xs
 
 -- Types at run time ---------------------------------------------------------------
 
