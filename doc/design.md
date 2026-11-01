@@ -1067,6 +1067,24 @@ digits. Every series is summed to a tolerance scaled by the size of its result
 zero rather than the cancelling difference of exponentials), and midpoint rounding
 follows the same rule.
 
+**Exact while small** (decided by the owner, 2026-11-01). Every number is
+made of rationals; working precision bounds how long they get, not what they
+are. An exact result of `+`, `-`, `*`, `/` or an integer power stays exact
+while its numerator and denominator stay short, within a size tied to the
+precision (a few times `p` digits): `1/3 + 1/6` is exactly `0.5`, and exact
+inputs give exact answers in ordinary use. When an exact result would grow
+past that size, it is rounded to `p + 4` significant digits instead, the
+rounding becoming a fresh bound nudge as any other operation's does, so an
+exact iteration that doubles its digits each step (`x ↦ 3.7·x·(1 − x)`)
+keeps running at working precision rather than growing without limit. A
+value's magnitude is a separate matter: a number too large or too small to
+write at all (`2^(2^64)`) is refused by the `digits` limit of §8.1, which
+bounds the exponent, not the significant digits. Every built-in operation
+and function is held to this: a non-linear function's result is always at
+working precision (its value is rarely an exact rational), and no built-in
+returns a rational longer than the precision allows unless it is exact and
+short.
+
 #### 3.2.9 Comparison
 
 On exact values, comparison is exact. On affine values, `a < b` forms `a - b`,
