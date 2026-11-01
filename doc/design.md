@@ -6257,8 +6257,10 @@ the same term runs under any backend that has the built-ins it uses.
       outcome before the batch's notes are read, and `Batch.merged`
       merges mixtures by outcome, each outcome's copies in batch order,
       comparing IEEE values on the nominal path only. Results and tables
-      are the same at 1, 2, 4 and 32 cores (tested, with a recursion that
-      splits at every level).
+      are the same at 1, 2 and 4 cores in the test suite, whose batches
+      run in turn, a recursion that splits at every level among them; the
+      executable, with real threads, was compared by hand at 1, 4 and 32
+      on the same recursion and on a value shared around a split.
     - *Checked.* `if x > 0.9 then 1 else 2`, `x = 1 ±σ 0.1`, at 10⁴
       samples to nearest: mean and sd within five standard errors of 1 +
       Φ(−1) = 1.1587 and √(p(1 − p)) = 0.3654. The bullet's 0.856, 1.144

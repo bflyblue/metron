@@ -1073,6 +1073,21 @@ mixtureTests =
                 @? T.unpack printed
             [] -> assertFailure (T.unpack printed)
           other -> assertFailure (show other)
+    , testCase "a field of an outcome that nothing reads is never evaluated" $ do
+        -- `loop 0` would run to the limit if anything forced it.
+        let lines' = ["let x = 1 ±σ 0.1", "let loop n = loop n", ":set steps 100000"]
+        cs <- copiesAfter batchedConfig ["let x = 1 ±σ 0.1"] "x"
+        out <-
+          copiesAfter
+            batchedConfig
+            (lines' <> ["let m = if x > 0.9 then {1, loop 0} else {}"])
+            "case m of {} -> 0; y : ys -> y"
+        out @?= VU.map (\c -> if c > 0.9 then 1 else 0) cs
+        case runWith
+          batchedConfig{cores = 4}
+          (lines' <> ["case (if x > 0.9 then {1, loop 0} else {}) of {} -> 0; y : ys -> y"]) of
+          Right [printed] -> ("1 (Monte Carlo" `T.isPrefixOf` printed) @? T.unpack printed
+          other -> assertFailure (show other)
     , testCase "1, 2 and 4 cores give the same mixtures, and the batches merge" $ do
         let lines' =
               [ "data Sign = Neg | Pos"
