@@ -132,6 +132,7 @@ import Metron.Dimension (
   dimPow,
   dimRoot,
  )
+import Metron.Double (Dbl)
 import Metron.Limits (
   Budget,
   Limit (..),
@@ -487,10 +488,13 @@ eval ::
   forall s n.
   (Scalar s) =>
   Config -> RuntimeOf s -> TyEnv -> Site -> Env s n -> TTerm n -> ThunkOf s
--- The affine backend's own copy of the evaluator, so that its hot path calls
--- the arithmetic directly rather than through the class.
+-- Each backend's own copy of the evaluator, so that its hot path calls the
+-- arithmetic directly rather than through the class.
 {-# SPECIALIZE eval ::
   Config -> Runtime -> TyEnv -> Site -> Env Magnitude n -> TTerm n -> Thunk
+  #-}
+{-# SPECIALIZE eval ::
+  Config -> RuntimeOf Dbl -> TyEnv -> Site -> Env Dbl n -> TTerm n -> ThunkOf Dbl
   #-}
 eval cfg rt = go
  where
@@ -876,6 +880,9 @@ runtimeDim d = dimFromAtoms [(a, k) | (a@(Base _), k) <- dimAtoms d]
 apply ::
   (Scalar s) => Config -> RuntimeOf s -> ValueOf s -> ThunkOf s -> ThunkOf s
 {-# SPECIALIZE apply :: Config -> Runtime -> Value -> Thunk -> Thunk #-}
+{-# SPECIALIZE apply ::
+  Config -> RuntimeOf Dbl -> ValueOf Dbl -> ThunkOf Dbl -> ThunkOf Dbl
+  #-}
 apply cfg rt f arg = case f of
   VClosure (Closure tenv site env body) -> eval cfg rt tenv site (VCons arg env) body
   _ -> Left (Internal "application of a non-function")
@@ -1025,6 +1032,9 @@ runPrim ::
   (Scalar s) => Config -> RuntimeOf s -> Text -> Type -> [ThunkOf s] -> ThunkOf s
 {-# SPECIALIZE runPrim ::
   Config -> Runtime -> Text -> Type -> [Thunk] -> Thunk
+  #-}
+{-# SPECIALIZE runPrim ::
+  Config -> RuntimeOf Dbl -> Text -> Type -> [ThunkOf Dbl] -> ThunkOf Dbl
   #-}
 runPrim cfg rt prim ty args = case (prim, args) of
   -- A base unit is a unit (design §3.10, U1).

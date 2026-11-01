@@ -5978,6 +5978,146 @@ the same term runs under any backend that has the built-ins it uses.
   `double` run that has gone to `NaN` or infinity, or taken the other
   branch of an `if` that the exact value would not take, is undecided.
 
+#### 8.2, as built (2026-11-01)
+
+**The generic evaluator.** `Metron.Scalar` holds the class a backend
+implements, `Scalar s`: its arithmetic, with the names and shapes of the
+`Metron.Affine` functions and a `Settings` (working precision, comparison
+policy, samples, seed) where those take the precision; its linear-algebra
+kernels (`determinantM`, `invertM`, `matrixExpM`, `choleskyM`); the few
+facts the shared code asks of a number (`literal`, `exactly` for index
+positions and a route's zero offsets, `sizeOf` for the `digits` limit,
+`stepProblem` for a chart's step, `hintFactor` for a display unit);
+`noiseM` and `uncertainM` for the uncertainty forms of Core; and `own`, a
+table of the backend's own built-ins by name, each described by its
+shape (componentwise, a covariance, a test, a constant, numbers to a
+number), so the evaluator supplies the tensors, dimensions and display
+units. A class and not a record of functions: the scalar type determines
+the backend, so a value of one can never meet an operation of the other,
+and the evaluator, the printer and the tests name a backend by a type.
+
+Values, charts, closures and runtimes take the scalar as a parameter
+(`ValueOf s`, `ChartOf s`, `RuntimeOf s`); `Value`, `Chart`, `Thunk` and
+`Runtime` are the affine backend's, so the code and the tests that only
+know affine are unchanged. Tensors, units and hints (whose factors stay
+exact magnitudes), dimensions, charts, data, closures, limits and the
+shape of printing are shared; the printer's numbers go through a small
+`Display` class in `Metron.Pretty`. `mid`, `bound`, `sd`, `covariance`
+and `crossCovariance` moved from the shared primitives into the affine
+table. The evaluator is specialised for each backend (`SPECIALIZE`),
+which keeps the hot path as fast as before: `f 0` to the `steps` limit
+takes 5.9 s, as on main, and a million-step counting loop 0.84 s.
+
+**The double backend** (`Metron.Double`). A number is its IEEE result,
+its estimate (a bound, or the copies) and, once it is not finite, where
+the first NaN or infinity came from (the operation and its operands, `1 /
+0`, `sqrt (-2)`: Typed Core has no source spans to name). Every operation
+is GHC's `Double` operation on the values, so the results equal GHC's for
+the same formula in the same order (tested over 33 expressions); `x ^ n`
+makes the multiplications of base's `^` (repeated squaring) and a
+negative power is the reciprocal, as `^^`. GHC's rewrite rules for a
+literal `x ^ 4` or `x ^ 5`, which multiply in a row, fire only in
+optimised Haskell, so a ported literal power can differ in its last bit.
+`floor`, `ceil` and `round` are Haskell's (`round` to even), on a finite
+value; the rest of IEEE is as the design says.
+
+*The running bound* (`samples 0`) bounds the distance from the result to
+the exact value of the same formula on the exact literals:
+
+- a literal's bound is its rounding, `|d − r|`, exactly, rounded up;
+- `x ± y` adds the bounds; `x · y` adds `|x|e_y + |y|e_x + e_x e_y`; `x / y`
+  adds `(e_x|y| + |x|e_y) / (|y|(|y| − e_y))`, unbounded when `|y| ≤ e_y`;
+- each then adds its own rounding, `u·|z| + 2⁻¹⁰⁷⁴` with `u = 2⁻⁵³`,
+  unless an error-free transformation (TwoSum; a fused multiply-add for a
+  product or a quotient) proves the result exact, which a product or a
+  quotient may only above the subnormals; so `0.5 * 4` stays exact;
+- a library function propagates its operand's interval: a monotone one
+  (`exp`, `log`, `sqrt`, `sinh`, `tanh`, `atan`, `asin`, `acos`, and `tan`
+  between poles) by the larger change at the interval's ends, each end's
+  own library error included; `cosh` the same with its minimum at 0; `sin`
+  and `cos` by `|h|·|f′(x)| + h²/2`, at most 2; `atan2` by `(e_x +
+  e_y)/r_min`, at most 2π, and 2π across the branch cut. An interval that
+  leaves the domain, or reaches a pole, is unbounded;
+- a library function then adds its own error, in units in the last place
+  of its result (`ulp(z) ≤ 2u|z|`), from glibc's documented maxima for
+  x86-64 rounded up: `sqrt` ½ (correctly rounded), `exp`, `log`, `sin`,
+  `cos`, `atan`, `asin`, `acos` 1, `tan`, `sinh`, `cosh`, `tanh`, `atan2` 2;
+- the bound, computed in floating point, is widened by a relative `2⁻⁴⁸`
+  and `4·2⁻¹⁰⁷⁴`, more than its own few roundings can lose.
+
+A property test checks it over generated arithmetic (the four operations,
+square roots, exponentials) against the affine backend's enclosure, 20000
+cases clean before it went in.
+
+*Stochastic arithmetic* (`samples N`). N copies run in lockstep; each
+operation on each copy rounds the exact result to the double below or
+above it, with equal probability, the side from the same error-free
+transformations (a fused multiply-add through exact rationals for `fma`);
+a library function's copy moves one unit in the last place up or down; a
+literal's copies are its two neighbouring doubles when it has two. The
+coin is a hash (SplitMix's finaliser) of the seed, the copy, the
+operation and its operands, so an estimate does not depend on the order
+lazy values are forced in. The estimate is `τ·s/√N`, the copies' sample
+deviation scaled by Student's t at 97.5 % for `N − 1` degrees of freedom
+(a table to 30, then its expansion about the normal). `:set samples`
+takes 0 or 2 to 1000: one copy has no spread. `:set seed` defaults to 1.
+
+*Comparisons.* The IEEE result decides (`NaN` compares false, `/=` true).
+Under samples, a comparison whose copies disagree is noted on the
+evaluation's budget (`Metron.Limits.remark`, kept in place for the reason
+the step counter is) and printed after the value: `warning: the
+comparison 1 > 1 goes both ways across the 3 samples: the condition is
+lost in rounding`. The design's wording names the `if`'s source; the
+comparison and its operands are what the evaluator has.
+
+*Printing.* The shortest digits that read back, written as Metron writes
+numbers (scientific outside `[10⁻⁴, 10¹⁵)`), then `± e` to two digits,
+rounded up for a bound, and once after the value `(bound)` or
+`(estimate, 3 samples)`; an exact value prints alone. A display unit
+divides the value and scales the estimate exactly, so `2 m * 3` prints `6
+m`. A NaN or an infinity prints with its origin: `NaN (the first NaN came
+from sqrt (-2))`.
+
+*Its built-ins*, the same under either setting: `errorOf x` (the
+estimate, elementwise, in `x`'s dimension), `digitsOf x` (`−log₁₀(e/|x|)`,
+from 0 to `log₁₀ 2⁵³ ≈ 15.95`), `ulps a b` (decided here: how many
+doubles lie from `a` to `b`, for checks such as `ulps r expected <= 4`;
+the size of one step is `nextUp x - x`), `eps` (`2⁻⁵²`, the gap from 1 to
+the next double), `nextUp x` (a function of the double: its error is
+`x`'s), `fma a b c` (one rounding), `isNaN`, `isInfinite`.
+
+**Choosing.** `:backend` names the backend, `:backend double` switches,
+`metron --backend double` starts under one. The built-ins only one
+backend has are listed in `Metron.Scalar.backendOwn`: affine's `±`, `±σ`,
+`noise`, `gauss`, `mid`, `sd`, `bound`, and `covariance` and
+`crossCovariance` too, by the design's own criterion (they read
+uncertainty, and under double they would be zeros); double's eight.
+`:exact`, `:budget` and `:covariance` are refused under double.
+
+**The check.** Core's one walk for references (`directUses`; `refs` and
+`refsWithIndex` are now its projections) names the backend-specific
+built-ins a term uses itself. `Metron.Needs` memoises `needs(h)` in the
+session (`Session.needs`), extended as inputs reach new hashes and never
+invalidated. Before an expression evaluates, its Core is walked and the
+memo answers for its references; a failure finds the path down the
+definitions that need the name: `` `orbitError` uses `sd` (through
+`budgetOf`), which the double backend does not have ``. A direct use
+gives the runtime's message, `` `sd` is the affine backend's; the double
+backend does not have it ``, which the evaluator also gives should a
+backend ever meet another's built-in. Commands that evaluate for
+inspection (`:exact` and the others) and `:prefer`'s units are not
+checked: the first are affine's, the second always run under affine.
+
+**What it means for the library.** Definitions that carry a declared
+uncertainty are affine's: CODATA's `G` (`` `G` uses `±σ` ``), the astro
+bodies' measured constants, `astro.kepler`'s solvers (which use `mid`,
+`bound` and `±` to keep their enclosures honest) and
+`linalg.jointCovariance`. They are refused under double, as the design
+intends; a double port of them is a separate decision.
+
+**Not built.** `:trace`, open above. `samplesOf`. `--set` still takes the
+limits only; `samples` and `seed` are `:set`'s.
+
 ## 9. Module layout and libraries
 
 Library code in `lib/`, executable in `src/`, as `doc/style.md` requires.
