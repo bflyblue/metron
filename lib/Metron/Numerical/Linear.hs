@@ -76,7 +76,12 @@ determinant p n = go 0 (Exact 1)
     f <- divM p (r !! k) pv
     pure (zipWith (\a b -> subM p a (mulM p f b)) r pivotRow)
 
--- | Inverse by Gauss-Jordan elimination on the augmented matrix.
+{- | Inverse by Gauss-Jordan elimination on the augmented matrix. Its last
+step is linear, a row less a multiple of another, which never rounds
+and scales by every exact entry it meets (@1/7@, @1/11@): an entry that
+is not exact is shortened at the end, as any operation's result is
+(design §3.2.8), its rounding a nudge of its own named by its position.
+-}
 invert :: Precision -> Int -> [[Magnitude]] -> Either ArithError [[Magnitude]]
 invert p n rows0 =
   go
@@ -85,8 +90,15 @@ invert p n rows0 =
     | (i, r) <- zip [0 ..] rows0
     ]
  where
+  settle i j = \case
+    x@(Exact _) -> x
+    x -> enclose "inverse" p (Exact (fromIntegral (i * n + j)) : concat rows0) 0 x
   go k rows
-    | k == n = Right (map (drop n) rows)
+    | k == n =
+        Right
+          [ zipWith (settle i) [0 :: Int ..] (drop n row)
+          | (i, row) <- zip [0 :: Int ..] rows
+          ]
     | otherwise =
         let column = map (!! k) rows
          in case pivotIn k column of

@@ -28,6 +28,10 @@ module Metron.Numerical.Approx (
   sinCosApprox,
   sinhApprox,
   coshApprox,
+  tanApprox,
+  sec2Approx,
+  tanhApprox,
+  sech2Approx,
   scaleA,
 ) where
 
@@ -405,3 +409,58 @@ sinhApprox p x
 
 coshApprox :: Precision -> Rational -> Approx
 coshApprox p x = scaleA (1 % 2) (addA (expApprox (p + 2) x) (expApprox (p + 2) (negate x)))
+
+{- | @tan x@ as the sine over the cosine, at more digits until the cosine
+is known to @p@ digits of itself: near a pole the cosine is small and the
+tangent large. The cosine of a rational other than zero is never zero,
+so the digits needed are finite.
+-}
+tanApprox :: Precision -> Rational -> Approx
+tanApprox p x = go (p + 4)
+ where
+  go q =
+    let ((s, se), (c, ce)) = sinCosApprox q x
+        t = s / c
+     in if ce * 10 ^ (p + 2) > abs c
+          then go (2 * q)
+          else (t, (se + abs t * ce) / (abs c - ce))
+
+-- | @tan′ x = 1 + tan² x@.
+sec2Approx :: Precision -> Rational -> Approx
+sec2Approx p x = let (t, te) = tanApprox (p + 4) x in (1 + t * t, (2 * abs t + te) * te)
+
+{- | @tanh x@: the sine over the cosine for @|x| < 1@, where the
+exponentials would cancel, and @(1 − q)/(1 + q)@ with @q = e^(−2|x|)@
+beyond, which never overflows. Far out, @q@ is below the precision and
+only bounded ('expTail').
+-}
+tanhApprox :: Precision -> Rational -> Approx
+tanhApprox p x
+  | x == 0 = (0, 0)
+  | abs x < 1 =
+      let (s, se) = sinhApprox (p + 4) x
+          (c, ce) = coshApprox (p + 4) x
+          t = s / c
+       in (t, (se + abs t * ce) / (c - ce))
+  | otherwise =
+      -- (1 − q)/(1 + q) has slope of size at most two in q.
+      let (q, qe) = expTail p x
+       in (signum x * (1 - q) / (1 + q), 2 * qe)
+
+-- | @tanh′ x = 1 − tanh² x@, as @4q/(1 + q)²@ beyond @|x| = 1@, without cancelling.
+sech2Approx :: Precision -> Rational -> Approx
+sech2Approx p x
+  | abs x < 1 =
+      let (t, te) = tanhApprox (p + 4) x in (1 - t * t, (2 * abs t + te) * te)
+  | otherwise =
+      -- 4q/(1 + q)² has slope at most four in q.
+      let (q, qe) = expTail p x in (4 * q / ((1 + q) * (1 + q)), 4 * qe)
+
+{- | @e^(−2|x|)@, or only a bound on it when it is below @10^-(p+10)@:
+@2|x| ≥ 2.4 (p + 10) > (p + 10) ln 10@ there, so nothing is summed
+whose digits are all zeros.
+-}
+expTail :: Precision -> Rational -> Approx
+expTail p x
+  | abs x * 5 > 6 * fromIntegral (p + 10) = (0, 10 ^^ negate (p + 10))
+  | otherwise = expApprox (p + 4) (negate (2 * abs x))

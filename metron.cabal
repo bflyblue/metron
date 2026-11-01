@@ -119,6 +119,7 @@ test-suite metron-test
     , Limits
     , Precision
     , Support.ExactApprox
+    , Support.References
     , Support.Render
   build-depends:
     , base ^>=4.21.0.0

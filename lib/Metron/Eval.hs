@@ -1160,7 +1160,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("atan", [a]) -> angle (Right . atanM p) a
   ("sinh", [a]) -> dimensionless (\x -> exponential abs x >> Right (sinhM p x)) a
   ("cosh", [a]) -> dimensionless (\x -> exponential abs x >> Right (coshM p x)) a
-  ("tanh", [a]) -> dimensionless (arith . tanhM p) a
+  ("tanh", [a]) -> dimensionless (Right . tanhM p) a
   ("atan2", [a, b]) -> do
     y <- scalar =<< a
     x <- scalar =<< b
