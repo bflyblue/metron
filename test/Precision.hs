@@ -22,6 +22,7 @@ import GHC.Num (integerLog2)
 import Metron.Affine (
   Decide (..),
   Magnitude (..),
+  Nudge (..),
   Origin (..),
   absM,
   acosM,
@@ -29,6 +30,7 @@ import Metron.Affine (
   asinM,
   atan2M,
   atanM,
+  boundRadius,
   cosM,
   coshM,
   divM,
@@ -36,6 +38,7 @@ import Metron.Affine (
   logM,
   midpoint,
   mulM,
+  nudges,
   piM,
   powM,
   radius,
@@ -66,6 +69,7 @@ precisionTests =
     "working precision (design §3.2.8)"
     [ oracleTests
     , exactWhileSmallTests
+    , heldLinearTests
     , logisticTests
     , builtinTests
     , sizeTests
@@ -164,9 +168,9 @@ exactWhileSmallTests =
         subM p24 (addM p24 (Exact a) (Exact b)) (addM p24 (Exact b) (Exact a))
           @?= Exact 0
         run ["let big = 1/7^300", "big + 1/3 == 1/3 + big"] @?= Right ["true"]
-    , testCase "linear operations on a form never round: x - x and (x + c) - x" $ do
+    , testCase "linear operations on short forms are exact: x - x and (x + c) - x" $ do
         let x = uncertain Bound (Tagged "x" 0) (Exact (17 / 7)) (Exact (1 / 100))
-            c = Exact (1 / 7 ^ (300 :: Int))
+            c = Exact (1 / 7 ^ (30 :: Int))
         subM p24 x x @?= Exact 0
         subM p24 (addM p24 x c) x @?= c
         run ["let x = 5 ± 0.1", "x - x", "(x + 1/3) - x"]
@@ -175,6 +179,103 @@ exactWhileSmallTests =
         $ run ["let a = (1/3)^500 + 1", "a - a", "bound (a - 1) > 0"]
           @?= Right ["0", "true"]
     ]
+
+{- | Linear results are held to the same length (design §3.2.8): a sum or a
+scaling of forms whose midpoint or coefficients pass the limit is
+rounded into a fresh bound nudge, after equal terms have cancelled.
+-}
+heldLinearTests :: TestTree
+heldLinearTests =
+  testGroup
+    "linear results held to the length limit"
+    [ testCase "x - x is exactly 0 however long x is" $ do
+        let long = 1 / 7 ^ (300 :: Int) + 1
+            x = uncertain Bound (Tagged "x" 0) (Exact long) (Exact (1 / 100))
+            s = uncertain Stat (Tagged "s" 0) (Exact long) (Exact long)
+        subM p24 x x @?= Exact 0
+        subM p24 s s @?= Exact 0
+        subM p24 (addM p24 x s) (addM p24 s x) @?= Exact 0
+    , testCase
+        "(x + c) - x is c when the midpoints are short, an enclosure of c when not"
+        $ do
+          let x = uncertain Bound (Tagged "x" 0) (Exact (17 / 7)) (Exact (1 / 100))
+              short = 1 / 7 ^ (30 :: Int)
+              long = 1 / 7 ^ (300 :: Int) + 1 / 3
+              d = subM p24 (addM p24 x (Exact long)) x
+          subM p24 (addM p24 x (Exact short)) x @?= Exact short
+          not (isExactM d) @? show d
+          encloses d long @? show d
+          longest d <= p24 + 5 @? show d
+    , testProperty "a long sum encloses the exact one, nudge by nudge"
+        $ forAll longRational
+        $ \m -> forAll longRational $ \c -> forAll longRational $ \k ->
+          let x = uncertain Bound (Tagged "x" 0) (Exact m) (Exact c)
+              y = addM p24 x (Exact k)
+              cy = coefficientOf (Tagged "x" 0) y
+              rest = radius y - abs cy
+           in counterexample (show y)
+                $ conjoin
+                  [ property (abs (midpoint y + cy * e - (m + k + abs c * e)) <= rest)
+                  | e <- [-1, 0, 1]
+                  ]
+                  .&&. longest y <= p24 + 5
+    , testProperty "a long scaling encloses the exact one"
+        $ forAll longRational
+        $ \m -> forAll shortRational $ \k ->
+          let x = uncertain Bound (Tagged "x" 0) (Exact m) (Exact (1 / 1000))
+              y = scaleM p24 (k + 1 / 7) x
+              exact = (k + 1 / 7) * m
+           in counterexample (show y) $ encloses y exact .&&. longest y <= p24 + 5
+    , testCase "a statistical coefficient is shortened, never made a bound" $ do
+        let c = 1 / 7 ^ (300 :: Int) + 1
+            s = uncertain Stat (Tagged "s" 0) (Exact 0) (Exact c)
+            y = addM p24 s s
+        -- its midpoint is zero, so nothing at all is a bound
+        boundRadius y @?= 0
+        map ((.kind) . snd) (nudges y) @?= [Stat]
+        let c' = coefficientOf (Tagged "s" 0) y
+        abs (c' - 2 * c) <= 2 * c * 10 ^^ negate (p24 + 3) @? show c'
+        longest y <= p24 + 5 @? show y
+    , testCase "the rounding is content-addressed: a + b and b + a are one unknown" $ do
+        let long = 1 / 7 ^ (300 :: Int) + 1
+            a = uncertain Bound (Tagged "a" 0) (Exact long) (Exact (1 / 100))
+            b = uncertain Bound (Tagged "b" 0) (Exact (1 / 3)) (Exact (1 / 100))
+        addM p24 a b @?= addM p24 b a
+        subM p24 (addM p24 a b) (addM p24 b a) @?= Exact 0
+    , localOption (mkTimeout 3_000_000)
+        $ testCase "the harmonic sum on a form, 30 000 terms, at working precision"
+        $ do
+          let x = uncertain Bound (Tagged "x" 0) (Exact 0) (Exact (1 / 1000))
+              h = foldl' (\acc k -> addM p24 acc (Exact (1 / k))) x [1 .. 30000]
+          longest h <= 8 * (p24 + 4) @? show (longest h)
+          -- x's nudge and one rounding: earlier roundings join the latest
+          nudgeCount h <= 3 @? show (nudgeCount h)
+          subM p24 h h @?= Exact 0
+          let float = sum [1 / fromInteger k | k <- [30000, 29999 .. 1]] :: Double
+          abs (fromRational (midpoint h) - float) < 1e-9 @? show (midpoint h)
+          radius h < 1001 / 1000000 @? show (radius h)
+    , localOption (mkTimeout 3_000_000)
+        $ testCase "the harmonic sum in the language, 30 000 terms, in a moment"
+        $ run
+          [ "let h x k n = if k > n then x else h (x + 1/k) (k + 1) n"
+          , "let x = 0 ± 0.001"
+          , "h x 1 30000"
+          , "h x 1 30000 - h x 1 30000"
+          ]
+          @?= Right ["10.8862 ± 0.0012", "0"]
+    , localOption (mkTimeout 4_000_000)
+        $ testCase "a series of exact terms, Σ xᵏ/k to 5000 terms, in a moment"
+        $ case run
+          [ "let s x t k n acc = if k > n then acc else s x (t * x) (k + 1) n (acc + t * x / k)"
+          , "s (999/1000) 1 1 5000 0"
+          ] of
+          Right [out] -> T.isPrefixOf "6.90" out @? T.unpack out
+          other -> assertFailure (show other)
+    ]
+
+-- | The coefficient of the nudge with this origin, or zero.
+coefficientOf :: Origin -> Magnitude -> Rational
+coefficientOf o x = sum [c | (c, n) <- nudges x, n.origin == o]
 
 -- | A rational of a few digits.
 shortRational :: Gen Rational

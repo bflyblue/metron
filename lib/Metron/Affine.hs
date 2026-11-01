@@ -107,6 +107,7 @@ import Data.Map.Strict qualified as Map (
   map,
   mapMaybe,
   null,
+  partition,
   singleton,
   size,
   toList,
@@ -374,11 +375,59 @@ exactLimit p = (8 * shortDigits p * 3322 + 999) `div` 1000
 
 {- | A sum. Two exact operands give an exact result while it is short
 ('exactResult'); otherwise a sum is linear, collecting the nudges like
-terms, and never rounds, which is what keeps @x - x@ exactly @0@.
+terms, and is held to the length limit only after they have cancelled
+('heldLinear'), which is what keeps @x - x@ exactly @0@.
 -}
 addM :: Precision -> Magnitude -> Magnitude -> Magnitude
 addM p (Exact a) (Exact b) = exactResult "add" p (sort [a, b]) (a + b)
-addM _ x y = addLinear x y
+addM p x y = heldLinear "add" p (inOrder [x, y]) (addLinear x y)
+
+{- | A linear result held to the length limit (design §3.2.8, linear
+results are held to the same length): while its midpoint, coefficients
+and slack are all within 'exactLimit', it is the exact linear result;
+past it, all of them are rounded to 'shortDigits' significant digits as
+a non-linear result's are ('shortenLinear', the midpoint by 'shorten'),
+and the rounding is a fresh bound nudge named by the operation, its
+operands and the precision (design §3.2.4). A statistical coefficient's
+rounding is measured against the σ, never made a bound. The length is
+measured on the result, after equal terms have cancelled, so @x - x@ is
+exactly @0@ and @(x + c) - x@ exactly @c@ whenever the midpoints were
+short. Without it, @x + 1/k@ summed over @k@ for an affine @x@ kept a
+midpoint whose denominator grew like @lcm (1, …, k)@.
+-}
+heldLinear :: Text -> Precision -> [Magnitude] -> Magnitude -> Magnitude
+heldLinear name p operands x = case x of
+  Affine m ts s sk
+    | any long (m : s : map fst (Map.elems ts)) ->
+        let (earlier, kept) = Map.partition (isRounding . snd) ts
+         in settle
+              Short
+              rounding
+              p
+              operands
+              (sum (map (abs . fst) (Map.elems earlier)))
+              0
+              Nothing
+              (Affine m kept s sk)
+  _ -> x
+ where
+  long r = exactLength r > exactLimit p
+  rounding = name <> ": rounding"
+  -- The earlier roundings of linear results the value carries join the
+  -- new one, a sound enclosure that forgets only their correlation with
+  -- other values. A loop that rounds every few dozen steps would
+  -- otherwise add a nudge each time, until compaction folded them into
+  -- slack, which no longer cancels: the harmonic sum minus itself was no
+  -- longer exactly zero.
+  isRounding n =
+    n.kind == Bound
+      && n.origin `elem` [Builtin "add: rounding", Builtin "mul: rounding"]
+
+{- | The operands of a commutative operation in a canonical order, by their
+encoding, so that @a + b@ and @b + a@ round to one unknown.
+-}
+inOrder :: [Magnitude] -> [Magnitude]
+inOrder = sortOn (toLazyByteString . operandBytes)
 
 {- | A sum that never rounds, an exact one included: for a comparison,
 which must see the exact difference.
@@ -417,12 +466,13 @@ subLinear :: Magnitude -> Magnitude -> Magnitude
 subLinear x y = addLinear x (negM y)
 
 {- | Multiplication by an exact constant: an exact product while it is
-short ('exactResult'), and on a form, linear and never rounded.
+short ('exactResult'), and on a form, linear and held to the length
+limit ('heldLinear').
 -}
 scaleM :: Precision -> Rational -> Magnitude -> Magnitude
 scaleM p k = \case
   Exact a -> exactResult "mul" p (sort [k, a]) (k * a)
-  x -> scaleLinear k x
+  x -> heldLinear "mul" p [Exact k, x] (scaleLinear k x)
 
 scaleLinear :: Rational -> Magnitude -> Magnitude
 scaleLinear k = \case
@@ -543,10 +593,27 @@ opResult ::
   Maybe Skew ->
   Magnitude ->
   Magnitude
-opResult name p operands boundSize statSize sk base =
+opResult = settle Working
+
+{- | 'opResult' with a choice of how the midpoint is rounded: to the working
+precision after a non-linear operation, or to 'shortDigits' digits when
+a linear result is held to the length limit ('heldLinear').
+-}
+settle ::
+  Rounding ->
+  Text ->
+  Precision ->
+  [Magnitude] ->
+  Rational ->
+  Rational ->
+  Maybe Skew ->
+  Magnitude ->
+  Magnitude
+settle rounding name p operands boundSize statSize sk base =
   finish
     p
-    ( withFresh
+    ( withFreshRounded
+        rounding
         name
         p
         operands
@@ -714,7 +781,24 @@ one, and a remainder summed from long series errors stays short.
 -}
 withFresh ::
   Text -> Precision -> [Magnitude] -> Rational -> Magnitude -> Magnitude
-withFresh name p operands size base =
+withFresh = withFreshRounded Working
+
+{- | How a result's midpoint is rounded: to the working precision, the
+rule after a non-linear operation, or to 'shortDigits' significant
+digits, for a linear result held to the length limit ('heldLinear').
+-}
+data Rounding = Working | Short
+
+-- | 'withFresh' with a choice of how the midpoint is rounded.
+withFreshRounded ::
+  Rounding ->
+  Text ->
+  Precision ->
+  [Magnitude] ->
+  Rational ->
+  Magnitude ->
+  Magnitude
+withFreshRounded rounding name p operands size base =
   let (m, ts, s) = parts base
       -- The midpoint is rounded to p digits (design §3.2.8) and the rounding
       -- error joins this operation's nudge rather than the anonymous slack,
@@ -725,10 +809,12 @@ withFresh name p operands size base =
       -- below the grid ('shortenLinear') no longer keeps the full length of
       -- its midpoint, the product of its operands' (115 digits a step of
       -- the logistic map).
-      m' =
-        if Map.null ts && s == 0
-          then shorten p m
-          else roundAt (precisionExponent p m) m
+      -- A linear result held to the length limit keeps 'shortDigits'.
+      m' = case rounding of
+        Short -> shorten p m
+        Working
+          | Map.null ts && s == 0 -> shorten p m
+          | otherwise -> roundAt (precisionExponent p m) m
       size' = roundUpSig (shortDigits p) (size + abs (m - m'))
    in if size' == 0
         then base
@@ -762,17 +848,19 @@ builtinId k name p operands =
         <> text name
         <> sint (toInteger p)
         <> varint (toInteger (length operands))
-        <> foldMap operand operands
+        <> foldMap operandBytes operands
     )
- where
-  operand = \case
-    Exact r -> word8 0 <> rational r
-    Affine m ts s _ ->
-      word8 1
-        <> rational m
-        <> varint (toInteger (Map.size ts))
-        <> foldMap (\(i, (c, _)) -> idBytes i <> rational c) (Map.toList ts)
-        <> rational s
+
+-- | An operand's part of a builtin's identity ('builtinId').
+operandBytes :: Magnitude -> Builder
+operandBytes = \case
+  Exact r -> word8 0 <> rational r
+  Affine m ts s _ ->
+    word8 1
+      <> rational m
+      <> varint (toInteger (Map.size ts))
+      <> foldMap (\(i, (c, _)) -> idBytes i <> rational c) (Map.toList ts)
+      <> rational s
 
 kindByte :: NudgeKind -> Builder
 kindByte = \case
