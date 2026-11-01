@@ -6108,6 +6108,22 @@ the same term runs under any backend that has the built-ins it uses.
     quantiles, unstable-branch flags by union. The `steps` limit counts all
     batches together; the `memory` limit is the process's and covers them.
     `affine` and `samples 0` are unaffected.
+  - **Corrections after building** (decided by the owner, 2026-11-01):
+    - *Printing under Monte Carlo.* When a value's copies carry draws of
+      declared σ, it prints its nominal IEEE value with the sample beside
+      it, `0 (Monte Carlo: mean 1.015, sd 1.441, 10000 samples)`, not `±`
+      the standard error of the copies' mean, which described only rounding
+      and made `n*n` look pinned at 0. `errorOf` and `digitsOf` measure
+      rounding, so they refuse a value whose copies carry draws ("its copies
+      carry declared σ; read `sd`"); with rounding alone they are as before.
+    - *`noise` is refused under `double`.* It makes a bound unknown (`x ±
+      e` is `x + e * noise 1`), so drawing it as a normal would let a bound
+      in as a σ. `gauss` is drawn; `noise` is refused as `±` is.
+    - *`steps` applies to each batch,* as to one evaluation: every batch
+      takes the same steps, so an input is accepted or refused alike for
+      every `K`. This replaces "counts all batches together".
+    - *The default for `cores` is the logical core count,* since the
+      runtime does not expose physical cores.
 
   *As built (2026-11-01): Monte Carlo.* `Metron.Double`'s `noiseM` and
   `uncertainM`. A unit unknown is a number whose value is 0 and whose
