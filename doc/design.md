@@ -6110,6 +6110,54 @@ the same term runs under any backend that has the built-ins it uses.
     *Comparisons* below). The `steps` limit counts all
     batches together; the `memory` limit is the process's and covers them.
     `affine` and `samples 0` are unaffected.
+- **Branches under copies** (decided by the owner, 2026-11-01). This
+  replaces the per-comparison warning.
+  - *A table at each branch point.* Under `samples N`, an `if` or `case`
+    whose copies would choose different alternatives reports a table at
+    that branch point, one row per alternative, counting the copies whose
+    own scrutinee selects it, with the IEEE result's row marked:
+
+    ```
+    warning: the branch at `if x > 0.9` goes both ways across 1000 samples (lost in rounding):
+      then   856   ← taken (the IEEE result)
+      else   144
+    ```
+
+    A `case` lists its alternatives (constructors, `true`/`false`, list
+    and tuple patterns). The header names the cause (rounding, or the
+    declared uncertainty), the evaluations when a branch point is reached
+    more than once (`2 evaluations × 1000 samples`), and the copies that
+    left the evaluated path at an earlier branch point. A comparison is
+    just a condition, so `/=` reads as written, and a row of 0 beside the
+    taken row needs no special wording. Branch points are numbered in
+    evaluation order and their counts summed after batches merge, so the
+    table is identical for every `cores`.
+  - *Monte Carlo follows each sample's own branch.* When the copies carry
+    draws of a declared σ, they are samples of the inputs, and a sample
+    that would take the other branch must compute the other branch's
+    formula: following the IEEE branch with every copy gives the wrong
+    distribution (`if x > 0.9 then 1 else 2` with `x = 1 ±σ 0.1` is 1 with
+    probability 0.856 and 2 with 0.144, mean 1.144, not mean 1, sd 0). So
+    the copies split: each alternative is evaluated with the group of
+    copies that selects it, in lockstep, and the results are put back
+    together copy by copy, the IEEE value coming from the IEEE branch.
+    Groups split again at later branch points. Numbers and tensors
+    recombine directly (the type fixes shape and dimension); a constructor
+    recombines field by field when every group gives the same
+    constructor. When the groups give different constructors, the copies
+    cannot be one value: the evaluation falls back to the IEEE branch for
+    all of them, and the value carries a mark, "the sample follows the
+    IEEE branch at …", which `mid` and `sd` refuse, as they refuse a
+    non-linear mark. The table at a split branch point is printed as a
+    note, not a warning, since the sample is right.
+  - *Rounding alone does not split.* With copies that differ only by
+    rounding, the IEEE branch is what a ported formula takes, so every
+    copy follows it and the table is the warning that the branch is
+    unstable.
+  - Splitting evaluates an alternative once per group, and `steps`
+    counts those evaluations. Each batch splits its own copies; the
+    recombined copies are keyed by their global number, so results stay
+    identical for every `cores`.
   - **Corrections after building** (decided by the owner, 2026-11-01):
     - *Printing under Monte Carlo.* When a value's copies carry draws of
       declared σ, it prints its nominal IEEE value with the sample beside
