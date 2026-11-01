@@ -51,6 +51,7 @@ library
     , Metron.Type.Match
     , Metron.Primitive.Types
     , Metron.Primitive
+    , Metron.Batch
     , Metron.Builtin
     , Metron.Codebase
     , Metron.Core
@@ -81,6 +82,7 @@ library
     , Metron.Update
   c-sources:       cbits/limits.c
   build-depends:
+    , async
     , base ^>=4.21.0.0
     , bytestring
     , containers
@@ -100,7 +102,7 @@ executable metron
   import:         common
   main-is:        Main.hs
   hs-source-dirs: src
-  ghc-options:    -O -threaded -feager-blackholing -rtsopts
+  ghc-options:    -O -threaded -feager-blackholing -rtsopts "-with-rtsopts=-qg1 -qn4"
   build-depends:
     , base ^>=4.21.0.0
     , directory

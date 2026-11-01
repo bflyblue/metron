@@ -7,6 +7,7 @@ module Metron.Compile (
   evalExpr,
   evalValue,
   evalValueAs,
+  evalBatchedAs,
   evalChecked,
   openInValue,
   runtimeOf,
@@ -14,6 +15,9 @@ module Metron.Compile (
   renderEvalError,
 ) where
 
+import Control.Concurrent.Async (forConcurrently)
+import Control.Exception (evaluate)
+import Data.Containers.ListUtils (nubOrd)
 import Data.Map.Lazy qualified as LazyMap (map, mapWithKey)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map (
@@ -22,9 +26,11 @@ import Data.Map.Strict qualified as Map (
   lookup,
  )
 import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Set qualified as Set (disjoint)
 import Data.Text (Text)
-import Data.Text qualified as T (intercalate, pack)
+import Data.Text qualified as T (intercalate, length, pack)
 import Metron.Affine (Magnitude)
+import Metron.Batch (acrossCopies, batchesOf, failure, forced, merged)
 import Metron.Check (
   CheckError (CoreLintError, InferenceError),
   CheckedCore (inferred, linted, typed),
@@ -48,7 +54,7 @@ import Metron.Desugar (
  )
 import Metron.Double (Dbl)
 import Metron.Eval (
-  Config (backend, limits, precision, samples),
+  Config (backend, batch, cores, limits, precision, samples),
   EvalError (..),
   RuntimeOf (..),
   Value,
@@ -64,9 +70,9 @@ import Metron.Infer qualified as I (
   readingsOf,
   rewriteReadings,
  )
-import Metron.Limits (limitHint, newBudget, remarksAfter)
+import Metron.Limits (limitHint, newBudgetOf, remarksAfter)
 import Metron.NameResolution (resolverFor)
-import Metron.Needs (Needs, checkBackend)
+import Metron.Needs (Needs, checkBackend, reachedBy)
 import Metron.Pretty (Display, renderValue)
 import Metron.Resolve (
   annotationsWith,
@@ -75,7 +81,7 @@ import Metron.Resolve (
   withHint,
  )
 import Metron.Resolve.Error (ResolveError (..), renderResolveError)
-import Metron.Scalar (Backend (..), Scalar)
+import Metron.Scalar (Backend (..), Batch (..), Scalar)
 import Metron.Session.Types (LastExpr (..))
 import Metron.Source (printerFor, refNamer)
 import Metron.Strictness (signatureAt, signatures, strictify)
@@ -96,6 +102,7 @@ import Metron.Type (
   selfType,
  )
 import Metron.UnitHint (Preferences)
+import System.IO.Unsafe (unsafePerformIO)
 
 data CheckedExpr = CheckedExpr
   { term :: Term Z
@@ -148,8 +155,83 @@ evalExpr cfg prefs scope cb memo src e = do
   either (Left . ("error: " <>)) Right verdict
   out <- case cfg.backend of
     AffineBackend -> evalShown @Magnitude cfg prefs scope cb h typed
-    DoubleBackend -> evalShown @Dbl cfg prefs scope cb h typed
+    DoubleBackend
+      -- The copies in parallel batches (design §8.2), unless the input reads
+      -- across them or its batches do not merge.
+      | cfg.samples > 0
+      , length (batchesOf cfg.samples cfg.cores) > 1
+      , Set.disjoint (fst (reachedBy cb.terms memo' le.term)) acrossCopies
+      , Just batched <- batchedValue cfg cb h typed ->
+          either
+            (Left . renderEvalError)
+            (uncurry (shown cfg scope cb prefs))
+            batched
+      | otherwise -> evalShown @Dbl cfg prefs scope cb h typed
   pure (out, le, memo')
+
+-- | A value printed, with a line for each warning its evaluation made.
+shown ::
+  (Display s) =>
+  Config ->
+  S.Scope ->
+  Codebase ->
+  Preferences ->
+  ValueOf s ->
+  [Text] ->
+  Either Text Text
+shown cfg scope cb prefs v remarks = do
+  out <-
+    either
+      (Left . renderEvalError)
+      Right
+      (renderValue (printerFor cfg scope cb) cfg.precision prefs v)
+  pure (T.intercalate "\n" (out : map ("warning: " <>) remarks))
+
+{- | The double backend's value with its copies evaluated in parallel
+batches (design §8.2, "Metron.Batch"), each batch in its own thread and
+its own runtime, then merged, with the batches' warnings together, or
+the error they fail with together ('failure': the shared @steps@ limit
+among them). 'Nothing' when the batches do not merge, and the input
+should run as one evaluation.
+-}
+batchedValue ::
+  Config ->
+  Codebase ->
+  Hash ->
+  TTerm Z ->
+  Maybe (Either EvalError (ValueOf Dbl, [Text]))
+batchedValue cfg cb h typed = unsafePerformIO $ do
+  results <- forConcurrently (batchesOf cfg.samples cfg.cores) $ \b -> do
+    let cfg' = cfg{batch = Just b}
+        (rt, prepare) = runtimeWith @Dbl cfg' cb
+    case evalAt cfg' rt h (prepare typed) of
+      Left err -> pure (Left err)
+      Right v -> do
+        forced v
+        remarks <- evaluate (remarksAfter v rt.budget)
+        _ <- evaluate (sum (map T.length remarks))
+        pure (Right (v, remarks))
+  pure $ case sequence results of
+    Left _ -> Left <$> failure results
+    Right batches -> do
+      v <- merged (map fst batches)
+      Just (Right (v, nubOrd (concatMap snd batches)))
+{-# NOINLINE batchedValue #-}
+
+{- | 'evalValueAs' for the double backend with its copies in parallel
+batches, as 'evalExpr' runs them, for the tests: 'Nothing' when the
+batches do not merge.
+-}
+evalBatchedAs ::
+  Config ->
+  S.Scope ->
+  Codebase ->
+  Text ->
+  S.Expr ->
+  Either Text (Maybe (Either EvalError (ValueOf Dbl)))
+evalBatchedAs cfg scope cb src e = do
+  (h, typed, _) <- prepared scope cb src e
+  Right (fmap fst <$> batchedValue cfg cb h typed)
 
 {- | Evaluate under the backend of the scalar type and print, with a line
 for each warning the evaluation made: a branch lost in rounding (design
@@ -173,6 +255,7 @@ evalShown cfg prefs scope cb h typed = do
       (Left . renderEvalError)
       Right
       (renderValue (printerFor cfg scope cb) cfg.precision prefs v)
+  -- The warnings are read once the printing has evaluated the value.
   pure
     (T.intercalate "\n" (out : map ("warning: " <>) (remarksAfter out rt.budget)))
 
@@ -283,7 +366,11 @@ runtimeWith cfg cb = (rt, strictify external)
       , chartName = \h i written -> chartNameFor (Reference h i) written cb
       , typeDefOf = (`lookupTypeDef` cb)
       , shared = (`Map.lookup` values)
-      , budget = newBudget cfg.limits cb
+      , budget =
+          newBudgetOf
+            (maybe 1 (.batches) cfg.batch)
+            cfg.limits
+            (cb, fmap (.first) cfg.batch)
       }
   analysed = LazyMap.map (strictify external . snd) cb.derived
   known = LazyMap.map (signatures external . snd) cb.derived

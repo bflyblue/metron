@@ -147,6 +147,7 @@ import Metron.Limits (
 import Metron.Primitive (baseUnit, primArity, typedPrims)
 import Metron.Scalar (
   Backend (..),
+  Batch,
   Decision (holds, lost),
   Own (..),
   Rel (..),
@@ -156,6 +157,7 @@ import Metron.Scalar (
   affineCovariance,
   lacks,
   ownerOf,
+  wholeBatch,
  )
 import Metron.Scalar qualified as Scalar (Shape (..))
 import Metron.Strictness (strictMarker)
@@ -223,6 +225,15 @@ data Config = Config
   -- ^ the seed of those copies' random choices (@:set seed@)
   , rounding :: Rounding
   -- ^ how those copies round (design §8.2, @:set rounding@)
+  , cores :: Int
+  {- ^ how many evaluations carry the copies in parallel, each a batch of
+  them (design §8.2, @:set cores@); the command line starts it at the
+  machine's cores
+  -}
+  , batch :: Maybe Batch
+  {- ^ the batch of the copies this evaluation carries, set only by the
+  evaluation that runs the batches; 'Nothing', all of them
+  -}
   }
   deriving stock (Show)
 
@@ -238,6 +249,8 @@ defaultConfig =
     , samples = 0
     , seed = 1
     , rounding = RoundRandom
+    , cores = 1
+    , batch = Nothing
     }
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
@@ -257,6 +270,7 @@ settingsOf cfg =
     , samples = cfg.samples
     , seed = cfg.seed
     , rounding = cfg.rounding
+    , batch = fromMaybe (wholeBatch cfg.samples) cfg.batch
     }
 
 {- | What the evaluator needs from the codebase: the Typed Core behind a

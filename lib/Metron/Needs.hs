@@ -21,6 +21,7 @@ module Metron.Needs (
   Needs,
   noNeeds,
   needsOf,
+  reachedBy,
   checkBackend,
 ) where
 
@@ -60,6 +61,17 @@ needsOf terms h memo@(Needs m) = case Map.lookup h m of
  where
   step (acc, memo') d = let (s, memo'') = needsOf terms d memo' in (acc <> s, memo'')
 
+{- | The backend-specific built-ins an input reaches, itself or through the
+definitions it refers to; the memo comes back extended.
+-}
+reachedBy :: Map Hash (Term Z) -> Needs -> Term Z -> (Set Text, Needs)
+reachedBy terms memo t =
+  let (rs, own) = direct t
+   in foldl'
+        (\(acc, mm) (d, _) -> let (s, mm') = needsOf terms d mm in (acc <> s, mm'))
+        (own, memo)
+        (Set.toList rs)
+
 {- | Whether an input may run under a backend at a number of samples (the
 double backend has some built-ins only with copies), its Core given; the
 memo comes back extended either way. The names a reference prints with
@@ -75,11 +87,7 @@ checkBackend ::
   (Either Text (), Needs)
 checkBackend b samples nameOf terms memo t =
   let (rs, own) = direct t
-      (total, memo') =
-        foldl'
-          (\(acc, mm) (d, _) -> let (s, mm') = needsOf terms d mm in (acc <> s, mm'))
-          (own, memo)
-          (Set.toList rs)
+      (total, memo') = reachedBy terms memo t
       refused = [(n, why) | n <- Set.toList total, Just why <- [refusalOf b samples n]]
    in case refused of
         [] -> (Right (), memo')

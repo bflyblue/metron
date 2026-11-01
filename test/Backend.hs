@@ -7,21 +7,23 @@ module Backend (backendTests) where
 
 import Control.Monad (foldM)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (isJust)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import Metron.Affine (Magnitude, midpoint, radius)
+import Metron.Batch (batchesOf)
 import Metron.Codebase (Codebase (..), Reference (..), emptyCodebase)
-import Metron.Compile (evalValueAs)
+import Metron.Compile (evalBatchedAs, evalValueAs)
 import Metron.Double (Dbl (..), Estimate (..), digitsOfDbl, estimateOf)
 import Metron.Driver (feed, seededSession, startBackend, startSettings)
 import Metron.Eval (Config (..), ValueOf (..), defaultConfig)
 import Metron.Limits (Limits (..))
 import Metron.Needs (needsOf)
 import Metron.Parser (parseExpr)
-import Metron.Scalar (Backend (..), Rounding (..), Scalar)
+import Metron.Scalar (Backend (..), Batch (..), Rounding (..), Scalar)
 import Metron.Session.Types (Session (..), emptySession)
 import Metron.Syntax qualified as S (rootScope)
 import Test.Tasty
@@ -42,6 +44,7 @@ backendTests =
     , checkTests
     , settingTests
     , monteCarloTests
+    , coresTests
     ]
 
 -- The check before running ----------------------------------------------------------------
@@ -173,19 +176,20 @@ switchingTests =
           )
           ["exact", "budget", "covariance"]
     , testCase
-        "the affine backend's built-ins are refused under double, ± at every setting" $ do
-        expectLeft
-          "`±` is the affine backend's; the double backend does not have it"
-          (runDouble ["1 ± 0.1"])
-        expectLeft
-          "`±` is the affine backend's; the double backend does not have it"
-          (runWith doubleConfig{samples = 10} ["1 ± 0.1"])
-        expectLeft
-          "`bound` is the affine backend's"
-          (runWith doubleConfig{samples = 10} ["bound 1"])
-        expectLeft
-          "`covariance` is the affine backend's"
-          (runWith doubleConfig{samples = 10} ["covariance [1, 2]"])
+        "the affine backend's built-ins are refused under double, ± at every setting"
+        $ do
+          expectLeft
+            "`±` is the affine backend's; the double backend does not have it"
+            (runDouble ["1 ± 0.1"])
+          expectLeft
+            "`±` is the affine backend's; the double backend does not have it"
+            (runWith doubleConfig{samples = 10} ["1 ± 0.1"])
+          expectLeft
+            "`bound` is the affine backend's"
+            (runWith doubleConfig{samples = 10} ["bound 1"])
+          expectLeft
+            "`covariance` is the affine backend's"
+            (runWith doubleConfig{samples = 10} ["covariance [1, 2]"])
     , testCase "the declared σ, mid and sd need samples under double" $ do
         expectLeft
           "`sd` needs `:set samples N` under the double backend"
@@ -693,14 +697,15 @@ monteCarloTests =
             drop 1 (items c) @?= drop 1 (items a)
           other -> assertFailure (show other)
     , testCase
-        "rounding random adds rounding to the draws; nearest leaves the draws alone" $ do
-        let at r = (.estimate) <$> doubleOf monteCarlo{rounding = r} "let x = 1 ±σ 0.1 in x / 3"
-        (at RoundNearest /= at RoundRandom) @? "the roundings agree"
-        case (at RoundNearest, at RoundRandom) of
-          (Right (Copies ns), Right (Copies rs)) ->
-            VU.all (<= 2.3e-16) (VU.zipWith (\n r -> abs (n - r)) ns rs)
-              @? "a copy moved more than a rounding"
-          other -> assertFailure (show other)
+        "rounding random adds rounding to the draws; nearest leaves the draws alone"
+        $ do
+          let at r = (.estimate) <$> doubleOf monteCarlo{rounding = r} "let x = 1 ±σ 0.1 in x / 3"
+          (at RoundNearest /= at RoundRandom) @? "the roundings agree"
+          case (at RoundNearest, at RoundRandom) of
+            (Right (Copies ns), Right (Copies rs)) ->
+              VU.all (<= 2.3e-16) (VU.zipWith (\n r -> abs (n - r)) ns rs)
+                @? "a copy moved more than a rounding"
+            other -> assertFailure (show other)
     , testCase "mid and sd under samples 0 are refused, naming the setting"
         $ expectLeft
           "`sd` needs `:set samples N` under the double backend"
@@ -781,12 +786,122 @@ copiesIn :: Config -> Text -> Either Text [VU.Vector Double]
 copiesIn cfg src = do
   e <- parseExpr src
   (_, v) <- evalValueAs @Dbl cfg S.rootScope emptyCodebase src e
+  vectorCopies src v
+
+-- | The copies of each component of a vector.
+vectorCopies :: Text -> ValueOf Dbl -> Either Text [VU.Vector Double]
+vectorCopies src = \case
+  VTensor [_] _ _ buf ->
+    traverse
+      ( \case
+          Right x | Copies cs <- x.estimate -> Right cs
+          other -> Left (T.pack (show other))
+      )
+      (V.toList buf)
+  _ -> Left ("not a vector: " <> src)
+
+-- The copies in parallel batches ---------------------------------------------------------
+
+{- | @:set cores K@ (design §8.2): the copies run in K batches, each a whole
+evaluation, and merge into what one evaluation gives, bit for bit.
+-}
+coresTests :: TestTree
+coresTests =
+  testGroup
+    ":set cores: the copies in parallel batches"
+    [ testCase
+        "batches of the copies: in order, sizes within one, at least two copies each" $ do
+        map (\b -> (b.first, b.count)) (batchesOf 10 4)
+          @?= [(0, 3), (3, 3), (6, 2), (8, 2)]
+        length (batchesOf 10 32) @?= 5
+        batchesOf 7 1 @?= [Batch{first = 0, count = 7, batches = 1}]
+    , testProperty "the batches cover the copies exactly, in order"
+        $ \(Positive n) (Positive k) ->
+          let bs = batchesOf n k
+           in concatMap (\b -> [b.first .. b.first + b.count - 1]) bs == [0 .. n - 1]
+                && all (\b -> b.batches == length bs) bs
+    , testCase
+        "K = 1, 2 and 4 give the same copies, bit for bit, and the same statistics" $ do
+        let src =
+              "let x = 1 ±σ 0.1 in let y = 2 ±σ 0.3 in [x * y / 3, sin (x * 1 rad) + y, if x > 0.9 then x else y]"
+            at k = case copiesBatched batchedConfig{cores = k} src of
+              Right (Just cs) -> pure cs
+              other -> assertFailure (show other) >> pure []
+        one <- at 1
+        two <- at 2
+        four <- at 4
+        two @?= one
+        four @?= one
+        map stats four @?= map stats one
+        -- and the same as the evaluation that never batches
+        (map (.estimate) <$> numbersIn batchedConfig src) @?= Right (map Copies one)
+    , testCase "under random rounding too, with no declared σ" $ do
+        let src = "[0.1 + 0.2 * 3, sqrt 2 / 3, exp 0.3]"
+            at k = copiesBatched batchedConfig{cores = k, rounding = RoundRandom} src
+        at 4 @?= at 1
+        (isJust <$> at 4) @?= Right True
+    , testCase
+        "an input that reads across the copies runs as one, with the same result" $ do
+        let ls = ["let x = 1 ±σ 0.1", "[mid (x * x), sd (x * x), errorOf x]"]
+        runWith batchedConfig{cores = 4} ls @?= runWith batchedConfig{cores = 1} ls
+    , testCase "the batches' warnings come together" $ do
+        let ls = ["if 1 + 1e-16 > 1 then 1 else 2"]
+            outs k = runWith doubleConfig{samples = 10, cores = k} ls
+        outs 4 @?= outs 1
+        case outs 4 of
+          Right [out] ->
+            ( "warning: the comparison 1 > 1 goes both ways across the 10 samples"
+                `T.isInfixOf` out
+            )
+              @? T.unpack out
+          other -> assertFailure (show other)
+    , testCase "the steps limit counts all batches together" $ do
+        let ls k steps =
+              [ "let go n acc = if n == 0 then acc else go (n - 1) (acc + 1)"
+              , ":set steps " <> T.pack (show (steps :: Int))
+              , ":set cores " <> T.pack (show (k :: Int))
+              , "go 1000 0"
+              ]
+            run k steps = runWith doubleConfig{samples = 8} (ls k steps)
+        run 1 20000 @?= Right ["1000"]
+        expectLeft "took more than 20000 steps" (run 4 20000)
+        run 4 80000 @?= Right ["1000"]
+    , testCase ":set cores and --set cores take a positive count" $ do
+        (elem "cores 1" <$> runWith defaultConfig [":set"]) @?= Right True
+        fmap (.config.cores) (sessionAfter defaultConfig [":set cores 4"]) @?= Right 4
+        expectLeft
+          "cores must be a positive integer"
+          (runWith defaultConfig [":set cores 0"])
+        fmap (.cores) (startSettings [("cores", "3")] defaultConfig) @?= Right 3
+    , testCase "affine and samples 0 never batch"
+        $ runWith defaultConfig{cores = 4} ["1 / 3 + 1"]
+          @?= runWith defaultConfig ["1 / 3 + 1"]
+    ]
+ where
+  stats cs =
+    let n = fromIntegral (VU.length cs)
+        m = VU.sum cs / n
+     in (m, sqrt (VU.sum (VU.map (\c -> (c - m) * (c - m)) cs) / (n - 1)))
+
+-- | Monte Carlo at 1000 copies, rounding to nearest, to batch.
+batchedConfig :: Config
+batchedConfig = doubleConfig{samples = 1000, rounding = RoundNearest}
+
+-- | The copies of each component of a vector, evaluated in batches.
+copiesBatched :: Config -> Text -> Either Text (Maybe [VU.Vector Double])
+copiesBatched cfg src = do
+  e <- parseExpr src
+  r <- evalBatchedAs cfg S.rootScope emptyCodebase src e
+  case r of
+    Nothing -> Right Nothing
+    Just (Left err) -> Left (T.pack (show err))
+    Just (Right v) -> Just <$> vectorCopies src v
+
+-- | The numbers of a vector, evaluated as one.
+numbersIn :: Config -> Text -> Either Text [Dbl]
+numbersIn cfg src = do
+  e <- parseExpr src
+  (_, v) <- evalValueAs @Dbl cfg S.rootScope emptyCodebase src e
   case v of
-    VTensor [_] _ _ buf ->
-      traverse
-        ( \case
-            Right x | Copies cs <- x.estimate -> Right cs
-            other -> Left (T.pack (show other))
-        )
-        (V.toList buf)
+    VTensor [_] _ _ buf -> traverse (either (Left . T.pack . show) Right) (V.toList buf)
     _ -> Left ("not a vector: " <> src)

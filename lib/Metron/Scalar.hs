@@ -36,6 +36,8 @@ module Metron.Scalar (
   lacks,
   Settings (..),
   Rounding (..),
+  Batch (..),
+  wholeBatch,
   roundingName,
   roundingNamed,
   settingsAt,
@@ -182,8 +184,23 @@ data Settings = Settings
   -- ^ the seed of those copies' random choices (@:set seed@)
   , rounding :: Rounding
   -- ^ how each copy rounds (@:set rounding@)
+  , batch :: Batch
+  -- ^ which of the copies this evaluation carries
   }
   deriving stock (Eq, Show)
+
+{- | The copies one evaluation carries (design §8.2, @:set cores@): when the
+samples run in parallel batches, each evaluation carries copies @first@
+to @first + count − 1@ of the @samples@, as one of @batches@. A copy's
+random choices are keyed by its number among all the samples, so a
+result does not depend on how the copies are batched.
+-}
+data Batch = Batch {first :: Int, count :: Int, batches :: Int}
+  deriving stock (Eq, Show)
+
+-- | All the copies in one evaluation.
+wholeBatch :: Int -> Batch
+wholeBatch n = Batch{first = 0, count = n, batches = 1}
 
 {- | How the double backend's copies round (design §8.2, @:set
 rounding@): each to nearest, so that they differ only in their draws of
@@ -213,6 +230,7 @@ settingsAt p =
     , samples = 0
     , seed = 0
     , rounding = RoundRandom
+    , batch = wholeBatch 0
     }
 
 -- | An order relation, as the comparisons ask it.

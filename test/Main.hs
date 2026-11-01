@@ -4431,6 +4431,7 @@ displayTests =
               , "samples 0"
               , "seed 1"
               , "rounding random"
+              , "cores 1"
               ]
                 ++ limits
             )
@@ -4443,6 +4444,7 @@ displayTests =
               , "samples 0"
               , "seed 1"
               , "rounding random"
+              , "cores 1"
               ]
                 ++ limits
                 ++ [ "precision 20"
@@ -4452,6 +4454,7 @@ displayTests =
                    , "samples 0"
                    , "seed 1"
                    , "rounding random"
+                   , "cores 1"
                    ]
                 ++ limits
             )

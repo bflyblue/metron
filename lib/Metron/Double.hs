@@ -79,6 +79,7 @@ import Metron.Core (NudgeKind (..))
 import Metron.Dimension (dimMul, dimOne)
 import Metron.Scalar (
   Backend (..),
+  Batch (..),
   Decision (..),
   Own (..),
   Rel (..),
@@ -207,8 +208,11 @@ the neighbour its coin picks.
 constantCopies ::
   Settings -> Word64 -> [Double] -> Double -> Ordering -> VU.Vector Double
 constantCopies s op xs r side = case s.rounding of
-  RoundNearest -> VU.replicate s.samples r
-  RoundRandom -> VU.generate s.samples (\i -> roundTo (coin s i op xs) r side)
+  RoundNearest -> VU.replicate s.batch.count r
+  RoundRandom ->
+    VU.generate
+      s.batch.count
+      (\i -> roundTo (coin s (s.batch.first + i) op xs) r side)
 
 {- | The neighbour a random rounding chooses: the nearest double @r@ and the
 side the exact result lies on.
@@ -297,7 +301,7 @@ operation s op say fv fb fc xs =
                 let ys = map (VU.! i) columns
                  in case s.rounding of
                       RoundNearest -> fv ys
-                      RoundRandom -> fc (coin s i op ys) ys
+                      RoundRandom -> fc (coin s (s.batch.first + i) op ys) ys
            in Copies (VU.generate n copy)
       -- Nothing to add is an exact result, which stays exact.
       boundOf bs
@@ -675,7 +679,10 @@ is 0, so a formula's IEEE result is its result at the nominal inputs.
 drawn :: Settings -> NudgeKind -> Origin -> Rational -> Dbl
 drawn s k o m =
   let key = drawKey k o m
-   in Dbl 0 (Copies (VU.generate s.samples (standardNormal s key))) Nothing
+   in Dbl
+        0
+        (Copies (VU.generate s.batch.count (standardNormal s key . (s.batch.first +))))
+        Nothing
 
 {- | @noise n@ / @gauss n@, one component: drawn in each copy, as the
 design has it for both (design §8.2), with copies; refused without.
@@ -749,8 +756,9 @@ relText = \case
 {- | The IEEE result decides; with copies, a comparison they disagree about
 is lost in rounding.
 -}
-decide :: Text -> (Double -> Double -> Bool) -> Dbl -> Dbl -> Decision
-decide what holds x y =
+decide ::
+  Settings -> Text -> (Double -> Double -> Bool) -> Dbl -> Dbl -> Decision
+decide s what holds x y =
   let result = holds x.value y.value
       lost = case copyCount [x, y] of
         Nothing -> Nothing
@@ -764,7 +772,7 @@ decide what holds x y =
                     <> " "
                     <> showDouble y.value
                     <> " goes both ways across the "
-                    <> T.pack (show n)
+                    <> T.pack (show s.samples)
                     <> " samples: the condition is lost in rounding"
                 )
           | otherwise -> Nothing
@@ -1092,8 +1100,8 @@ instance Scalar Dbl where
   floorM s = Right . rounding s 20 "floor" floor
   ceilM s = Right . rounding s 21 "ceil" ceiling
   roundM s = Right . rounding s 22 "round" round
-  relate _ rel x y = Right (decide (relText rel) (relation rel) x y)
-  equalM _ x y = Right (decide "==" (==) x y)
+  relate s rel x y = Right (decide s (relText rel) (relation rel) x y)
+  equalM s x y = Right (decide s "==" (==) x y)
   sizeOf _ = Nothing
   stepProblem step
     | step.value == 0 = Just "its step is zero"

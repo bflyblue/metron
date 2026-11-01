@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Control.Concurrent (getNumCapabilities, setNumCapabilities)
 import Control.Exception (SomeException, displayException, evaluate, try)
 import Control.Monad (join, unless, when)
 import Control.Monad.IO.Class (liftIO)
@@ -10,6 +11,7 @@ import Data.Maybe (catMaybes, isNothing, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import GHC.Conc (getNumProcessors)
 import Metron.Codebase (emptyCodebase)
 import Metron.Driver
 import Metron.Eval (Config (..))
@@ -118,9 +120,10 @@ the empty codebase.
 startSession :: Options -> IO Live
 startSession opts = do
   live <- openSession opts
+  cores <- startCores
   cfg <-
     either (\err -> TIO.hPutStrLn stderr err >> exitFailure) pure
-      $ startSettings opts.settings live.session.config
+      $ startSettings opts.settings live.session.config{cores}
   applyMemory cfg.limits
   let limited = live.session{config = cfg}
   -- The backend, as :backend chooses it (design §8.2).
@@ -132,6 +135,16 @@ startSession opts = do
         pure
         $ startBackend b limited
   pure live{session = chosen}
+
+{- | The cores the double backend's batches run on (design §8.2, @:set
+cores@): the machine's, unless @+RTS -N@ chose a number of capabilities,
+which then wins.
+-}
+startCores :: IO Int
+startCores = do
+  caps <- getNumCapabilities
+  when (caps == 1) (setNumCapabilities =<< getNumProcessors)
+  getNumCapabilities
 
 openSession :: Options -> IO Live
 openSession opts =

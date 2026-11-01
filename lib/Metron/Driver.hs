@@ -444,6 +444,11 @@ setSetting name value cfg = case name of
           (\r -> Right cfg{rounding = r})
           (roundingNamed value)
       )
+  -- How many evaluations carry the copies in parallel (design §8.2).
+  "cores" ->
+    Just $ case natural of
+      Just k | k >= 1 -> Right cfg{cores = k}
+      _ -> Left "cores must be a positive integer"
   "precision" ->
     Just
       (count (\k -> cfg{precision = k}) "precision must be a non-negative integer")
@@ -464,6 +469,8 @@ setSetting name value cfg = case name of
                 , samples = cfg.samples
                 , seed = cfg.seed
                 , rounding = cfg.rounding
+                , cores = cfg.cores
+                , batch = cfg.batch
                 }
           )
           "nonlinear must be a non-negative integer, a percentage"
@@ -508,6 +515,7 @@ command session src = \case
             , "samples " <> tshow cfg.samples
             , "seed " <> tshow cfg.seed
             , "rounding " <> roundingName cfg.rounding
+            , "cores " <> tshow cfg.cores
             ]
             ++ settingLines cfg.limits
       )
