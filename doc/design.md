@@ -6069,8 +6069,8 @@ the same term runs under any backend that has the built-ins it uses.
 - **Declared σ is sampled: Monte Carlo under `double`** (decided by the
   owner, 2026-11-01). Under `samples N > 0`, a declared standard
   uncertainty is no longer refused: each copy draws it. `x ±σ s` is `x +
-  s·z` in each copy, `z` a standard normal, and `gauss` and `noise` are
-  drawn likewise. The draw is keyed by the nudge's identity (§3.2.4), the
+  s·z` in each copy, `z` a standard normal, and `gauss` is drawn likewise
+  (`noise`, which makes a bound unknown, is refused, below). The draw is keyed by the nudge's identity (§3.2.4), the
   copy and `:set seed`, so the same unknown has the same draw wherever it
   appears in a copy, and `x - x` is exactly 0 in every copy: the
   correlation affine forms keep by name, kept by the key. The shown value
@@ -6097,7 +6097,7 @@ the same term runs under any backend that has the built-ins it uses.
     `affine`.
   - **The copies run in parallel batches** (decided by the owner,
     2026-11-01), for `double` with `samples N > 0` only. With `:set cores
-    K` (default: the machine's cores), the expression is evaluated K times
+    K` (default: the logical core count), the expression is evaluated K times
     in parallel, each evaluation carrying its batch of about N/K copies in
     lockstep; parallelising each operation across copies would cost a
     synchronisation per operation, too fine at about 0.1 µs a copy. Since a
