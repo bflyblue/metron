@@ -1287,6 +1287,12 @@ runPrim cfg rt prim ty args = case (prim, args) of
     sc <- chartOf =<< s
     (_, _, _, ks) <- tensor =<< x
     Right (VPoint sc.dims sc.dim sc (V.map (fmap (\k -> mulM p k sc.step)) ks))
+  -- An amount from a chart's origin along its axes (design §7.7): the
+  -- coordinates with the step applied are the amount itself.
+  ("pointAt", [s, v]) -> do
+    sc <- chartOf =<< s
+    (_, _, _, vs) <- tensor =<< v
+    Right (VPoint sc.dims sc.dim sc vs)
   -- Within a frame, coordinate arithmetic. A difference carries the step
   -- unit of the chart both points were written on.
   ("pointAdd", [pt, v]) -> do

@@ -9676,7 +9676,47 @@ partFTests :: TestTree
 partFTests =
   testGroup
     "spaces and frames (design §3.10, part F)"
-    [ testCase "shared chart configurations cancel before uncertainty arithmetic" $ do
+    [ testCase "pointAt places an amount on a chart from its origin along its axes" $ do
+        let setup =
+              [ "space Shop = Vec 3 m"
+              , "chart room on Shop"
+              , "chart bench on room at [2, 1, 0] m by rotz (90 deg)"
+              , "chart pf on room step km by rotz (30 deg) then rotx (45 deg)"
+              ]
+        runLinesP
+          ( setup
+              ++ [ ":type pointAt"
+                 , "pointAt bench ([1, 2, 3] m)"
+                 , -- the origin and the step apply; the axes are the chart's
+                   "pointAt pf ([1, 2, 3] m)"
+                 , "pointAt pf ([1, 2, 3] m) == [0, 0, 0] pf .+ withAxes pf ([1, 2, 3] m)"
+                 , "pointAt bench ([1, 2, 3] m) .- [0, 0, 0] bench"
+                 , "let q = (pointAt bench ([1, 0, 0] m) to room) .- [2, 2, 0] room"
+                 , "q · q < 1e-40 m^2"
+                 , -- a computed amount along the chart's axes
+                   "let off = withAxes pf ([0, 0, 2] m)"
+                 , "pointAt pf (off + off)"
+                 , -- a scalar chart: degC's origin is 273.15 K
+                   "pointAt degC (5 K)"
+                 , "pointAt degF (9 deltaF) to degC"
+                 ]
+          )
+          @?= Right
+            [ "forall c. Chart c -> Diff c -> Point c"
+            , "[1, 2, 3] bench"
+            , "[0.001, 0.002, 0.003] pf"
+            , "true"
+            , "[1, 2, 3] m"
+            , "true"
+            , "[0, 0, 0.004] pf"
+            , "5 degC"
+            , "-12.777777777777777777… degC"
+            ]
+        -- An amount along another chart's axes is not silently relabelled.
+        expectError
+          (runLinesP (setup ++ ["pointAt pf (withAxes bench ([1, 2, 3] m))"]))
+          "the axes of"
+    , testCase "shared chart configurations cancel before uncertainty arithmetic" $ do
         runLinesP
           [ "space Review = Vec 3 m"
           , "chart root on Review"

@@ -2892,6 +2892,7 @@ as it is, and arithmetic on it is a pending constraint `Diff c ~ Tensor σ δ`.
 pointOn    : forall c. Chart c -> Coords c -> Point c        -- 3 degC, [1, 2, 3] lvlh; Coords c dimensionless, along Axes c
 (.-)       : forall c. Point c -> Point c -> Diff c
 (.+)       : forall c. Point c -> Diff c -> Point c
+pointAt    : forall c. Chart c -> Diff c -> Point c          -- the amount from the origin along Axes c: [0, 0, 0] c .+ v, at any shape (7.7)
 to         : forall s (c : s) (c1 : s). Point c -> Chart c1 -> Point c1
 p.k        : Point c -> Num δ                                -- the k-th coordinate, the step applied
 rotationOf : forall s (c : s). Chart c -> Mat s c            -- rows along the space's base axes, columns along c's
@@ -3546,6 +3547,7 @@ originOf    : Chart c -> Vec s d                        -- the origin from the s
 withAxes    : Chart c -> Vec n d1 -> Vec c d1           -- anonymous axes read as the chart's; no arithmetic (3.9)
 pointOn     : Chart c -> Coords c -> Point c            -- what the quantity rule builds for `20 degC`, `[1, 2, 3] site` (3.10 F5)
 pointAdd    : Point c -> Diff c -> Point c              -- `.+`
+pointAt     : Chart c -> Diff c -> Point c              -- an amount from the chart's origin along its axes (7.7)
 pointSub    : Point c -> Point c -> Diff c              -- `.-`
 toChart     : Point c -> Chart c1 -> Point c1           -- `p to c1`, c and c1 frames of one space (3.10 F5)
 fromTo      : Point c -> Chart c -> Chart c1 -> Point c1   -- `p from c to c1` (3.10 F7)

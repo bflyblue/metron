@@ -92,6 +92,11 @@ primScheme name = case name of
   "pointSub" ->
     let (f, vs) = frameVar 20
      in Just (Forall vs (TFun (TPoint f) (TFun (TPoint f) (TOver f Nothing))))
+  -- An amount placed on a chart from its origin along its axes (design
+  -- §7.7): @[0, 0, 0] c .+ v@, at any shape of space.
+  "pointAt" ->
+    let (f, vs) = frameVar 20
+     in Just (Forall vs (TFun (TChart f) (TFun (TOver f Nothing) (TPoint f))))
   -- A point to a chart of another frame of its space (F5), and from a
   -- configuration of its frame (F7).
   "toChart" ->
