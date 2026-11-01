@@ -16,6 +16,21 @@
   from what parses. A test prints every pair of operators nested either
   way, and random operator trees, in both spellings, and parses them back
   to the same Core.
+- Internal, no change to behaviour or hashes: exports that no other module
+  imports are gone, found by `-ddump-minimal-imports` over the library,
+  the executable and the tests, and the definitions nothing used at all
+  are deleted (`propagate`, `propagateWith`, `runtimeOf`, `resolveName`,
+  `plainPrinter`, `renderUnits`, `spaceHash`, `pairT`, `wholeBatch`, the
+  type synonym `Eval.Elem`). The driver prints the views of `:exact` and
+  `:covariance` through one helper, and one walk over the library's layout
+  gives both its source and its names.
+- Tests: the suite runs the built `metron` in a 1 MB Haskell stack on a
+  loop of 2 · 10⁵ calls whose condition carries draws under `samples
+  100`, so a split in tail position staying a tail call no longer rests on
+  a hand measurement; `cabal test` puts the executable on the PATH.
+  `test/Main.hs` is split into topic modules under `test/Lang/`, with
+  shared helpers and named fixtures in `Lang.Common`; the same 1008 tests
+  run under the same names.
 - A branch point that splits the samples, in tail position, is a tail
   call (design §8.2). Under Monte Carlo a loop whose condition carries
   draws, each sample stopping at its own step, runs group after group in
