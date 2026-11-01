@@ -27,6 +27,7 @@ import Lang.Common (
   expectError,
   expecting,
   lastN,
+  multiline,
   num,
   runLines,
   runLinesP,
@@ -59,7 +60,7 @@ import Metron.Hash (decodeTypeDef, encodeTypeDef)
 import Metron.Infer (TypeError (..), elaborateClosed)
 import Metron.Lexer (Token (TOp, TSup))
 import Metron.Lexer qualified as L (Token (TNum))
-import Metron.Limits (defaultLimits, settingLines)
+import Metron.Limits (defaultLimits, limitSettings)
 import Metron.Prelude (stdlibNamespaces)
 import Metron.Pretty (renderTermIn)
 import Metron.TCore (lintClosed)
@@ -161,6 +162,18 @@ partUTests =
         expectError
           (runLinesP ["data Box r = Box (Quantity r m)"])
           "quantities are amounts"
+        -- The refusal of `Amount` suggests types that are accepted; it
+        -- once suggested `Quantity Amount d`, itself refused.
+        expectError
+          (runLinesP ["f :: Amount -> Num m", "let f x = x"])
+          "Amount is not a type: an amount is Num d, or Tensor s d"
+        forM_ ["forall d. Num d -> Num d", "forall s d. Tensor s d -> Tensor s d"] $ \sig ->
+          runLinesP
+            [ multiline
+                ["f :: " <> sig, "let f x = x"]
+            , "f 2"
+            ]
+            @?= Right ["2"]
     , testCase "quantity grouping is determined before implicit one" $ do
         runLinesP
           ["4 km / 2 km", "4 km / km", "(4 km) / km", "1 / 2 m/s", "1 / 2 * m / s"]
@@ -368,7 +381,7 @@ displayTests =
   testGroup
     "display units"
     [ testCase ":set unicode prints the unicode spellings, which read back" $ do
-        let limits = settingLines defaultLimits
+        let limits = [n <> " " <> v | (n, v) <- limitSettings defaultLimits]
         runLinesP [":set"]
           @?= Right
             ( [ "precision 20"

@@ -3,23 +3,27 @@ module Lang.Repl (
   replTests,
 ) where
 
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as T (
   breakOn,
   drop,
   dropWhile,
   intercalate,
+  isInfixOf,
   length,
   null,
   pack,
   singleton,
   splitOn,
+  takeWhile,
   unpack,
  )
 import Lang.Common (
   coloured,
   completeAt,
   evalP,
+  expecting,
   grey',
   keyword',
   red',
@@ -33,6 +37,8 @@ import Lang.Common (
   type',
   unit',
  )
+import Metron.Driver (setSetting, settingNames)
+import Metron.Eval (defaultConfig)
 import Metron.Lexer (Token (TIdent, TOp, TSqrt, TSup))
 import Metron.Parser (parseProgram)
 import Metron.Repl qualified as R (
@@ -119,9 +125,41 @@ replTests =
         all (":l" `isPrefixOfS`) cs @? show cs
         replacements seeded "  :up" @?= [":update", ":upgrade"]
         filter (":" `isPrefixOfS`) (replacements seeded "x :l") @?= []
+        -- :help and :edit --file are commands too, and :edit completes once.
+        replacements seeded ":he" @?= [":help"]
+        replacements seeded ":ed" @?= [":edit"]
+    , testCase ":help lists every command, :edit --file among them" $ do
+        expecting (runLinesP [":help"]) $ \case
+          [help] -> do
+            T.isInfixOf "\n  :edit --file path [name|namespace]\n" help @? T.unpack help
+            T.isInfixOf "\n  :help\n" help @? T.unpack help
+          other -> assertFailure (show other)
     , testCase ":set and :colour complete their arguments" $ do
         replacements seeded ":set un" @?= ["unicode"]
-        replacements seeded ":set " @?= ["precision", "sigma", "unicode"]
+        -- Every setting, in the order :set lists them; once only three.
+        replacements seeded ":set "
+          @?= [ "precision"
+              , "sigma"
+              , "unicode"
+              , "nonlinear"
+              , "samples"
+              , "seed"
+              , "rounding"
+              , "cores"
+              , "memory"
+              , "steps"
+              , "depth"
+              , "digits"
+              , "components"
+              , "outcomes"
+              , "time"
+              ]
+        replacements seeded ":set " @?= map T.unpack settingNames
+        expecting (runLinesP [":set"]) $ \ls ->
+          map (T.takeWhile (/= ' ')) ls @?= settingNames
+        -- Each is a setting :set takes.
+        [n | n <- settingNames, isNothing (setSetting n "" defaultConfig)] @?= []
+        replacements seeded ":set rounding n" @?= ["nearest"]
         replacements seeded ":set unicode o" @?= ["on", "off"]
         replacements seeded ":colour of" @?= ["off"]
         R.completions seeded (reverse ":set ") "un"

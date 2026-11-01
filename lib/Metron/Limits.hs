@@ -13,7 +13,7 @@ module Metron.Limits (
   Limit (..),
   defaultLimits,
   limitHint,
-  settingLines,
+  limitSettings,
   setLimit,
   parseCount,
 
@@ -134,17 +134,18 @@ limitName = \case
 limitHint :: Limit -> Text
 limitHint l = " (`:set " <> limitName l <> "`)"
 
--- | The settings as @:set@ lists them.
-settingLines :: Limits -> [Text]
-settingLines l =
-  [ "memory " <> tshow l.memory
-  , "steps " <> tshow l.steps
-  , "depth " <> tshow l.depth
-  , "digits " <> tshow l.digits
-  , "components " <> tshow l.components
-  , "outcomes " <> tshow l.outcomes
-  , "time " <> maybe "off" tshow l.time
-  ]
+-- | The limits as @:set@ lists them, each by name with its value, in order.
+limitSettings :: Limits -> [(Text, Text)]
+limitSettings l = [(limitName k, valueOf k) | k <- [minBound .. maxBound]]
+ where
+  valueOf = \case
+    Memory -> tshow l.memory
+    Steps -> tshow l.steps
+    Depth -> tshow l.depth
+    Digits -> tshow l.digits
+    Components -> tshow l.components
+    OutcomeCount -> tshow l.outcomes
+    Time -> maybe "off" tshow l.time
 
 {- | Change one setting by name, as @:set name value@ and @--set name
 value@ do. 'Nothing' when the name is not a limit's.

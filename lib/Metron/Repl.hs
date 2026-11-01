@@ -78,7 +78,7 @@ import Data.Text qualified as T (
 import Metron.Codebase (Codebase (..))
 import Metron.Command (commands)
 import Metron.Dimension (baseSymbol)
-import Metron.Driver (Session (..))
+import Metron.Driver (Session (..), settingNames)
 import Metron.Lexer (
   Keyword (..),
   Located (..),
@@ -88,6 +88,7 @@ import Metron.Lexer (
   tokenize,
  )
 import Metron.NameResolution (LabelKind (..), shortestName, shortestNameOf)
+import Metron.Scalar (roundingName)
 import Metron.Syntax (Pos (..), Span (..), lastSegment)
 import Metron.Unicode qualified as U (matching)
 
@@ -198,7 +199,8 @@ completions session prev word = case word of
     , f `isPrefixOf` n
     ]
   _ -> case words (reverse prev) of
-    [":set"] -> plain ["precision", "sigma", "unicode"]
+    [":set"] -> plain (map T.unpack settingNames)
+    [":set", "rounding"] -> plain (map (T.unpack . roundingName) [minBound .. maxBound])
     [":set", "unicode"] -> plain ["on", "off"]
     [":backend"] -> plain ["affine", "double"]
     [c] | c `elem` [":colour", ":color"] -> plain ["on", "off"]
@@ -208,7 +210,7 @@ completions session prev word = case word of
       | typeOpenAt (reverse (takeWhile (/= ';') prev)) ->
           plain
             ( sorted
-                ( ["Bool", "Num", "Unit", "Vec", "Mat", "Tensor", "Point", "Chart"]
+                ( ["Bool", "Num", "Vec", "Mat", "Tensor", "Point", "Chart"]
                     ++ map T.unpack (types ++ map (shortestNameOf TypeLabel session.scope cb) types)
                 )
             )

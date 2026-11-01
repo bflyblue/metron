@@ -473,7 +473,7 @@ tyType env t = case t.node of
     | n == "Unit" ->
         bad t "units are syntax, not value types; pass an amount such as 1 km"
     | n == "Amount" ->
-        bad t "Amount is a role, not a type: an amount is Num d, or Quantity Amount d"
+        bad t "Amount is not a type: an amount is Num d, or Tensor s d"
     | n `elem` builtinTypeNames -> bad t ("`" <> n <> "` needs its arguments")
     | otherwise -> applied env t n []
   S.TyApp hd args

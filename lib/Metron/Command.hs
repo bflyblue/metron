@@ -4,6 +4,7 @@ module Metron.Command (
   commandHelp,
 ) where
 
+import Data.Containers.ListUtils (nubOrd)
 import Data.Text (Text)
 import Data.Text qualified as T (intercalate, null, unpack)
 
@@ -18,6 +19,7 @@ commandDescriptions =
   , Command "scratch" ""
   , Command "forget" "name"
   , Command "edit" "[name|namespace]"
+  , Command "edit" "--file path [name|namespace]"
   , Command "type" "expr"
   , Command "ls" "[glob|namespace] [--all|--units|--charts|--types] [: type]"
   , Command "view" "name"
@@ -47,13 +49,14 @@ commandDescriptions =
   , Command "prefer" "[unit]"
   , Command "unprefer" "unit"
   , Command "load" "file"
+  , Command "help" ""
   , Command "quit" ""
   , Command "store" ""
   , Command "colour" "on|off"
   ]
 
 commands :: [String]
-commands = [":" ++ T.unpack c.name | c <- commandDescriptions]
+commands = nubOrd [":" ++ T.unpack c.name | c <- commandDescriptions]
 
 commandHelp :: Text
 commandHelp =

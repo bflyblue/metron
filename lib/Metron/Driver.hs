@@ -16,6 +16,8 @@ module Metron.Driver (
   seededSession,
   startBackend,
   startSettings,
+  setSetting,
+  settingNames,
   stdlibUpgrade,
   feed,
   feedFile,
@@ -159,6 +161,7 @@ import Metron.Eval (
   EvalError (Internal),
   ValueOf (VData, VTensor),
   covarianceMatrix,
+  defaultConfig,
   precisionOf,
  )
 import Metron.Hash (hashTerm)
@@ -167,7 +170,7 @@ import Metron.Infer qualified as I (
   elaborateClosed,
   matchesQuery,
  )
-import Metron.Limits (Limits (digits), setLimit, settingLines)
+import Metron.Limits (Limits (digits), limitSettings, setLimit)
 import Metron.NameResolution (
   LabelKind (FieldLabel, TypeLabel),
   Qualified (Found),
@@ -421,6 +424,29 @@ propose session src decls = do
 
 -- Commands ----------------------------------------------------------------------
 
+{- | The settings as @:set@ lists them (design §7.3), each by name with its
+value, in order: the one list of their names, which completion offers
+after @:set@ ('settingNames').
+-}
+settingValues :: Config -> [(Text, Text)]
+settingValues cfg =
+  [ ("precision", tshow cfg.precision)
+  , ("sigma", tshow cfg.sigma)
+  , ("unicode", if cfg.unicode then "on" else "off")
+  , ("nonlinear", T.pack (show (round (100 * cfg.nonlinear) :: Integer)))
+  , ("samples", tshow cfg.samples)
+  , ("seed", tshow cfg.seed)
+  , ("rounding", roundingName cfg.rounding)
+  , ("cores", tshow cfg.cores)
+  ]
+    ++ limitSettings cfg.limits
+ where
+  tshow = T.pack . show
+
+-- | Every setting's name, in the order @:set@ lists them.
+settingNames :: [Text]
+settingNames = map fst (settingValues defaultConfig)
+
 {- | @:set name value@, as the command and @--set@ take it: the changed
 configuration, the reason it is refused, or 'Nothing' when there is no
 such setting.
@@ -506,20 +532,7 @@ maxSamples = 100000
 
 command :: Session -> Text -> [Text] -> Either Text (Session, [Text])
 command session src = \case
-  ["set"] ->
-    keep
-      ( Right
-          $ [ "precision " <> tshow cfg.precision
-            , "sigma " <> tshow cfg.sigma
-            , "unicode " <> (if cfg.unicode then "on" else "off")
-            , "nonlinear " <> T.pack (show (round (100 * cfg.nonlinear) :: Integer))
-            , "samples " <> tshow cfg.samples
-            , "seed " <> tshow cfg.seed
-            , "rounding " <> roundingName cfg.rounding
-            , "cores " <> tshow cfg.cores
-            ]
-            ++ settingLines cfg.limits
-      )
+  ["set"] -> keep (Right [n <> " " <> v | (n, v) <- settingValues cfg])
   ["set", name, value]
     | Just changed <- setSetting name value cfg ->
         (\c -> (session{config = c}, [])) <$> changed
@@ -861,6 +874,8 @@ command session src = \case
     exportRequest session args >>= \case
       (Nothing, source) -> Right (session, [source | not (T.null source)])
       (Just file, _) -> Left ("only the REPL writes files; :export there to write " <> T.pack file)
+  -- The command list (design §7.3); an unknown command is refused with it.
+  ["help"] -> keep (Right [commandHelp])
   _ ->
     Left commandHelp
  where

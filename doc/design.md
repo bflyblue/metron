@@ -3422,7 +3422,7 @@ back with the same hashes: `:view speed` is `speed = km / h`, `:view km` is
 |---|---|
 | `a :: Unit m` | "units are syntax, not value types; pass an amount such as 1 km" |
 | `b :: Quantity Amount m` | "quantities are amounts: use Num d or Tensor s d" |
-| `c :: Amount` | "Amount is a role, not a type: an amount is Num d, or Quantity Amount d" |
+| `c :: Amount` | "Amount is not a type: an amount is Num d, or Tensor s d" |
 
 The type checker keeps an internal role on a quantity type, an amount or a
 unit, to tell the two apart during elaboration. Applying a chart still
@@ -5306,8 +5306,9 @@ the signature holds of the new definition (§4.8).
 
 ### 7.3 REPL commands
 
-`:help` prints this list. `Metron.Command.commandDescriptions` is its one
-source, shared with completion.
+`:help` prints this list, and an unknown command is refused with it.
+`Metron.Command.commandDescriptions` is its one source, shared with
+completion.
 
 ```
 Scratch and codebase (7.5)
@@ -5398,6 +5399,7 @@ Session
                    misspelling
 :store             the directory of the store in use, or "no codebase: running in memory"
 :colour [on|off]   colour the REPL's output; alone, say whether it is on (a REPL setting, below)
+:help              this list
 :quit              also :q
 ```
 
@@ -5408,6 +5410,10 @@ The defaults are `precision 20`, `sigma 3`, `unicode off`, `nonlinear 1`,
 `samples 0`, `seed 1` and `rounding random`. `cores` starts at the
 machine's logical core count (§8.2), and §8.1 gives the limits' defaults.
 `metron --set NAME VALUE` changes any of them at the start (§7.4).
+The list has one source (`Metron.Driver.settingValues`): completion after
+`:set` offers its names in the same order. Each default a backend reads
+(`sigma`, `nonlinear`, `samples`, `seed`, `rounding`) has one definition,
+`Metron.Scalar.settingsAt`, from which the session takes its own.
 
 **Editing in place.** `:edit` is a round trip through a text editor. It
 has three forms, and they work alike:
@@ -5712,7 +5718,7 @@ line. haskeline writes its history file one entry per line, and its line
 editor does not redraw an entry that contains a newline, so the lines are
 not joined into one entry.
 
-**Implemented in:** `Metron.Command` (`commandDescriptions`, `commandHelp`), `Metron.Driver` (`feed`, `feedFile`, `setSetting`), `Metron.Edit` (`editRequest`, `applyEdit`, `editorNote`), `Metron.Repl` (`complete`, `continuation`, `needsMore`, `classify`, `paint`, `highlight`, `echoInput`), `Metron.Unicode` (`completions`, `lookupName`), `Metron.Pretty` (`respell`). The editor, `:store`, `:colour`, `:load` and the history file are in `src/Main.hs`.
+**Implemented in:** `Metron.Command` (`commandDescriptions`, `commandHelp`), `Metron.Driver` (`feed`, `feedFile`, `setSetting`, `settingValues`, `settingNames`), `Metron.Limits` (`limitSettings`), `Metron.Edit` (`editRequest`, `applyEdit`, `editorNote`), `Metron.Repl` (`complete`, `continuation`, `needsMore`, `classify`, `paint`, `highlight`, `echoInput`), `Metron.Unicode` (`completions`, `lookupName`), `Metron.Pretty` (`respell`). The editor, `:store`, `:colour`, `:load` and the history file are in `src/Main.hs`.
 **Tested by:** "repl"; ":edit, the editor round trip"; "unicode echo"; "it, the last result"; "codebase" › ":edit prints a definition as source".
 
 ### 7.4 CLI and persistence
@@ -6683,7 +6689,7 @@ error: the evaluation took more than 100000000 steps (`:set steps`)
 - *A list kept whole by design.* `length (reverse (range 0 1e6))` keeps
   the list and stops at `memory` under a small heap.
 
-**Implemented in:** `Metron.Limits` (`defaultLimits`, `setLimit`, `parseCount`, `settingLines`, `newBudget`, `spend`, `nested`, `enter`, `within`, `reach`, `log10Abs`, `beyond`, `runLimited`, `applyMemory`, `limitHeap`), `Metron.Eval` (`perOption`, `settle`), `Metron.Compile` (`runtimeWith`), `Metron.Driver` (`setSetting`, `startSettings`).
+**Implemented in:** `Metron.Limits` (`defaultLimits`, `setLimit`, `parseCount`, `limitSettings`, `newBudget`, `spend`, `nested`, `enter`, `within`, `reach`, `log10Abs`, `beyond`, `runLimited`, `applyMemory`, `limitHeap`), `Metron.Eval` (`perOption`, `settle`), `Metron.Compile` (`runtimeWith`), `Metron.Driver` (`setSetting`, `startSettings`).
 **Tested by:** "limits (design §8.1)" › "settings", "steps", "depth", "digits", "memory", "time", "constant memory"; "end to end" › "a tensor past the components limit is refused when built"; "backends (design §8.2)" › ":set cores: the copies in parallel batches" › "steps counts each path: accepted alike at every K", "a split near the limit: accepted or refused alike at K = 1, 2 and 4", "work shared before a split is on each path that forces it", "the work after a join is on every path through it".
 
 ### 8.2 Backends
