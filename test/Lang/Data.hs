@@ -91,7 +91,7 @@ dataTests =
           evalP "if true then 1 else 2" @?= Right ["1"]
           runLinesP ["let g c = if c then 1 else 2", ":view g", ":core g"]
             @?= Right
-              ["g = \\c -> if c then 1 else 2", "g = \\(c : Bool) -> if c then 1.0 else 2.0"]
+              ["g = \\c -> if c then 1 else 2", "g = \\(c : Bool) -> if c then 1 else 2"]
           case evalP "case 5 of x -> x + 1" of
             Left err -> T.isInfixOf "at least one constructor pattern" err @? T.unpack err
             Right v -> assertFailure (show v)

@@ -14,7 +14,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
-import Metron.Affine (Magnitude, midpoint, radius)
+import Metron.Affine (Decide (..), Magnitude, midpoint, radius)
 import Metron.Batch (batchesOf)
 import Metron.Codebase (Codebase (..), Reference (..), emptyCodebase)
 import Metron.Compile (evalBatchedAs, evalValueAs)
@@ -28,11 +28,18 @@ import Metron.Double (
   showSampled,
  )
 import Metron.Driver (feed, seededSession, startBackend, startSettings)
-import Metron.Eval (Config (..), ValueOf (..), defaultConfig)
+import Metron.Eval (Config (..), ValueOf (..), defaultConfig, precisionOf)
 import Metron.Limits (Limits (..))
 import Metron.Needs (needsOf)
 import Metron.Parser (parseExpr)
-import Metron.Scalar (Backend (..), Batch (..), Rounding (..), Scalar)
+import Metron.Scalar (
+  Backend (..),
+  Batch (..),
+  Rounding (..),
+  Scalar,
+  settingsAt,
+ )
+import Metron.Scalar qualified as Scalar (Settings (..))
 import Metron.Session.Types (Session (..), emptySession)
 import Metron.Syntax qualified as S (rootScope)
 import Numeric (showFFloat)
@@ -1213,6 +1220,22 @@ settingTests =
         expectLeft
           "rounding is nearest or random"
           (runWith defaultConfig [":set rounding up"])
+    , testCase "the backend's defaults are the session's: seed 1, as :set shows" $ do
+        -- The printer's settings once had seed 0 while :set showed 1.
+        let backend = settingsAt (precisionOf defaultConfig)
+        backend.seed @?= 1
+        ( backend.decide.sigma
+          , backend.decide.nonlinear
+          , backend.samples
+          , backend.rounding
+          )
+          @?= ( defaultConfig.sigma
+              , defaultConfig.nonlinear
+              , defaultConfig.samples
+              , defaultConfig.rounding
+              )
+        (elem ("seed " <> T.pack (show backend.seed)) <$> runWith defaultConfig [":set"])
+          @?= Right True
     , testCase
         "rounding nearest: copies with no draws are the IEEE result, and print exact"
         $ case doubleOf doubleConfig{samples = 10, rounding = RoundNearest} "0.1 + 0.2 * 3" of

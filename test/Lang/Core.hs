@@ -274,15 +274,20 @@ tcoreTests =
     , testCase "a polymorphic let is instantiated explicitly at each use"
         $ showCore <$> elabText "let id x = x in if id true then id 1 else 2"
           @?= Right
-            "let id : t0 -> t0 = Λt0. \\(x : t0) -> x in if id @Bool true then id @Num 1.0 else 2.0"
+            "let id : t0 -> t0 = Λt0. \\(x : t0) -> x in if id @Bool true then id @Num 1 else 2"
     , testCase "length polymorphism is explicit too"
         $ showCore <$> elabText "\\v -> v.0 + 1"
-          @?= Right "Λn3. \\(v : Vec (n3 + 1)) -> add v.0 1.0"
+          @?= Right "Λn3. \\(v : Vec (n3 + 1)) -> add v.0 1"
     , testCase "shape polymorphism is explicit too"
         $ showCore <$> elabText "\\v -> v.0"
           @?= Right "Λn1. Λs2. Λd3. \\(v : Tensor (n1 + 1 : s2) d3) -> v.0"
     , testCase "primitives record the type they are used at"
-        $ showCore <$> elabText "1 == 2" @?= Right "eq 1.0 2.0"
+        $ showCore <$> elabText "1 == 2" @?= Right "eq 1 2"
+    , testCase "a slice's positions print as whole numbers, a fraction as a decimal" $ do
+        -- They printed as `slice 1.0 0.0 t`.
+        T.isInfixOf "-> slice 1 0 t" . showCore <$> elabText "\\t -> slice 1 0 t"
+          @?= Right True
+        showCore <$> elabText "0.5" @?= Right "0.5"
     , testCase "lint accepts everything elaboration produces"
         $ mapM_
           (either (assertFailure . T.unpack) (const (pure ())) . elabText)

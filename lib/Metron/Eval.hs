@@ -180,6 +180,7 @@ import Metron.Scalar (
   memberCount,
   memberVector,
   ownerOf,
+  settingsAt,
  )
 import Metron.Scalar qualified as Scalar (Shape (..))
 import Metron.Strictness (strictMarker)
@@ -263,22 +264,27 @@ data Config = Config
   }
   deriving stock (Show)
 
+{- | The session's settings at their defaults (design §7.3): those a backend
+reads are 'settingsAt''s, so that each default has one definition.
+-}
 defaultConfig :: Config
 defaultConfig =
   Config
     { precision = 20
-    , sigma = 3
+    , sigma = backendDefaults.decide.sigma
     , unicode = False
-    , nonlinear = 1 / 100
+    , nonlinear = backendDefaults.decide.nonlinear
     , limits = defaultLimits
     , backend = AffineBackend
-    , samples = 0
-    , seed = 1
-    , rounding = RoundRandom
+    , samples = backendDefaults.samples
+    , seed = backendDefaults.seed
+    , rounding = backendDefaults.rounding
     , cores = 1
     , batch = Nothing
     , group = Nothing
     }
+ where
+  backendDefaults = settingsAt 0
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
 precisionOf :: Config -> Precision

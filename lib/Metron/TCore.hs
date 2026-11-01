@@ -51,6 +51,7 @@ import Data.Map.Strict qualified as Map (
   insert,
  )
 import Data.Maybe (fromMaybe)
+import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T (
   concat,
@@ -656,7 +657,11 @@ renderTTerm namer = go 0
     KFrame -> "f" <> T.pack (show v)
     KSpace -> "sp" <> T.pack (show v)
     KRole -> "r" <> T.pack (show v)
-  showD r = T.pack (show (fromRational r :: Double))
+  -- A whole number prints as one, so that a slice's or a contraction's
+  -- positions read as positions: `slice 1 0 t`.
+  showD r
+    | denominator r == 1 = T.pack (show (numerator r))
+    | otherwise = T.pack (show (fromRational r :: Double))
   nested dims rs = case dims of
     [] -> maybe "[]" showD (nth 0 rs)
     [_] -> "[" <> T.intercalate ", " (map showD rs) <> "]"

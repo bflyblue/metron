@@ -260,8 +260,11 @@ roundingName = \case
 roundingNamed :: Text -> Maybe Rounding
 roundingNamed t = lookup t [(roundingName r, r) | r <- [minBound .. maxBound]]
 
-{- | Settings at a working precision with the default comparison policy and
-no samples: for the printer, which converts to a display unit.
+{- | The settings a backend reads, at their defaults (design §7.3), at a
+working precision: sigma 3, nonlinear 1 %, no samples, seed 1 and random
+rounding. It is the one definition of those defaults: the session's
+('Metron.Eval.defaultConfig') are taken from it, and the printer uses it
+to convert to a display unit.
 -}
 settingsAt :: Precision -> Settings
 settingsAt p =
@@ -269,7 +272,7 @@ settingsAt p =
     { precision = p
     , decide = Decide{sigma = 3, nonlinear = 1 / 100}
     , samples = 0
-    , seed = 0
+    , seed = 1
     , rounding = RoundRandom
     , copies = Range 0 0
     }
