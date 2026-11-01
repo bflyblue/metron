@@ -6181,13 +6181,20 @@ the same term runs under any backend that has the built-ins it uses.
   global number.
   - *Combining.* The batches' copies are concatenated in order, and the
     statistics computed from the whole vector as before, so the result
-    is the single evaluation's bit for bit at every K (tested at K = 1, 2
-    and 4 against the unbatched evaluation, copies and statistics, and
-    the executable's output at K = 1 and 32 on the orbit workload below).
-    Chan's parallel update, which the bullet names, sums in an order that
-    depends on K, so it would not be. The IEEE value is computed in every
-    batch, alike, and taken from the first. The warnings are united, and
-    say the total N.
+    is the single evaluation's bit for bit at every K. The tests check
+    copies and statistics at K = 1, 2 and 4 against the unbatched
+    evaluation, but the test suite is not threaded, so its batches run in
+    turn; with real threads, only the executable's printed output (two
+    digits of each estimate) was compared, at K = 1 and 32 on the orbit
+    workload below. Chan's parallel update, which the bullet names, sums
+    in an order that depends on K, so it would not be bit for bit. The
+    IEEE value is computed in every batch, alike, and taken from the
+    first. Each batch forces its value as the printer does, in order and
+    up to the first error, so it makes the reductions one evaluation's
+    printing makes and no others. A warning records the step it was made
+    at, the same in every batch, and the batches' warnings print in the
+    order of the first step any made each at, which is one evaluation's
+    order; they say the total N.
   - *One evaluation instead* when the input reaches `mid`, `sd`,
     `errorOf` or `digitsOf` (they read across a number's copies and
     would see only their batch's; the check's memo says which an input
@@ -6202,7 +6209,18 @@ the same term runs under any backend that has the built-ins it uses.
     limit named. *Open, for the owner:* this makes "counts all batches
     together" and "identical for every K" disagree near the limit: an
     input of S steps with S < limit < K·S runs at K = 1 and is refused
-    at K.
+    at K. *Also open:* `exactly`, which asks whether a number's copies
+    spread at all (an index position must be exact), sees only its
+    batch's; a small batch can agree by chance where all N would not, so
+    an index could be accepted batched and refused at K = 1. Rare, and
+    not seen.
+  - *The limits under threads.* A timeout or a heap overflow reaches the
+    waiting thread, and `forConcurrently` stops the batches. While they
+    stop they go on allocating, and the runtime throws a second heap
+    overflow, which reached the top level and ended the session in two
+    runs of six at 32 batches. `runLimited` now runs masked and takes in
+    any further overflow after the first: ten runs in ten report `:set
+    memory` and go on to the next input.
   - *The runtime.* With 32 capabilities, GHC's parallel collector slowed
     affine: `f 0` to the `steps` limit took 7.6 s and the million-step
     loop 1.1 s. The executable now runs the young generation's
@@ -6212,9 +6230,10 @@ the same term runs under any backend that has the built-ins it uses.
   - *Speed-up* on the orbit workload (100 positions, each from ten Newton
     steps of Kepler's equation, `a = 7000 ±σ 1 km`) at 10⁴ copies, on an
     i9-14900K (8 performance and 16 efficiency cores, 32 threads): K = 1
-    8.0 s, K = 2 4.2 s, K = 4 2.4 s, K = 8 1.7 s, K = 16 1.6 s, and the
+    7.9 s, K = 2 4.3 s, K = 4 2.4 s, K = 8 1.7 s, K = 16 1.6 s, and the
     default 32 2.0 s, 4.0 times faster; past 8 the efficiency cores and
-    the shared cache cap it. At 10⁵ copies, default K: 18 s and 250 MB.
+    the shared cache cap it, and K = 16 beats the default on this
+    machine. At 10⁵ copies, default K: 18 s and 250 MB.
     The orbital period, at most 0.3 s at any N, is dominated by starting
     the session.
 - **`double`'s built-ins are the same under every setting,** so the
