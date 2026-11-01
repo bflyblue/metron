@@ -508,7 +508,7 @@ command session src = \case
               cfg.precision
               cfg.nonlinear
               units
-              (foldr addM (Exact 0) xs)
+              (foldr (addM (precisionOf cfg)) (Exact 0) xs)
           )
       Left (Internal _) -> Left "budget: not a number"
       Left err -> Left (renderEvalError err)

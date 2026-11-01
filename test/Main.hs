@@ -57,6 +57,7 @@ import Metron.Lexer hiding (TNum, TProj)
 import Metron.Lexer qualified as L
 import Metron.Limits (defaultLimits, newBudget, settingLines)
 import Metron.NameResolution (LabelKind (..), Qualified (..), qualifyName)
+import Metron.Numerical.Approx (isqrt)
 import Metron.Parser
 import Metron.Prelude (
   isLibraryPath,
@@ -75,6 +76,7 @@ import Metron.Type
 import Metron.Type.Match
 import Metron.Type.Syntax (queryScheme)
 import Metron.Unicode qualified as U
+import Precision (precisionTests)
 import System.Directory (
   createDirectoryIfMissing,
   doesDirectoryExist,
@@ -143,6 +145,7 @@ main = do
       , partFTests
       , roleTests
       , astroTests
+      , precisionTests
       ]
 
 -- Term-building helpers -------------------------------------------------
@@ -2514,7 +2517,7 @@ movingChartTests =
                    ]
             )
             @?= Right
-              ["stored use astro", "true", "3.6460579499999995e-8 ± 2.9e-23", "[0, 0, 0] m"]
+              ["stored use astro", "true", "3.6460579499999992e-8 ± 3.5e-23", "[0, 0, 0] m"]
     , testCase
         "two levels: a station under a spinning Earth, a dish spinning on the station"
         $ do
@@ -4584,25 +4587,25 @@ affineTests =
           Left err -> assertFailure (show err)
         -- named nudges beside slack: the slack keeps it from cancelling
         let named = uncertain Bound (Tagged "s" 0) (Exact 2) (Exact (1 / 2))
-            withSlack = addM named anonymous
+            withSlack = addM 24 named anonymous
         case divM 24 withSlack withSlack of
           Right (Exact q) -> assertFailure ("cancelled to " <> show q)
           Right q -> radius q > 0 @? show q
           Left err -> assertFailure (show err)
-        divM 24 (scaleM 3 named) named @?= Right (Exact 3)
+        divM 24 (scaleM 24 3 named) named @?= Right (Exact 3)
     , testCase "remainders of different operand lists never share a nudge" $ do
         -- [1, 12] and [1/11, 2] once ran together as the same bytes
         let remainder operands = enclose "op" 24 operands 1 (Exact 0)
             a = remainder [Exact 1, Exact 12]
             b = remainder [Exact (1 / 11), Exact 2]
         map fst (nudges a) @?= [1]
-        subM a b /= Exact 0 @? "the remainders cancelled"
-        radius (subM a b) @?= 2
+        subM 24 a b /= Exact 0 @? "the remainders cancelled"
+        radius (subM 24 a b) @?= 2
         -- the same operation twice is still one unknown
-        subM a (remainder [Exact 1, Exact 12]) @?= Exact 0
+        subM 24 a (remainder [Exact 1, Exact 12]) @?= Exact 0
         -- an operand's kind and its count are part of the identity
         let x = uncertain Bound (Tagged "s" 0) (Exact 1) (Exact (1 / 2))
-        subM (remainder [x]) (remainder [x, Exact 0]) /= Exact 0 @? "count"
+        subM 24 (remainder [x]) (remainder [x, Exact 0]) /= Exact 0 @? "count"
     , testCase "declared bounds print as mid ± r" $ do
         evalText "5 ± 0.1" @?= Right ["5.0 ± 0.1"]
         evalText "(5 ± 0.1) * (5 ± 0.1)" @?= Right ["25 ± 1"]
@@ -4871,7 +4874,7 @@ affineTests =
             [ "1.4142135624 ± 1.4e-9"
             , "  kind   source  contribution  share"
             , "  bound  f @0    1e-9          100% of bound"
-            , "  bound  sqrt    1e-26         0% of bound"
+            , "  bound  sqrt    9.3e-28       0% of bound"
             ]
     , testCase "the library's G carries its σ and a mass derived from it inherits it" $ do
         evalU ["astro"] "G" @?= Right ["6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
@@ -4993,7 +4996,7 @@ affineTests =
         evalP "cholesky [4, 2 ± 0.1; 2, 3]"
           @?= Left
             "error: cholesky needs a symmetric matrix: symmetry of entries .0.1 and .1.0 cannot be established"
-        evalP "[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2" @?= Right ["[0 ±σ 1, 0.0 ±σ 1.0] m"]
+        evalP "[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2" @?= Right ["[0 ±σ 1, 0 ±σ 1] m"]
     , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
         runLinesP
           [ "let w = [0, 0] m ±σ [[4, 2], [2, 10]] m^2"
@@ -5608,7 +5611,7 @@ affineTests =
         $ \(Positive a) (NonNegative k) ->
           -- a long integer, as an uncertain value's endpoints become
           let n = (a :: Integer) * 7 ^ (k `mod` 400 :: Int)
-              s = floor (fst (sqrtApprox 0 (fromInteger n))) :: Integer
+              s = isqrt n
            in within caseLimit (s * s <= n && n < (s + 1) * (s + 1))
     , -- A generated case that once took ten seconds: the integer square
       -- root started Newton's method from n itself, one step per halving
@@ -5648,13 +5651,13 @@ affineTests =
                 uncertain
                   Stat
                   (Tagged "m" 0)
-                  (mulM p (Exact (1177 / 5)) (scaleM (1 / 180) (piM p)))
+                  (mulM p (Exact (1177 / 5)) (scaleM p (1 / 180) (piM p)))
                   (Exact (1 / 1000))
               step ea = do
                 let e = Exact (2 / 5)
-                    residual = subM (subM ea (mulM p e (sinM p ea))) meanAnomaly
-                    den = subM (Exact 1) (mulM p e (cosM p ea))
-                subM ea <$> divM p residual den
+                    residual = subM p (subM p ea (mulM p e (sinM p ea))) meanAnomaly
+                    den = subM p (Exact 1) (mulM p e (cosM p ea))
+                subM p ea <$> divM p residual den
               steps k = foldM (\ea _ -> step ea) meanAnomaly [1 .. k :: Int]
           case (longestRational <$> steps 10, longestRational <$> steps 40) of
             (Right l10, Right l40) ->

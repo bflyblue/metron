@@ -90,7 +90,7 @@ import Data.ByteString.Builder (
   toLazyByteString,
   word8,
  )
-import Data.List (sortOn)
+import Data.List (sort, sortOn)
 import Data.Map.Merge.Strict qualified as Merge (
   merge,
   preserveMissing,
@@ -117,6 +117,7 @@ import Data.Ord (Down (..))
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T (pack)
+import GHC.Num (integerLog2)
 import Metron.Core (Hash (..), NudgeKind (..))
 import Metron.Encode (sint, text, varint)
 import Metron.Numerical.Approx (
@@ -133,9 +134,13 @@ import Metron.Numerical.Approx (
   roundAt,
   roundUpAt,
   scaleA,
+  sec2Approx,
+  sech2Approx,
   sinCosApprox,
   sinhApprox,
   sqrtApprox,
+  tanApprox,
+  tanhApprox,
   tolerance,
  )
 
@@ -320,11 +325,67 @@ sigmaOf p c
   | c.variance == 0 = 0
   | otherwise = let (s, e) = sqrtApprox p c.variance in s + e
 
+-- Exact while small -------------------------------------------------------------------
+
+{- | The exact result of an operation on exact operands, @+@, @*@ or @/@
+(design §3.2.8, exact while small): exact while it is short
+('exactLength' within 'exactLimit'), and otherwise rounded to
+'shortDigits' significant digits, the rounding a fresh bound nudge named
+by the operation, its operands and the precision as any other
+operation's is (design §3.2.4). The operands of a sum or a product are
+named in order, so that @a + b@ and @b + a@ round to one unknown.
+-}
+exactResult :: Text -> Precision -> [Rational] -> Rational -> Magnitude
+exactResult name p operands r
+  | exactLength r <= exactLimit p = Exact r
+  | otherwise =
+      let r' = shorten p r
+       in fresh name p (map Exact operands) r' (abs (r - r'))
+
+{- | How long a rational is beyond its size, in bits: the shorter of its
+numerator and denominator. A number's size is the @digits@ limit's
+concern (design §8.1), so @2^100000@ and @1e-99999@ are short, and
+@1/3@ is; a number with many digits both above and below its leading
+one, @(1/3)^500 + 1@, is long. The cost of exact arithmetic is bounded by
+the size and twice the length together.
+-}
+exactLength :: Rational -> Int
+exactLength r = min (bits (abs (numerator r))) (bits (denominator r))
+ where
+  bits n = if n == 0 then 0 else fromIntegral (integerLog2 n) + 1
+
+{- | The longest exact result kept exact, in bits: eight times
+'shortDigits' decimal digits, 224 digits at the default precision
+(design §3.2.8). Measured, the longest exact result of ordinary
+arithmetic in the test suite is 122 digits at the default precision (the
+products of a spinning chart's exact rotation), which a finite
+difference then cancels; the limit is about twice that, and the
+tutorial's output is unchanged by it.
+A product of eight values at working precision stays exact, and an
+exact operation at the limit costs at most about sixty-four times one
+at working precision, microseconds. An exact iteration that doubles its
+length each step reaches the limit within @log₂ (8 (p + 4))@ steps of
+its start and runs at working precision after.
+-}
+exactLimit :: Precision -> Int
+exactLimit p = (8 * shortDigits p * 3322 + 999) `div` 1000
+
 -- Linear operations ---------------------------------------------------------------
 
-addM :: Magnitude -> Magnitude -> Magnitude
-addM (Exact a) (Exact b) = Exact (a + b)
-addM x y =
+{- | A sum. Two exact operands give an exact result while it is short
+('exactResult'); otherwise a sum is linear, collecting the nudges like
+terms, and never rounds, which is what keeps @x - x@ exactly @0@.
+-}
+addM :: Precision -> Magnitude -> Magnitude -> Magnitude
+addM p (Exact a) (Exact b) = exactResult "add" p (sort [a, b]) (a + b)
+addM _ x y = addLinear x y
+
+{- | A sum that never rounds, an exact one included: for a comparison,
+which must see the exact difference.
+-}
+addLinear :: Magnitude -> Magnitude -> Magnitude
+addLinear (Exact a) (Exact b) = Exact (a + b)
+addLinear x y =
   let (m1, t1, s1) = parts x
       (m2, t2, s2) = parts y
       -- Only a nudge both share can cancel to zero.
@@ -344,15 +405,27 @@ addM x y =
 addCoeff :: (Rational, Nudge) -> (Rational, Nudge) -> (Rational, Nudge)
 addCoeff (c, n) (d, _) = let !s = c + d in (s, n)
 
+-- | Negation, which never lengthens a rational.
 negM :: Magnitude -> Magnitude
-negM = scaleM (-1)
+negM = scaleLinear (-1)
 
-subM :: Magnitude -> Magnitude -> Magnitude
-subM x y = addM x (negM y)
+subM :: Precision -> Magnitude -> Magnitude -> Magnitude
+subM p x y = addM p x (negM y)
 
--- | Multiplication by an exact constant.
-scaleM :: Rational -> Magnitude -> Magnitude
-scaleM k = \case
+-- | The exact difference, never rounded, for a comparison.
+subLinear :: Magnitude -> Magnitude -> Magnitude
+subLinear x y = addLinear x (negM y)
+
+{- | Multiplication by an exact constant: an exact product while it is
+short ('exactResult'), and on a form, linear and never rounded.
+-}
+scaleM :: Precision -> Rational -> Magnitude -> Magnitude
+scaleM p k = \case
+  Exact a -> exactResult "mul" p (sort [k, a]) (k * a)
+  x -> scaleLinear k x
+
+scaleLinear :: Rational -> Magnitude -> Magnitude
+scaleLinear k = \case
   Exact a -> Exact (k * a)
   Affine m ts s sk
     | k == 0 -> Exact 0
@@ -405,8 +478,8 @@ statistical terms are measured against the first-order σ, not carried
 as independent random variables.
 -}
 mulM :: Precision -> Magnitude -> Magnitude -> Magnitude
-mulM _ (Exact a) y = scaleM a y
-mulM _ x (Exact b) = scaleM b x
+mulM p (Exact a) y = scaleM p a y
+mulM p x (Exact b) = scaleM p b x
 mulM p x y =
   let (m1, t1, s1) = parts x
       (m2, t2, s2) = parts y
@@ -593,9 +666,9 @@ recipM p x
         )
 
 divM :: Precision -> Magnitude -> Magnitude -> Either ArithError Magnitude
-divM _ (Exact a) (Exact b)
+divM p (Exact a) (Exact b)
   | b == 0 = Left DivideByZero
-  | otherwise = Right (Exact (a / b))
+  | otherwise = Right (exactResult "div" p [a, b] (a / b))
 divM p x y
   -- A denominator that may be zero is refused before anything cancels, so
   -- x / x and 0 / x fail as 1 / x does when x's bound enclosure reaches
@@ -610,7 +683,7 @@ divM p x y
   , Nothing <- skewOf x
   , Nothing <- skewOf y
   , let k = midpoint x / m
-  , x == scaleM k y =
+  , x == scaleLinear k y =
       Right (Exact k)
   | otherwise = mulM p x <$> recipM p y
 
@@ -646,7 +719,16 @@ withFresh name p operands size base =
       -- The midpoint is rounded to p digits (design §3.2.8) and the rounding
       -- error joins this operation's nudge rather than the anonymous slack,
       -- so that two evaluations of the same operation still cancel exactly.
-      m' = if Map.null ts && s == 0 then m else roundAt (precisionExponent p m) m
+      -- A base with no nudges is shortened to p + 4 digits instead: a value
+      -- the caller rounded already (π, an exact result, a function's value)
+      -- is left as it is, and a product whose every linear coefficient fell
+      -- below the grid ('shortenLinear') no longer keeps the full length of
+      -- its midpoint, the product of its operands' (115 digits a step of
+      -- the logistic map).
+      m' =
+        if Map.null ts && s == 0
+          then shorten p m
+          else roundAt (precisionExponent p m) m
       size' = roundUpSig (shortDigits p) (size + abs (m - m'))
    in if size' == 0
         then base
@@ -810,37 +892,122 @@ liftEndpoints name p inDomain f f' x = liftWith name p inDomain f f' remainder s
         let (fm', em) = f' m
          in maximum [abs (fy' - fm') + ey' + em | y <- [lo x, hi x], let (fy', ey') = f' y]
 
-{- | For a function with @|f''| ≤ b@ over the bound enclosure: Taylor's
-remainder, and the slope changes by at most @b@ times the radius.
+{- | For a function given a bound on @|f''|@ over any interval
+(@curvature a b@): over the bound enclosure, Taylor's remainder, and the
+slope changes by at most that bound times the radius. The statistical
+part is measured with the bound over the enclosure widened by σ on each
+side, against the slope at the midpoint (design §3.2), so that equal
+slopes at @m ± σ@ cannot hide an oscillation between them.
+
+The bound is the largest @|f''|@ over the interval itself, not over the
+whole line: @atan@'s global bound, 0.65, against its slope @1/(1 + t²)@
+at @t = 75@ overstated the second-order term of @atan (75 ±σ 0.075)@ by
+five orders of magnitude, and @atan2@'s through it.
 -}
 liftBounded ::
   Text ->
   Precision ->
   (Rational -> Approx) ->
   (Rational -> Approx) ->
-  Rational ->
+  (Rational -> Rational -> Rational) ->
   Magnitude ->
   Magnitude
-liftBounded name p f f' b x = markedBy (measured (midpoint lifted)) lifted
+liftBounded name p f f' curvature x = markedBy (measured (midpoint lifted)) lifted
  where
-  lifted =
-    liftWith
-      name
-      p
-      (const True)
-      f
-      f'
-      (\_ _ -> b * boundRadius x * boundRadius x / 2)
-      (b * boundRadius x)
-      x
+  r = boundRadius x
+  b = if r == 0 then 0 else curvature (lo x) (hi x)
+  lifted = liftWith name p (const True) f f' (\_ _ -> b * r * r / 2) (b * r) x
   sigma = statSigma p x
+  across = curvature (lo x - sigma) (hi x + sigma)
   slope = abs (fst (f' (midpoint x)))
   measured mid
-    | sigma == 0 || b == 0 = Nothing
-    | belowFloor p mid ((b * sigma * sigma) ^ (2 :: Int)) = Nothing
+    | sigma == 0 || across == 0 = Nothing
+    | belowFloor p mid ((across * sigma * sigma) ^ (2 :: Int)) = Nothing
     | slope == 0 = Just (Skew Nothing name)
     | otherwise =
-        Just (Skew (Just (roundUpSig 3 ((b * sigma / slope) ^ (2 :: Int)))) name)
+        Just (Skew (Just (roundUpSig 3 ((across * sigma / slope) ^ (2 :: Int)))) name)
+
+-- Curvature -----------------------------------------------------------------------------
+
+{- | Whether @[a, b]@ may contain @(k + phase) π@ for an integer @k@: decided
+with π to twenty digits more than @a@ and @b@ need and its error, and
+answered yes when in doubt.
+-}
+periodicIn :: Rational -> Rational -> Rational -> Bool
+periodicIn phase a b =
+  let whole = max 0 (decimalExponent (max (abs a) (abs b)) + 1)
+      (pv, pe) = piApprox (20 + whole)
+      ends v = [v / (pv - pe), v / (pv + pe)]
+   in floor (maximum (ends b) - phase)
+        >= (ceiling (minimum (ends a) - phase) :: Integer)
+
+{- | @|sin''| = |sin|@ and @|cos''| = |cos|@ over @[a, b]@: one where the
+interval reaches a peak, at @(k + 1/2) π@ for the sine and @k π@ for the
+cosine; otherwise the larger end, since between two peaks the function's
+size falls to zero and rises again.
+-}
+sinCurvature, cosCurvature :: Rational -> Rational -> Rational
+sinCurvature = trigCurvature (1 % 2) (fst . sinCosApprox 10)
+cosCurvature = trigCurvature 0 (snd . sinCosApprox 10)
+
+trigCurvature ::
+  Rational -> (Rational -> Approx) -> Rational -> Rational -> Rational
+trigCurvature phase f a b
+  | periodicIn phase a b = 1
+  | otherwise = min 1 (maximum [abs v + e | z <- [a, b], let (v, e) = f z])
+
+{- | @|atan''(t)| = 2|t|/(1 + t²)²@ over @[a, b]@, exactly: it rises with
+@|t|@ to @3√3/8 < 0.65@ at @|t| = 1/√3@ and falls after, so its largest
+value is that peak if the interval's sizes reach it, and otherwise at
+the size nearest it.
+-}
+atanCurvature :: Rational -> Rational -> Rational
+atanCurvature = peaked (13 % 20) (\t -> 2 * t / ((1 + t * t) * (1 + t * t)))
+
+{- | @|tanh''(x)| = 2|t|(1 − t²)@ with @t = tanh x@: as a function of @|t|@ it
+rises to @4/(3√3) < 0.77@ at @|t| = 1/√3@ and falls after; @t@ is
+increasing in @x@, so the interval's @t@ runs between its ends' enclosures.
+-}
+tanhCurvature :: Rational -> Rational -> Rational
+tanhCurvature a b
+  -- Far out, where ten digits of tanh only bound it near ±1:
+  -- 2|t| sech² x ≤ 8 e^(−2|x|) ≤ 8 · 2^(−⌊2.885 |x|⌋), falling with |x|, so
+  -- largest at the end nearest zero. From ten-digit ends it was 1e-19,
+  -- and tanh (−1e6 ±σ 1), −1 to every digit, was marked unbounded.
+  | near > 20 = 8 / 2 ^ (floor (2885 * near / 1000) :: Integer)
+  | otherwise =
+      let (ta, ea) = tanhApprox 10 a
+          (tb, eb) = tanhApprox 10 b
+       in peaked
+            (77 % 100)
+            (\t -> 2 * t * (1 - t * t))
+            (max (-1) (ta - ea))
+            (min 1 (tb + eb))
+ where
+  near = if a <= 0 && b >= 0 then 0 else min (abs a) (abs b)
+
+{- | The largest value over @[a, b]@ of a function of @|t|@ that rises to its
+peak at @|t| = 1/√3@ and falls after: the peak's bound if the interval's
+sizes reach it, else the function at the size nearest it.
+-}
+peaked ::
+  Rational -> (Rational -> Rational) -> Rational -> Rational -> Rational
+peaked top g a b
+  | 3 * near * near <= 1 && 3 * far * far >= 1 = top
+  | 3 * far * far < 1 = g far
+  | otherwise = g near
+ where
+  near = if a <= 0 && b >= 0 then 0 else min (abs a) (abs b)
+  far = max (abs a) (abs b)
+
+{- | @|tan''(x)| = 2|t|(1 + t²)@ with @t = tan x@, rising with @|t|@: on an
+interval free of poles @|t|@ is largest at an end. (Across a pole the
+caller marks the value unbounded instead.)
+-}
+tanCurvature :: Rational -> Rational -> Rational
+tanCurvature a b =
+  let big = maximum [abs t + e | z <- [a, b], let (t, e) = tanApprox 10 z]
+   in 2 * big * (1 + big * big)
 
 -- | Square root. Exact for perfect squares of exact inputs.
 sqrtM :: Precision -> Magnitude -> Either ArithError Magnitude
@@ -887,7 +1054,7 @@ sinM p = \case
       p
       (fst . sinCosApprox (p + 2))
       (snd . sinCosApprox (p + 2))
-      1
+      sinCurvature
       x
 
 cosM :: Precision -> Magnitude -> Magnitude
@@ -899,17 +1066,45 @@ cosM p = \case
       p
       (snd . sinCosApprox (p + 2))
       (scaleA (-1) . fst . sinCosApprox (p + 2))
-      1
+      cosCurvature
       x
 
+{- | Tangent, lifted itself rather than as the sine over the cosine: near
+zero the cosine's own curvature, against its slope of nearly zero, made
+the quotient's statistical part look non-linear when the tangent there
+is nearly a line. An enclosure that reaches a pole is refused, and a
+statistical part that reaches one within σ is unbounded.
+-}
 tanM :: Precision -> Magnitude -> Either ArithError Magnitude
-tanM p x = divM p (sinM p x) (cosM p x)
+tanM p x
+  | periodicIn (1 % 2) (lo x) (hi x) =
+      Left (Domain "tan of an enclosure that reaches a pole, an odd multiple of π/2")
+  | Exact 0 <- x = Right (Exact 0)
+  | otherwise =
+      Right
+        ( markedBy
+            pole
+            (liftBounded "tan" p (tanApprox (p + 2)) (sec2Approx (p + 2)) tanCurvature x)
+        )
+ where
+  sigma = statSigma p x
+  pole
+    | sigma > 0 && periodicIn (1 % 2) (lo x - sigma) (hi x + sigma) =
+        Just (Skew Nothing "tan")
+    | otherwise = Nothing
 
--- | @|atan''| = 2|y|/(1+y²)² ≤ 0.65@.
+-- | Arctangent, its curvature bounded over each interval ('atanCurvature').
 atanM :: Precision -> Magnitude -> Magnitude
 atanM p = \case
   Exact 0 -> Exact 0
-  x -> liftBounded "atan" p (atanApprox (p + 2)) (\m -> (recip (1 + m * m), 0)) 1 x
+  x ->
+    liftBounded
+      "atan"
+      p
+      (atanApprox (p + 2))
+      (\m -> (recip (1 + m * m), 0))
+      atanCurvature
+      x
 
 -- | @asin x = atan (x / √(1 − x²))@.
 asinM :: Precision -> Magnitude -> Either ArithError Magnitude
@@ -917,29 +1112,54 @@ asinM p x
   | lo x < -1 || hi x > 1 =
       Left (Domain "asin of a value that may lie outside [-1, 1]")
   | Exact 0 <- x = Right (Exact 0)
-  | Exact 1 <- x = Right (scaleM (1 % 2) (piM p))
-  | Exact (-1) <- x = Right (scaleM (-(1 % 2)) (piM p))
+  | Exact 1 <- x = Right (scaleM p (1 % 2) (piM p))
+  | Exact (-1) <- x = Right (scaleM p (-(1 % 2)) (piM p))
   | lo x <= -1 || hi x >= 1 =
       Left
         ( Domain
             "asin of an enclosure that reaches the edge of its domain, where the slope is infinite"
         )
   | otherwise = do
-      inner <- sqrtM p (subM (Exact 1) (mulM p x x))
+      inner <- sqrtM p (subM p (Exact 1) (mulM p x x))
       atanM p <$> divM p x inner
 
 acosM :: Precision -> Magnitude -> Either ArithError Magnitude
-acosM p x = subM (scaleM (1 % 2) (piM p)) <$> asinM p x
+acosM p x = subM p (scaleM p (1 % 2) (piM p)) <$> asinM p x
 
+{- | The angle of @(x, y)@, by the arctangent of the smaller over the larger
+(by midpoint), whose enclosure must exclude zero: @atan (y/x)@ near the
+x axis, @±π/2 − atan (x/y)@ near the y axis. The quotient then lies
+within one in size, where it and the arctangent are nearly linear over
+a σ that is small against the larger operand. Dividing by the smaller
+instead, @y / 0.03@ for an angle near 90°, made a quotient whose own
+second-order term the arctangent then undid, and the value was marked
+non-linear at 120000% where the angle's true second-order term is 0.1%
+(design §3.2). When the preferred quotient's divisor may be zero, the
+other is taken if it can be; at the negative x axis the angle's cut is
+refused unless @y@'s sign is known.
+-}
 atan2M :: Precision -> Magnitude -> Magnitude -> Either ArithError Magnitude
 atan2M p y x
   | Exact 0 <- x, Exact 0 <- y = Left (Domain "atan2 0 0")
-  | lo x > 0 = atanM p <$> divM p y x
-  | hi x < 0 && lo y >= 0 = (`addM` piM p) . atanM p <$> divM p y x
-  | hi x < 0 && hi y < 0 = (`subM` piM p) . atanM p <$> divM p y x
-  | lo y > 0 = subM (scaleM (1 % 2) (piM p)) . atanM p <$> divM p x y
-  | hi y < 0 = subM (scaleM (-(1 % 2)) (piM p)) . atanM p <$> divM p x y
-  | otherwise = Left (Domain "atan2 of an enclosure that contains the origin")
+  | abs (midpoint x) >= abs (midpoint y) = alongX `orElse` alongY
+  | otherwise = alongY `orElse` alongX
+ where
+  alongX
+    | lo x > 0 = Just (atanM p <$> divM p y x)
+    | hi x < 0 && lo y >= 0 =
+        Just ((\a -> addM p a (piM p)) . atanM p <$> divM p y x)
+    | hi x < 0 && hi y < 0 =
+        Just ((\a -> subM p a (piM p)) . atanM p <$> divM p y x)
+    | otherwise = Nothing
+  alongY
+    | lo y > 0 = Just (subM p (scaleM p (1 % 2) (piM p)) . atanM p <$> divM p x y)
+    | hi y < 0 =
+        Just (subM p (scaleM p (-(1 % 2)) (piM p)) . atanM p <$> divM p x y)
+    | otherwise = Nothing
+  orElse a b = case (a, b) of
+    (Just r, _) -> r
+    (_, Just r) -> r
+    _ -> Left (Domain "atan2 of an enclosure that contains the origin")
 
 sinhM, coshM :: Precision -> Magnitude -> Magnitude
 sinhM p = \case
@@ -963,8 +1183,16 @@ coshM p = \case
   x ->
     liftEndpoints "cosh" p (const True) (coshApprox (p + 2)) (sinhApprox (p + 2)) x
 
-tanhM :: Precision -> Magnitude -> Either ArithError Magnitude
-tanhM p x = divM p (sinhM p x) (coshM p x)
+{- | Hyperbolic tangent, lifted itself: as the sine over the cosine, two
+nearly equal statistical parts cancelled in the quotient to first order
+but not in its measure, and @tanh (5 ±σ 0.1)@ was marked non-linear at
+78000% where its second-order term is 20%.
+-}
+tanhM :: Precision -> Magnitude -> Magnitude
+tanhM p = \case
+  Exact 0 -> Exact 0
+  x ->
+    liftBounded "tanh" p (tanhApprox (p + 2)) (sech2Approx (p + 2)) tanhCurvature x
 
 -- | π at the working precision.
 piM :: Precision -> Magnitude
@@ -995,7 +1223,7 @@ coscSqM p t
   | Exact 0 <- t = Right (Exact (1 % 2))
   | lo t >= 1 = do
       theta <- sqrtM p t
-      divM p (subM (Exact 1) (cosM p theta)) t
+      divM p (subM p (Exact 1) (cosM p theta)) t
   | otherwise = Right (rodriguesSeries "cosc" p 2 t)
 
 {- | @Σₖ (−t)ᵏ / (2k + j)!@ on an enclosure of @t@, by Horner's rule in
@@ -1017,19 +1245,25 @@ rodriguesSeries name p j t =
         k : _ -> k
         [] -> 0
       poly =
-        foldr (\k acc -> addM (Exact (coeff k)) (mulM p t acc)) (Exact 0) [0 .. top - 1]
+        foldr
+          (\k acc -> addM p (Exact (coeff k)) (mulM p t acc))
+          (Exact 0)
+          [0 .. top - 1]
    in enclose name p [t] (2 * size top) poly
 
 {- | Add one fresh bound nudge of the given size to a value, named after
-the operation, its operands and the precision (design §3.2.4), and
+the operation, its operands and the precision (design §3.2.4), with its
+rationals shortened as any operation's result is ('opResult'), and
 compact. For a remainder bounded outside this module, such as a matrix
-series' (@expm@): the operands must tell apart every value that is to
-get an unknown of its own, so two entries of one matrix pass their
-positions.
+series' (@expm@), or none, for the result of a built-in whose last step
+was linear (@inverse@): the operands must tell apart every value that
+is to get an unknown of its own, so two entries of one matrix pass their
+positions. The series' terms are scaled by @1/k@ and summed, so without
+the shortening their coefficients kept the digits of @lcm (1, …, K)@.
 -}
 enclose ::
   Text -> Precision -> [Magnitude] -> Rational -> Magnitude -> Magnitude
-enclose name p operands size base = finish p (withFresh name p operands size base)
+enclose name p operands size = opResult name p operands size 0 Nothing
 
 -- Rounding to integers --------------------------------------------------------------------
 
@@ -1083,7 +1317,7 @@ even below the warning threshold.
 compareM ::
   Decide -> Precision -> Magnitude -> Magnitude -> Either ArithError Ordering
 compareM decide p a b =
-  let d = subM a b
+  let d = subLinear a b
       c = collapse d
       k = decide.sigma
       sigma = sigmaOf p c

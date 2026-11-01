@@ -240,11 +240,15 @@ timeTests =
   testGroup
     "time"
     [ testCase "an input past the time limit stops" $ do
+        -- A countdown of six million steps takes about 3 s, within the
+        -- steps limit. (The exact logistic map once served, its rationals
+        -- doubling every step; it now runs at working precision, design
+        -- §3.2.8, and finishes at once.)
         r <-
           runIO
             defaultLimits{time = Just 1}
-            [ "let iter x k = if k == 0 then x else iter (x * (1 - x) * 37/10) (k - 1)"
-            , "iter (1/3) 40"
+            [ "let hh n = if n == 0 then 0 else hh (n - 1)"
+            , "hh 6000000"
             ]
         case r of
           Left err -> T.isInfixOf "took more than 1 second (`:set time`)" err @? T.unpack err
@@ -298,6 +302,21 @@ leakPrograms =
     ( "a quantity with a unit carried through a loop"
     , ["let go v k = if k == 0 then v else go (v + 1 m) (k - 1)", "go (0 m) 1000000"]
     , (@?= Right ["1000000 m"])
+    )
+  , -- Exact while its rationals are short, then at working precision
+    -- (design §3.2.8): once 13 s for twenty steps, its digits doubling.
+
+    ( "the exact logistic map, at working precision after its first steps"
+    ,
+      [ ":set precision 200"
+      , "let iter x k = if k == 0 then x else iter (x * (1 - x) * 37/10) (k - 1)"
+      , "iter (1/3) 250"
+      ]
+    , \case
+        Right [out] ->
+          T.isPrefixOf "0.92481968045107953044160642097568835177392693028574" out
+            @? T.unpack out
+        other -> assertFailure (show other)
     )
   ,
     ( "the margin is tight enough to see growth: a list kept whole overflows it"
