@@ -1,12 +1,13 @@
 module Main (main) where
 
-import Support.Render (render)
 import Control.Exception (evaluate)
 import Control.Monad (foldM, forM_)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Support.Render (render)
 
+import Astro (astroTests)
 import Data.List (sort)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
@@ -17,6 +18,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import Gen (exprDepth, genProgram, instanceOf)
 import Metron.Affine hiding (Builtin, DivideByZero)
 import Metron.Affine qualified as A
 import Metron.Builtin
@@ -52,6 +54,7 @@ import Metron.Infer (
  )
 import Metron.Lexer hiding (TNum, TProj)
 import Metron.Lexer qualified as L
+import Metron.NameResolution (LabelKind (..), Qualified (..), qualifyName)
 import Metron.Parser
 import Metron.Prelude (
   isLibraryPath,
@@ -61,18 +64,15 @@ import Metron.Prelude (
   stdlibNamespaces,
  )
 import Metron.Pretty
+import Metron.Primitive.Types
 import Metron.Repl qualified as R
-import Metron.NameResolution ( LabelKind (..), Qualified (..), qualifyName )
-import Metron.Type.Syntax ( queryScheme )
 import Metron.Store
 import Metron.Syntax qualified as S
 import Metron.TCore
-import Metron.Primitive.Types
-import Metron.Type.Match
 import Metron.Type
+import Metron.Type.Match
+import Metron.Type.Syntax (queryScheme)
 import Metron.Unicode qualified as U
-import Astro (astroTests)
-import Gen (exprDepth, genProgram, instanceOf)
 import System.Directory (
   createDirectoryIfMissing,
   doesDirectoryExist,
@@ -1113,11 +1113,11 @@ codebaseTests =
                 -- lists and pairs.
                 astroTypes
                   ++ [ "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
-                , "Cov2 : forall n d d1. Mat n n (d^2) -> Mat n n (d*d1) -> Mat n n (d1^2) -> Cov2 n d d1"
-                , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
-                , "Circle : Num m -> Shape"
-                , "Rect : Num m -> Num m -> Shape"
-                ]
+                     , "Cov2 : forall n d d1. Mat n n (d^2) -> Mat n n (d*d1) -> Mat n n (d1^2) -> Cov2 n d d1"
+                     , "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
+                     , "Circle : Num m -> Shape"
+                     , "Rect : Num m -> Num m -> Shape"
+                     ]
                   ++ builtinTypeListing
                   ++ [ "frame degC"
                      , "frame degF"
@@ -1261,43 +1261,77 @@ codebaseTests =
               assertBool "distinct" (T.takeWhile (/= ' ') cur /= old)
             other -> assertFailure (show other)
           Left err -> assertFailure (T.unpack err)
-    , testCase "historical values and functions resolve in expressions and definitions" $ do
-        let setup = ["let f x = x + 1", ":add"]
-            digest = "#" <> hashShownAs setup "f"
-            changed = setup ++ ["let f x = x + 2", ":update"]
-        expecting (runLines (changed ++
-          ["f" <> digest <> " 10", digest <> " 10", "let old = f" <> digest,
-           "old 10", "let f = 99 in f" <> digest <> " 10"])) $ \outs ->
-            lastN 4 outs @?= replicate 4 "11"
-        expecting (runLines (changed ++ [":unname f", "f" <> digest <> " 10"])) $ \outs ->
-          last outs @?= "11"
+    , testCase
+        "historical values and functions resolve in expressions and definitions"
+        $ do
+          let setup = ["let f x = x + 1", ":add"]
+              digest = "#" <> hashShownAs setup "f"
+              changed = setup ++ ["let f x = x + 2", ":update"]
+          expecting
+            ( runLines
+                ( changed
+                    ++ [ "f" <> digest <> " 10"
+                       , digest <> " 10"
+                       , "let old = f" <> digest
+                       , "old 10"
+                       , "let f = 99 in f" <> digest <> " 10"
+                       ]
+                )
+            )
+            $ \outs ->
+              lastN 4 outs @?= replicate 4 "11"
+          expecting (runLines (changed ++ [":unname f", "f" <> digest <> " 10"])) $ \outs ->
+            last outs @?= "11"
     , testCase "hash arguments do not steal measurement labels" $ do
         let digest = hashText 5
-        expecting (runLines ["let x = 5", ":add", "let ident x = x",
-          "ident (" <> digest <> ")", "let n = 5 ± 1 #sensor", "n - n",
-          "let n2 = 5 ± 1#sensor", "n - n2"]) $ \outs ->
+        expecting
+          ( runLines
+              [ "let x = 5"
+              , ":add"
+              , "let ident x = x"
+              , "ident (" <> digest <> ")"
+              , "let n = 5 ± 1 #sensor"
+              , "n - n"
+              , "let n2 = 5 ± 1#sensor"
+              , "n - n2"
+              ]
+          )
+          $ \outs ->
             lastN 3 outs @?= ["5", "0", "0"]
     , testCase "historical names respect namespace lookup and explicit absolute paths" $ do
         let setup = ["namespace lab\n  let f x = x + 1", ":add"]
             digest = "#" <> hashShownAs setup "lab.f"
-        expecting (runLines (setup ++ ["lab.f" <> digest <> " 3",
-          ":use lab", "f" <> digest <> " 4", ".lab.f" <> digest <> " 5"])) $ \outs -> do
+        expecting
+          ( runLines
+              ( setup
+                  ++ [ "lab.f" <> digest <> " 3"
+                     , ":use lab"
+                     , "f" <> digest <> " 4"
+                     , ".lab.f" <> digest <> " 5"
+                     ]
+              )
+          )
+          $ \outs -> do
             take 1 (drop 1 outs) @?= ["4"]
             lastN 2 outs @?= ["5", "6"]
     , testCase "hash references validate missing, malformed and ambiguous prefixes" $ do
         expectError (runLines ["#w"]) "invalid hash prefix"
-        expectError (runLines ["#0000000000000000000000000000000000000000000000000000"])
+        expectError
+          (runLines ["#0000000000000000000000000000000000000000000000000000"])
           "no stored version matches"
-        expectError (runLines ["let x = 5", ":add", "x" <> hashText 6])
+        expectError
+          (runLines ["let x = 5", ":add", "x" <> hashText 6])
           "no stored version matches"
-        expectError (runLines ["let x = 5", ":add", hashText 5 <> ".0"])
+        expectError
+          (runLines ["let x = 5", ":add", hashText 5 <> ".0"])
           "member index is only valid"
         let numbers = [0 .. 64]
             groups = Map.fromListWith (++) [(T.take 2 (hashText n), [n]) | n <- numbers]
             prefix = case filter ((> 1) . length . snd) (Map.toList groups) of
               (p, _) : _ -> p
               [] -> error "65 hashes must share one of 32 initial digits"
-            setup = ["let n" <> T.pack (show n) <> " = " <> T.pack (show n) | n <- [0 :: Int .. 64]]
+            setup =
+              ["let n" <> T.pack (show n) <> " = " <> T.pack (show n) | n <- [0 :: Int .. 64]]
         expectError (runLines (setup ++ [":add", prefix])) "ambiguous hash reference"
     , testCase "recursive-group references select and validate members" $ do
         let setup = ["let down n = if n == 0 then 0 else down (n - 1)", ":add"]
@@ -1311,22 +1345,45 @@ codebaseTests =
         let setup = ["let ident x = x", "let five = 5", ":add"]
             fn = hashTerm (Lam (Hint "x") (Var FZ))
             value = hashTerm (num 5)
-            source = renderTerm (\digest _ _ -> showHash digest) VNil
-              (App (Ref fn Nothing (Hint "")) (Ref value Nothing (Hint "")))
+            source =
+              renderTerm
+                (\digest _ _ -> showHash digest)
+                VNil
+                (App (Ref fn Nothing (Hint "")) (Ref value Nothing (Hint "")))
         source @?= showHash fn <> " (" <> showHash value <> ")"
         expecting (runLines (setup ++ [source])) $ \outs -> last outs @?= "5"
-    , testCase "historical references do not become dependencies on new local bindings" $ do
-        let setup = ["let x = 5", "let y = x + 1", "let z = y * 2", ":add"]
-        expecting (runLines (setup ++ ["let x = x" <> hashText 5 <> " + 1\nlet newOnly = x * 3",
-          ":update", "x", "y", "z", "newOnly", ":todo"])) $ \outs ->
-          lastN 5 outs @?= ["6", "7", "14", "18", "nothing to do"]
-    , testCase "historical record fields and tensor projections remain postfix operations" $ do
-        let setup = ["data Box = Box {value :: Num}", "let box = Box {value = 7}",
-                     "let vector = [3, 4]", ":add"]
-            boxRef = "box#" <> hashShownAs setup "box"
-            vectorRef = "vector#" <> hashShownAs setup "vector"
-        expecting (runLines (setup ++ [boxRef <> ".value", "(" <> vectorRef <> ").0"])) $ \outs ->
-          lastN 2 outs @?= ["7", "3"]
+    , testCase
+        "historical references do not become dependencies on new local bindings"
+        $ do
+          let setup = ["let x = 5", "let y = x + 1", "let z = y * 2", ":add"]
+          expecting
+            ( runLines
+                ( setup
+                    ++ [ "let x = x" <> hashText 5 <> " + 1\nlet newOnly = x * 3"
+                       , ":update"
+                       , "x"
+                       , "y"
+                       , "z"
+                       , "newOnly"
+                       , ":todo"
+                       ]
+                )
+            )
+            $ \outs ->
+              lastN 5 outs @?= ["6", "7", "14", "18", "nothing to do"]
+    , testCase
+        "historical record fields and tensor projections remain postfix operations"
+        $ do
+          let setup =
+                [ "data Box = Box {value :: Num}"
+                , "let box = Box {value = 7}"
+                , "let vector = [3, 4]"
+                , ":add"
+                ]
+              boxRef = "box#" <> hashShownAs setup "box"
+              vectorRef = "vector#" <> hashShownAs setup "vector"
+          expecting (runLines (setup ++ [boxRef <> ".value", "(" <> vectorRef <> ").0"])) $ \outs ->
+            lastN 2 outs @?= ["7", "3"]
     , testCase "historical unit and chart roles come from the referenced version" $ do
         let setup = ["unit track = 400 m", ":add"]
             ref = "track#" <> hashShownAs setup "track"
@@ -1340,11 +1397,20 @@ codebaseTests =
     , testCase "historical references survive a store reload" $ withTempStore $ \dir -> do
         let setup = ["let f x = x + 1", ":add"]
             digest = "#" <> hashShownAs setup "f"
-        _ <- persistLines dir (setup ++ ["let f x = x + 2", ":update",
-          "let previous = f" <> digest, ":add"])
+        _ <-
+          persistLines
+            dir
+            ( setup
+                ++ [ "let f x = x + 2"
+                   , ":update"
+                   , "let previous = f" <> digest
+                   , ":add"
+                   ]
+            )
         (s, notes) <- reload dir
         notes @?= []
-        linesIn s ["previous 10", "f" <> digest <> " 10", "f 10"] @?= Right ["11", "11", "12"]
+        linesIn s ["previous 10", "f" <> digest <> " 10", "f 10"]
+          @?= Right ["11", "11", "12"]
     , testCase "alpha-equivalent definitions share a hash"
         $ expecting
           ( outputsWhere
@@ -3709,7 +3775,11 @@ partUTests =
               , "let g r = if (case r of B m -> m > 1 kg) then 1 else 2"
               , "let k b = case b of B m -> (case m > 1 kg of true -> 1; false -> 2)"
               ]
-        views <- either (assertFailure . T.unpack) pure (runLinesP (defs ++ [":view f", ":view g"]))
+        views <-
+          either
+            (assertFailure . T.unpack)
+            pure
+            (runLinesP (defs ++ [":view f", ":view g"]))
         views
           @?= [ "f = \\r -> let x = (case r of B mass -> mass) in x * 2"
               , "g = \\r -> if (case r of B m -> m > 1 kg) then 1 else 2"
@@ -4541,7 +4611,9 @@ affineTests =
         $ do
           evalText "6.67430e-11 ±σ 1.5e-15" @?= Right ["6.67430e-11 ±σ 1.5e-15"]
           evalText "(6.67430e-11 ±σ 1.5e-15) * (2 ± 0.1)"
-            @?= Right ["1.335e-10 ±σ 3e-15 (bound 6.7e-12) (non-linear: mul: uncertain statistical coefficient, second-order term 5% of the first-order σ; a mean and a σ do not describe it)"]
+            @?= Right
+              [ "1.335e-10 ±σ 3e-15 (bound 6.7e-12) (non-linear: mul: uncertain statistical coefficient, second-order term 5% of the first-order σ; a mean and a σ do not describe it)"
+              ]
           -- σ by σ is second order: measured, never a bound (design §3.2)
           evalText "(1 ±σ 0.1) * (1 ±σ 0.1)"
             @?= Right
@@ -4604,7 +4676,9 @@ affineTests =
         evalText "let n = 0 ±σ 1 in n - n" @?= Right ["0"]
     , testCase "expm refuses statistical inputs instead of erasing them" $ do
         let refused src = case evalP src of
-              Left err -> T.isInfixOf "expm with statistical uncertainty is not supported" err @? T.unpack err
+              Left err ->
+                T.isInfixOf "expm with statistical uncertainty is not supported" err
+                  @? T.unpack err
               Right out -> assertFailure (show out)
         refused "let n = 0 ±σ 1 in expm [n, 0; 0, 0]"
         refused "let n = 0 ±σ 1 in expm [0, n; -n, 0]"
@@ -4618,11 +4692,11 @@ affineTests =
         -- the delta method's second-order term, |f''|·σ² against |f'|·σ
         evalText "exp (0 ±σ 0.1)"
           @?= Right
-              [ "1.0 ±σ 0.1 (non-linear: exp, second-order term 11% of the first-order σ; a mean and a σ do not describe it)"
+            [ "1.0 ±σ 0.1 (non-linear: exp, second-order term 11% of the first-order σ; a mean and a σ do not describe it)"
             ]
         evalText "sqrt (100 ±σ 10)"
           @?= Right
-              [ "10.0 ±σ 0.5 (non-linear: sqrt, second-order term 5.4% of the first-order σ; a mean and a σ do not describe it)"
+            [ "10.0 ±σ 0.5 (non-linear: sqrt, second-order term 5.4% of the first-order σ; a mean and a σ do not describe it)"
             ]
         -- the threshold is a setting
         runLines [":set nonlinear 10", "(1 ±σ 0.1) * (1 ±σ 0.1)"]
@@ -4894,7 +4968,8 @@ affineTests =
           @?= Left "error: cholesky needs a symmetric matrix: entries .0.1 and .1.0 differ"
         -- Overlap is not proof of symmetry.
         evalP "cholesky [4, 2 ± 0.1; 2, 3]"
-          @?= Left "error: cholesky needs a symmetric matrix: symmetry of entries .0.1 and .1.0 cannot be established"
+          @?= Left
+            "error: cholesky needs a symmetric matrix: symmetry of entries .0.1 and .1.0 cannot be established"
         evalP "[0, 0] m ±σ [1, 0.5; 0.5, 1] m^2" @?= Right ["[0 ±σ 1, 0.0 ±σ 1.0] m"]
     , testCase "v ±σ P is a vector with covariance P, stamped like any ±" $ do
         runLinesP
@@ -5909,7 +5984,8 @@ storeTests =
           opened <- openStore theSeed dir
           case opened of
             Left err ->
-              err @?= T.pack dir <> ": this codebase is format 10; this metron opens format 12"
+              err
+                @?= T.pack dir <> ": this codebase is format 10; this metron opens format 12"
             Right _ -> assertFailure "opened a store of another format"
           snapshot dir >>= (@?= before)
           listDirectory dir >>= (@?= entries) . sort
@@ -6951,8 +7027,28 @@ replTests =
         -- Every field completes, the library's among them: Cov2's, and
         -- astro's State, Body, Elements and Transfer.
         map (.display) (R.completions s "b" ".")
-          @?= [ "a", "argp", "dv1", "dv2", "dv3", "e", "epoch", "flattening", "i", "j2", "mass"
-              , "mu", "nu", "pos", "raan", "radius", "rate", "rr", "rv", "tof", "vel", "vv"
+          @?= [ "a"
+              , "argp"
+              , "dv1"
+              , "dv2"
+              , "dv3"
+              , "e"
+              , "epoch"
+              , "flattening"
+              , "i"
+              , "j2"
+              , "mass"
+              , "mu"
+              , "nu"
+              , "pos"
+              , "raan"
+              , "radius"
+              , "rate"
+              , "rr"
+              , "rv"
+              , "tof"
+              , "vel"
+              , "vv"
               ]
     , testCase ":load completes file names" $ do
         completeAt seeded ":load fo" @?= Nothing
@@ -7872,12 +7968,14 @@ namespaceTests =
           (runLinesP [":export orbitl"])
           "`orbitl` is not a namespace; to write a file give a path like orbitl.metron"
         fmap fst (exportRequest s ["orbitl"])
-          @?= Left "`orbitl` is not a namespace; to write a file give a path like orbitl.metron"
+          @?= Left
+            "`orbitl` is not a namespace; to write a file give a path like orbitl.metron"
         expectError
           (runLinesP [":export nowhere out.metron"])
           "`nowhere` is not a namespace"
         fmap fst (exportRequest s ["out.metron"]) @?= Right (Just "out.metron")
-        fmap fst (exportRequest s ["orbital", "out.metron"]) @?= Right (Just "out.metron")
+        fmap fst (exportRequest s ["orbital", "out.metron"])
+          @?= Right (Just "out.metron")
         fmap snd (exportRequest s ["orbital", "out.metron"])
           @?= exportSource s (Just "orbital")
     , testCase ":export refuses a definition on a version no name points at"
@@ -8222,18 +8320,18 @@ editTests =
               ]
                 ++ [ movedLine "upgraded" s s' ("astro.de440." <> b)
                    | b <-
-                      [ "sun"
-                      , "mercury"
-                      , "venus"
-                      , "earth"
-                      , "moon"
-                      , "mars"
-                      , "jupiter"
-                      , "saturn"
-                      , "uranus"
-                      , "neptune"
-                      , "pluto"
-                      ]
+                       [ "sun"
+                       , "mercury"
+                       , "venus"
+                       , "earth"
+                       , "moon"
+                       , "mars"
+                       , "jupiter"
+                       , "saturn"
+                       , "uranus"
+                       , "neptune"
+                       , "pluto"
+                       ]
                    ]
             )
         snd <$> feed s' "trip to m" @?= Right ["2002 m"]
@@ -9524,6 +9622,7 @@ withBuiltinTypes ts =
     )
 
 -- | How @:ls --types@ lists the library's @astro.State@ (design §3.8).
+
 {- | The library's records in @astro@, as @:ls --types@ lists them: a body
 of a constant set, the classical elements, a transfer, a body's state.
 -}

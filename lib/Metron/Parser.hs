@@ -9,74 +9,122 @@ module Metron.Parser (
   parseType,
 ) where
 
-import Control.Monad.Combinators.Expr
-    ( Operator(InfixR, Prefix, InfixL, Postfix, InfixN),
-      makeExprParser )
-import Data.Bifunctor ( first )
-import Data.List.NonEmpty ( NonEmpty(..) )
-import Data.Maybe ( fromMaybe, isJust )
-import Data.Ratio ( denominator, numerator )
-import Data.Text ( Text )
-import Data.Void ( Void )
-import Metron.Core ( NudgeKind )
-import Metron.Lexer
-    ( showToken, tokenize, Keyword(..), Located(..), Token(..) )
-import Metron.Syntax
-    ( juxtaposedHint,
-      renderPath,
-      spanUnion,
-      BindKind(Plain, Unit, ChartDecl),
-      Binding(span, Binding, name, params, body),
-      ChartClauses(ChartClauses),
-      DataDecl(DataDecl),
-      Expr(..),
-      FieldDecl(ty, FieldDecl),
-      Name(..),
-      Node(Vec, ChartForm, Lam, Let, If, Neg, Labelled, FromTo, BinOp,
-           Pow, App, Proj, FieldOf, Slice, Record, Num, Bool, Var, SectionL,
-           SectionR, Ascribe, Tuple, List, CaseOf),
-      Op(..),
-      PatNode(PVar, PCon, PWild),
-      Path(Path),
-      Pattern(Pattern),
-      Pos(line, Pos, col),
-      Span(..),
-      Statement(..),
-      TyBinder(TyBinder),
-      TyExpr(..),
-      TyNode(TyDim, TyForall, TyFun, TyApp, TyList, TyShape, TyName,
-             TyInt, TyShapeCons, TyTuple) )
-import Data.List.NonEmpty qualified as NE ( fromList, toList )
-import Text.Megaparsec qualified as P
-    ( (<|>), empty,
-      ErrorItem(Label, Tokens),
-      PosState(pstateSourcePos, pstateInput, pstateOffset),
-      Parsec,
-      SourcePos(sourceLine, sourceName, SourcePos),
-      MonadParsec(try, token, notFollowedBy, eof, lookAhead),
-      Stream(..),
-      optional,
-      anySingle,
-      getInput,
-      getOffset,
-      runParser,
-      setInput,
-      setOffset,
-      errorBundlePretty,
-      mkPos,
-      unPos,
-      choice,
-      option,
-      many,
-      sepBy,
-      sepBy1,
-      sepEndBy,
-      some,
-      TraversableStream(reachOffset),
-      VisualStream(..) )
-import Data.Set qualified as Set ( singleton )
-import Data.Text qualified as T
-    ( pack, any, intercalate, lines, unwords, unpack )
+import Control.Monad.Combinators.Expr (
+  Operator (InfixL, InfixN, InfixR, Postfix, Prefix),
+  makeExprParser,
+ )
+import Data.Bifunctor (first)
+import Data.List.NonEmpty (NonEmpty (..))
+import Data.List.NonEmpty qualified as NE (fromList, toList)
+import Data.Maybe (fromMaybe, isJust)
+import Data.Ratio (denominator, numerator)
+import Data.Set qualified as Set (singleton)
+import Data.Text (Text)
+import Data.Text qualified as T (
+  any,
+  intercalate,
+  lines,
+  pack,
+  unpack,
+  unwords,
+ )
+import Data.Void (Void)
+import Metron.Core (NudgeKind)
+import Metron.Lexer (
+  Keyword (..),
+  Located (..),
+  Token (..),
+  showToken,
+  tokenize,
+ )
+import Metron.Syntax (
+  BindKind (ChartDecl, Plain, Unit),
+  Binding (Binding, body, name, params, span),
+  ChartClauses (ChartClauses),
+  DataDecl (DataDecl),
+  Expr (..),
+  FieldDecl (FieldDecl, ty),
+  Name (..),
+  Node (
+    App,
+    Ascribe,
+    BinOp,
+    Bool,
+    CaseOf,
+    ChartForm,
+    FieldOf,
+    FromTo,
+    If,
+    Labelled,
+    Lam,
+    Let,
+    List,
+    Neg,
+    Num,
+    Pow,
+    Proj,
+    Record,
+    SectionL,
+    SectionR,
+    Slice,
+    Tuple,
+    Var,
+    Vec
+  ),
+  Op (..),
+  PatNode (PCon, PVar, PWild),
+  Path (Path),
+  Pattern (Pattern),
+  Pos (Pos, col, line),
+  Span (..),
+  Statement (..),
+  TyBinder (TyBinder),
+  TyExpr (..),
+  TyNode (
+    TyApp,
+    TyDim,
+    TyForall,
+    TyFun,
+    TyInt,
+    TyList,
+    TyName,
+    TyShape,
+    TyShapeCons,
+    TyTuple
+  ),
+  juxtaposedHint,
+  renderPath,
+  spanUnion,
+ )
+import Text.Megaparsec qualified as P (
+  ErrorItem (Label, Tokens),
+  MonadParsec (eof, lookAhead, notFollowedBy, token, try),
+  Parsec,
+  PosState (pstateInput, pstateOffset, pstateSourcePos),
+  SourcePos (SourcePos, sourceLine, sourceName),
+  Stream (..),
+  TraversableStream (reachOffset),
+  VisualStream (..),
+  anySingle,
+  choice,
+  empty,
+  errorBundlePretty,
+  getInput,
+  getOffset,
+  many,
+  mkPos,
+  option,
+  optional,
+  runParser,
+  sepBy,
+  sepBy1,
+  sepEndBy,
+  setInput,
+  setOffset,
+  some,
+  unPos,
+  (<|>),
+ )
 
 -- Token stream ---------------------------------------------------------------
 
@@ -821,7 +869,8 @@ atom = primary >>= postfixes
   historical acc = do
     n <- maybe P.empty pure (referenceName acc)
     (sp, h) <- P.try $ do
-      pair@(sp, _) <- match "glued hash reference" (\case THashLabel h -> Just h; _ -> Nothing)
+      pair@(sp, _) <-
+        match "glued hash reference" (\case THashLabel h -> Just h; _ -> Nothing)
       if acc.span.to == sp.from then pure pair else P.empty
     referenceSuffix (spanUnion acc.span sp) (n <> "#" <> h)
   referenceName e = case e.node of
@@ -868,7 +917,8 @@ primary =
 -- Parenthesise the reference before projecting an ordinary value.
 referenceSuffix :: Span -> Text -> Parser Expr
 referenceSuffix sp n = do
-  member <- P.optional (match "cycle member" (\case TProj i -> Just i; _ -> Nothing))
+  member <-
+    P.optional (match "cycle member" (\case TProj i -> Just i; _ -> Nothing))
   pure $ case member of
     Nothing -> Expr sp (Var n)
     Just (end, i) -> Expr (spanUnion sp end) (Var (n <> "." <> T.pack (show i)))
