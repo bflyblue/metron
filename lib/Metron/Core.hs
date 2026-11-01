@@ -54,6 +54,7 @@ module Metron.Core (
   refsWritten,
   inlineRef,
   primArity,
+  lengthLimit,
 
   -- * Traversal
   traverseChildren,
@@ -62,20 +63,6 @@ module Metron.Core (
   foldTerm,
   Child (..),
   children,
-
-  -- * Walks on the traversal, checked against the hand-written ones
-  conTypesNew,
-  directUsesNew,
-  rewriteRefsNew,
-  rewriteRefsWrittenNew,
-  refsWrittenNew,
-  inlineRefNew,
-  renameTerm,
-  renameTermNew,
-  weakenByNew,
-  closedIn,
-  closedInNew,
-  lengthLimit,
 ) where
 
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
@@ -411,25 +398,12 @@ refs = Set.map fst . refsWithIndex
 
 -- | The declared types whose constructors a term builds or matches.
 conTypes :: Term n -> Set Hash
-conTypes = \case
-  Con c as -> conType c <> foldMap conTypes as
-  Case s alts -> conTypes s <> foldMap (\(Alt c _ b) -> conType c <> conTypes b) alts
-  PrimApp _ as -> foldMap conTypes as
-  Lam _ b -> conTypes b
-  App a b -> conTypes a <> conTypes b
-  Let _ e b -> conTypes e <> conTypes b
-  Pow t _ -> conTypes t
-  Uncertain _ _ x e -> conTypes x <> conTypes e
-  Pack ts -> foldMap conTypes ts
-  Proj t _ -> conTypes t
-  Cycle _ bs -> foldMap conTypes (vecToList bs)
-  Var _ -> Set.empty
-  Ref{} -> Set.empty
-  Lit _ -> Set.empty
-  Noise{} -> Set.empty
+conTypes = foldTerm $ \case
+  Con c _ -> conType c
+  Case _ alts -> foldMap (\(Alt c _ _) -> conType c) alts
+  _ -> Set.empty
  where
-  conType = \case
-    UserCon h _ -> Set.singleton h
+  conType (UserCon h _) = Set.singleton h
 
 -- | The references a term makes, with their cycle indices.
 refsWithIndex :: Term n -> Set (Hash, Maybe Int)
@@ -441,25 +415,13 @@ the built-ins only one backend has (design §8.2). An uncertainty form is
 named as it is written: @±@, @±σ@, @noise@, @gauss@.
 -}
 directUses :: (Text -> Bool) -> Term n -> (Set (Hash, Maybe Int), Set Text)
-directUses picked = go
+directUses picked = foldTerm $ \case
+  Ref h i _ -> (Set.singleton (h, i), Set.empty)
+  PrimApp p _ -> named p
+  Noise k _ _ -> named (case k of Bound -> "noise"; Stat -> "gauss")
+  Uncertain k _ _ _ -> named (case k of Bound -> "±"; Stat -> "±σ")
+  _ -> mempty
  where
-  go :: Term m -> (Set (Hash, Maybe Int), Set Text)
-  go = \case
-    Var _ -> mempty
-    Ref h i _ -> (Set.singleton (h, i), Set.empty)
-    PrimApp p as -> named p <> foldMap go as
-    Lit _ -> mempty
-    Lam _ b -> go b
-    App f a -> go f <> go a
-    Let _ e b -> go e <> go b
-    Con _ as -> foldMap go as
-    Case s alts -> go s <> foldMap (\(Alt _ _ b) -> go b) alts
-    Pow t _ -> go t
-    Noise k _ _ -> named (case k of Bound -> "noise"; Stat -> "gauss")
-    Uncertain k _ x e -> named (case k of Bound -> "±"; Stat -> "±σ") <> go x <> go e
-    Pack ts -> foldMap go ts
-    Proj t _ -> go t
-    Cycle _ bs -> foldMap go (vecToList bs)
   named p = (Set.empty, if picked p then Set.singleton p else Set.empty)
 
 {- | Replace references according to a function; 'Nothing' keeps a reference
@@ -467,55 +429,52 @@ as it is. Used to upgrade dependents to a new version (design §7.5).
 -}
 rewriteRefs ::
   (Hash -> Maybe Int -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
-rewriteRefs f = go
+rewriteRefs f = rewriteRefsWritten (\h i _ -> f h i)
+
+{- | Every reference with the name it was written under (the storage hint;
+empty for a term loaded from a format-1 store). Propagation follows a
+rebinding only through references written under the rebound name (design
+§7.5): a user's @meter = m@ and the library's @metre = m@ are one term, but
+@km = kilo * metre@ depends on @metre@, not on @meter@.
+-}
+refsWritten :: Term n -> Set (Hash, Maybe Int, Text)
+refsWritten = foldTerm $ \case
+  Ref h i (Hint w) -> Set.singleton (h, i, w)
+  _ -> Set.empty
+
+-- | 'rewriteRefs' that also sees the written name, which it keeps.
+rewriteRefsWritten ::
+  (Hash -> Maybe Int -> Text -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
+rewriteRefsWritten f = go
  where
   go :: Term m -> Term m
   go = \case
-    Var i -> Var i
-    Ref h i hint -> maybe (Ref h i hint) (\(h', i') -> Ref h' i' hint) (f h i)
-    PrimApp p as -> PrimApp p (map go as)
-    Lit l -> Lit l
-    Lam h b -> Lam h (go b)
-    App a b -> App (go a) (go b)
-    Let h e b -> Let h (go e) (go b)
-    Con c as -> Con c (map go as)
-    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
-    Pow t n -> Pow (go t) n
-    Noise k l n -> Noise k l n
-    Uncertain k l x e -> Uncertain k l (go x) (go e)
-    Pack ts -> Pack (map go ts)
-    Proj t i -> Proj (go t) i
-    Cycle hs bs -> Cycle hs (vecMap go bs)
+    Ref h i hint@(Hint w) -> maybe (Ref h i hint) (\(h', i') -> Ref h' i' hint) (f h i w)
+    t -> mapChildren go t
 
-{- | The number of arguments each primitive takes. The desugarer uses this to
-eta-expand partial applications; the evaluator and type checker rely on
-'PrimApp' nodes being saturated.
+{- | Replace every reference to a hash (with no cycle index) by a closed
+term: how @it@ absorbs the expression before it, so that @:view it@ shows
+the whole expression rather than a reference to one that has no name.
 -}
+inlineRef :: Hash -> Term Z -> Term n -> Term n
+inlineRef target replacement = go
+ where
+  go :: Term m -> Term m
+  go = \case
+    Ref h Nothing _ | h == target -> closedIn replacement
+    t -> mapChildren go t
 
 -- Renaming and weakening ------------------------------------------------------
 
 {- | Apply a renaming of free variables, lifting it under binders. The one use
 is weakening: moving a term under new binders it does not mention.
 -}
-renameTerm :: forall n m. (Fin n -> Fin m) -> Term n -> Term m
-renameTerm f = \case
-  Var i -> Var (f i)
-  Ref h i hint -> Ref h i hint
-  PrimApp p as -> PrimApp p (map (renameTerm f) as)
-  Lit l -> Lit l
-  Lam h b -> Lam h (renameTerm (liftFin f) b)
-  App a b -> App (renameTerm f a) (renameTerm f b)
-  Let h e b -> Let h (renameTerm f e) (renameTerm (liftFin f) b)
-  Con c as -> Con c (map (renameTerm f) as)
-  Case s alts -> Case (renameTerm f s) (map renameAlt alts)
-  Pow t k -> Pow (renameTerm f t) k
-  Noise k l n -> Noise k l n
-  Uncertain k l x e -> Uncertain k l (renameTerm f x) (renameTerm f e)
-  Pack ts -> Pack (map (renameTerm f) ts)
-  Proj t i -> Proj (renameTerm f t) i
-  Cycle hs bs -> Cycle hs (vecMap (renameTerm (liftFinBy hs f)) bs)
- where
-  renameAlt (Alt c hs b) = Alt c hs (renameTerm (liftFinBy hs f) b)
+renameTerm :: (Fin n -> Fin m) -> Term n -> Term m
+renameTerm f =
+  runIdentity
+    . traverseChildren
+      (Identity . Var . f)
+      (\hs -> Identity . renameTerm (liftFinBy hs f))
 
 liftFin :: (Fin n -> Fin m) -> Fin (S n) -> Fin (S m)
 liftFin f = \case
@@ -535,6 +494,10 @@ weakenBy ks = renameTerm (shiftFin ks)
   shiftFin js i = case js of
     VNil -> i
     VCons _ rest -> FS (shiftFin rest i)
+
+-- | A closed term is a term in any scope: it has no variables to rename.
+closedIn :: Term Z -> Term n
+closedIn = renameTerm (\case {})
 
 -- Hash display ----------------------------------------------------------------------
 
@@ -572,142 +535,3 @@ base32hex (Hash bs) = T.pack (go (BS.unpack bs))
           | i <- [0 .. chars - 1]
           ]
      in digits ++ go rest
-
-{- | Replace every reference to a hash (with no cycle index) by a closed
-term: how @it@ absorbs the expression before it, so that @:view it@ shows
-the whole expression rather than a reference to one that has no name.
--}
-inlineRef :: Hash -> Term Z -> Term n -> Term n
-inlineRef target replacement = go
- where
-  go :: Term m -> Term m
-  go = \case
-    Var i -> Var i
-    Ref h Nothing _ | h == target -> closedIn replacement
-    r@Ref{} -> r
-    PrimApp p as -> PrimApp p (map go as)
-    Lit l -> Lit l
-    Lam h b -> Lam h (go b)
-    App a b -> App (go a) (go b)
-    Let h e b -> Let h (go e) (go b)
-    Con c as -> Con c (map go as)
-    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
-    Pow t n -> Pow (go t) n
-    Noise k l n -> Noise k l n
-    Uncertain k l x e -> Uncertain k l (go x) (go e)
-    Pack ts -> Pack (map go ts)
-    Proj t i -> Proj (go t) i
-    Cycle hs bs -> Cycle hs (vecMap go bs)
-
--- | A closed term is a term in any scope: it has no variables to rename.
-closedIn :: Term Z -> Term n
-closedIn = renameTerm (\case {})
-
-{- | Every reference with the name it was written under (the storage hint;
-empty for a term loaded from a format-1 store). Propagation follows a
-rebinding only through references written under the rebound name (design
-§7.5): a user's @meter = m@ and the library's @metre = m@ are one term, but
-@km = kilo * metre@ depends on @metre@, not on @meter@.
--}
-refsWritten :: Term n -> Set (Hash, Maybe Int, Text)
-refsWritten = \case
-  Var _ -> Set.empty
-  Ref h i (Hint w) -> Set.singleton (h, i, w)
-  PrimApp _ as -> foldMap refsWritten as
-  Lit _ -> Set.empty
-  Lam _ b -> refsWritten b
-  App f a -> refsWritten f <> refsWritten a
-  Let _ e b -> refsWritten e <> refsWritten b
-  Con _ as -> foldMap refsWritten as
-  Case s alts -> refsWritten s <> foldMap (\(Alt _ _ b) -> refsWritten b) alts
-  Pow t _ -> refsWritten t
-  Noise{} -> Set.empty
-  Uncertain _ _ x e -> refsWritten x <> refsWritten e
-  Pack ts -> foldMap refsWritten ts
-  Proj t _ -> refsWritten t
-  Cycle _ bs -> foldMap refsWritten (vecToList bs)
-
--- | 'rewriteRefs' that also sees the written name, which it keeps.
-rewriteRefsWritten ::
-  (Hash -> Maybe Int -> Text -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
-rewriteRefsWritten f = go
- where
-  go :: Term m -> Term m
-  go = \case
-    Var i -> Var i
-    Ref h i hint@(Hint w) -> maybe (Ref h i hint) (\(h', i') -> Ref h' i' hint) (f h i w)
-    PrimApp p as -> PrimApp p (map go as)
-    Lit l -> Lit l
-    Lam h b -> Lam h (go b)
-    App a b -> App (go a) (go b)
-    Let h e b -> Let h (go e) (go b)
-    Con c as -> Con c (map go as)
-    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
-    Pow t n -> Pow (go t) n
-    Noise k l n -> Noise k l n
-    Uncertain k l x e -> Uncertain k l (go x) (go e)
-    Pack ts -> Pack (map go ts)
-    Proj t i -> Proj (go t) i
-    Cycle hs bs -> Cycle hs (vecMap go bs)
-
--- The walks on 'traverseChildren', checked against the hand-written ones -----
-
-conTypesNew :: Term n -> Set Hash
-conTypesNew = foldTerm $ \case
-  Con (UserCon h _) _ -> Set.singleton h
-  Case _ alts -> foldMap (\(Alt (UserCon h _) _ _) -> Set.singleton h) alts
-  _ -> Set.empty
-
-directUsesNew :: (Text -> Bool) -> Term n -> (Set (Hash, Maybe Int), Set Text)
-directUsesNew picked = foldTerm $ \case
-  Ref h i _ -> (Set.singleton (h, i), Set.empty)
-  PrimApp p _ -> named p
-  Noise k _ _ -> named (case k of Bound -> "noise"; Stat -> "gauss")
-  Uncertain k _ _ _ -> named (case k of Bound -> "±"; Stat -> "±σ")
-  _ -> mempty
- where
-  named p = (Set.empty, if picked p then Set.singleton p else Set.empty)
-
-rewriteRefsNew ::
-  (Hash -> Maybe Int -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
-rewriteRefsNew f = rewriteRefsWrittenNew (\h i _ -> f h i)
-
-renameTermNew :: (Fin n -> Fin m) -> Term n -> Term m
-renameTermNew f =
-  runIdentity
-    . traverseChildren
-      (Identity . Var . f)
-      (\hs -> Identity . renameTermNew (liftFinBy hs f))
-
-weakenByNew :: Vec k a -> Term n -> Term (Plus k n)
-weakenByNew ks = renameTermNew (shiftFin ks)
- where
-  shiftFin :: Vec j a -> Fin n -> Fin (Plus j n)
-  shiftFin js i = case js of
-    VNil -> i
-    VCons _ rest -> FS (shiftFin rest i)
-
-inlineRefNew :: Hash -> Term Z -> Term n -> Term n
-inlineRefNew target replacement = go
- where
-  go :: Term m -> Term m
-  go = \case
-    Ref h Nothing _ | h == target -> closedInNew replacement
-    t -> mapChildren go t
-
-closedInNew :: Term Z -> Term n
-closedInNew = renameTermNew (\case {})
-
-refsWrittenNew :: Term n -> Set (Hash, Maybe Int, Text)
-refsWrittenNew = foldTerm $ \case
-  Ref h i (Hint w) -> Set.singleton (h, i, w)
-  _ -> Set.empty
-
-rewriteRefsWrittenNew ::
-  (Hash -> Maybe Int -> Text -> Maybe (Hash, Maybe Int)) -> Term n -> Term n
-rewriteRefsWrittenNew f = go
- where
-  go :: Term m -> Term m
-  go = \case
-    Ref h i hint@(Hint w) -> maybe (Ref h i hint) (\(h', i') -> Ref h' i' hint) (f h i w)
-    t -> mapChildren go t

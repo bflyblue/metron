@@ -20,7 +20,6 @@ module Metron.Update (
   Restamped (..),
   restamp,
   restampTerm,
-  restampTermNew,
   retypeScheme,
   conTypes,
 ) where
@@ -90,7 +89,6 @@ import Metron.Core (
   rewriteRefs,
   rewriteRefsWritten,
   showHash,
-  vecMap,
  )
 import Metron.Hash (hashTerm, hashTypeDef)
 import Metron.Infer (TypeError (message), elaborateClosed)
@@ -510,27 +508,6 @@ restamp moves cb0 = do
 -- | A term with its owner stamps and its declared constructors mapped.
 restampTerm :: (Label -> Label) -> (ConRef -> ConRef) -> Term n -> Term n
 restampTerm lab con = go
- where
-  go :: Term m -> Term m
-  go = \case
-    Var i -> Var i
-    Ref h i hint -> Ref h i hint
-    PrimApp p as -> PrimApp p (map go as)
-    Lit l -> Lit l
-    Lam h b -> Lam h (go b)
-    App a b -> App (go a) (go b)
-    Let h e b -> Let h (go e) (go b)
-    Con c as -> Con (con c) (map go as)
-    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt (con c) hs (go b)) alts)
-    Pow t n -> Pow (go t) n
-    Noise k l n -> Noise k (lab l) n
-    Uncertain k l x e -> Uncertain k (lab l) (go x) (go e)
-    Pack ts -> Pack (map go ts)
-    Proj t i -> Proj (go t) i
-    Cycle hs bs -> Cycle hs (vecMap go bs)
-
-restampTermNew :: (Label -> Label) -> (ConRef -> ConRef) -> Term n -> Term n
-restampTermNew lab con = go
  where
   go :: Term m -> Term m
   go t = case mapChildren go t of

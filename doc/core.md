@@ -345,13 +345,48 @@ before code:
    encoding table in design §6.1, and its evaluation rule to design §8.
 4. **Can an existing constructor be removed because of it?** `Case` removes
    `If`. A change that makes Core smaller overall is the best kind.
-5. **Then implement, in this order:** the constructor; `alphaEq`, `refs`,
-   `rewriteRefs`, the encoder; inference and elaboration; lint; the
+5. **Then implement, in this order:** the constructor; `traverseChildren`,
+   `alphaEq`, the encoder (see "Walks over Core" below); inference and
+   elaboration; lint; the
    evaluator; the pretty-printer. Run the property tests from §9. Nothing is
    stored until lint accepts the new form.
 6. **Hash impact.** A new tag never changes the hash of an existing term.
    Changing an existing constructor's encoding does, and so is a format
    bump (§6); it needs a reason strong enough to write down.
+
+### Walks over Core
+
+`Metron.Core.traverseChildren` is the one function that knows where each
+constructor keeps its subterms and what each one binds. It applies a hook
+to a `Var` and a hook to each immediate subterm, left to right, with the
+binders that subterm sits under: one hint under `Lam` and in a `Let` body,
+the fields under an `Alt`, every member under a `Cycle`. `mapChildren`,
+`foldChildren`, `foldTerm` and `children` are built on it, and the walks
+over Core are built on those. A walk says only what is particular to it,
+and leaves every other constructor to the traversal:
+
+| Walk | Module | Its own clauses |
+|---|---|---|
+| `refs`, `refsWithIndex`, `directUses` | `Metron.Core` | `Ref`, `PrimApp`, `Noise`, `Uncertain` |
+| `refsWritten`, `rewriteRefs`, `rewriteRefsWritten` | `Metron.Core` | `Ref` |
+| `inlineRef` | `Metron.Core` | `Ref` |
+| `conTypes` | `Metron.Core` | `Con`, `Case` |
+| `renameTerm`, `weakenBy`, `closedIn` | `Metron.Core` | `Var`, through the variable hook |
+| `rewriteReadings`, `hasReadingMarkers` | `Metron.Infer` | `PrimApp` |
+| `restampTerm` | `Metron.Update` | `Con`, `Case`, `Noise`, `Uncertain` |
+| `child` | `Metron.Branch` | none: a subterm's number is its place in `children` |
+
+A new constructor is therefore added to `traverseChildren` once. Because a
+walk's own clauses end in a catch-all, the compiler cannot say which
+walks the new constructor matters to. Check the table: a constructor
+that carries a `Label` or a `ConRef`, refers to another definition, or
+names an operation needs a clause in the walks that look at those. The
+walks that give every constructor its own meaning stay hand-written and
+exhaustive: `alphaEq`, the encoder (`Metron.Hash`), the printers
+(`Metron.Pretty`), the desugarer, inference and the evaluator. Their
+output differs by constructor, so there is nothing to share. The property
+tests in `test/Traversal.hs` check the walks' laws on generated terms of
+every shape (§9).
 
 ## 8. What is coming, and what it will cost
 

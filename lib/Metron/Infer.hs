@@ -26,8 +26,6 @@ module Metron.Infer (
   readingsOf,
   rewriteReadings,
   hasReadingMarkers,
-  rewriteReadingsNew,
-  hasReadingMarkersNew,
   Annotations (..),
   noAnnotations,
   matchesQuery,
@@ -1796,58 +1794,11 @@ rewriteReadings chosen = go
             else PrimApp prim [go a, go b]
     PrimApp p as
       | Just prim <- Map.lookup p chosen -> PrimApp prim (map go as)
-    PrimApp p as -> PrimApp p (map go as)
-    Var i -> Var i
-    Ref h i hint -> Ref h i hint
-    Lit l -> Lit l
-    Lam h b -> Lam h (go b)
-    App a b -> App (go a) (go b)
-    Let h e b -> Let h (go e) (go b)
-    Con c as -> Con c (map go as)
-    Case s alts -> Case (go s) (map (\(Alt c hs b) -> Alt c hs (go b)) alts)
-    Pow t n -> Pow (go t) n
-    Noise k l n -> Noise k l n
-    Uncertain k l x e -> Uncertain k l (go x) (go e)
-    Pack ts -> Pack (map go ts)
-    Proj t i -> Proj (go t) i
-    Cycle hs bs -> Cycle hs (vecMap go bs)
+    t -> mapChildren go t
 
 -- | Whether a term has a quantity or @to@ whose reading is still to choose.
 hasReadingMarkers :: Term n -> Bool
-hasReadingMarkers = \case
-  PrimApp p as ->
-    isQuantityMarker p || isToMarker p || isFromMarker p || any hasReadingMarkers as
-  Var _ -> False
-  Ref{} -> False
-  Lit _ -> False
-  Lam _ b -> hasReadingMarkers b
-  App a b -> hasReadingMarkers a || hasReadingMarkers b
-  Let _ e b -> hasReadingMarkers e || hasReadingMarkers b
-  Con _ as -> any hasReadingMarkers as
-  Case s alts -> hasReadingMarkers s || any (\(Alt _ _ b) -> hasReadingMarkers b) alts
-  Pow t _ -> hasReadingMarkers t
-  Noise{} -> False
-  Uncertain _ _ x e -> hasReadingMarkers x || hasReadingMarkers e
-  Pack ts -> any hasReadingMarkers ts
-  Proj t _ -> hasReadingMarkers t
-  Cycle _ bs -> any hasReadingMarkers (vecToList bs)
-
-rewriteReadingsNew :: Map.Map Text Text -> Term n -> Term n
-rewriteReadingsNew chosen = go
- where
-  go :: Term m -> Term m
-  go = \case
-    PrimApp p [a, b]
-      | Just prim <- Map.lookup p chosen ->
-          if prim == "pointOn"
-            then PrimApp prim [go b, go a]
-            else PrimApp prim [go a, go b]
-    PrimApp p as
-      | Just prim <- Map.lookup p chosen -> PrimApp prim (map go as)
-    t -> mapChildren go t
-
-hasReadingMarkersNew :: Term n -> Bool
-hasReadingMarkersNew =
+hasReadingMarkers =
   getAny
     . foldTerm
       ( \case

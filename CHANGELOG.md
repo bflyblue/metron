@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Internal, no change to behaviour or hashes: one traversal for Core
+  (core.md §7, "Walks over Core"). `traverseChildren` is the one place that
+  knows each constructor's subterms and binders, and the walks over Core
+  (references, rewriting, inlining, renaming, readings, restamping, a
+  branch point's children) say only what is particular to them. A new
+  constructor is added in one place. A generator of well-scoped Core terms
+  of every shape checks the walks' laws.
 - A branch point that splits the samples, in tail position, is a tail
   call (design §8.2). Under Monte Carlo a loop whose condition carries
   draws, each sample stopping at its own step, runs group after group in

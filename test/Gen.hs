@@ -36,7 +36,6 @@ module Gen (
   coreHashes,
   genCoreTerm,
   genSomeTerm,
-  scopeNames,
 ) where
 
 import Control.Monad (foldM)
@@ -1017,12 +1016,6 @@ fins :: Depth n -> [Fin n]
 fins = \case
   DZ -> []
   DS d -> FZ : map FS (fins d)
-
--- | A name for each variable in scope, repeating so that printing primes some.
-scopeNames :: Depth n -> Vec n Text
-scopeNames = \case
-  DZ -> VNil
-  DS d -> VCons "x" (scopeNames d)
 
 -- | Three hashes, so that references, rewrites and constructors collide.
 coreHashes :: [Hash]

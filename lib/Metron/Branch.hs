@@ -7,9 +7,6 @@ for each alternative counting the copies whose own scrutinee selects it.
 -}
 module Metron.Branch (
   tableLines,
-  Inside (..),
-  child,
-  childNew,
 ) where
 
 import Data.IntMap.Strict qualified as IntMap
@@ -27,7 +24,6 @@ import Metron.Core (
   Vec (..),
   children,
   vecAppend,
-  vecIndex,
   vecMap,
   vecToList,
  )
@@ -126,34 +122,15 @@ termAt cb (inputHash, input) site = do
 
 {- | A child of a term by the index the evaluator gives it ("Metron.Eval"):
 a case's scrutinee is 0 and its alternatives from 1; a let's bound value
-0 and its body 1; a lambda's body 0; a cycle's members by number.
+0 and its body 1; a lambda's body 0; a cycle's members by number. That
+is the order 'children' gives them in.
 -}
 child :: Inside -> Int -> Maybe Inside
-child (Inside ctx t) i = case t of
-  Lam (Hint h) b | i == 0 -> Just (Inside (VCons (fresh h ctx) ctx) b)
-  App f a -> nth [Inside ctx f, Inside ctx a]
-  Let (Hint h) e b
-    | i == 0 -> Just (Inside ctx e)
-    | i == 1 -> Just (Inside (VCons (fresh h ctx) ctx) b)
-  PrimApp _ args -> nth (map (Inside ctx) args)
-  Con _ args -> nth (map (Inside ctx) args)
-  Case sc alts
-    | i == 0 -> Just (Inside ctx sc)
-    | otherwise -> case drop (i - 1) alts of
-        Alt _ hs b : _ -> Just (Inside (vecAppend (names hs) ctx) b)
-        [] -> Nothing
-  Pow b _ | i == 0 -> Just (Inside ctx b)
-  Uncertain _ _ x e -> nth [Inside ctx x, Inside ctx e]
-  Pack ts -> nth (map (Inside ctx) ts)
-  Proj b _ | i == 0 -> Just (Inside ctx b)
-  Cycle hs bodies -> Inside (vecAppend (names hs) ctx) <$> vecIndex i bodies
+child (Inside ctx t) i = case drop i (children t) of
+  Child hs b : _ | i >= 0 -> Just (Inside (vecAppend (vecMap name hs) ctx) b)
   _ -> Nothing
  where
-  nth xs = case drop i xs of
-    x : _ -> Just x
-    [] -> Nothing
-  names :: Vec k Hint -> Vec k Text
-  names = vecMap (\(Hint h) -> fresh h ctx)
+  name (Hint h) = fresh h ctx
 
 -- | A binder's name as printed: its hint, primed where it would shadow.
 fresh :: Text -> Vec n Text -> Text
@@ -191,10 +168,3 @@ branchAt spelling namer named (Inside ctx t) = case t of
 
 tshow :: (Show a) => a -> Text
 tshow = T.pack . show
-
-childNew :: Inside -> Int -> Maybe Inside
-childNew (Inside ctx t) i = case drop i (children t) of
-  Child hs b : _ | i >= 0 -> Just (Inside (vecAppend (vecMap name hs) ctx) b)
-  _ -> Nothing
- where
-  name (Hint h) = fresh h ctx
