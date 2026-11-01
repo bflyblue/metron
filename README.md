@@ -92,4 +92,4 @@ Start without `--no-codebase` to use a saved store. Metron uses a project-local 
 
 New definitions remain in a temporary workspace until you accept them with `:add`. Use `:update` for changes to saved definitions. Use `:export` and `:load` to work with text files, or run a file with `metron -f ride.metron`.
 
-For a guided introduction, follow the [tutorial](TUTORIAL.md), from basic calculations through saved definitions and function upgrades. For more detail, read the [language design](doc/design.md), the [implementation overview](doc/core.md), or the [changelog](CHANGELOG.md). The design document also contains planned work and open questions.
+For a guided introduction, follow the [tutorial](TUTORIAL.md), from basic calculations through saved definitions and function upgrades. For more detail, read the [project overview](doc/overview.md), the [language design](doc/design.md), the [implementation overview](doc/core.md), or the [changelog](CHANGELOG.md). The design document also contains planned work and open questions.
