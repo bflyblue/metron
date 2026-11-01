@@ -90,7 +90,7 @@ import Data.ByteString.Builder (
   toLazyByteString,
   word8,
  )
-import Data.List (sortOn)
+import Data.List (sort, sortOn)
 import Data.Map.Merge.Strict qualified as Merge (
   merge,
   preserveMissing,
@@ -117,6 +117,7 @@ import Data.Ord (Down (..))
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T (pack)
+import GHC.Num (integerLog2)
 import Metron.Core (Hash (..), NudgeKind (..))
 import Metron.Encode (sint, text, varint)
 import Metron.Numerical.Approx (
@@ -320,11 +321,66 @@ sigmaOf p c
   | c.variance == 0 = 0
   | otherwise = let (s, e) = sqrtApprox p c.variance in s + e
 
+-- Exact while small -------------------------------------------------------------------
+
+{- | The exact result of an operation on exact operands, @+@, @*@ or @/@
+(design §3.2.8, exact while small): exact while it is short
+('exactLength' within 'exactLimit'), and otherwise rounded to
+'shortDigits' significant digits, the rounding a fresh bound nudge named
+by the operation, its operands and the precision as any other
+operation's is (design §3.2.4). The operands of a sum or a product are
+named in order, so that @a + b@ and @b + a@ round to one unknown.
+-}
+exactResult :: Text -> Precision -> [Rational] -> Rational -> Magnitude
+exactResult name p operands r
+  | exactLength r <= exactLimit p = Exact r
+  | otherwise =
+      let r' = shorten p r
+       in fresh name p (map Exact operands) r' (abs (r - r'))
+
+{- | How long a rational is beyond its size, in bits: the shorter of its
+numerator and denominator. A number's size is the @digits@ limit's
+concern (design §8.1), so @2^100000@ and @1e-99999@ are short, and
+@1/3@ is; a number with many digits both above and below its leading
+one, @(1/3)^500 + 1@, is long. The cost of exact arithmetic is bounded by
+the size and twice the length together.
+-}
+exactLength :: Rational -> Int
+exactLength r = min (bits (abs (numerator r))) (bits (denominator r))
+ where
+  bits n = if n == 0 then 0 else fromIntegral (integerLog2 n) + 1
+
+{- | The longest exact result kept exact, in bits: eight times
+'shortDigits' decimal digits, 224 digits at the default precision
+(design §3.2.8). Measured, the longest exact result of ordinary
+arithmetic in the test suite and the tutorial is 122 digits at the
+default precision (the products of a spinning chart's exact rotation),
+which a finite difference then cancels; the limit is about twice that.
+A product of eight values at working precision stays exact, and an
+exact operation at the limit costs at most about sixty-four times one
+at working precision, microseconds. An exact iteration that doubles its
+length each step reaches the limit within @log₂ (8 (p + 4))@ steps of
+its start and runs at working precision after.
+-}
+exactLimit :: Precision -> Int
+exactLimit p = (8 * shortDigits p * 3322 + 999) `div` 1000
+
 -- Linear operations ---------------------------------------------------------------
 
-addM :: Magnitude -> Magnitude -> Magnitude
-addM (Exact a) (Exact b) = Exact (a + b)
-addM x y =
+{- | A sum. Two exact operands give an exact result while it is short
+('exactResult'); otherwise a sum is linear, collecting the nudges like
+terms, and never rounds, which is what keeps @x - x@ exactly @0@.
+-}
+addM :: Precision -> Magnitude -> Magnitude -> Magnitude
+addM p (Exact a) (Exact b) = exactResult "add" p (sort [a, b]) (a + b)
+addM _ x y = addLinear x y
+
+{- | A sum that never rounds, an exact one included: for a comparison,
+which must see the exact difference.
+-}
+addLinear :: Magnitude -> Magnitude -> Magnitude
+addLinear (Exact a) (Exact b) = Exact (a + b)
+addLinear x y =
   let (m1, t1, s1) = parts x
       (m2, t2, s2) = parts y
       -- Only a nudge both share can cancel to zero.
@@ -344,15 +400,27 @@ addM x y =
 addCoeff :: (Rational, Nudge) -> (Rational, Nudge) -> (Rational, Nudge)
 addCoeff (c, n) (d, _) = let !s = c + d in (s, n)
 
+-- | Negation, which never lengthens a rational.
 negM :: Magnitude -> Magnitude
-negM = scaleM (-1)
+negM = scaleLinear (-1)
 
-subM :: Magnitude -> Magnitude -> Magnitude
-subM x y = addM x (negM y)
+subM :: Precision -> Magnitude -> Magnitude -> Magnitude
+subM p x y = addM p x (negM y)
 
--- | Multiplication by an exact constant.
-scaleM :: Rational -> Magnitude -> Magnitude
-scaleM k = \case
+-- | The exact difference, never rounded, for a comparison.
+subLinear :: Magnitude -> Magnitude -> Magnitude
+subLinear x y = addLinear x (negM y)
+
+{- | Multiplication by an exact constant: an exact product while it is
+short ('exactResult'), and on a form, linear and never rounded.
+-}
+scaleM :: Precision -> Rational -> Magnitude -> Magnitude
+scaleM p k = \case
+  Exact a -> exactResult "mul" p (sort [k, a]) (k * a)
+  x -> scaleLinear k x
+
+scaleLinear :: Rational -> Magnitude -> Magnitude
+scaleLinear k = \case
   Exact a -> Exact (k * a)
   Affine m ts s sk
     | k == 0 -> Exact 0
@@ -405,8 +473,8 @@ statistical terms are measured against the first-order σ, not carried
 as independent random variables.
 -}
 mulM :: Precision -> Magnitude -> Magnitude -> Magnitude
-mulM _ (Exact a) y = scaleM a y
-mulM _ x (Exact b) = scaleM b x
+mulM p (Exact a) y = scaleM p a y
+mulM p x (Exact b) = scaleM p b x
 mulM p x y =
   let (m1, t1, s1) = parts x
       (m2, t2, s2) = parts y
@@ -593,9 +661,9 @@ recipM p x
         )
 
 divM :: Precision -> Magnitude -> Magnitude -> Either ArithError Magnitude
-divM _ (Exact a) (Exact b)
+divM p (Exact a) (Exact b)
   | b == 0 = Left DivideByZero
-  | otherwise = Right (Exact (a / b))
+  | otherwise = Right (exactResult "div" p [a, b] (a / b))
 divM p x y
   -- A denominator that may be zero is refused before anything cancels, so
   -- x / x and 0 / x fail as 1 / x does when x's bound enclosure reaches
@@ -610,7 +678,7 @@ divM p x y
   , Nothing <- skewOf x
   , Nothing <- skewOf y
   , let k = midpoint x / m
-  , x == scaleM k y =
+  , x == scaleLinear k y =
       Right (Exact k)
   | otherwise = mulM p x <$> recipM p y
 
@@ -646,7 +714,16 @@ withFresh name p operands size base =
       -- The midpoint is rounded to p digits (design §3.2.8) and the rounding
       -- error joins this operation's nudge rather than the anonymous slack,
       -- so that two evaluations of the same operation still cancel exactly.
-      m' = if Map.null ts && s == 0 then m else roundAt (precisionExponent p m) m
+      -- A base with no nudges is shortened to p + 4 digits instead: a value
+      -- the caller rounded already (π, an exact result, a function's value)
+      -- is left as it is, and a product whose every linear coefficient fell
+      -- below the grid ('shortenLinear') no longer keeps the full length of
+      -- its midpoint, the product of its operands' (115 digits a step of
+      -- the logistic map).
+      m' =
+        if Map.null ts && s == 0
+          then shorten p m
+          else roundAt (precisionExponent p m) m
       size' = roundUpSig (shortDigits p) (size + abs (m - m'))
    in if size' == 0
         then base
@@ -917,28 +994,28 @@ asinM p x
   | lo x < -1 || hi x > 1 =
       Left (Domain "asin of a value that may lie outside [-1, 1]")
   | Exact 0 <- x = Right (Exact 0)
-  | Exact 1 <- x = Right (scaleM (1 % 2) (piM p))
-  | Exact (-1) <- x = Right (scaleM (-(1 % 2)) (piM p))
+  | Exact 1 <- x = Right (scaleM p (1 % 2) (piM p))
+  | Exact (-1) <- x = Right (scaleM p (-(1 % 2)) (piM p))
   | lo x <= -1 || hi x >= 1 =
       Left
         ( Domain
             "asin of an enclosure that reaches the edge of its domain, where the slope is infinite"
         )
   | otherwise = do
-      inner <- sqrtM p (subM (Exact 1) (mulM p x x))
+      inner <- sqrtM p (subM p (Exact 1) (mulM p x x))
       atanM p <$> divM p x inner
 
 acosM :: Precision -> Magnitude -> Either ArithError Magnitude
-acosM p x = subM (scaleM (1 % 2) (piM p)) <$> asinM p x
+acosM p x = subM p (scaleM p (1 % 2) (piM p)) <$> asinM p x
 
 atan2M :: Precision -> Magnitude -> Magnitude -> Either ArithError Magnitude
 atan2M p y x
   | Exact 0 <- x, Exact 0 <- y = Left (Domain "atan2 0 0")
   | lo x > 0 = atanM p <$> divM p y x
-  | hi x < 0 && lo y >= 0 = (`addM` piM p) . atanM p <$> divM p y x
-  | hi x < 0 && hi y < 0 = (`subM` piM p) . atanM p <$> divM p y x
-  | lo y > 0 = subM (scaleM (1 % 2) (piM p)) . atanM p <$> divM p x y
-  | hi y < 0 = subM (scaleM (-(1 % 2)) (piM p)) . atanM p <$> divM p x y
+  | hi x < 0 && lo y >= 0 = (\a -> addM p a (piM p)) . atanM p <$> divM p y x
+  | hi x < 0 && hi y < 0 = (\a -> subM p a (piM p)) . atanM p <$> divM p y x
+  | lo y > 0 = subM p (scaleM p (1 % 2) (piM p)) . atanM p <$> divM p x y
+  | hi y < 0 = subM p (scaleM p (-(1 % 2)) (piM p)) . atanM p <$> divM p x y
   | otherwise = Left (Domain "atan2 of an enclosure that contains the origin")
 
 sinhM, coshM :: Precision -> Magnitude -> Magnitude
@@ -995,7 +1072,7 @@ coscSqM p t
   | Exact 0 <- t = Right (Exact (1 % 2))
   | lo t >= 1 = do
       theta <- sqrtM p t
-      divM p (subM (Exact 1) (cosM p theta)) t
+      divM p (subM p (Exact 1) (cosM p theta)) t
   | otherwise = Right (rodriguesSeries "cosc" p 2 t)
 
 {- | @Σₖ (−t)ᵏ / (2k + j)!@ on an enclosure of @t@, by Horner's rule in
@@ -1017,7 +1094,10 @@ rodriguesSeries name p j t =
         k : _ -> k
         [] -> 0
       poly =
-        foldr (\k acc -> addM (Exact (coeff k)) (mulM p t acc)) (Exact 0) [0 .. top - 1]
+        foldr
+          (\k acc -> addM p (Exact (coeff k)) (mulM p t acc))
+          (Exact 0)
+          [0 .. top - 1]
    in enclose name p [t] (2 * size top) poly
 
 {- | Add one fresh bound nudge of the given size to a value, named after
@@ -1083,7 +1163,7 @@ even below the warning threshold.
 compareM ::
   Decide -> Precision -> Magnitude -> Magnitude -> Either ArithError Ordering
 compareM decide p a b =
-  let d = subM a b
+  let d = subLinear a b
       c = collapse d
       k = decide.sigma
       sigma = sigmaOf p c

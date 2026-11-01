@@ -607,7 +607,7 @@ eval cfg rt = go
               component i =
                 ( \vi ->
                     foldl
-                      addM
+                      (addM p)
                       vi
                       [mulM (precisionOf cfg) lij (noise j) | (j, lij) <- zip [0 ..] (lrows !! i)]
                 )
@@ -1030,8 +1030,8 @@ runPrim cfg rt prim ty args = case (prim, args) of
           (V.map (fmap (\x -> mulM p x k)) xs)
       )
   -- Sum: the left operand's display unit wins.
-  ("add", [a, b]) -> elementwise2 (pureOp addM) const (combine smallerUnit) a b
-  ("sub", [a, b]) -> elementwise2 (pureOp subM) const (combine smallerUnit) a b
+  ("add", [a, b]) -> elementwise2 (pureOp (addM p)) const (combine smallerUnit) a b
+  ("sub", [a, b]) -> elementwise2 (pureOp (subM p)) const (combine smallerUnit) a b
   ("neg", [a]) -> elementwise1 negM a
   ("abs", [a]) -> elementwise1 (absM p) a
   -- The parts of an enclosure as the printer collapses it (design §3.2.9,
@@ -1093,7 +1093,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
                 rows = product d1
                 element k =
                   let (i, j) = k `divMod` stride2
-                   in sized cfg.limits . sumM
+                   in sized cfg.limits . sumM p
                         =<< sequence
                           [ mulM p <$> (xs V.! (i * n + c)) <*> (ys V.! (c * stride2 + j))
                           | c <- [0 .. n - 1]
@@ -1170,7 +1170,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("norm", [a]) -> do
     (_, d, hint, buf) <- tensor =<< a
     xs <- sequence (V.toList buf)
-    r <- arith (sqrtM p (sumM [mulM p x x | x <- xs]))
+    r <- arith (sqrtM p (sumM p [mulM p x x | x <- xs]))
     Right (num d hint r)
   ("det", [a]) -> do
     (dims, _, _, buf) <- tensor =<< a
@@ -1234,7 +1234,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
                     (n * n)
                     ( \k ->
                         let (j, i) = k `divMod` n
-                         in (\x y x' y' -> subM (mulM p x y) (mulM p x' y'))
+                         in (\x y x' y' -> subM p (mulM p x y) (mulM p x' y'))
                               <$> (xs V.! j)
                               <*> (ys V.! i)
                               <*> (xs V.! i)
@@ -1313,7 +1313,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
                 diagonal = st !! lo + st !! hi
                 element k =
                   let base = sum (zipWith (*) (unflatten outDims k) (map snd dropped))
-                   in sumM <$> sequence [buf V.! (base + c * diagonal) | c <- [0 .. dims !! lo - 1]]
+                   in sumM p <$> sequence [buf V.! (base + c * diagonal) | c <- [0 .. dims !! lo - 1]]
              in Right (VTensor outDims d hint (V.generate (product outDims) element))
       _ -> Left (Internal "contract: positions out of range or of different lengths")
   -- Index permutation: position q of the result is position p_q of the
@@ -1480,12 +1480,12 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("pointAdd", [pt, v]) -> do
     (dims, d, sc, buf) <- point =<< pt
     (_, _, _, vs) <- tensor =<< v
-    Right (VPoint dims d sc (V.zipWith (\m dv -> addM <$> m <*> dv) buf vs))
+    Right (VPoint dims d sc (V.zipWith (\m dv -> addM p <$> m <*> dv) buf vs))
   ("pointSub", [pt, q]) -> do
     (dims, d, sc1, m1) <- point =<< pt
     (_, _, sc2, m2) <- point =<< q
     let hint = if sc1.name == sc2.name then sc1.stepHint else Nothing
-    Right (VTensor dims d hint (V.zipWith (\x y -> subM <$> x <*> y) m1 m2))
+    Right (VTensor dims d hint (V.zipWith (\x y -> subM p <$> x <*> y) m1 m2))
   -- A point to another chart (design §3.10, F5, F7): through the space's
   -- base, from its frame's configuration, which a chart with no parameters
   -- has one of, so the chart it was written on serves; one with parameters
@@ -1588,7 +1588,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
       Just r -> do
         rm <- r
         Right (rotateVector p n rm amount)
-    let originM = maybe along (\pc -> V.zipWith addM pc.origin along) parentChart
+    let originM = maybe along (\pc -> V.zipWith (addM p) pc.origin along) parentChart
         (forward, backward) = chartFrame p n parentChart gens
         (localForward, localBackward) = chartFrame p n Nothing gens
         (spinAbsM, originVelocityM) = chartMotion p n parentChart forward along spinM
@@ -1638,8 +1638,8 @@ runPrim cfg rt prim ty args = case (prim, args) of
         xs <- V.fromList <$> sequence (V.toList buf)
         let n = V.length xs
         let (up, down) = chartRoute src sc
-            ascend x c = V.zipWith addM c.localOrigin <$> turn n c.relativeRotation x
-            descend x c = turn n c.relativeRotationInverse (V.zipWith subM x c.localOrigin)
+            ascend x c = V.zipWith (addM p) c.localOrigin <$> turn n c.relativeRotation x
+            descend x c = turn n c.relativeRotationInverse (V.zipWith (subM p) x c.localOrigin)
         above <- foldM ascend xs up
         coords <- foldM descend above down
         Right (VPoint dims d sc (V.map Right coords))
@@ -1745,15 +1745,15 @@ runPrim cfg rt prim ty args = case (prim, args) of
         element k =
           let i = (k `div` st) `mod` n
               base = k - i * st
-           in sumM
+           in sumM p
                 <$> sequence
                   [ mulM p <$> (rbuf V.! (i * n + j)) <*> (buf V.! (base + j * st))
                   | j <- [0 .. n - 1]
                   ]
      in V.generate (product dims) element
 
-sumM :: [Magnitude] -> Magnitude
-sumM = foldl' addM (Exact 0)
+sumM :: Precision -> [Magnitude] -> Magnitude
+sumM p = foldl' (addM p) (Exact 0)
 
 {- | Whether a tensor of these lengths may be built: at most the session's
 @components@ (design §8.1), counted without overflow. A product whose
@@ -1905,7 +1905,7 @@ chartMotion p n parentChart rotationAbs along spinM =
           Just $ do
             v <- fromMaybe (Right zeros) vp
             transport <- maybe (Right zeros) (>>= \w -> cross3 p w along) wp
-            Right (V.zipWith addM v transport)
+            Right (V.zipWith (addM p) v transport)
   )
  where
   zeros = V.replicate n (Exact 0)
@@ -1914,7 +1914,7 @@ chartMotion p n parentChart rotationAbs along spinM =
     Just r -> (\rm -> rotateVector p n rm w) <$> r
   plus Nothing b = b
   plus a Nothing = a
-  plus (Just a) (Just b) = Just (V.zipWith addM <$> a <*> b)
+  plus (Just a) (Just b) = Just (V.zipWith (addM p) <$> a <*> b)
 
 -- | The cross product of two three-vectors of magnitudes.
 cross3 ::
@@ -1924,7 +1924,7 @@ cross3 ::
   Either EvalError (Vector Magnitude)
 cross3 p a b
   | V.length a == 3 && V.length b == 3 =
-      let x i j = subM (mulM p (a V.! i) (b V.! j)) (mulM p (a V.! j) (b V.! i))
+      let x i j = subM p (mulM p (a V.! i) (b V.! j)) (mulM p (a V.! j) (b V.! i))
        in Right (V.fromList [x 1 2, x 2 0, x 0 1])
   | otherwise = Left (Internal "a spin is a three-vector")
 
@@ -1972,7 +1972,7 @@ matrixProduct p n a b =
     (n * n)
     ( \k ->
         let (i, j) = k `divMod` n
-         in sumM [mulM p (a V.! (i * n + l)) (b V.! (l * n + j)) | l <- [0 .. n - 1]]
+         in sumM p [mulM p (a V.! (i * n + l)) (b V.! (l * n + j)) | l <- [0 .. n - 1]]
     )
 
 -- | A row-major @n × n@ matrix applied to a vector.
@@ -1981,7 +1981,7 @@ rotateVector ::
 rotateVector p n r v =
   V.generate
     n
-    (\i -> sumM [mulM p (r V.! (i * n + j)) (v V.! j) | j <- [0 .. n - 1]])
+    (\i -> sumM p [mulM p (r V.! (i * n + j)) (v V.! j) | j <- [0 .. n - 1]])
 
 chunksOf :: Int -> [a] -> [[a]]
 chunksOf n xs

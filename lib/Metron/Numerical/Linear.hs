@@ -6,32 +6,33 @@ module Metron.Numerical.Linear (
   choleskyRows,
 ) where
 
-import Control.Monad ( foldM )
-import Data.List ( transpose )
-import Data.Maybe ( isJust )
-import Data.Text ( Text )
-import Metron.Affine
-    ( Precision,
-      addM,
-      boundRadius,
-      compareM,
-      coscSqM,
-      divM,
-      enclose,
-      isExact,
-      midpoint,
-      mulM,
-      scaleM,
-      sincSqM,
-      skewOf,
-      sqrtM,
-      statCoefficients,
-      subM,
-      ArithError(Domain, Undecided),
-      Decide,
-      Magnitude(Exact) )
-import Data.Map.Strict qualified as Map ( null )
-import Data.Text qualified as T ( pack )
+import Control.Monad (foldM)
+import Data.List (transpose)
+import Data.Map.Strict qualified as Map (null)
+import Data.Maybe (isJust)
+import Data.Text (Text)
+import Data.Text qualified as T (pack)
+import Metron.Affine (
+  ArithError (Domain, Undecided),
+  Decide,
+  Magnitude (Exact),
+  Precision,
+  addM,
+  boundRadius,
+  compareM,
+  coscSqM,
+  divM,
+  enclose,
+  isExact,
+  midpoint,
+  mulM,
+  scaleM,
+  sincSqM,
+  skewOf,
+  sqrtM,
+  statCoefficients,
+  subM,
+ )
 
 {- | A usable pivot: the entry of largest midpoint among those whose
 enclosure excludes zero, by row position.
@@ -46,7 +47,8 @@ pivotIn from column =
 
 singular :: Text -> [Magnitude] -> ArithError
 singular what column
-  | all (== Exact 0) column = Metron.Affine.Domain (what <> " of a singular matrix")
+  | all (== Exact 0) column =
+      Metron.Affine.Domain (what <> " of a singular matrix")
   | otherwise =
       Metron.Affine.Undecided (what <> " of a matrix whose enclosure may be singular")
 
@@ -69,10 +71,10 @@ determinant p n = go 0 (Exact 1)
                     -- Moving row i to the front is i transpositions.
                     sign = if even i then 1 else -1
                 reduced <- mapM (eliminate k pivotRow pv) others
-                go (k + 1) (scaleM sign (mulM p acc pv)) reduced
+                go (k + 1) (scaleM p sign (mulM p acc pv)) reduced
   eliminate k pivotRow pv r = do
     f <- divM p (r !! k) pv
-    pure (zipWith (\a b -> subM a (mulM p f b)) r pivotRow)
+    pure (zipWith (\a b -> subM p a (mulM p f b)) r pivotRow)
 
 -- | Inverse by Gauss-Jordan elimination on the augmented matrix.
 invert :: Precision -> Int -> [[Magnitude]] -> Either ArithError [[Magnitude]]
@@ -98,7 +100,7 @@ invert p n rows0 =
                     pivotRow = swapped !! k
                     pv = pivotRow !! k
                 normalised <- mapM (\x -> divM p x pv) pivotRow
-                let eliminate r = let f = r !! k in zipWith (\a b -> subM a (mulM p f b)) r normalised
+                let eliminate r = let f = r !! k in zipWith (\a b -> subM p a (mulM p f b)) r normalised
                 go
                   (k + 1)
                   [if j == k then normalised else eliminate r | (j, r) <- zip [0 ..] swapped]
@@ -140,7 +142,10 @@ matrixExp ::
   Precision -> Int -> [[Magnitude]] -> Either ArithError [[Magnitude]]
 matrixExp p n b
   | any (any (\x -> not (Map.null (statCoefficients x)) || isJust (skewOf x))) b =
-      Left (Metron.Affine.Domain "expm with statistical uncertainty is not supported; its statistical remainder cannot yet be propagated")
+      Left
+        ( Metron.Affine.Domain
+            "expm with statistical uncertainty is not supported; its statistical remainder cannot yet be propagated"
+        )
   | singlePlane && sigma == 0 = rodrigues
   | singlePlane && sigma <= 10 ^^ negate (p - 4) =
       positioned "expm: symmetric part" (2 * sigma) <$> rodrigues
@@ -152,7 +157,7 @@ matrixExp p n b
   identity =
     [[if i == j then Exact 1 else Exact 0 | j <- [0 .. n - 1]] | i <- [0 .. n - 1]]
   at i j = b !! i !! j
-  matMul x y = [[sumM (zipWith (mulM p) row col) | col <- transpose y] | row <- x]
+  matMul x y = [[sumM p (zipWith (mulM p) row col) | col <- transpose y] | row <- x]
   -- An independent fresh nudge on every entry, named with its position.
   positioned name size m =
     [ [ enclose name p (Exact (fromIntegral (i * n + j)) : concat b) size x
@@ -163,16 +168,17 @@ matrixExp p n b
   normBound m = maximum (0 : [sum [abs (midpoint x) + boundRadius x | x <- row] | row <- m])
   -- Rodrigues
   anti =
-    [ [scaleM (1 / 2) (subM (at i j) (at j i)) | j <- [0 .. n - 1]]
+    [ [scaleM p (1 / 2) (subM p (at i j) (at j i)) | j <- [0 .. n - 1]]
     | i <- [0 .. n - 1]
     ]
   sigma =
     normBound
-      [ [scaleM (1 / 2) (addM (at i j) (at j i)) | j <- [0 .. n - 1]]
+      [ [scaleM p (1 / 2) (addM p (at i j) (at j i)) | j <- [0 .. n - 1]]
       | i <- [0 .. n - 1]
       ]
   t =
     sumM
+      p
       [ mulM p (anti !! i !! j) (anti !! i !! j)
       | i <- [0 .. n - 1]
       , j <- [i + 1 .. n - 1]
@@ -183,7 +189,7 @@ matrixExp p n b
              && all
                (all (== Exact 0))
                ( zipWith
-                   (zipWith addM)
+                   (zipWith (addM p))
                    (matMul anti (matMul anti anti))
                    (map (map (mulM p t)) anti)
                )
@@ -192,23 +198,23 @@ matrixExp p n b
     f <- sincSqM p t
     g <- coscSqM p t
     Right
-      [ [addM d (addM (mulM p f x) (mulM p g y)) | (d, x, y) <- zip3 drow xrow yrow]
+      [ [addM p d (addM p (mulM p f x) (mulM p g y)) | (d, x, y) <- zip3 drow xrow yrow]
       | (drow, xrow, yrow) <- zip3 identity anti (matMul anti anti)
       ]
   -- The series
   beta = normBound b
   s = length (takeWhile (> 1 / 2) (iterate (/ 2) beta))
   beta' = beta / 2 ^ s
-  scaled = map (map (scaleM (recip (2 ^ s)))) b
+  scaled = map (map (scaleM p (recip (2 ^ s)))) b
   tol = 10 ^^ negate (p + 4 + s) :: Rational
   factorial k = fromInteger (product [1 .. k]) :: Rational
   top = until (\k -> beta' ^ k / factorial k < tol) (+ 1) (1 :: Integer)
   powers =
     scanl
-      (\m k -> map (map (scaleM (recip (fromInteger k)))) (matMul m scaled))
+      (\m k -> map (map (scaleM p (recip (fromInteger k)))) (matMul m scaled))
       identity
       [1 .. top - 1]
-  partial = foldr1 (zipWith (zipWith addM)) powers
+  partial = foldr1 (zipWith (zipWith (addM p))) powers
   remainder = 2 * beta' ^ top / factorial top
 
 {- | Cholesky–Banachiewicz on enclosures (design §3.5): @L Lᵀ = P@ with @L@
@@ -243,7 +249,21 @@ choleskyRows what decide p a = mapM_ symmetric pairs >> go 0 []
                     <> " differ"
                 )
             )
-    _ -> Left (Metron.Affine.Domain (what <> ": symmetry of entries ." <> tshow i <> "." <> tshow j <> " and ." <> tshow j <> "." <> tshow i <> " cannot be established"))
+    _ ->
+      Left
+        ( Metron.Affine.Domain
+            ( what
+                <> ": symmetry of entries ."
+                <> tshow i
+                <> "."
+                <> tshow j
+                <> " and ."
+                <> tshow j
+                <> "."
+                <> tshow i
+                <> " cannot be established"
+            )
+        )
   go i done
     | i == n = Right done
     | otherwise = do
@@ -254,16 +274,15 @@ choleskyRows what decide p a = mapM_ symmetric pairs >> go 0 []
           | j > i = Right (Exact 0)
           | otherwise = do
               let rowJ = if j == i then prev else done !! j
-                  s = foldl addM (Exact 0) [mulM p (prev !! k) (rowJ !! k) | k <- [0 .. j - 1]]
-                  rest = subM ((a !! i) !! j) s
+                  s = foldl (addM p) (Exact 0) [mulM p (prev !! k) (rowJ !! k) | k <- [0 .. j - 1]]
+                  rest = subM p ((a !! i) !! j) s
               if i == j
                 then sqrtM p rest
                 else divM p rest ((done !! j) !! j)
     foldM (\acc j -> (\x -> acc ++ [x]) <$> entry j acc) [] [0 .. n - 1]
 
+sumM :: Precision -> [Magnitude] -> Magnitude
+sumM p = foldl' (addM p) (Exact 0)
 
-sumM :: [Magnitude] -> Magnitude
-sumM = foldl' addM (Exact 0)
-
-tshow :: Show a => a -> Text
+tshow :: (Show a) => a -> Text
 tshow = T.pack . show
