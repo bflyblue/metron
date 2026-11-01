@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- Resource limits (design §8.1): a program that asks for more than the
+  machine has fails with an ordinary error naming the setting it hit, and
+  the session goes on. `:set` lists them; `:set NAME VALUE`, and `--set
+  NAME VALUE` on the command line, change them. `memory` (4 GB) is the
+  runtime's heap, changed while running; `steps` (10⁸ per expression,
+  about five seconds of a runaway loop) and `depth` (10⁵ nested calls; a
+  tail call does not nest) are counted by the evaluator; `digits` (10⁵)
+  bounds how large or small a number may be, checked before computing a
+  power, a literal or an exponential, and after arithmetic; `components`
+  (10⁷) is the old fixed tensor limit, now a setting checked where a tensor
+  is built (types and literals keep a fixed bound of 2^40); `time`, off by
+  default, is a wall-clock limit per input. Limits change no value and no
+  hash.
+- Memory that grew with how long a program ran: a call in tail position
+  is a tail call, so a loop runs in constant stack; an argument that is a
+  variable is passed on, not wrapped; a value's dimension and display unit
+  are evaluated, not chains of thunks; a closure keeps only the variables
+  it uses; and a call evaluates first the arguments its function certainly
+  evaluates (a strictness analysis), so `go n acc = … go (n - 1) (acc + 1)`
+  and `f n = f (n + 1)` run in constant memory. `hh 1000000`, a counting
+  loop, needed 870 MB and now 32 MB; `length (range 0 1e6)` needed
+  3.3 GB and runs in 32 MB, as do a state vector or a quantity with a
+  unit carried through a loop.
+- `std.foldl'`, strict in its accumulator, beside the lazy `std.foldl`, and
+  the primitive `seq a b`, which evaluates `a` and every component of a
+  number, a tensor or a point before giving `b`. `length` and `reverse` use
+  `foldl'`.
+- A sum of many uncertain values is linear in their number: each addition
+  filtered every nudge, and compaction sorted by insertion, so `norm
+  (noise 1000000)` ran past a minute; it takes 8.5 s. `log` of a tiny
+  number finds its power of two at once instead of halving one step at a
+  time; it is still slow (`log 1e-99999` takes 28 s), its series being
+  summed in exact rationals, which the precision audit is to fix.
+
 - The `astro` library, first build (design §7.7): the record `Body {mu,
   radius, flattening, j2, rate}` and nested constant sets chosen with a
   `use`: `astro.wgs84` (TR8350.2 with the EGM96 J2), `astro.iers2010` (IERS

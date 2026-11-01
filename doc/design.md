@@ -5223,11 +5223,11 @@ another route.
 The library is split by domain into sibling namespaces, each a `namespace`
 block in the seed source, with the basic functions alone in `std`. The
 counts are labels, as `:ls` counts them (aliases and record fields
-included; a nested block's labels count in its top namespace), 980 in all:
+included; a nested block's labels count in its top namespace), 981 in all:
 
 | namespace | contents | labels | stored `use` by default |
 |---|---|---|---|
-| `std` | the types `Bool` (`False True`), `Pair` and `List` (`Nil Cons`), the compiler's own declarations; the structural functions `fst snd map filter foldr foldl length reverse zip range` | 17 | yes |
+| `std` | the types `Bool` (`False True`), `Pair` and `List` (`Nil Cons`), the compiler's own declarations; the structural functions `fst snd map filter foldr foldl foldl' length reverse zip range` | 18 | yes |
 | `linalg` | `ε levi cross trace vimap`; the rotations `e1 e2 e3 rotx roty rotz dual axisAngle rotation euler313` (§3.3), `rotateVec rotateCov` (§3.9); the record `Cov2` with its fields `rr rv vv`, and `jointCovariance propagateCov2 innovationCov2 gain2 updateCov2 inChartCov2` (§3.7, §3.8) | 27 | yes |
 | `si` | the spelled-out base units `metre second kilogram ampere mole candela radian`; the 24 prefixes as plain numbers, `quetta` to `quecto` (`let kilo = 10^3`); the 22 coherent derived and accepted units by symbol (`N J W Pa Hz C V Ω F S T H Wb lm lx Bq Gy Sv kat g L t`), each with its name as an alias on the same term (`newton`, …, `ohm`, …, `gram`, `litre`, `tonne`); the 699 prefixed units, each written from the prefix's name (`unit km = kilo * 1 metre`, `unit kPa = kilo * 1 Pa`), with `kohm` and the other prefixed ohms aliases of `kΩ` | 799 | yes |
 | `time` | `min hr day week year`, with `h` an alias of `hr` (`unit hr = 60 min`); the space `TT` (Terrestrial Time) with the charts `JD MJD J2000`, and the space `UTC` with the chart `unix`, no chart between them | 12 | yes |
@@ -5249,6 +5249,17 @@ the scope like any expression.
 
 What the build settled that the plan left open:
 
+- **Two left folds, as Haskell has** (decided by the owner, 2026-11-01).
+  `std.foldl` stays lazy in its accumulator: `foldl (\_ x -> x) (1/0)
+  (range 0 3)` is `3`, and an accumulator that is never used never fails.
+  `std.foldl'` evaluates each step's accumulator before the next, through
+  the primitive `seq a b`: `b`, once `a` is evaluated to a value and, for
+  a number, a tensor or a point, every component (data only to its
+  constructor). A component that fails keeps its error to itself, as
+  elsewhere (§3.3): `seq [1/0, 2] 5` is `5`. `length` and `reverse` are
+  written with `foldl'`, so `length (range 0 1e6)` runs in constant memory;
+  `seq` is in tail position, so a strict fold also runs in constant stack.
+  `'` is an identifier character, so the name is spelled as in Haskell.
 - **`kelvin` is the absolute temperature scale** (`0 kelvin to degC`),
   so `K` has no spelled-out unit name in `si`: a name is one label,
   and two default namespaces offering `kelvin` would be an error. The
@@ -5457,7 +5468,21 @@ unreachable for linted terms and are reported as internal errors.
   guaranteed the shapes and dimensions match, so the evaluator does no dimension
   checking beyond maintaining the vector for printing.
 - Closures capture the environment. Application is call-by-need: Haskell's own
-  laziness supplies thunks, which `case` and recursion rely on.
+  laziness supplies thunks, which `case` and recursion rely on. As built
+  (§8.1), so that a long run keeps only what it still needs: a closure keeps
+  the variables its body uses and no others (a function term carries that
+  set, computed once); an argument that is a variable is the thunk it is
+  bound to, not a new one around the environment; a call in tail position
+  is a Haskell tail call, so a loop runs in constant stack; a value's
+  shape, dimension and display unit are evaluated with it; and a call
+  evaluates first the arguments its function certainly evaluates
+  (`Metron.Strictness`: a case evaluates its scrutinee and what every
+  alternative evaluates, a strict primitive its operands, a saturated call
+  of known signature the arguments it is strict in, a cycle's members
+  solved together from all-strict down). Errors are values, not
+  exceptions, so evaluating an argument early raises no error the program
+  would not have raised; the components of a number, or of a tensor or point
+  of at most 64 components, are evaluated with it, a larger tensor's stay lazy.
 - `Con` builds a data value whose fields are thunks; `Case` forces its scrutinee
   to a constructor and binds the fields, unevaluated, in the chosen alternative.
   Booleans are the two nullary constructors; lists are cons cells of thunks, so
@@ -5494,9 +5519,9 @@ session never reaches.
 | `:set memory` | the heap, in GB (the GHC runtime's maximum heap) | the runtime: a heap overflow becomes the error "the expression needed more than N GB (`:set memory`)", the session survives |
 | `:set steps` | evaluation steps per expression (fuel) | the evaluator, counted per reduction |
 | `:set depth` | nesting of calls | the evaluator |
-| `:set digits` | the size of an exact integer or rational, in decimal digits | arithmetic, *before* computing where the size can be predicted (a power's result from its exponent, a literal's exponent), after otherwise |
-| `:set components` | a tensor's or a list's elements | construction (today the fixed `componentLimit`, 10⁷) |
-| `:set time` | wall-clock seconds per expression | the REPL, by a timeout; off by default |
+| `:set digits` | ~~the size of an exact integer or rational, in decimal digits~~ a number's magnitude, its decimal exponent either way (as built, by the owner's decision in §3.2.8: an exact result's length is the precision's) | arithmetic, *before* computing where the size can be predicted (a power's result from its exponent, a literal's exponent, an exponential), after otherwise |
+| `:set components` | a tensor's ~~or a list's~~ elements (as built: a list's length is not known until it is walked, so `steps` and `memory` bound it) | construction (formerly the fixed `componentLimit`, 10⁷) |
+| `:set time` | wall-clock seconds per ~~expression~~ input (as built: a line at the prompt, a `-f` file, a `:load`) | the REPL, by a timeout; off by default |
 
 The defaults are chosen by measurement, so that the test suite, the library
 and the tutorial run well inside them while a runaway stops within seconds:
@@ -5505,6 +5530,151 @@ a starting point is `memory` 4, `steps` 10⁹, `depth` 10⁵, `digits` 10⁵,
 property of the session, not of a term: it never changes a value or a hash,
 only whether an evaluation finishes. Precision (`:set precision`) is
 separate, being a property of the result.
+
+#### 8.1, as built (2026-11-01)
+
+**The limits.** `Metron.Limits` holds them; `:set` lists them after the
+other settings, `:set NAME VALUE` changes one, and `metron --set NAME
+VALUE`, any number of times, starts a session with one changed. A value
+is a positive whole number, written `100000000`, `100_000_000` or `1e8`;
+`time` also takes `off`. Each limit, when hit, is an ordinary error that
+ends with the setting to change, and the session goes on:
+
+| setting | default | how it is checked | the error |
+|---|---|---|---|
+| `memory` | 4 GB | the runtime's maximum heap, set at startup and whenever the setting changes: `RtsFlags.GcFlags.maxHeapSize`, which the collector reads at every collection, so a change takes effect at once (measured: `:set memory 1` stops `reverse (range 0 1e8)` at 1.1 GB). The executable links with `-rtsopts`; `--set memory` supersedes `+RTS -M`. The runtime throws `HeapOverflow` to the main thread, which in the executable is the one evaluating; it is caught around each input, whose outputs are forced inside the handler, and a collection frees what the input built | `the evaluation needed more than 4 GB` |
+| `steps` | 10⁸ per expression | every reduction of the evaluator counts against a budget made for that expression's evaluation | `the evaluation took more than 100000000 steps` |
+| `depth` | 10⁵ | the budget's second counter: one level for each value something waits for (an operand, a scrutinee, the function of a call, a thunk when forced); a call in tail position is no deeper | `the evaluation nested more than 100000 calls deep` |
+| `digits` | 10⁵ | a number's magnitude, `log₁₀` of its size from the leading bits of its numerator and denominator. Before computing: a power from its exponent (`n · log₁₀ |x|`), a literal in the lexer from its exponent, an exponential (`exp`, `sinh`, `cosh`) from its argument. After: every result of `+ − * /`, `outer` and `dot` | `the power would have more than 100000 digits`, or `… zeros after the point` |
+| `components` | 10⁷ | where a tensor is built: `noise`/`gauss`, a stack of tensors, `outer`, `dot`, a matrix from a vector. A length a type or a literal names has a fixed bound of 2^40 instead, so that a definition checks the same in every session | `the result would have 16000000 components, more than 10000000` |
+| `time` | off | `System.Timeout` around each input | `the input took more than 2 seconds` |
+
+The budget is counted in place: the evaluator is pure, its values lazy
+thunks, and threading a counter through them would make every value a
+computation. `newBudget` makes a pair of counters per evaluation (in
+`Compile.runtimeWith`); `spend` and `nested` read and write them with
+`unsafeDupablePerformIO`, `NOINLINE` and an argument that makes each call
+its own. A limit reached is a `Left`, an `EvalError` like any other, so
+`feed` stays pure and the tests see it; `memory` and `time` are the only
+ones that need `IO`, in `runLimited`. A Haskell stack overflow is caught
+there too and named `depth`, but the stack is heap, so `memory` stops it
+first.
+
+**Leaks fixed rather than limited.** Measuring the catalogue below found
+that most of the runaways were not programs asking for much but the
+evaluator keeping what it no longer needed:
+
+1. *No tail calls.* An application checked, after the call, whether it
+   had made a moving chart's instant, so every call held a Haskell frame:
+   `let loop n = loop n` grew the stack without end. The check is now made
+   first, from the term, and the call is the last thing done.
+2. *A variable passed on became a new thunk around the whole environment*,
+   so `loop n = loop n` chained every environment it went through. A
+   variable is now its own thunk (`delay`), and a literal is built at once.
+3. *A value's dimension and display unit were thunks over its
+   operands'*, so `n - 1` in a loop kept every earlier `n` (`hh 1000000`,
+   a counting loop, held 870 MB). `VTensor`'s and `VPoint`'s shape,
+   dimension and display unit are strict fields; a magnitude's rationals
+   are strict too.
+4. *A closure kept its whole environment*, so the lambda in `length xs =
+   foldl (\n _ -> n + 1) 0 xs` kept the list's head for the whole fold. A
+   function term (`TLam`, now a pattern over `TLamWith`) carries the set
+   of variables free in its body, computed once and shared, and a closure
+   keeps only those, the choice made when the closure is built (a lazy
+   choice kept the variable anyway).
+5. *A lazy accumulator*: `go n acc = if n == 0 then acc else go (n - 1)
+   (acc + 1)` built one thunk per step, and `f n = f (n + 1)` grew until
+   the machine ran out. `Metron.Strictness` (§8) finds the arguments a
+   call certainly evaluates and the evaluator evaluates them first, with a
+   number's or a small tensor's components; both loops now run in constant memory, `f 0` until
+   `steps` stops it.
+6. *`std.foldl` is lazy by definition*, so `length`, written with it, kept
+   a million-deep chain of `n + 1`. `std.foldl'` and the primitive `seq`
+   are new (§7.7), and `length` and `reverse` use `foldl'`.
+7. *Sums were quadratic*: each `addM` filtered every coefficient for
+   zeros, and compaction sorted by insertion. Only coefficients two forms
+   share can cancel, so only those are checked; compaction sorts in
+   `n log n`. The results are the same.
+
+The catalogue, each program measured alone with peak RSS under a 6 GB
+cap and a 60 s timeout, before (main at `d89f2a4`) and after (time, peak
+RSS, outcome); the numbers in the cause column are the fixes above:
+
+| program | before | after | cause |
+|---|---|---|---|
+| `1e1000000000` | 60 s timeout, 4.0 GB | 0.07 s, 32 MB: refused, `digits` | the lexer wrote out `10^e` |
+| `2^18446744073709551616` | 60 s timeout, 5.3 GB | 0.08 s: refused, `digits` | the power was computed exactly |
+| `exp 1000000`, `exp (-1000000)`, `sinh 1000000` | 16 s, 89 s, past 120 s | 0.07 s each: refused, `digits` | the series was summed at the result's size |
+| `let f n = f (n + 1)`, `f 0` | killed at 6 GB, 4.6 s | 5.5 s, 32 MB: `steps` | 1, 2, 5 |
+| `let loop n = loop n`, `loop 0` | killed at 6 GB, 4.7 s | 2.4 s, 32 MB: `steps` | 1, 2 |
+| `hh 1000000`, a countdown in tail position | 1.2 s, 870 MB | 0.56 s, 32 MB | 1, 3 |
+| `go 1000000 0`, a counting accumulator | 2.3 s, 1.9 GB | 0.8 s, 32 MB | 5 |
+| the same with a 6-vector, and with `1 m` | 1.6 s, 778 MB (300000 steps); 1.6 s, 690 MB (this branch, before the last fix) | 1.2 s and 1.1 s, 32 MB | 5, for a tensor of up to 64 components; a sum's unit was a choice left in a thunk |
+| `g 1000000`, `1 + g (n - 1)` | 1.9 s, 1.5 GB: finishes | 0.15 s, 49 MB: `depth` | real nesting; `:set depth 2e6` finishes in 1.4 s, 467 MB |
+| `fact 100000` | 2.7 s, 173 MB: finishes | 0.18 s: `depth`; with depth raised, `digits` (456574 digits) | real nesting and a real size |
+| `fst (Pair 1 (range 0 1e9))` | 0.07 s, 32 MB | the same | a lazy list is fine |
+| `length (range 0 1e6)` | 3.7 s, 3.3 GB | 1.3 s, 32 MB | 4, 6 |
+| `length (range 0 1e8)` | killed at 6 GB, 5.6 s | 4.3 s, 32 MB: `steps` | 4, 6; ten million elements need `:set steps 1e9` |
+| `foldl (\n x -> n + x) 0 (range 0 1e6)` | 3.8 s, 3.3 GB | 2.1 s, 1.4 GB: `depth` | lazy by definition: forcing the result walks a million-deep chain; `foldl'` runs in 32 MB |
+| `reverse (range 0 1e8)` | killed at 6 GB, 5.6 s | 11 s, 3.9 GB: `steps` | the list is kept whole by design; `memory` is next |
+| `iter (1/3) 20`, exact logistic map | 12.9 s, 39 MB | 12.9 s, 40 MB | rationals that double their digits; see below |
+| `norm (noise 1000000)` | 60 s timeout, 0.49 GB | 6.8 s, 1.7 GB | 7 |
+| `norm (gauss 1000000)` | 3.4 s, 1.8 GB | 3.1 s, 1.5 GB | a million statistical nudges, about 1.5 KB each, are real |
+| `noise 9000000` | killed at 6 GB, 27 s | 24 s, 4.3 GB: `memory` | within `components`; nine million nudges are real |
+| `(outer (noise 3000) (noise 3000)).0.0` | 0.7 s, 0.67 GB | 0.9 s, 0.80 GB | nine million lazy components, each now checked for `digits` |
+| `(outer (noise 4000) (noise 4000)).0.0` | refused, fixed limit | 0.07 s: refused, `components` | |
+| `2^100000`, `exp 200`, printed | 0.09 s, 32 MB | the same | printing a long exact value is cheap |
+| `log 1e-99999` | 33 s, 0.96 GB | 28 s, 0.97 GB | its series in exact rationals; see below |
+
+The test suite, run with every QuickCheck property at 2000 cases under a
+3 GB cap, is green in 29 s with a peak of 1.0 GB, the generator's slowest
+property taking 2.3 s for its 2000 cases.
+
+**The defaults, and why.** Measured with every limit lowered until
+something failed: the whole test suite (700 tests, the astro solvers'
+Newton iterations among them) needs fewer than 3·10⁵ steps and 300 levels
+of nesting in any one expression, the tutorial's examples fewer than
+3·10⁴ and 50, and the largest magnitudes the suite writes are beyond
+`10^±60`. The evaluator takes about 18 million steps a second, so `steps`
+at 10⁸ stops a runaway in about 5 s with room for 300 times the suite's
+largest expression; the design's starting point, 10⁹, took 54 s to stop `f
+0`. The cost is that a fold over ten million list elements needs `:set
+steps 1e9`. `depth` at 10⁵ is about 50 MB of stack and stops a runaway
+recursion in 0.15 s. `digits` at 10⁵ is the design's: far past any
+physical quantity, and below what makes arithmetic slow. `components`
+stays at 10⁷: the suite builds a 3000 × 3000 outer product, which needs
+0.8 GB of lazy elements, so a tensor at the limit fits the 4 GB heap.
+`memory` at 4 GB is the design's, about four times the suite's peak.
+
+**What the limits do not stop.**
+
+- *Exact rationals that grow without growing in size.* `iter x k = …
+  iter (x * (1 - x) * 37/10) (k - 1)` from `1/3` doubles the digits of
+  its numerator and denominator each step while `x` stays near 0.7: 20
+  steps take 13 s at 36 MB, 24 steps more than a minute at 142 MB. Few
+  steps, little memory and an ordinary magnitude: only `:set time` stops
+  it, until exact results round past a size tied to the precision
+  (§3.2.8), which a separate task builds.
+- *`log` of a number with many digits*, `log 1e-99999`: its series runs
+  in exact rationals of that length (28 s, 0.97 GB). It belongs to the
+  same precision audit; finding the argument's power of two at once
+  instead of halving it 330000 times took 5 s off.
+- *Many independent nudges*: each costs about 2 KB, so `norm (gauss
+  1000000)` holds 1.5 GB, and `noise 9000000` reaches the 4 GB heap only
+  after about 24 s of collections near the limit.
+- *A list's length*: `components` counts tensors only; `steps` and
+  `memory` bound a list.
+
+**Where the build differs from the plan above**, besides the struck-out
+words in the table: `steps` defaults to 10⁸, not 10⁹ (above); `time` is
+per input, and an input that is a file is one; `digits` bounds magnitude;
+`components` does not count a list; a literal is checked against the
+session's `digits` at the prompt, in files and in `:type`, `:exact` and
+the other commands that evaluate, but `:edit` and `:prefer` parse with the
+default; and `--set memory` supersedes `+RTS -M`. The test suite measures
+memory on its main thread before the tests start (`Limits.measure`), since
+the runtime throws a heap overflow to the main thread and tasty runs a
+test on another.
 
 ## 9. Module layout and libraries
 
