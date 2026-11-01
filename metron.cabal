@@ -64,6 +64,7 @@ library
     , Metron.Infer
     , Metron.Lexer
     , Metron.Limits
+    , Metron.Needs
     , Metron.Parser
     , Metron.Prelude
     , Metron.Pretty

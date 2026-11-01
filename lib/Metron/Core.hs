@@ -48,6 +48,7 @@ module Metron.Core (
   refs,
   conTypes,
   refsWithIndex,
+  directUses,
   rewriteRefs,
   rewriteRefsWritten,
   refsWritten,
@@ -61,7 +62,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS (unpack)
 import Data.Kind (Type)
 import Data.Set (Set)
-import Data.Set qualified as Set (empty, singleton)
+import Data.Set qualified as Set (empty, map, singleton)
 import Data.String (IsString (..))
 import Data.Text (Text)
 import Data.Text qualified as T (
@@ -321,22 +322,7 @@ alphaEq = go
 
 -- | The hashes a term refers to.
 refs :: Term n -> Set Hash
-refs = \case
-  Var _ -> Set.empty
-  Ref h _ _ -> Set.singleton h
-  PrimApp _ as -> foldMap refs as
-  Lit _ -> Set.empty
-  Lam _ b -> refs b
-  App f a -> refs f <> refs a
-  Let _ e b -> refs e <> refs b
-  Con _ as -> foldMap refs as
-  Case s alts -> refs s <> foldMap (\(Alt _ _ b) -> refs b) alts
-  Pow t _ -> refs t
-  Noise{} -> Set.empty
-  Uncertain _ _ x e -> refs x <> refs e
-  Pack ts -> foldMap refs ts
-  Proj t _ -> refs t
-  Cycle _ bs -> foldMap refs (vecToList bs)
+refs = Set.map fst . refsWithIndex
 
 -- | The declared types whose constructors a term builds or matches.
 conTypes :: Term n -> Set Hash
@@ -362,22 +348,34 @@ conTypes = \case
 
 -- | The references a term makes, with their cycle indices.
 refsWithIndex :: Term n -> Set (Hash, Maybe Int)
-refsWithIndex = \case
-  Var _ -> Set.empty
-  Ref h i _ -> Set.singleton (h, i)
-  PrimApp _ as -> foldMap refsWithIndex as
-  Lit _ -> Set.empty
-  Lam _ b -> refsWithIndex b
-  App f a -> refsWithIndex f <> refsWithIndex a
-  Let _ e b -> refsWithIndex e <> refsWithIndex b
-  Con _ as -> foldMap refsWithIndex as
-  Case s alts -> refsWithIndex s <> foldMap (\(Alt _ _ b) -> refsWithIndex b) alts
-  Pow t _ -> refsWithIndex t
-  Noise{} -> Set.empty
-  Uncertain _ _ x e -> refsWithIndex x <> refsWithIndex e
-  Pack ts -> foldMap refsWithIndex ts
-  Proj t _ -> refsWithIndex t
-  Cycle _ bs -> foldMap refsWithIndex (vecToList bs)
+refsWithIndex = fst . directUses (const False)
+
+{- | What a term uses directly, in one walk: the references it makes, with
+their cycle indices, and the operations it names that the test picks out,
+the built-ins only one backend has (design §8.2). An uncertainty form is
+named as it is written: @±@, @±σ@, @noise@, @gauss@.
+-}
+directUses :: (Text -> Bool) -> Term n -> (Set (Hash, Maybe Int), Set Text)
+directUses picked = go
+ where
+  go :: Term m -> (Set (Hash, Maybe Int), Set Text)
+  go = \case
+    Var _ -> mempty
+    Ref h i _ -> (Set.singleton (h, i), Set.empty)
+    PrimApp p as -> named p <> foldMap go as
+    Lit _ -> mempty
+    Lam _ b -> go b
+    App f a -> go f <> go a
+    Let _ e b -> go e <> go b
+    Con _ as -> foldMap go as
+    Case s alts -> go s <> foldMap (\(Alt _ _ b) -> go b) alts
+    Pow t _ -> go t
+    Noise k _ _ -> named (case k of Bound -> "noise"; Stat -> "gauss")
+    Uncertain k _ x e -> named (case k of Bound -> "±"; Stat -> "±σ") <> go x <> go e
+    Pack ts -> foldMap go ts
+    Proj t _ -> go t
+    Cycle _ bs -> foldMap go (vecToList bs)
+  named p = (Set.empty, if picked p then Set.singleton p else Set.empty)
 
 {- | Replace references according to a function; 'Nothing' keeps a reference
 as it is. Used to upgrade dependents to a new version (design §7.5).

@@ -5,15 +5,19 @@ session chooses a backend.
 -}
 module Backend (backendTests) where
 
+import Control.Monad (foldM)
+import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
 import Metron.Affine (Magnitude, midpoint, radius)
-import Metron.Codebase (emptyCodebase)
+import Metron.Codebase (Codebase (..), Reference (..), emptyCodebase)
 import Metron.Compile (evalValueAs)
 import Metron.Double (Dbl (..), digitsOfDbl, estimateOf)
 import Metron.Driver (feed)
 import Metron.Eval (Config (..), ValueOf (..), defaultConfig)
+import Metron.Needs (needsOf)
 import Metron.Parser (parseExpr)
 import Metron.Scalar (Backend (..), Scalar)
 import Metron.Session.Types (Session (..), emptySession)
@@ -33,6 +37,89 @@ backendTests =
     , boundTests
     , samplesTests
     , switchingTests
+    , checkTests
+    ]
+
+-- The check before running ----------------------------------------------------------------
+
+checkTests :: TestTree
+checkTests =
+  testGroup
+    "built-ins a backend lacks are refused before running"
+    [ testCase "the refusal names the path through the definitions"
+        $ expectLeft
+          "`orbitError` uses `sd` (through `budgetOf`), which the double backend does not have"
+          ( runDouble
+              [ "let budgetOf x = sd x"
+              , "let orbitError x = budgetOf x * 2"
+              , "orbitError 1"
+              ]
+          )
+    , testCase "and down a longer chain to the definition that uses it"
+        $ expectLeft
+          "`a` uses `errorOf` (through `b`, `c`), which the affine backend does not have"
+          ( runWith
+              defaultConfig
+              ["let c x = errorOf x", "let b x = c x + 1", "let a x = b x * 2", "a 1"]
+          )
+    , testCase
+        "a definition that uses one is entered under either backend; using it is refused"
+        $ expectLeft
+          "`g` uses `sd`"
+          (runDouble ["let g x = sd x", "let k = 1", "k + 1", "g 1"])
+    , testCase "an input whose closure is clean runs"
+        $ runDouble ["let budgetOf x = sd x", "let twice x = x * 2", "twice 0.25"]
+          @?= Right ["0.5"]
+    , testCase "the check is conservative: a branch never taken counts"
+        $ expectLeft
+          "`sd` is the affine backend's"
+          (runDouble ["if false then sd 1 else 0"])
+    , testCase "so is a definition the input never calls but refers to"
+        $ expectLeft
+          "`pick` uses `gauss` (through `unused`), which the double backend does not have"
+          ( runDouble
+              ["let unused = gauss 1", "let pick b = if b then 1 else unused.0", "pick true"]
+          )
+    , testCase "a recursive group is one union"
+        $ expectLeft
+          "`ev` uses `±`"
+          ( runDouble
+              [ "let ev n = if n == 0 then 1 else od (n - 1)\nlet od n = if n == 0 then 1 ± 0.1 else ev (n - 1)"
+              , "ev 4"
+              ]
+          )
+    , testCase
+        "the memo holds names, not backends: the same session switches back and forth"
+        $ runWith
+          defaultConfig
+          [ "let budgetOf x = sd (x ±σ 0.1)"
+          , "budgetOf 1"
+          , ":backend double"
+          , ":backend affine"
+          , "budgetOf 2"
+          ]
+          @?= Right ["0.1", "0.1"]
+    , testCase "needs(h) is memoised by hash, and answers without the term"
+        $ case sessionAfter
+          defaultConfig
+          ["let budgetOf x = sd (x ±σ 0.1)", "let twice x = budgetOf x * 2", "twice 1"] of
+          Left err -> assertFailure (T.unpack err)
+          Right s -> case (Map.lookup "budgetOf" s.staging.names, Map.lookup "twice" s.staging.names) of
+            (Just b, Just t) -> do
+              fst (needsOf Map.empty b.hash s.needs) @?= Set.fromList ["sd", "±σ"]
+              fst (needsOf Map.empty t.hash s.needs) @?= Set.fromList ["sd", "±σ"]
+            _ -> assertFailure "no definitions"
+    , testCase "after switching, the memo refuses what it allowed before"
+        $ expectLeft
+          "`budgetOf` uses `sd`, which the double backend does not have"
+          ( runWith
+              defaultConfig
+              [ "let budgetOf x = sd (x ±σ 0.1)"
+              , "budgetOf 1"
+              , ":backend double"
+              , "budgetOf 2"
+              ]
+          )
     ]
 
 -- Choosing a backend -----------------------------------------------------------------------
@@ -88,12 +175,14 @@ switchingTests =
           [":set samples 5", ":set seed 9", ":backend double", "1 / 4"]
           @?= Right ["0.25"]
     ]
- where
-  expectLeft needle = \case
-    Left err -> T.isInfixOf needle err @? T.unpack err
-    Right out ->
-      assertFailure
-        ("expected an error containing " <> T.unpack needle <> ", got " <> show out)
+
+-- | An error that says the given thing.
+expectLeft :: Text -> Either Text [Text] -> Assertion
+expectLeft needle = \case
+  Left err -> T.isInfixOf needle err @? T.unpack err
+  Right out ->
+    assertFailure
+      ("expected an error containing " <> T.unpack needle <> ", got " <> show out)
 
 -- Running --------------------------------------------------------------------------------
 
@@ -108,6 +197,10 @@ runWith cfg = go emptySession{config = cfg} []
   go s acc (l : ls) = do
     (s', outs) <- feed s l
     go s' (outs : acc) ls
+
+-- | The session after some lines.
+sessionAfter :: Config -> [Text] -> Either Text Session
+sessionAfter cfg = foldM (\s l -> fst <$> feed s l) emptySession{config = cfg}
 
 runDouble :: [Text] -> Either Text [Text]
 runDouble = runWith doubleConfig

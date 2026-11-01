@@ -5,16 +5,17 @@ module Metron.Session.Types (
   emptySession,
 ) where
 
-import Data.Map.Strict ( Map )
-import Data.Text ( Text )
-import Metron.Codebase ( emptyCodebase, Codebase )
-import Metron.Core ( Nat(Z), Term )
-import Metron.UnitHint ( Preferences )
-import Metron.Eval ( defaultConfig, Config )
-import Metron.TCore ( TTerm )
-import Metron.Type ( Scheme )
-import Data.Map.Strict qualified as Map ( empty )
-import Metron.Syntax qualified as S ( rootScope, Decl, Scope )
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map (empty)
+import Data.Text (Text)
+import Metron.Codebase (Codebase, emptyCodebase)
+import Metron.Core (Nat (Z), Term)
+import Metron.Eval (Config, defaultConfig)
+import Metron.Needs (Needs, noNeeds)
+import Metron.Syntax qualified as S (Decl, Scope, rootScope)
+import Metron.TCore (TTerm)
+import Metron.Type (Scheme)
+import Metron.UnitHint (Preferences)
 
 data Session = Session
   { codebase :: Codebase
@@ -35,6 +36,10 @@ data Session = Session
   , scope :: S.Scope
   {- ^ the current namespace, set with @:namespace@, and the @use@s in
   effect (design §7.6); never stored
+  -}
+  , needs :: Needs
+  {- ^ what each definition reached needs of a backend, by hash, memoised
+  for the session and never invalidated (design §8.2)
   -}
   }
 
@@ -60,3 +65,4 @@ emptySession =
     Map.empty
     Nothing
     S.rootScope
+    noNeeds

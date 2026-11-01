@@ -31,7 +31,7 @@ import Metron.Check (
   checkCore,
  )
 import Metron.Codebase (
-  Codebase (derived),
+  Codebase (derived, terms),
   Reference (Reference),
   chartNameFor,
   lookupTypeDef,
@@ -66,6 +66,7 @@ import Metron.Infer qualified as I (
  )
 import Metron.Limits (limitHint, newBudget, remarksAfter)
 import Metron.NameResolution (resolverFor)
+import Metron.Needs (Needs, checkBackend)
 import Metron.Pretty (Display, renderValue)
 import Metron.Resolve (
   annotationsWith,
@@ -75,8 +76,8 @@ import Metron.Resolve (
  )
 import Metron.Resolve.Error (ResolveError (..), renderResolveError)
 import Metron.Scalar (Backend (..), Scalar)
-import Metron.Session.Types (LastExpr (LastExpr))
-import Metron.Source (printerFor)
+import Metron.Session.Types (LastExpr (..))
+import Metron.Source (printerFor, refNamer)
 import Metron.Strictness (signatureAt, signatures, strictify)
 import Metron.Syntax qualified as S (
   Expr (span),
@@ -129,15 +130,25 @@ evalExpr ::
   Preferences ->
   S.Scope ->
   Codebase ->
+  Needs ->
   Text ->
   S.Expr ->
-  Either Text (Text, LastExpr)
-evalExpr cfg prefs scope cb src e = do
+  Either Text (Text, LastExpr, Needs)
+evalExpr cfg prefs scope cb memo src e = do
   (h, typed, le) <- prepared scope cb src e
+  -- Refused before running if it reaches a built-in the backend lacks (design §8.2).
+  let (verdict, memo') =
+        checkBackend
+          cfg.backend
+          (\(r, i) -> refNamer scope cb r i "")
+          cb.terms
+          memo
+          le.term
+  either (Left . ("error: " <>)) Right verdict
   out <- case cfg.backend of
     AffineBackend -> evalShown @Magnitude cfg prefs scope cb h typed
     DoubleBackend -> evalShown @Dbl cfg prefs scope cb h typed
-  pure (out, le)
+  pure (out, le, memo')
 
 {- | Evaluate under the backend of the scalar type and print, with a line
 for each warning the evaluation made: a branch lost in rounding (design

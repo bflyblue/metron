@@ -306,9 +306,10 @@ feed' session src
         if null decls then Right (session, []) else propose session src decls
       -- Each expression that evaluates becomes `it` for the next one.
       let step (s, outs) (scope, e) = do
-            (out, le) <- evalExpr s.config s.preferred scope (exprCodebase s) src e
+            (out, le, needs) <-
+              evalExpr s.config s.preferred scope (exprCodebase s) s.needs src e
             le' <- absorbLast s le
-            pure (s{lastExpr = Just le'}, out : outs)
+            pure (s{lastExpr = Just le', needs}, out : outs)
       (session'', outs) <- foldM step (session', []) exprs
       pure (session''{scope = scope'}, notes ++ reverse outs)
 
