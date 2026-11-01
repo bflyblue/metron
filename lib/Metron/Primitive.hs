@@ -5,8 +5,8 @@ module Metron.Primitive (
   typedPrims,
 ) where
 
-import Data.Text ( Text )
-import Metron.Dimension ( BaseDim(..) )
+import Data.Text (Text)
+import Metron.Dimension (BaseDim (..))
 
 primArity :: Text -> Maybe Int
 primArity = \case

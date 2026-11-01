@@ -19,27 +19,33 @@ module Metron.Prelude (
   stdlibCodebase,
 ) where
 
-import Control.Monad ( foldM )
-import Data.Bifunctor ( first )
-import Data.Maybe ( fromMaybe )
-import Data.Text ( Text )
-import Metron.Codebase
-    ( Codebase(..),
-      addStoredUse,
-      bindName,
-      emptyCodebase,
-      isChartName,
-      isUnitName,
-      lookupName,
-      markChart,
-      markUnit )
-import Metron.Lexer ( prepare )
-import Metron.Parser ( parseProgram )
-import Metron.Resolve ( processGroup )
-import Metron.Resolve.Error ( renderResolveError )
-import Metron.Syntax qualified as S ( flatten, rootScope, Use(Use) )
-import Data.Text qualified as T
-    ( isPrefixOf, unlines, unwords, pack, replicate )
+import Control.Monad (foldM)
+import Data.Bifunctor (first)
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
+import Data.Text qualified as T (
+  isPrefixOf,
+  pack,
+  replicate,
+  unlines,
+  unwords,
+ )
+import Metron.Codebase (
+  Codebase (..),
+  addStoredUse,
+  bindName,
+  emptyCodebase,
+  isChartName,
+  isUnitName,
+  lookupName,
+  markChart,
+  markUnit,
+ )
+import Metron.Lexer (prepare)
+import Metron.Parser (parseProgram)
+import Metron.Resolve (processGroup)
+import Metron.Resolve.Error (renderResolveError)
+import Metron.Syntax qualified as S (Use (Use), flatten, rootScope)
 
 -- The library's tables -------------------------------------------------------------
 
@@ -349,32 +355,31 @@ are taken as standard uncertainties.
 iers2010 :: [Statement]
 iers2010 =
   UseNs "astro"
-    :
-  [ Let
-      "earth"
-      ( T.unwords
-          [ "astro.Body {mu = (3.986004418e14 ±σ 8e5) * 1 m^3/s^2,"
-          , "radius = (6378136.6 ±σ 0.1) * 1 m,"
-          , "flattening = 1 / (298.25642 ±σ 0.00001),"
-          , "j2 = 1.0826359e-3 ±σ 1e-10,"
-          , "rate = 7.292115e-5 rad/s}"
-          ]
-      )
-  , Let
-      "moon"
-      ( T.unwords
-          [ "astro.Body {mu = (0.0123000371 ±σ 4e-10) * earth.mu,"
-          , "radius = 0 m, flattening = 0, j2 = 0, rate = 0 rad/s}"
-          ]
-      )
-  , Let
-      "sun"
-      ( T.unwords
-          [ "astro.Body {mu = (1.32712442099e20 ±σ 1e10) * 1 m^3/s^2,"
-          , "radius = 0 m, flattening = 0, j2 = 2.0e-7, rate = 0 rad/s}"
-          ]
-      )
-  ]
+    : [ Let
+          "earth"
+          ( T.unwords
+              [ "astro.Body {mu = (3.986004418e14 ±σ 8e5) * 1 m^3/s^2,"
+              , "radius = (6378136.6 ±σ 0.1) * 1 m,"
+              , "flattening = 1 / (298.25642 ±σ 0.00001),"
+              , "j2 = 1.0826359e-3 ±σ 1e-10,"
+              , "rate = 7.292115e-5 rad/s}"
+              ]
+          )
+      , Let
+          "moon"
+          ( T.unwords
+              [ "astro.Body {mu = (0.0123000371 ±σ 4e-10) * earth.mu,"
+              , "radius = 0 m, flattening = 0, j2 = 0, rate = 0 rad/s}"
+              ]
+          )
+      , Let
+          "sun"
+          ( T.unwords
+              [ "astro.Body {mu = (1.32712442099e20 ±σ 1e10) * 1 m^3/s^2,"
+              , "radius = 0 m, flattening = 0, j2 = 2.0e-7, rate = 0 rad/s}"
+              ]
+          )
+      ]
 
 {- | IAU 2015 Resolution B3, the nominal solar and planetary conversion
 constants (also Prša et al. 2016, AJ 152:41, Table 1): exact by
@@ -551,8 +556,12 @@ kepler =
           ]
       )
   , -- Anomalies (Vallado §2.2, algorithms 5 and 6).
-    Let "trueToEccentric" "\\e nu -> fullAngle (sqrt (1 - e^2) * sin nu) (e + cos nu)"
-  , Let "eccentricToTrue" "\\e ea -> fullAngle (sqrt (1 - e^2) * sin ea) (cos ea - e)"
+    Let
+      "trueToEccentric"
+      "\\e nu -> fullAngle (sqrt (1 - e^2) * sin nu) (e + cos nu)"
+  , Let
+      "eccentricToTrue"
+      "\\e ea -> fullAngle (sqrt (1 - e^2) * sin ea) (cos ea - e)"
   , Let "eccentricToMean" "\\e ea -> ea - e * sin ea * 1 rad"
   , Let "asinh" "\\x -> log (x + sqrt (x^2 + 1))"
   , Let

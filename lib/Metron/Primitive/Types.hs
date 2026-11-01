@@ -5,40 +5,47 @@ module Metron.Primitive.Types (
   StaticArg (..),
 ) where
 
-import Data.Maybe ( fromMaybe )
-import Data.Ratio ( numerator, denominator )
-import Data.Text ( Text )
-import Metron.Builtin
-    ( boolT, frameDefMoving, isAxesDef, listT, spaceOf )
-import Metron.Core ( componentLimit, ConRef(..), Hash, Lit(..) )
-import Metron.Dimension
-    ( dimBase,
-      dimDiv,
-      dimInv,
-      dimMul,
-      dimOne,
-      dimPow,
-      dimVar,
-      BaseDim(T, Ang) )
-import Metron.Primitive ( baseUnit )
-import Metron.Type
-    ( appendShape,
-      numD,
-      numT,
-      spaceLens,
-      vecT,
-      Axis(AVar, ANamed, AAnon),
-      Frame(..),
-      FrameSlot(FrNamed, FrVar),
-      Kind(KAxis, KSpace, KFrame, KShape, KDim, KLen),
-      Len(..),
-      Scheme(..),
-      Shape(SVar, SNil, SCons),
-      Space(dim, Space, shape, base),
-      SpaceSlot(SpVar),
-      Type(TTensor, TPoint, TData, TChart, TUnit, TOver, TFun),
-      TypeDef,
-      VarId )
+import Data.Maybe (fromMaybe)
+import Data.Ratio (denominator, numerator)
+import Data.Text (Text)
+import Metron.Builtin (
+  boolT,
+  frameDefMoving,
+  isAxesDef,
+  listT,
+  spaceOf,
+ )
+import Metron.Core (ConRef (..), Hash, Lit (..), componentLimit)
+import Metron.Dimension (
+  BaseDim (Ang, T),
+  dimBase,
+  dimDiv,
+  dimInv,
+  dimMul,
+  dimOne,
+  dimPow,
+  dimVar,
+ )
+import Metron.Primitive (baseUnit)
+import Metron.Type (
+  Axis (AAnon, ANamed, AVar),
+  Frame (..),
+  FrameSlot (FrNamed, FrVar),
+  Kind (KAxis, KDim, KFrame, KLen, KShape, KSpace),
+  Len (..),
+  Scheme (..),
+  Shape (SCons, SNil, SVar),
+  Space (Space, base, dim, shape),
+  SpaceSlot (SpVar),
+  Type (TChart, TData, TFun, TOver, TPoint, TTensor, TUnit),
+  TypeDef,
+  VarId,
+  appendShape,
+  numD,
+  numT,
+  spaceLens,
+  vecT,
+ )
 
 {- | The scheme of each primitive. Quantified variables use small fixed ids;
 inference instantiates them, 'lint' matches against them. See core.md
