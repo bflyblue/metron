@@ -6135,7 +6135,7 @@ the same term runs under any backend that has the built-ins it uses.
   - *Monte Carlo follows each sample's own branch.* When the copies carry
     draws of a declared σ, they are samples of the inputs, and a sample
     that would take the other branch must compute the other branch's
-    formula: following the IEEE branch with every copy gives the wrong
+    formula: following the nominal branch with every copy gives the wrong
     distribution (`if x > 0.9 then 1 else 2` with `x = 1 ±σ 0.1` is 1 with
     probability 0.856 and 2 with 0.144, mean 1.144, not mean 1, sd 0). So
     the copies split: each alternative is evaluated with the group of
@@ -6174,7 +6174,7 @@ the same term runs under any backend that has the built-ins it uses.
     and `sd` never refuse for this reason. The table at a split branch
     point prints as a note, not a warning, since the sample is right.
   - *Rounding alone does not split.* With copies that differ only by
-    rounding, the IEEE branch is what a ported formula takes, so every
+    rounding, the nominal branch is what a ported formula takes, so every
     copy follows it and the table is the warning that the branch is
     unstable.
   - Splitting evaluates an alternative once per group, and `steps`
