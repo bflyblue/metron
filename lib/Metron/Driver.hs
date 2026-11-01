@@ -152,7 +152,7 @@ import Metron.Edit (
   editorNote,
  )
 import Metron.Eval (
-  Config (Config, limits, nonlinear, precision, sigma, unicode),
+  Config (..),
   EvalError (Internal),
   ValueOf (VData, VTensor),
   covarianceMatrix,
@@ -407,9 +407,21 @@ command session src = \case
             , "sigma " <> tshow cfg.sigma
             , "unicode " <> (if cfg.unicode then "on" else "off")
             , "nonlinear " <> T.pack (show (round (100 * cfg.nonlinear) :: Integer))
+            , "samples " <> tshow cfg.samples
+            , "seed " <> tshow cfg.seed
             ]
             ++ settingLines cfg.limits
       )
+  -- The double backend's estimate (design §8.2): 0 is the running bound,
+  -- N ≥ 2 copies under random rounding; one copy has no spread.
+  ["set", "samples", n] -> case reads (T.unpack n) of
+    [(k, "")]
+      | k == 0 || (k >= 2 && k <= 1000) ->
+          Right (session{config = cfg{samples = k}}, [])
+    _ ->
+      Left
+        "samples is 0 (a running error bound) or from 2 to 1000 copies under random rounding"
+  ["set", "seed", n] -> setting n (\k -> cfg{seed = k}) "seed must be a non-negative integer"
   ["set", "precision", n] ->
     setting n (\k -> cfg{precision = k}) "precision must be a non-negative integer"
   ["set", "sigma", n] -> setting n (\k -> cfg{sigma = k}) "sigma must be a non-negative integer"
@@ -425,6 +437,9 @@ command session src = \case
             , unicode = cfg.unicode
             , nonlinear = fromIntegral k / 100
             , limits = cfg.limits
+            , backend = cfg.backend
+            , samples = cfg.samples
+            , seed = cfg.seed
             }
       )
       "nonlinear must be a non-negative integer, a percentage"

@@ -257,4 +257,11 @@ strictPrimitives =
   , "bound"
   , "sd"
   , "seq"
+  , "errorOf"
+  , "digitsOf"
+  , "nextUp"
+  , "ulps"
+  , "fma"
+  , "isNaN"
+  , "isInfinite"
   ]

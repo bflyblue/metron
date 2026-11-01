@@ -102,6 +102,15 @@ primArity = \case
   "mid" -> Just 1
   "bound" -> Just 1
   "sd" -> Just 1
+  -- The double backend's own (design §8.2).
+  "errorOf" -> Just 1
+  "digitsOf" -> Just 1
+  "nextUp" -> Just 1
+  "ulps" -> Just 2
+  "eps" -> Just 0
+  "fma" -> Just 3
+  "isNaN" -> Just 1
+  "isInfinite" -> Just 1
   -- Rotations (design §3.3, §3.8): the matrix exponential, a matrix
   -- applied along every axis of a tensor, and the rotation of a chart.
   "expm" -> Just 1

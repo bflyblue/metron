@@ -8,6 +8,7 @@ import Data.ByteString qualified as BS
 import Support.Render (render)
 
 import Astro (astroTests)
+import Backend (backendTests)
 import Data.List (sort)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust)
@@ -133,6 +134,7 @@ main = do
       , itTests
       , respellTests
       , replTests
+      , backendTests
       , namespaceTests
       , editTests
       , stdlibTests
@@ -4357,12 +4359,12 @@ displayTests =
     [ testCase ":set unicode prints the unicode spellings, which read back" $ do
         let limits = settingLines defaultLimits
         runLinesP [":set"]
-          @?= Right (["precision 20", "sigma 3", "unicode off", "nonlinear 1"] ++ limits)
+          @?= Right (["precision 20", "sigma 3", "unicode off", "nonlinear 1", "samples 0", "seed 1"] ++ limits)
         runLinesP [":set unicode on", ":set", ":set unicode off", ":set"]
           @?= Right
-            ( ["precision 20", "sigma 3", "unicode on", "nonlinear 1"]
+            ( ["precision 20", "sigma 3", "unicode on", "nonlinear 1", "samples 0", "seed 1"]
                 ++ limits
-                ++ ["precision 20", "sigma 3", "unicode off", "nonlinear 1"]
+                ++ ["precision 20", "sigma 3", "unicode off", "nonlinear 1", "samples 0", "seed 1"]
                 ++ limits
             )
         case runLinesP [":set unicode maybe"] of

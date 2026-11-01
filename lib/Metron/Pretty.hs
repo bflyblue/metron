@@ -56,6 +56,7 @@ import Data.Text qualified as T (
   unwords,
  )
 import Data.Vector qualified as V (head, toList)
+import Data.Vector.Unboxed qualified as VU (length, map)
 import Metron.Affine (
   Collapsed (bound, mid, variance),
   Magnitude (Affine, Exact),
@@ -105,6 +106,14 @@ import Metron.Dimension (
   exponentText,
   productText,
   renderUnitsIn,
+ )
+import Metron.Double (
+  Dbl (..),
+  Estimate (..),
+  estimateOf,
+  originNote,
+  showDouble,
+  showEstimate,
  )
 import Metron.Eval (
   Applied (Applied),
@@ -356,6 +365,44 @@ instance Display Magnitude where
   renderNumber = renderMagnitude
   inUnit p f r = either (const Nothing) Just (divM p r f)
   numbersNote = nonLinearNote
+
+{- | A double prints as the shortest digits that read back to it, then its
+error estimate, when it has one, to two digits: @0.30000000000000004 ±
+5.6e-17@. After the value, what kind of estimate it is, @(bound)@ or
+@(estimate, 3 samples)@, and where the first NaN or infinity came from
+(design §8.2).
+-}
+instance Display Dbl where
+  renderNumber _ x =
+    let e = estimateOf x
+        isBound = case x.estimate of
+          ErrorBound _ -> True
+          Copies _ -> False
+     in if e == 0 || isNaN x.value || isInfinite x.value
+          then showDouble x.value
+          else showDouble x.value <> " ± " <> showEstimate isBound e
+
+  -- Divided by the unit's factor, the estimate scaled with it: a quantity
+  -- known exactly stays exact in any unit it prints in.
+  inUnit _ f x
+    | fd == 0 || isNaN fd || isInfinite fd = Nothing
+    | otherwise =
+        Just
+          x
+            { value = x.value / fd
+            , estimate = case x.estimate of
+                ErrorBound e -> ErrorBound (if e == 0 then 0 else e / abs fd * (1 + 1.0e-15))
+                Copies cs -> Copies (VU.map (/ fd) cs)
+            }
+   where
+    fd = fromRational (midpoint f) :: Double
+  numbersNote _ xs =
+    let estimated = [x | x <- xs, estimateOf x > 0, not (isNaN x.value || isInfinite x.value)]
+        kind = case [x.estimate | x <- estimated] of
+          [] -> []
+          ErrorBound _ : _ -> ["bound"]
+          Copies cs : _ -> ["estimate, " <> tshow (VU.length cs) <> " samples"]
+     in T.concat [" (" <> t <> ")" | t <- kind ++ maybe [] pure (originNote xs)]
 
 {- | Print a value. A tensor with a display unit whose dimension matches
 prints its magnitudes in that unit (design §3.2.12); otherwise in SI base

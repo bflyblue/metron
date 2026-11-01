@@ -20,6 +20,9 @@ once per evaluation.
 -}
 module Metron.Scalar (
   Scalar (..),
+  Backend (..),
+  backendName,
+  backendNamed,
   Settings (..),
   settingsAt,
   Decision (..),
@@ -49,6 +52,23 @@ import Metron.Affine qualified as A
 import Metron.Core (NudgeKind)
 import Metron.Dimension (Dim)
 import Metron.Numerical.Linear qualified as L
+
+-- | The evaluators of the scalars a session can choose (@:backend@).
+data Backend
+  = -- | rationals with affine error forms (design §3.2), the default
+    AffineBackend
+  | -- | IEEE 754 doubles with an error estimate (design §8.2)
+    DoubleBackend
+  deriving stock (Eq, Show, Enum, Bounded)
+
+-- | A backend's name, as @:backend@ and @--backend@ take it.
+backendName :: Backend -> Text
+backendName = \case
+  AffineBackend -> "affine"
+  DoubleBackend -> "double"
+
+backendNamed :: Text -> Maybe Backend
+backendNamed t = lookup t [(backendName b, b) | b <- [minBound .. maxBound]]
 
 {- | What a backend's arithmetic needs from the session, fixed for one
 evaluation.
@@ -85,7 +105,7 @@ data Rel = Lt | Le | Gt | Ge
 the double backend's copies disagree about it (design §8.2). The result
 alone decides the branch; the flag is a warning.
 -}
-data Decision = Decision {holds :: Bool, lost :: Bool}
+data Decision = Decision {holds :: Bool, lost :: Maybe Text}
   deriving stock (Eq, Show)
 
 -- | Where an elementwise built-in's result lives.
@@ -246,7 +266,7 @@ instance Scalar Magnitude where
     _ -> Nothing
 
 decided :: Bool -> Decision
-decided b = Decision{holds = b, lost = False}
+decided b = Decision{holds = b, lost = Nothing}
 
 -- | An accessor of a mean or a σ, refusing a value marked non-linear.
 described ::

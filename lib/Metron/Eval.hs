@@ -140,11 +140,13 @@ import Metron.Limits (
   defaultLimits,
   log10Abs,
   nested,
+  remark,
   spend,
  )
 import Metron.Primitive (baseUnit, primArity, typedPrims)
 import Metron.Scalar (
-  Decision (holds),
+  Backend (..),
+  Decision (holds, lost),
   Own (..),
   Rel (..),
   Scalar (..),
@@ -207,6 +209,14 @@ data Config = Config
   -}
   , limits :: Limits
   -- ^ what an evaluation may ask of the machine (design §8.1)
+  , backend :: Backend
+  -- ^ which evaluator of the scalars runs (design §8.2, @:backend@)
+  , samples :: Int
+  {- ^ the double backend's estimate: 0 a running error bound, N copies
+  under random rounding (design §8.2, @:set samples@)
+  -}
+  , seed :: Int
+  -- ^ the seed of those copies' random choices (@:set seed@)
   }
   deriving stock (Show)
 
@@ -218,6 +228,9 @@ defaultConfig =
     , unicode = False
     , nonlinear = 1 / 100
     , limits = defaultLimits
+    , backend = AffineBackend
+    , samples = 0
+    , seed = 1
     }
 
 -- | Working precision: the scale plus guard digits (design §3.2.8).
@@ -234,8 +247,8 @@ settingsOf cfg =
   Settings
     { precision = precisionOf cfg
     , decide = decideOf cfg
-    , samples = 0
-    , seed = 0
+    , samples = cfg.samples
+    , seed = cfg.seed
     }
 
 {- | What the evaluator needs from the codebase: the Typed Core behind a
@@ -1737,8 +1750,11 @@ runPrim cfg rt prim ty args = case (prim, args) of
   compareWith rel a b = do
     x <- ordered =<< a
     y <- ordered =<< b
-    VBool . (.holds) <$> arith (relate p rel x y)
-  equalAll xs ys = and <$> mapM (\(u, v) -> (.holds) <$> arith (equalM p u v)) (zip xs ys)
+    VBool . settle <$> arith (relate p rel x y)
+  equalAll xs ys = and <$> mapM (\(u, v) -> settle <$> arith (equalM p u v)) (zip xs ys)
+  -- A decision lost in rounding is the result all the same, with a warning
+  -- (design §8.2).
+  settle d = maybe d.holds (\why -> remark rt.budget why d.holds) d.lost
   -- Tensors of one shape (lint agrees), data or points: the equality
   -- instances of design §4.2. Tensors are equal when every component is
   -- decided equal (design §3.2.9).

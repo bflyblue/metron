@@ -56,6 +56,7 @@ library
     , Metron.Core
     , Metron.Desugar
     , Metron.Dimension
+    , Metron.Double
     , Metron.Encode
     , Metron.Driver
     , Metron.Eval
@@ -115,6 +116,7 @@ test-suite metron-test
   main-is:        Main.hs
   ghc-options:    -rtsopts "-with-rtsopts=-T"
   other-modules:
+    , Backend
     , Astro
     , Gen
     , Limits

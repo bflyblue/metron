@@ -222,6 +222,26 @@ primScheme name = case name of
   "mid" -> Just (Forall [sv, dv] (TFun sd sd))
   "bound" -> Just (Forall [sv, dv] (TFun sd sd))
   "sd" -> Just (Forall [sv, dv] (TFun sd sd))
+  -- The double backend's own (design §8.2): its error estimate and the
+  -- significant digits that leave, elementwise; the next double up; the
+  -- distance between two doubles in doubles; the gap from 1 to the next;
+  -- a fused multiply-add; and the two questions IEEE results raise.
+  "errorOf" -> Just (Forall [sv, dv] (TFun sd sd))
+  "digitsOf" -> Just (Forall [sv, dv] (TFun sd (TTensor s dimOne)))
+  "nextUp" -> Just (Forall [sv, dv] (TFun sd sd))
+  "ulps" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) numT)))
+  "eps" -> mono numT
+  "fma" ->
+    Just
+      ( Forall
+          [dv, d2v]
+          ( TFun
+              (numD d)
+              (TFun (numD d2) (TFun (numD (dimMul d d2)) (numD (dimMul d d2))))
+          )
+      )
+  "isNaN" -> Just (Forall [dv] (TFun (numD d) boolT))
+  "isInfinite" -> Just (Forall [dv] (TFun (numD d) boolT))
   "vmap" ->
     Just
       (Forall [sv, dv, d2v] (TFun (TFun (numD d) (numD d2)) (TFun sd (TTensor s d2))))
