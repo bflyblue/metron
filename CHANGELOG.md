@@ -16,6 +16,14 @@
   `random`) chooses whether the copies also round at random. `:set
   samples` goes up to 100000. `--set` takes every setting `:set` does,
   `samples`, `seed` and `rounding` included.
+- The double backend's copies run in parallel batches (design §8.2, as
+  built): `:set cores K` (on the command line, the machine's cores by
+  default) evaluates an input K times at once, each with about N/K of the
+  copies, and merges them into exactly what one evaluation gives. The
+  orbit workload at 10⁴ copies takes 2.0 s instead of 8.0 s. Inputs that
+  use `mid`, `sd`, `errorOf` or `digitsOf` still run as one evaluation.
+  The `steps` limit counts every batch. The executable's garbage collector
+  is now `-qg1 -qn4`, which keeps affine's timings with many cores.
 - Linear results are held to the same length (design §3.2.8, linear
   results held, as built): a sum or a scaling of uncertain values whose
   midpoint or coefficients pass eight times `p + 4` digits is rounded to

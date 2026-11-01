@@ -6169,6 +6169,54 @@ the same term runs under any backend that has the built-ins it uses.
     the copies' mean, not the spread of the input: at 10⁴ copies `1 ±σ
     0.1` prints `1 ± 0.0020 (estimate, 10000 samples)`, and `sd` is the
     way to read its σ.
+
+  *As built (2026-11-01): parallel batches.* `Metron.Batch` and
+  `Compile.batchedValue`. `:set cores K` and `--set cores K`; the command
+  line starts it at the machine's cores, raising the runtime's
+  capabilities to them unless `+RTS -N` chose; a library session starts
+  at 1. Each batch is a whole evaluation in its own thread (`async`'s
+  `forConcurrently`, now a dependency) with its own runtime and budget;
+  `Settings.batch` names its copies, and the coins of `operation`, the
+  copies of a literal and of `pi`, and the draws all take a copy's
+  global number.
+  - *Combining.* The batches' copies are concatenated in order, and the
+    statistics computed from the whole vector as before, so the result
+    is the single evaluation's bit for bit at every K (tested at K = 1, 2
+    and 4 against the unbatched evaluation, copies and statistics, and
+    the executable's output at K = 1 and 32 on the orbit workload below).
+    Chan's parallel update, which the bullet names, sums in an order that
+    depends on K, so it would not be. The IEEE value is computed in every
+    batch, alike, and taken from the first. The warnings are united, and
+    say the total N.
+  - *One evaluation instead* when the input reaches `mid`, `sd`,
+    `errorOf` or `digitsOf` (they read across a number's copies and
+    would see only their batch's; the check's memo says which an input
+    reaches), when the value holds a chart, and when the batches
+    disagree in anything but their copies. So `sd T` does not run in
+    parallel; `T` does. K is at most N/2, so a batch always has the two
+    copies a spread needs.
+  - *Steps.* Every batch takes the same steps, since the same IEEE
+    values decide every branch, so each batch stops once K times its own
+    count passes the limit: a shared count with no counter shared between
+    threads. A batch that reaches it fails the input with the user's
+    limit named. *Open, for the owner:* this makes "counts all batches
+    together" and "identical for every K" disagree near the limit: an
+    input of S steps with S < limit < K·S runs at K = 1 and is refused
+    at K.
+  - *The runtime.* With 32 capabilities, GHC's parallel collector slowed
+    affine: `f 0` to the `steps` limit took 7.6 s and the million-step
+    loop 1.1 s. The executable now runs the young generation's
+    collections on one thread and the older generations' on four
+    (`-with-rtsopts=-qg1 -qn4`): 6.1 s and 0.87 s, as with a sequential
+    collector. `samples 0` is unchanged (it never batches).
+  - *Speed-up* on the orbit workload (100 positions, each from ten Newton
+    steps of Kepler's equation, `a = 7000 ±σ 1 km`) at 10⁴ copies, on an
+    i9-14900K (8 performance and 16 efficiency cores, 32 threads): K = 1
+    8.0 s, K = 2 4.2 s, K = 4 2.4 s, K = 8 1.7 s, K = 16 1.6 s, and the
+    default 32 2.0 s, 4.0 times faster; past 8 the efficiency cores and
+    the shared cache cap it. At 10⁵ copies, default K: 18 s and 250 MB.
+    The orbital period, at most 0.3 s at any N, is dominated by starting
+    the session.
 - **`double`'s built-ins are the same under every setting,** so the
   before-running check depends only on `:backend`. `errorOf x` is the
   absolute error estimate (the bound under `samples 0`, the scaled spread
