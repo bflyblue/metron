@@ -415,11 +415,12 @@ mulM p x y =
       ab = sum (Map.elems (Map.intersectionWith (*) a b))
       second = sumSq a * sumSq b + ab * ab
       first' = sumSq (statTerms linear)
+      mid = m1 * m2 + (pos + neg) / 2
       measured
-        | second == 0 = Nothing
+        | second == 0 || belowFloor p mid second = Nothing
         | first' == 0 = Just (Skew Nothing "mul")
         | otherwise = Just (Skew (Just (roundUpSig 3 (second / first'))) "mul")
-      base = affine (m1 * m2 + (pos + neg) / 2) linear (abs m2 * s1 + abs m1 * s2) Nothing
+      base = affine mid linear (abs m2 * s1 + abs m1 * s2) Nothing
    in opResult
         "mul"
         p
@@ -465,13 +466,27 @@ opResult name p operands boundSize statSize sk base =
   statSize' = statSize + short.statError
   firstSigma = statSigma p short.value
   mixed
-    | statSize' == 0 = Nothing
+    | statSize' == 0 || belowFloor p (midpoint base) (statSize' * statSize') =
+        Nothing
     | firstSigma == 0 = Just (Skew Nothing name)
     | otherwise =
         Just
           (Skew
             (Just (roundUpSig 3 ((statSize' / firstSigma) ^ (2 :: Int))))
             (name <> ": uncertain statistical coefficient"))
+
+{- | Whether a neglected second-order statistical term, given by its size
+squared, is within the precision floor at the value's midpoint: the last
+of @p@ significant digits there (design §3.2.8). Such a term is
+arithmetic noise, and it never marks the value non-linear, however small
+the first-order σ it would be compared with: one that cancelled to the
+same noise. At a midpoint of zero there is no floor, so a value that is
+second order alone stays marked.
+-}
+belowFloor :: Precision -> Rational -> Rational -> Bool
+belowFloor p mid sizeSq = mid /= 0 && sizeSq <= floorSize * floorSize
+ where
+  floorSize = tolerance p mid
 
 -- | Round up to @k@ significant digits: an upper bound stays one.
 roundUpSig :: Int -> Rational -> Rational
@@ -540,7 +555,6 @@ shortenLinear p = \case
         errorOf k = sum [d | (k', d) <- changes, k' == k]
         s' = fromInteger (ceiling (s / grid)) * grid
      in Shortened (affine m ts' s' sk) (errorOf Bound) (errorOf Stat)
-
 
 recipM :: Precision -> Magnitude -> Either ArithError Magnitude
 recipM p x
@@ -733,7 +747,7 @@ liftWith name p inDomain f f' remainderOver spread x =
         | not (inDomain (m - sigma) && inDomain (m + sigma)) = Just (Skew Nothing name)
         | otherwise =
             let change = maximum [abs (fst (f' z) - fm') | z <- [m - sigma, m + sigma]]
-             in if change == 0
+             in if change == 0 || belowFloor p fm (change * change * sigma * sigma)
                   then Nothing
                   else
                     if fm' == 0
@@ -786,21 +800,23 @@ liftBounded ::
   Rational ->
   Magnitude ->
   Magnitude
-liftBounded name p f f' b x =
-  markedBy measured $ liftWith
-    name
-    p
-    (const True)
-    f
-    f'
-    (\_ _ -> b * boundRadius x * boundRadius x / 2)
-    (b * boundRadius x)
-    x
+liftBounded name p f f' b x = markedBy (measured (midpoint lifted)) lifted
  where
+  lifted =
+    liftWith
+      name
+      p
+      (const True)
+      f
+      f'
+      (\_ _ -> b * boundRadius x * boundRadius x / 2)
+      (b * boundRadius x)
+      x
   sigma = statSigma p x
   slope = abs (fst (f' (midpoint x)))
-  measured
+  measured mid
     | sigma == 0 || b == 0 = Nothing
+    | belowFloor p mid ((b * sigma * sigma) ^ (2 :: Int)) = Nothing
     | slope == 0 = Just (Skew Nothing name)
     | otherwise = Just (Skew (Just (roundUpSig 3 ((b * sigma / slope) ^ (2 :: Int)))) name)
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A second-order statistical term within the precision floor at a value's
+  midpoint is arithmetic noise and no longer marks the value non-linear,
+  even when the first-order σ it was compared with cancelled to noise too:
+  `x * (4 - x)` for `x = 2 ±σ 1e-15` prints `4`. A midpoint of zero has no
+  floor, so `n * n` stays marked. `G * M_earth` stays marked: its
+  second-order term is real for first-order forms (design §3.2).
 - Iterating a function costs the same per step. Every non-linear operation
   now keeps the rationals it produces to the working precision plus four
   digits: the function's value and slope, the fresh nudge's size (rounded

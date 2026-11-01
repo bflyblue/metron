@@ -802,6 +802,22 @@ apart (decided by the owner).
   even below the warning threshold. In particular `n*n == n*n` is currently
   undecidable: discarded remainders have no identity. Linear cancellation
   such as `n - n` remains exact.
+- **The floor.** A second-order term whose absolute size is within the
+  last of `p` significant digits at the value's midpoint (§3.2.8) is
+  arithmetic noise and is not measured, whatever the first-order σ: one
+  that cancelled exactly is noise of the same size, and the ratio of two
+  noises is no measure. So `x * (4 - x)` for `x = 2 ±σ 1e-15`, stationary
+  at 2 with a second-order term of `1.4e-30`, prints `4`; with `±σ 1e-3`
+  the term is `1.4e-6`, real and visible, and it is marked. At a midpoint
+  of zero there is no floor: `n*n` is all second order and stays marked.
+  The floor does not unmark a term that is significant but cancels against
+  another discarded term. `G * M_earth` in `astro`, with `M_earth = GM_earth
+  / G`, is exactly `GM_earth`, but its product's second-order term,
+  `−GM (δG/G)²`, about `7e-10` of the value, is cancelled only by the
+  `+GM (δG/G)²` that `recip` discarded, which a first-order form does not
+  carry. It stays marked; write `GM_earth`. Carrying second-order
+  statistical coefficients, so that `ε²` cancels as `ε` does, would fix
+  it, and is not done.
 - **The threshold** is `:set nonlinear` in percent, default 1, and is
   applied where a value is used, not where it is computed: printing adds
   "(non-linear: mul, second-order term 7.1% of the first-order σ; a mean and

@@ -4477,6 +4477,24 @@ affineTests =
         evalText "(5 ± 0.1) * (5 ± 0.1)" @?= Right ["25 ± 1"]
         evalText "(2 ± 0.1) ^ 3" @?= Right ["8.0 ± 1.3"]
         evalText "1e-30 * (1 ± 0.5)" @?= Right ["1.0e-30 ± 5e-31"]
+    , testCase "a second-order term below the precision floor never marks" $ do
+        -- x (4 − x) is stationary at 2, so its first-order σ cancels
+        -- exactly; its second-order term, 1.4e-30, is arithmetic noise at 4
+        evalText "let x = 2 ±σ 1e-15 in x * (4 - x)" @?= Right ["4"]
+        -- at σ = 1e-3 the term, 1.4e-6, is real and visible
+        evalText "let x = 2 ±σ 1e-3 in x * (4 - x)"
+          @?= Right
+            [ "4 (non-linear: mul, second-order term unbounded; a mean and a σ do not describe it)"
+            ]
+        -- at a midpoint of zero there is no floor: a square is all second order
+        evalText "let n = 0 ±σ 1 in n * n"
+          @?= Right
+            [ "0 (non-linear: mul, second-order term unbounded; a mean and a σ do not describe it)"
+            ]
+        evalText "let n = 0 ±σ 1e-15 in n * n"
+          @?= Right
+            [ "0 (non-linear: mul, second-order term unbounded; a mean and a σ do not describe it)"
+            ]
     , testCase "a shared nudge squares into a one-sided range" $ do
         evalText "let n = noise 1 in n.0 * n.0" @?= Right ["0.5 ± 0.5"]
         evalText "let x = 5 ± 0.1 in x * x" @?= Right ["25 ± 1"]
