@@ -14,6 +14,7 @@ module Metron.Driver (
   LastExpr (..),
   emptySession,
   seededSession,
+  startBackend,
   stdlibUpgrade,
   feed,
   feedFile,
@@ -267,6 +268,18 @@ entered by domain as one group and added, with its six stored default
 @use@s, as a new codebase starts and as @--no-codebase@ runs. Fails only if
 the library itself does not check, which is a build error.
 -}
+
+{- | A session under the named backend (design §8.2), as @:backend NAME@
+leaves it: what @metron --backend NAME@ starts with.
+-}
+startBackend :: Text -> Session -> Either Text Session
+startBackend name session = case backendNamed name of
+  Just b -> Right session{config = session.config{backend = b}}
+  Nothing -> Left (noBackend name)
+
+noBackend :: Text -> Text
+noBackend name = "no backend " <> name <> "; the backends are affine and double"
+
 seededSession :: Either Text Session
 seededSession = do
   cb <- stdlibCodebase
@@ -502,9 +515,7 @@ command session src = \case
   -- The evaluator of the scalars (design §8.2). A stored term names no
   -- backend, so switching changes no hash, only what the next input runs on.
   ["backend"] -> keep (Right [backendName cfg.backend])
-  ["backend", name] -> case backendNamed name of
-    Just b -> Right (session{config = cfg{backend = b}}, [])
-    Nothing -> Left ("no backend " <> name <> "; the backends are affine and double")
+  ["backend", name] -> (,[]) <$> startBackend name session
   -- The commands that read uncertainty are the affine backend's.
   (c : _)
     | cfg.backend /= AffineBackend

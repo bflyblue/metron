@@ -6039,9 +6039,13 @@ the exact value of the same formula on the exact literals:
   e_y)/r_min`, at most 2π, and 2π across the branch cut. An interval that
   leaves the domain, or reaches a pole, is unbounded;
 - a library function then adds its own error, in units in the last place
-  of its result (`ulp(z) ≤ 2u|z|`), from glibc's documented maxima for
-  x86-64 rounded up: `sqrt` ½ (correctly rounded), `exp`, `log`, `sin`,
-  `cos`, `atan`, `asin`, `acos` 1, `tan`, `sinh`, `cosh`, `tanh`, `atan2` 2;
+  of its result (`ulp(z) ≤ 2u|z|`), a figure chosen here and stated, not
+  checked against a published table: `sqrt` ½ (correctly rounded by IEEE
+  754), `exp`, `log`, `sin`, `cos`, `atan`, `asin`, `acos` 1, `tan`,
+  `sinh`, `cosh`, `tanh`, `atan2` 2. glibc does not round these correctly,
+  and its manual's test suite flags only errors above 9 units, so the
+  figures are an assumption about the library, the one place the bound is
+  not guaranteed by the model alone (open: measure them, or take the 9);
 - the bound, computed in floating point, is widened by a relative `2⁻⁴⁸`
   and `4·2⁻¹⁰⁷⁴`, more than its own few roundings can lose.
 
@@ -6061,6 +6065,9 @@ lazy values are forced in. The estimate is `τ·s/√N`, the copies' sample
 deviation scaled by Student's t at 97.5 % for `N − 1` degrees of freedom
 (a table to 30, then its expansion about the normal). `:set samples`
 takes 0 or 2 to 1000: one copy has no spread. `:set seed` defaults to 1.
+Few copies can all agree by chance, and the value then prints as exact:
+`0.1 + 0.2 + 0.3 + 0.4 + 0.7 - 1.7` at three samples is `0 ± 6.4e-16`
+at seed 1 and `0` at seed 3, the method's known weakness at small N.
 
 *Comparisons.* The IEEE result decides (`NaN` compares false, `/=` true).
 Under samples, a comparison whose copies disagree is noted on the

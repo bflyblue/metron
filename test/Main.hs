@@ -4423,7 +4423,10 @@ displayTests =
     [ testCase ":set unicode prints the unicode spellings, which read back" $ do
         let limits = settingLines defaultLimits
         runLinesP [":set"]
-          @?= Right (["precision 20", "sigma 3", "unicode off", "nonlinear 1", "samples 0", "seed 1"] ++ limits)
+          @?= Right
+            ( ["precision 20", "sigma 3", "unicode off", "nonlinear 1", "samples 0", "seed 1"]
+                ++ limits
+            )
         runLinesP [":set unicode on", ":set", ":set unicode off", ":set"]
           @?= Right
             ( ["precision 20", "sigma 3", "unicode on", "nonlinear 1", "samples 0", "seed 1"]

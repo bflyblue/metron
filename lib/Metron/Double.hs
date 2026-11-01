@@ -119,8 +119,11 @@ up x
 
 {- | The error of each library function, in units in the last place of its
 result: GHC calls the C library, whose functions are not correctly
-rounded. The figures are glibc's documented maxima for x86-64, rounded up
-(@sqrt@ is correctly rounded by IEEE 754, half a unit).
+rounded. The figures are chosen here, stated rather than guaranteed by
+the library: one unit for the functions modern C libraries round within
+one, two for the rest. They are not checked against a published table;
+glibc's own test suite flags only errors above nine units. @sqrt@ is
+correctly rounded by IEEE 754, half a unit.
 -}
 libmUlps :: Text -> Double
 libmUlps = \case

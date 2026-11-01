@@ -137,8 +137,8 @@ startSession opts = do
     Just b ->
       either
         (\err -> TIO.hPutStrLn stderr ("--backend: " <> err) >> exitFailure)
-        (pure . fst)
-        $ feed limited (":backend " <> b)
+        pure
+        $ startBackend b limited
   pure live{session = chosen}
 
 openSession :: Options -> IO Live

@@ -15,7 +15,7 @@ import Metron.Affine (Magnitude, midpoint, radius)
 import Metron.Codebase (Codebase (..), Reference (..), emptyCodebase)
 import Metron.Compile (evalValueAs)
 import Metron.Double (Dbl (..), digitsOfDbl, estimateOf)
-import Metron.Driver (feed)
+import Metron.Driver (feed, startBackend)
 import Metron.Eval (Config (..), ValueOf (..), defaultConfig)
 import Metron.Needs (needsOf)
 import Metron.Parser (parseExpr)
@@ -143,6 +143,15 @@ switchingTests =
           , "0.1 + 0.2 == 0.3"
           ]
           @?= Right ["true", "false", "true"]
+    , testCase "--backend starts a session under one, as :backend would" $ do
+        case startBackend "double" emptySession of
+          Left err -> assertFailure (T.unpack err)
+          Right s -> do
+            s.config.backend @?= DoubleBackend
+            fmap snd (feed s ":backend") @?= Right ["double"]
+        case startBackend "quad" emptySession of
+          Left err -> err @?= "no backend quad; the backends are affine and double"
+          Right _ -> assertFailure "quad accepted"
     , testCase "an unknown backend is refused"
         $ expectLeft
           "no backend single; the backends are affine and double"
@@ -468,16 +477,35 @@ samplesTests =
     , testCase "a stable sum keeps nearly all its digits" $ case doubleOf doubleConfig{samples = 3} "0.1 + 0.2 + 0.3" of
         Left err -> assertFailure (T.unpack err)
         Right x -> (digitsOfDbl x > 14) @? show (digitsOfDbl x)
-    , testCase "the same seed gives the same estimate; the value never changes" $ do
+    , testCase ":set seed: the same seed gives the same estimate, others others" $ do
         let run sd =
               runWith
-                doubleConfig{samples = 3, seed = sd}
-                ["(1 + 1e-15) - 1", "digitsOf ((1 + 1e-15) - 1)"]
-        run 7 @?= run 7
-        fmap (map (T.takeWhile (/= ' '))) (run 7)
-          @?= fmap (map (T.takeWhile (/= ' '))) (run 7)
-        fmap (take 1 . map (T.takeWhile (/= ' '))) (run 7)
-          @?= fmap (take 1 . map (T.takeWhile (/= ' '))) (run 8)
+                defaultConfig
+                [ ":set samples 3"
+                , ":set seed " <> sd
+                , ":backend double"
+                , "0.1 + 0.2 + 0.3 + 0.4 + 0.7 - 1.7"
+                ]
+            seeds = map (T.pack . show) [1 .. 8 :: Int]
+        run "7" @?= run "7"
+        case mapM run seeds of
+          Left err -> assertFailure (T.unpack err)
+          Right outs -> do
+            let values = [T.takeWhile (/= ' ') o | o <- concat outs]
+                estimates = [T.dropWhile (/= '±') o | o <- concat outs]
+            -- The value is the IEEE result whatever the seed; the estimate is not.
+            length (filter (/= "0") values) @?= 0
+            (length (Set.fromList estimates) > 1) @? show estimates
+    , testCase "at samples 3, the unstable branch of the default seed is flagged"
+        $ case runWith
+          defaultConfig
+          [":set samples 3", ":backend double", "if 1 + 1e-16 > 1 then 1 else 2"] of
+          Right [out] ->
+            ( "2\nwarning: the comparison 1 > 1 goes both ways across the 3 samples"
+                `T.isPrefixOf` out
+            )
+              @? T.unpack out
+          other -> assertFailure (show other)
     , testCase
         "a branch the copies disagree on is flagged, and the IEEE result decides"
         $ case runWith doubleConfig{samples = 10} ["if 1 + 1e-16 > 1 then 1 else 2"] of
