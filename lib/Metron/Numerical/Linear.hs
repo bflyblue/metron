@@ -27,7 +27,6 @@ import Metron.Affine
       sqrtM,
       statCoefficients,
       subM,
-      tidyM,
       ArithError(Domain, Undecided),
       Decide,
       Magnitude(Exact) )
@@ -148,7 +147,7 @@ matrixExp p n b
   | beta == 0 = Right identity
   | otherwise =
       Right
-        (iterate (\m -> tidy (matMul m m)) (positioned "expm" remainder partial) !! s)
+        (iterate (\m -> matMul m m) (positioned "expm" remainder partial) !! s)
  where
   identity =
     [[if i == j then Exact 1 else Exact 0 | j <- [0 .. n - 1]] | i <- [0 .. n - 1]]
@@ -206,10 +205,9 @@ matrixExp p n b
   top = until (\k -> beta' ^ k / factorial k < tol) (+ 1) (1 :: Integer)
   powers =
     scanl
-      (\m k -> tidy (map (map (scaleM (recip (fromInteger k)))) (matMul m scaled)))
+      (\m k -> map (map (scaleM (recip (fromInteger k)))) (matMul m scaled))
       identity
       [1 .. top - 1]
-  tidy = map (map (tidyM p))
   partial = foldr1 (zipWith (zipWith addM)) powers
   remainder = 2 * beta' ^ top / factorial top
 

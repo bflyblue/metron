@@ -802,6 +802,22 @@ apart (decided by the owner).
   even below the warning threshold. In particular `n*n == n*n` is currently
   undecidable: discarded remainders have no identity. Linear cancellation
   such as `n - n` remains exact.
+- **The floor.** A second-order term whose absolute size is within the
+  last of `p` significant digits at the value's midpoint (§3.2.8) is
+  arithmetic noise and is not measured, whatever the first-order σ: one
+  that cancelled exactly is noise of the same size, and the ratio of two
+  noises is no measure. So `x * (4 - x)` for `x = 2 ±σ 1e-15`, stationary
+  at 2 with a second-order term of `1.4e-30`, prints `4`; with `±σ 1e-3`
+  the term is `1.4e-6`, real and visible, and it is marked. At a midpoint
+  of zero there is no floor: `n*n` is all second order and stays marked.
+  The floor does not unmark a term that is significant but cancels against
+  another discarded term. `G * M_earth` in `astro`, with `M_earth = GM_earth
+  / G`, is exactly `GM_earth`, but its product's second-order term,
+  `−GM (δG/G)²`, about `7e-10` of the value, is cancelled only by the
+  `+GM (δG/G)²` that `recip` discarded, which a first-order form does not
+  carry. It stays marked; write `GM_earth`. Carrying second-order
+  statistical coefficients, so that `ε²` cancels as `ε` does, would fix
+  it, and is not done.
 - **The threshold** is `:set nonlinear` in percent, default 1, and is
   applied where a value is used, not where it is computed: printing adds
   "(non-linear: mul, second-order term 7.1% of the first-order σ; a mean and
@@ -863,7 +879,8 @@ product with the reciprocal (§3.2.2).
 3. Bound the gap between the curve and the line over the input range. That bound
    becomes the coefficient of **one fresh nudge**.
 4. Add the rigorous truncation and rounding error of the numerical evaluation to
-   the same fresh nudge.
+   the same fresh nudge, including the rounding that keeps the result's
+   rationals short (§3.2.8).
 
 Worked example, `x * x` with `x = 0.85 + 0.05·e₁`:
 
@@ -1000,8 +1017,9 @@ A long computation accumulates nudges. When a value carries more than `N` nudges
 (default 64), the smallest coefficients are folded into `slack`, which is a plain
 worst-case radius. This is always correct and slightly loose: the folded nudges
 can no longer cancel. Statistical nudges are never folded: a σ must not quietly
-become a bound. Rounding error from midpoint arithmetic does **not** go into
-slack: it joins the fresh nudge of the operation that did the rounding, whose id
+become a bound. Rounding error from midpoint arithmetic and from shortening
+coefficients (§3.2.8) does **not** go into slack: it joins the fresh nudge of
+the operation that did the rounding, whose id
 is content-addressed (§3.2.4), so two evaluations of the same operation round
 the same way and `sin 1 - sin 1` is still exactly `0`. Slack never shrinks under
 any operation.
@@ -1009,11 +1027,34 @@ any operation.
 #### 3.2.8 Working precision
 
 Midpoints are rounded to `p` digits after every nonlinear operation, with the
-rounding error accounted for (§3.2.7), so denominators never grow without bound.
-This is the approach of the Arb library. `p` is the `precision` setting plus
-guard digits (default `precision + 4`). A value is therefore a pure function of
-the term and `p`. Exact values are never rounded, and linear operations (`+`, `-`,
-scaling by an exact value) never round, which is what keeps cancellation exact.
+rounding error accounted for (§3.2.7). This is the approach of the Arb library.
+`p` is the `precision` setting plus guard digits (default `precision + 4`). A
+value is therefore a pure function of the term and `p`. Exact values are never
+rounded, and linear operations (`+`, `-`, scaling by an exact value) never round,
+which is what keeps cancellation exact.
+
+Every other rational a nonlinear operation produces is kept short too, at
+`p + 4` significant digits:
+
+- the function's value and slope at the midpoint, whose rounding joins their
+  error bounds (a series summed in exact rationals is thousands of digits long);
+- the size of the fresh nudge, rounded up, so a bound stays one;
+- the bound coefficients of the result, rounded to a grid of `p + 4` digits of
+  the value's size (the larger of its midpoint and its radius), and its slack,
+  rounded up onto that grid. Their rounding joins the operation's fresh nudge.
+  A coefficient below the grid becomes zero and its nudge leaves the value;
+- the statistical coefficients, each to `p + 4` digits of its own size, so none
+  vanishes. Their rounding is an error in a coefficient, like a slope's, and is
+  measured against the first-order σ (§3.2), never made a bound.
+
+Without this, lengths compound. A product's coefficients have the digits of
+both factors, a sum of rationals with different denominators has the digits of
+both, and the next operation evaluates its series at the enclosure's ends. An
+iteration that uses a value several times, Newton's method for Kepler's
+equation, then multiplied the length of every coefficient by about four per
+step and its time by about ten (four steps took 110 s). With every rational
+short, each step costs the same, and a value no longer keeps every nudge an
+iteration ever made: the converged steps' leftovers fall below the grid.
 
 "`p` digits" means `p` **significant digits**: an error of at most `10^-p`
 relative to the value. This is the meaning scientists and engineers give the word
@@ -1427,11 +1468,9 @@ in the enclosure; `B / 2ˢ` has `β / 2ˢ ≤ 1/2`; the series is summed to
 the first term `K` with `β'ᴷ / K!` below the working precision plus a
 digit per squaring; the remainder, at most `2 β'ᴷ / K!` in ∞-norm and so
 in every entry, is a fresh nudge of each entry's own; and the result is
-squared `s` times. Each product's coefficients are rounded to the working
-precision plus guard digits, the error joining a fresh nudge, as a
-midpoint's rounding does (§3.2.8), since a product of affine forms rounds
-its midpoint but not the coefficients it multiplies, and a series of them
-would otherwise carry ever longer rationals. An angle's nudges therefore reach the entries:
+squared `s` times. Each product's coefficients are shortened as every
+nonlinear operation's are (§3.2.8), so the series carries rationals of
+bounded length. An angle's nudges therefore reach the entries:
 `expm (rotz (90 deg ± 0.001 rad))` has a bound of 0.001 on its cosine
 entries and only a second-order one on its sine entries. `expm (−B)` is
 the inverse of `expm B` within the enclosures.
@@ -2242,7 +2281,7 @@ turns backwards on the chart. `stateFrom` then `velocityIn` and the
 position read back enclose what went in, on a chart turned, offset and
 spinning under a spinning parent. A body fixed on `spinner` at `t1` and at
 `t1 + 1 ms`: the forward difference of its positions differs from the
-velocity `stateFrom` gives by `3.6460579499989e-8 ± 5.3e-20` of the speed,
+velocity `stateFrom` gives by `3.6460579499999995e-8 ± 2.9e-23` of the speed,
 which is `ω δt / 2`, the centripetal term. Two levels: a station under the
 spinning chart, turned and offset, has spin `ω` and origin velocity `ω × (R_p
 a)` by hand, and a body fixed at it, moving with `ω × (p − o_eci)`, is at
@@ -5826,7 +5865,7 @@ chart pf on eci step km by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
 > rp to eci
 [887785.38831025442775…, 5462310.6012293745031…, 4286607.0498705616718…] eci
 > (rp to eci) to pf
-[6999.9999999999999999…, -1.3e-20 ± 9.1e-20, 6e-21 ± 2.4e-20] pf
+[6999.9999999999999999…, -1.3e-20 ± 8.9e-20, 6e-21 ± 2.4e-20] pf
 ```
 
 Periapsis lies on the perifocal x axis 7000 km out; in eci it is 7000 km

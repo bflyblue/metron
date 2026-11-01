@@ -89,7 +89,6 @@ import Metron.Affine
       subM,
       tanM,
       tanhM,
-      tidyM,
       uncertain,
       unitNoise,
       ArithError(..),
@@ -1658,7 +1657,7 @@ chartFrame p n parentChart gens =
   local sign gs = Just (foldr1 (\a b -> matrixProduct p n <$> a <*> b) (map (expOf . sign) gs))
   expOf g = do
     rows <- arith (matrixExp p n (chunk (V.toList g)))
-    Right (V.fromList (map (tidyM p) (concat rows)))
+    Right (V.fromList (concat rows))
   chunk xs
     | null xs = []
     | otherwise = let (r, rest) = splitAt n xs in r : chunk rest
@@ -1758,7 +1757,7 @@ identityMatrix :: Int -> Vector Magnitude
 identityMatrix n =
   V.generate (n * n) (\k -> if k `div` n == k `mod` n then Exact 1 else Exact 0)
 
--- | The product of two row-major @n × n@ matrices, its entries tidied.
+-- | The product of two row-major @n × n@ matrices.
 matrixProduct ::
   Precision -> Int -> Vector Magnitude -> Vector Magnitude -> Vector Magnitude
 matrixProduct p n a b =
@@ -1766,9 +1765,7 @@ matrixProduct p n a b =
     (n * n)
     ( \k ->
         let (i, j) = k `divMod` n
-         in tidyM
-              p
-              (sumM [mulM p (a V.! (i * n + l)) (b V.! (l * n + j)) | l <- [0 .. n - 1]])
+         in sumM [mulM p (a V.! (i * n + l)) (b V.! (l * n + j)) | l <- [0 .. n - 1]]
     )
 
 -- | A row-major @n × n@ matrix applied to a vector.

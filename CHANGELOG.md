@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- A second-order statistical term within the precision floor at a value's
+  midpoint is arithmetic noise and no longer marks the value non-linear,
+  even when the first-order σ it was compared with cancelled to noise too:
+  `x * (4 - x)` for `x = 2 ±σ 1e-15` prints `4`. A midpoint of zero has no
+  floor, so `n * n` stays marked. `G * M_earth` stays marked: its
+  second-order term is real for first-order forms (design §3.2).
+- Iterating a function costs the same per step. Every non-linear operation
+  now keeps the rationals it produces to the working precision plus four
+  digits: the function's value and slope, the fresh nudge's size (rounded
+  up), the bound coefficients and slack (on a grid of the value's size, the
+  rounding joining the fresh nudge), and the statistical coefficients (each
+  to its own digits, the rounding measured against σ). Before, lengths
+  compounded: Newton's method for Kepler's equation took 0.9 s for two
+  steps, 9.4 s for three and 110 s for four; ten steps now take 0.26 s and
+  twenty 0.48 s. A converged iteration's leftover nudges fall below the
+  grid and leave the value. `tidyM`, which did the same for matrix series
+  only, is gone.
 - Read historical values and call historical functions with `name#hash` or
   `#hash`, including recursive-group member suffixes. Resolve prefixes against
   stored definitions, reject ambiguous matches with full-hash diagnostics,

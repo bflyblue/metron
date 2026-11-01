@@ -19,7 +19,6 @@ module Metron.Source (
   exportLabels,
 ) where
 
-import Metron.Type (renderForallIn)
 import Data.Char ( isDigit )
 import Data.Graph ( flattenSCC, stronglyConnComp )
 import Data.List ( sortOn )
@@ -67,7 +66,7 @@ import Metron.NameResolution ( shortestName, shortestNameOf, LabelKind(TypeLabel
 import Metron.Session.Names ( namespaceArg )
 import Metron.Session.Types ( Session(scratch, codebase) )
 import Metron.TCore ( renderTTerm, TTerm(TCycle) )
-import Metron.Type ( TypeDef(constructors), typeRefs, renderTypeDef )
+import Metron.Type ( TypeDef(constructors), renderForallIn, renderTypeDef, typeRefs )
 import Metron.Update ( Propagation(skipped, upgraded) )
 import Data.Map.Strict qualified as Map
     ( null,
