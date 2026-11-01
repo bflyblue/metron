@@ -6066,6 +6066,35 @@ the same term runs under any backend that has the built-ins it uses.
     ways: the condition is lost in rounding"). The random choices come from
     a generator seeded by `:set seed` (a fixed default), so the same input
     under the same settings gives the same estimate.
+- **Declared σ is sampled: Monte Carlo under `double`** (decided by the
+  owner, 2026-11-01). Under `samples N > 0`, a declared standard
+  uncertainty is no longer refused: each copy draws it. `x ±σ s` is `x +
+  s·z` in each copy, `z` a standard normal, and `gauss` and `noise` are
+  drawn likewise. The draw is keyed by the nudge's identity (§3.2.4), the
+  copy and `:set seed`, so the same unknown has the same draw wherever it
+  appears in a copy, and `x - x` is exactly 0 in every copy: the
+  correlation affine forms keep by name, kept by the key. The shown value
+  is still the IEEE result at the nominal inputs, what a ported formula
+  computes; the copies measure the spread. This is the GUM's Supplement 1
+  method, and it is the answer for a value `affine` marks non-linear: the
+  copies give a skewed sample's real spread instead of a refusal.
+  - `:set rounding nearest | random` (default `random`). With `random`
+    each copy also rounds randomly (CESTAC), so the spread is input
+    uncertainty and rounding together, the realistic total for a ported
+    formula; with `nearest` the copies differ only in their draws, pure
+    Monte Carlo, the fair comparison with `affine`'s σ. Under `samples 0`
+    the setting has no effect.
+  - `mid` and `sd` are the copies' mean and standard deviation under
+    `double` with `samples N > 0`, and refused under `samples 0`, where no
+    copies exist. They join `errorOf` and `digitsOf` as `double`'s; the
+    check before running then depends on the setting for these two only.
+  - Monte Carlo needs many copies, so `samples` goes up to 10⁵ (CESTAC's 3
+    remains enough for rounding alone). The copies are computed in
+    lockstep as before.
+  - A bound `±` has no distribution, and sampling it uniformly would be an
+    assumption the language never makes elsewhere, so `±` stays refused
+    under `double`. A computation that mixes `±` and `±σ` runs under
+    `affine`.
 - **`double`'s built-ins are the same under every setting,** so the
   before-running check depends only on `:backend`. `errorOf x` is the
   absolute error estimate (the bound under `samples 0`, the scaled spread
