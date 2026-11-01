@@ -5879,6 +5879,34 @@ tuned, and compilation is a later milestone.
 
 ## 11. Open questions
 
+- Lazy precision (an idea for later; §3.2.8, §8.1). Today a value is computed
+  once at the session's working precision `p`. Instead, a value could be a
+  lazy, shared list of ever-better approximations, each element being
+  exactly what today's evaluator gives at that precision, an affine form at
+  `p₀`, `2·p₀`, `4·p₀`, …. A consumer (printing to n digits, a comparison,
+  `floor`) walks the list until the value is good enough, and every other
+  consumer of the same node shares the levels already forced.
+  - A leaf whose terms are exact (the series of `exp 1`, Newton's iterates
+    for `sqrt 2`) resumes where it stopped.
+  - A function of an approximated input advances in plateaus. At one
+    approximation of its input, its own series can only reach the error the
+    input brings (`|f′(y)|·err_y`). Going further pulls the input's next
+    level and computes again. An addition formula (`exp y′ = exp y · exp
+    δ`, `sin (y + δ)`, …) makes each new level a cheap correction rather
+    than a restart.
+  - Keeping affine forms within each level preserves what plain intervals
+    would lose: named nudges, so `x - x` is exactly 0, the budget and σ.
+    It also tells a consumer when to stop: walk on while the width is
+    rounding, stop at once when it is declared `±` or `±σ`, which no
+    precision shrinks.
+  - The cost over today is bookkeeping and memory, the levels a node keeps
+    while it is alive, and it is paid only where a consumer asks for more
+    than `p`. A `max precision` limit (§8.1) would cap the walk, since equal
+    values never separate.
+  - The simpler alternative is Ziv's strategy (Arb, MPFR): re-evaluate the
+    whole term at doubling precision. It costs at most about twice the
+    final run, but shares nothing between consumers that want different
+    accuracy and never resumes a leaf.
 - `:sample expr` (§3.2): Monte Carlo over the statistical nudges, for a value
   marked non-linear, reporting quantiles rather than a mean and a σ.
 - Curvilinear charts (§3.10). A chart is affine, so latitude and longitude,
