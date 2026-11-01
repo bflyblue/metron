@@ -48,7 +48,7 @@ import Metron.Desugar (
  )
 import Metron.Double (Dbl)
 import Metron.Eval (
-  Config (backend, limits, precision),
+  Config (backend, limits, precision, samples),
   EvalError (..),
   RuntimeOf (..),
   Value,
@@ -140,6 +140,7 @@ evalExpr cfg prefs scope cb memo src e = do
   let (verdict, memo') =
         checkBackend
           cfg.backend
+          cfg.samples
           (\(r, i) -> refNamer scope cb r i "")
           cb.terms
           memo

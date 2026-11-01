@@ -16,7 +16,7 @@ import Metron.Affine (Magnitude, midpoint, radius)
 import Metron.Codebase (Codebase (..), Reference (..), emptyCodebase)
 import Metron.Compile (evalValueAs)
 import Metron.Double (Dbl (..), Estimate (..), digitsOfDbl, estimateOf)
-import Metron.Driver (feed, startBackend, startSettings)
+import Metron.Driver (feed, seededSession, startBackend, startSettings)
 import Metron.Eval (Config (..), ValueOf (..), defaultConfig)
 import Metron.Limits (Limits (..))
 import Metron.Needs (needsOf)
@@ -41,6 +41,7 @@ backendTests =
     , switchingTests
     , checkTests
     , settingTests
+    , monteCarloTests
     ]
 
 -- The check before running ----------------------------------------------------------------
@@ -51,7 +52,7 @@ checkTests =
     "built-ins a backend lacks are refused before running"
     [ testCase "the refusal names the path through the definitions"
         $ expectLeft
-          "`orbitError` uses `sd` (through `budgetOf`), which the double backend does not have"
+          "`orbitError` uses `sd` (through `budgetOf`), which needs `:set samples N` under the double backend"
           ( runDouble
               [ "let budgetOf x = sd x"
               , "let orbitError x = budgetOf x * 2"
@@ -74,12 +75,16 @@ checkTests =
         $ runDouble ["let budgetOf x = sd x", "let twice x = x * 2", "twice 0.25"]
           @?= Right ["0.5"]
     , testCase "the check is conservative: a branch never taken counts"
-        $ expectLeft
-          "`sd` is the affine backend's"
-          (runDouble ["if false then sd 1 else 0"])
+        $ do
+          expectLeft
+            "`sd` needs `:set samples N` under the double backend"
+            (runDouble ["if false then sd 1 else 0"])
+          expectLeft
+            "`bound` is the affine backend's"
+            (runWith doubleConfig{samples = 10} ["if false then bound 1 else 0"])
     , testCase "so is a definition the input never calls but refers to"
         $ expectLeft
-          "`pick` uses `gauss` (through `unused`), which the double backend does not have"
+          "`pick` uses `gauss` (through `unused`), which needs `:set samples N` under the double backend"
           ( runDouble
               ["let unused = gauss 1", "let pick b = if b then 1 else unused.0", "pick true"]
           )
@@ -114,7 +119,7 @@ checkTests =
             _ -> assertFailure "no definitions"
     , testCase "after switching, the memo refuses what it allowed before"
         $ expectLeft
-          "`budgetOf` uses `sd`, which the double backend does not have"
+          "`budgetOf` uses `sd`, which needs `:set samples N` under the double backend"
           ( runWith
               defaultConfig
               [ "let budgetOf x = sd (x ±σ 0.1)"
@@ -167,14 +172,33 @@ switchingTests =
                 (runDouble [":" <> c <> " 1"])
           )
           ["exact", "budget", "covariance"]
-    , testCase "the affine backend's built-ins are refused under double" $ do
-        expectLeft
-          "`sd` is the affine backend's; the double backend does not have it"
-          (runDouble ["sd 1"])
+    , testCase
+        "the affine backend's built-ins are refused under double, ± at every setting" $ do
         expectLeft
           "`±` is the affine backend's; the double backend does not have it"
           (runDouble ["1 ± 0.1"])
-        expectLeft "`gauss` is the affine backend's" (runDouble ["gauss 2"])
+        expectLeft
+          "`±` is the affine backend's; the double backend does not have it"
+          (runWith doubleConfig{samples = 10} ["1 ± 0.1"])
+        expectLeft
+          "`bound` is the affine backend's"
+          (runWith doubleConfig{samples = 10} ["bound 1"])
+        expectLeft
+          "`covariance` is the affine backend's"
+          (runWith doubleConfig{samples = 10} ["covariance [1, 2]"])
+    , testCase "the declared σ, mid and sd need samples under double" $ do
+        expectLeft
+          "`sd` needs `:set samples N` under the double backend"
+          (runDouble ["sd 1"])
+        expectLeft
+          "`mid` needs `:set samples N` under the double backend"
+          (runDouble ["mid 1"])
+        expectLeft
+          "`±σ` needs `:set samples N` under the double backend"
+          (runDouble ["1 ±σ 0.1"])
+        expectLeft "`gauss` needs `:set samples N`" (runDouble ["gauss 2"])
+        expectLeft "`noise` needs `:set samples N`" (runDouble ["noise 2"])
+        runWith doubleConfig{samples = 10} ["sd 1", "mid 0.5"] @?= Right ["0", "0.5"]
     , testCase "the double backend's are refused under affine" $ do
         expectLeft
           "`errorOf` is the double backend's; the affine backend does not have it"
@@ -577,3 +601,192 @@ settingTests =
         $ fmap (.limits.steps) (startSettings [("steps", "500")] defaultConfig)
           @?= Right 500
     ]
+
+-- Declared σ, sampled: Monte Carlo ------------------------------------------------------
+
+{- | Monte Carlo under double (design §8.2): declared σ drawn in each copy.
+The tolerances are five standard errors of the statistic at the sample
+size, derived, not tuned: the mean's is @σ/√N@; a normal sample's
+deviation's is @σ/√(2(N−1))@; for @n²@, @n@ standard normal, whose fourth
+central moment is 60 and variance 2, @Var(s²) ≈ (60 − 4)/N@, so the
+deviation's is @√(56/N)/(2√2)@. The draws are fixed by the seed, so each
+check is deterministic; the tolerance says how far an honest sampler may
+stray at any seed.
+-}
+monteCarloTests :: TestTree
+monteCarloTests =
+  testGroup
+    "declared σ is sampled: Monte Carlo under double"
+    [ testCase
+        "a nearly linear formula: the orbital period with CODATA's G agrees with affine's σ"
+        $ agreesWithAffine
+          [ "let M = 5.9722e24 kg ±σ 6e20 kg"
+          , "let T = 2 * pi * sqrt ((7000 km)^3 / (astro.G * M))"
+          ]
+          "T"
+    , testCase "a product of small-σ values agrees with affine's σ"
+        $ agreesWithAffine ["let a = 3 ±σ 0.01", "let b = 5 ±σ 0.02"] "a * b"
+    , testCase "a non-linear value: n·n for n = 0 ±σ 1 has mean 1 and deviation √2" $ do
+        expectLeft
+          "non-linear"
+          (runWith defaultConfig ["let n = 0 ±σ 1", "sd (n * n)"])
+        case mapM
+          (doubleOf monteCarlo)
+          ["mid (let n = 0 ±σ 1 in n * n)", "sd (let n = 0 ±σ 1 in n * n)"] of
+          Right [m, s] -> do
+            let se = sqrt (56 / 10000) / (2 * sqrt 2)
+            (abs (m.value - 1) <= 5 * sqrt 2 / 100) @? ("mean " <> show m.value)
+            (abs (s.value - sqrt 2) <= 5 * se) @? ("sd " <> show s.value)
+          other -> assertFailure (show other)
+    , testCase "the shown value is the IEEE result at the nominal inputs"
+        $ fmap (.value) (doubleOf monteCarlo "let n = 0.5 ±σ 1 in n * n + 0.1")
+          @?= Right (0.5 * 0.5 + 0.1)
+    , testCase "x - x is exactly 0 in every copy, under either rounding" $ do
+        let zeroCopies cfg = case doubleOf cfg "let x = 1 ±σ 0.1 in (x * 3 + 1) - (x * 3 + 1)" of
+              Right x -> x.estimate @?= Copies (VU.replicate cfg.samples 0)
+              Left err -> assertFailure (T.unpack err)
+        zeroCopies monteCarlo
+        zeroCopies monteCarlo{rounding = RoundRandom}
+    , testCase "the same unknown is one draw across definitions, by its identity"
+        $ runWith monteCarlo ["let x = 2 ±σ 0.1", "let y = x * 2", "sd (y - 2 * x)"]
+          @?= Right ["0"]
+    , testCase "two independent ±σ values are independent" $ do
+        case copiesIn monteCarlo "let a = 1 ±σ 1 in let b = 1 ±σ 1 in [a, b]" of
+          Right [as, bs] -> do
+            let r = correlation as bs
+            (abs r <= 5 / sqrt 10000) @? ("correlation " <> show r)
+          other -> assertFailure (show other)
+        case doubleOf monteCarlo "sd (let a = 1 ±σ 1 in let b = 1 ±σ 1 in a - b)" of
+          Right s -> (abs (s.value - sqrt 2) <= 5 * sqrt 2 / sqrt (2 * 9999)) @? show s.value
+          Left err -> assertFailure (T.unpack err)
+    , testCase "gauss draws standard normals, independent across components"
+        $ case copiesIn monteCarlo "gauss 2" of
+          Right [as, bs] -> do
+            (abs (mean as) <= 5 / 100) @? show (mean as)
+            (abs (deviation as - 1) <= 5 / sqrt (2 * 9999)) @? show (deviation as)
+            (abs (correlation as bs) <= 5 / 100) @? show (correlation as bs)
+          other -> assertFailure (show other)
+    , testCase "a labelled unknown is one draw wherever the label appears"
+        -- Independent, the difference would spread by √2 · 0.1; one draw
+        -- leaves only the roundings of the two sums.
+        $ case doubleOf monteCarlo "sd ((5 ±σ 0.1 #s7) - (3 ±σ 0.1 #s7))" of
+          Right s -> (s.value < 1e-15) @? show s.value
+          Left err -> assertFailure (T.unpack err)
+    , testCase "the same seed gives the same copies; another seed, others" $ do
+        let at sd = (.estimate) <$> doubleOf monteCarlo{seed = sd} "let x = 1 ±σ 0.1 in x * x"
+        at 4 @?= at 4
+        (at 4 /= at 5) @? "seeds 4 and 5 drew alike"
+    , testCase "the draws do not depend on the order things are forced in" $ do
+        let outs =
+              runWith
+                monteCarlo
+                [ "let x = 1 ±σ 0.1"
+                , "let y = 7 ±σ 0.3"
+                , "[mid x, sd x]"
+                , "[mid y, sd y, mid x, sd x]"
+                , "[sd (y * x), sd x]"
+                ]
+            items = T.splitOn ", " . T.dropAround (`elem` ['[', ']'])
+        case outs of
+          Right [a, b, c] -> do
+            drop 2 (items b) @?= items a
+            drop 1 (items c) @?= drop 1 (items a)
+          other -> assertFailure (show other)
+    , testCase
+        "rounding random adds rounding to the draws; nearest leaves the draws alone" $ do
+        let at r = (.estimate) <$> doubleOf monteCarlo{rounding = r} "let x = 1 ±σ 0.1 in x / 3"
+        (at RoundNearest /= at RoundRandom) @? "the roundings agree"
+        case (at RoundNearest, at RoundRandom) of
+          (Right (Copies ns), Right (Copies rs)) ->
+            VU.all (<= 2.3e-16) (VU.zipWith (\n r -> abs (n - r)) ns rs)
+              @? "a copy moved more than a rounding"
+          other -> assertFailure (show other)
+    , testCase "mid and sd under samples 0 are refused, naming the setting"
+        $ expectLeft
+          "`sd` needs `:set samples N` under the double backend"
+          (runDouble ["let x = 1", "sd x"])
+    , testCase "the definitions that were refused run once samples are set"
+        $ runWith
+          doubleConfig
+          ["let budgetOf x = sd (x ±σ 0.1)", ":set samples 2", "budgetOf 1 < 1"]
+          @?= Right ["true"]
+    , testCase "a bound ± stays refused with samples, through definitions too"
+        $ expectLeft
+          "`ev` uses `±`"
+          ( runWith
+              monteCarlo
+              [ "let ev n = if n == 0 then 1 else od (n - 1)\nlet od n = if n == 0 then 1 ± 0.1 else ev (n - 1)"
+              , "ev 4"
+              ]
+          )
+    ]
+ where
+  mean cs = VU.sum cs / fromIntegral (VU.length cs)
+  deviation cs =
+    let m = mean cs
+     in sqrt
+          ( VU.sum (VU.map (\c -> (c - m) ^ (2 :: Int)) cs)
+              / fromIntegral (VU.length cs - 1)
+          )
+  correlation as bs =
+    let ma = mean as
+        mb = mean bs
+        cov = VU.sum (VU.zipWith (\a b -> (a - ma) * (b - mb)) as bs)
+     in cov
+          / sqrt (VU.sum (VU.map (\a -> (a - ma) ^ (2 :: Int)) as))
+          / sqrt (VU.sum (VU.map (\b -> (b - mb) ^ (2 :: Int)) bs))
+
+-- | Pure Monte Carlo: 10⁴ copies rounded to nearest.
+monteCarlo :: Config
+monteCarlo = doubleConfig{samples = 10000, rounding = RoundNearest}
+
+{- | Affine's first-order σ of an expression, after some definitions in the
+seeded session, against double's sample deviation and mean at 10⁴
+copies rounded to nearest: within five standard errors.
+-}
+agreesWithAffine :: [Text] -> Text -> Assertion
+agreesWithAffine defs expr =
+  case seededLines
+    ( defs
+        ++ ["sd (" <> expr <> ")", "mid (" <> expr <> ")"]
+        ++ [":set samples 10000", ":set rounding nearest", ":backend double"]
+        ++ ["sd (" <> expr <> ")", "mid (" <> expr <> ")"]
+    ) of
+    Left err -> assertFailure (T.unpack err)
+    Right outs -> case mapM leading outs of
+      Just [sigma, nominal, s, m] -> do
+        let n = 10000 :: Double
+        (abs (s / sigma - 1) <= 5 / sqrt (2 * (n - 1)))
+          @? ("sd " <> show s <> " against affine's " <> show sigma)
+        (abs (m - nominal) <= 5 * sigma / sqrt n)
+          @? ("mean " <> show m <> " against " <> show nominal)
+      _ -> assertFailure (show outs)
+ where
+  leading t = case reads (T.unpack (T.takeWhile (`notElem` [' ', '…']) t)) of
+    [(x, "")] -> Just (x :: Double)
+    _ -> Nothing
+
+-- | Lines fed to the seeded session, with the standard library.
+seededLines :: [Text] -> Either Text [Text]
+seededLines ls = do
+  s0 <- seededSession
+  let go _ acc [] = Right (concat (reverse acc))
+      go s acc (l : rest) = do
+        (s', outs) <- feed s l
+        go s' (outs : acc) rest
+  go s0 [] ls
+
+-- | The copies of each component of a vector, under a configuration.
+copiesIn :: Config -> Text -> Either Text [VU.Vector Double]
+copiesIn cfg src = do
+  e <- parseExpr src
+  (_, v) <- evalValueAs @Dbl cfg S.rootScope emptyCodebase src e
+  case v of
+    VTensor [_] _ _ buf ->
+      traverse
+        ( \case
+            Right x | Copies cs <- x.estimate -> Right cs
+            other -> Left (T.pack (show other))
+        )
+        (V.toList buf)
+    _ -> Left ("not a vector: " <> src)

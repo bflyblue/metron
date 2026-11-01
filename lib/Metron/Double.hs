@@ -34,6 +34,13 @@ its error, chosen by @:set samples@:
   seed, the copy, the operation and its operands, so the same input gives
   the same estimate whatever order lazy values are forced in. The
   estimate is the copies' spread scaled by Student's t at 95 %: @τ·s/√N@.
+  @:set rounding nearest@ rounds each copy to nearest instead.
+
+With copies, a declared standard uncertainty is drawn (Monte Carlo, the
+GUM's Supplement 1): @x ±σ e@ is @x + |e|·z@ in each copy, @z@ a standard
+normal keyed by the nudge's identity, the copy and the seed, and @gauss@
+and @noise@ are drawn likewise; @mid@ and @sd@ read the copies' mean and
+deviation. Without copies they are refused, and @±@ always is.
 -}
 module Metron.Double (
   Dbl (..),
@@ -52,6 +59,7 @@ module Metron.Double (
 ) where
 
 import Data.Bits (shiftR, testBit, xor)
+import Data.ByteString qualified as BS
 import Data.List (transpose)
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
@@ -60,7 +68,13 @@ import Data.Vector.Unboxed qualified as VU
 import Data.Word (Word64)
 import GHC.Exts (Double (D#), fmaddDouble#)
 import GHC.Float (castDoubleToWord64, castWord64ToDouble, floatToDigits)
-import Metron.Affine (ArithError (Domain), Magnitude (Exact))
+import Metron.Affine (
+  ArithError (Domain),
+  Magnitude (Exact),
+  NudgeId (..),
+  Origin,
+  originId,
+ )
 import Metron.Core (NudgeKind (..))
 import Metron.Dimension (dimMul, dimOne)
 import Metron.Scalar (
@@ -73,6 +87,7 @@ import Metron.Scalar (
   Settings (..),
   Shape (..),
   lacks,
+  needsSamples,
  )
 
 -- The numbers ------------------------------------------------------------------------
@@ -628,6 +643,93 @@ piD s
         Nothing
   | otherwise = Dbl pi (ErrorBound 1.2246467991473533e-16) Nothing
 
+-- Declared uncertainty: Monte Carlo ---------------------------------------------------
+
+{- | A declared unknown's key: the first eight bytes of its content-addressed
+identity (design §3.2.4), the SHA-256 the affine backend names the same
+nudge by. One hash per declared component, not per copy.
+-}
+drawKey :: NudgeKind -> Origin -> Rational -> Word64
+drawKey k o m =
+  let NudgeId bytes = originId k o m
+   in BS.foldl' (\h b -> h * 256 + fromIntegral b) 0 (BS.take 8 bytes)
+
+{- | Copy @i@'s draw of the unknown with this key: a standard normal, by
+Box–Muller on two uniforms hashed from the key, the seed and the copy
+with SplitMix's finaliser. @u₁@ lies in @(0, 1]@, so its logarithm is
+finite; only the cosine of the pair is used, so each draw depends on its
+own key, seed and copy and nothing else, and the order lazy values are
+forced in cannot change it.
+-}
+standardNormal :: Settings -> Word64 -> Int -> Double
+standardNormal s key i =
+  let base = mix (mix (key + fromIntegral s.seed * 0x9e3779b97f4a7c15) + fromIntegral i)
+      uniform w = (fromIntegral (w `shiftR` 11) + 1) * 1.1102230246251565e-16
+      u1 = uniform (mix (base + 1))
+      u2 = uniform (mix (base + 2))
+   in sqrt (-(2 * log u1)) * cos (2 * pi * u2)
+
+{- | A unit unknown: 0, drawn as a standard normal in each copy. Its value
+is 0, so a formula's IEEE result is its result at the nominal inputs.
+-}
+drawn :: Settings -> NudgeKind -> Origin -> Rational -> Dbl
+drawn s k o m =
+  let key = drawKey k o m
+   in Dbl 0 (Copies (VU.generate s.samples (standardNormal s key))) Nothing
+
+{- | @noise n@ / @gauss n@, one component: drawn in each copy, as the
+design has it for both (design §8.2), with copies; refused without.
+-}
+noiseD :: Settings -> NudgeKind -> Origin -> Either ArithError Dbl
+noiseD s k o
+  | s.samples > 0 = Right (drawn s k o 0)
+  | otherwise = Left (Domain (needsSamples (noiseName k)))
+
+noiseName :: NudgeKind -> Text
+noiseName = \case
+  Bound -> "noise"
+  Stat -> "gauss"
+
+{- | @x ±σ e@: @x + |e|·z@ in each copy, @z@ drawn under the identity the
+affine backend gives the nudge, so the same unknown has the same draw
+wherever it appears in a copy and @x - x@ is 0 in every copy. The sum and
+the product round as the copies do. @±@, a bound, has no distribution
+and stays refused (design §8.2).
+-}
+uncertainD ::
+  Settings -> NudgeKind -> Origin -> Dbl -> Dbl -> Either ArithError Dbl
+uncertainD s k o x e = case k of
+  Bound -> refused "±"
+  Stat
+    | s.samples > 0 ->
+        Right (addD s x (mulD s (exactly1 abs e) (drawn s k o midpoint)))
+    | otherwise -> Left (Domain (needsSamples "±σ"))
+ where
+  midpoint = if finite x.value then toRational x.value else 0
+
+{- | The copies' mean, or their sample standard deviation (with @N − 1@),
+as a number known exactly; refused without copies.
+-}
+copyStatistic ::
+  Text -> (VU.Vector Double -> Double) -> Settings -> Dbl -> Either ArithError Dbl
+copyStatistic name f s x = case x.estimate of
+  Copies cs -> Right (exactDbl (f cs))
+  ErrorBound _
+    | s.samples > 0 -> Right (exactDbl (f (VU.singleton x.value)))
+    | otherwise -> Left (Domain (needsSamples name))
+
+meanOf :: VU.Vector Double -> Double
+meanOf cs = VU.sum cs / fromIntegral (VU.length cs)
+
+deviationOf :: VU.Vector Double -> Double
+deviationOf cs
+  | n < 2 = 0
+  | otherwise =
+      sqrt (VU.sum (VU.map (\c -> (c - m) * (c - m)) cs) / fromIntegral (n - 1))
+ where
+  n = VU.length cs
+  m = meanOf cs
+
 -- Comparisons -------------------------------------------------------------------------
 
 relation :: Rel -> Double -> Double -> Bool
@@ -1000,8 +1102,8 @@ instance Scalar Dbl where
   hintFactor x
     | finite x.value = Exact (toRational x.value)
     | otherwise = Exact 0
-  noiseM _ k _ = refused (case k of Bound -> "noise"; Stat -> "gauss")
-  uncertainM _ k _ _ _ = refused (case k of Bound -> "±"; Stat -> "±σ")
+  noiseM = noiseD
+  uncertainM = uncertainD
   determinantM s _ rows = Right (determinantD s rows)
   invertM s n rows = Right (invertD s n rows)
   matrixExpM s n rows = Right (matrixExpD s n rows)
@@ -1046,4 +1148,8 @@ instance Scalar Dbl where
         )
     "isNaN" -> Just (Test (isNaN . (.value)))
     "isInfinite" -> Just (Test (isInfinite . (.value)))
+    -- The copies' mean and deviation (design §8.2): with declared σ drawn,
+    -- a Monte Carlo estimate of the mean and the standard uncertainty.
+    "mid" -> Just (Each Keep False (copyStatistic "mid" meanOf))
+    "sd" -> Just (Each Keep False (copyStatistic "sd" deviationOf))
     _ -> Nothing

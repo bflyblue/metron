@@ -32,7 +32,7 @@ import Data.Set qualified as Set (empty, member, toList)
 import Data.Text (Text)
 import Data.Text qualified as T (intercalate)
 import Metron.Core (Hash, Nat (Z), Term, directUses)
-import Metron.Scalar (Backend, backendName, lacks, ownerOf)
+import Metron.Scalar (Backend, ownerOf, refusal, refusalClause, refusalOf)
 
 -- | What each definition needs, by hash: the backend-specific built-ins it reaches.
 newtype Needs = Needs (Map Hash (Set Text))
@@ -60,32 +60,34 @@ needsOf terms h memo@(Needs m) = case Map.lookup h m of
  where
   step (acc, memo') d = let (s, memo'') = needsOf terms d memo' in (acc <> s, memo'')
 
-{- | Whether an input may run under a backend, its Core given; the memo
-comes back extended either way. The names a reference prints with come
-from the caller.
+{- | Whether an input may run under a backend at a number of samples (the
+double backend has some built-ins only with copies), its Core given; the
+memo comes back extended either way. The names a reference prints with
+come from the caller.
 -}
 checkBackend ::
   Backend ->
+  Int ->
   ((Hash, Maybe Int) -> Text) ->
   Map Hash (Term Z) ->
   Needs ->
   Term Z ->
   (Either Text (), Needs)
-checkBackend b nameOf terms memo t =
+checkBackend b samples nameOf terms memo t =
   let (rs, own) = direct t
       (total, memo') =
         foldl'
           (\(acc, mm) (d, _) -> let (s, mm') = needsOf terms d mm in (acc <> s, mm'))
           (own, memo)
           (Set.toList rs)
-      foreign' = [n | n <- Set.toList total, ownerOf n /= Just b]
-   in case foreign' of
+      refused = [(n, why) | n <- Set.toList total, Just why <- [refusalOf b samples n]]
+   in case refused of
         [] -> (Right (), memo')
-        n : _
-          | n `Set.member` own -> (Left (lacks b n), memo')
-          | otherwise -> (Left (explain n (pathTo memo' n (Set.toList rs))), memo')
+        (n, why) : _
+          | n `Set.member` own -> (Left (refusal b n why), memo')
+          | otherwise -> (Left (explain n why (pathTo memo' n (Set.toList rs))), memo')
  where
-  explain n = \case
+  explain n why = \case
     first : rest ->
       "`"
         <> nameOf first
@@ -97,10 +99,9 @@ checkBackend b nameOf terms memo t =
                else
                  " (through " <> T.intercalate ", " ["`" <> nameOf r <> "`" | r <- rest] <> ")"
            )
-        <> ", which the "
-        <> backendName b
-        <> " backend does not have"
-    [] -> lacks b n
+        <> ", "
+        <> refusalClause b why
+    [] -> refusal b n why
   -- The first reference that needs the name, then down through the
   -- definitions that need it to one that uses it itself.
   pathTo (Needs m) n = \case

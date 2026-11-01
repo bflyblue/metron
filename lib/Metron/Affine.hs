@@ -22,6 +22,7 @@ module Metron.Affine (
   nonLinearAt,
   NudgeId (..),
   Origin (..),
+  originId,
   Nudge (..),
   Precision,
   isExact,

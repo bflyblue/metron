@@ -27,6 +27,12 @@ module Metron.Scalar (
   backendNamed,
   backendOwn,
   ownerOf,
+  sampledOwn,
+  Refusal (..),
+  refusalOf,
+  refusal,
+  refusalClause,
+  needsSamples,
   lacks,
   Settings (..),
   Rounding (..),
@@ -105,6 +111,51 @@ ownerOf :: Text -> Maybe Backend
 ownerOf name = case [b | b <- [minBound .. maxBound], name `elem` backendOwn b] of
   b : _ -> Just b
   [] -> Nothing
+
+{- | The affine backend's built-ins the double backend has too when it
+carries copies (design §8.2): a declared σ is drawn in each copy, and
+@mid@ and @sd@ are the copies' mean and deviation. With no copies, under
+@samples 0@, it has none of them.
+-}
+sampledOwn :: [Text]
+sampledOwn = ["±σ", "gauss", "noise", "mid", "sd"]
+
+-- | Why a backend, at a setting, cannot run a built-in.
+data Refusal
+  = -- | the backend does not have it at all
+    Lacks
+  | -- | the double backend has it only with copies
+    NeedsSamples
+  deriving stock (Eq, Show)
+
+{- | Whether a backend, at a number of samples, can run a built-in a program
+names; the reason if not. The check before running asks it of every
+backend-specific built-in an input reaches.
+-}
+refusalOf :: Backend -> Int -> Text -> Maybe Refusal
+refusalOf b n name = case ownerOf name of
+  Just o
+    | o /= b ->
+        if b == DoubleBackend && name `elem` sampledOwn
+          then if n > 0 then Nothing else Just NeedsSamples
+          else Just Lacks
+  _ -> Nothing
+
+-- | The refusal of a built-in used directly.
+refusal :: Backend -> Text -> Refusal -> Text
+refusal b name = \case
+  Lacks -> lacks b name
+  NeedsSamples -> needsSamples name
+
+-- | The refusal's end, for a built-in reached through definitions.
+refusalClause :: Backend -> Refusal -> Text
+refusalClause b = \case
+  Lacks -> "which the " <> backendName b <> " backend does not have"
+  NeedsSamples -> "which needs `:set samples N` under the double backend"
+
+-- | Why the double backend refuses a built-in that needs its copies.
+needsSamples :: Text -> Text
+needsSamples name = "`" <> name <> "` needs `:set samples N` under the double backend"
 
 -- | Why a backend refuses another's built-in.
 lacks :: Backend -> Text -> Text
