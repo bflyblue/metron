@@ -1,6 +1,6 @@
 # Learning Metron
 
-Metron is a calculator and small language for physical calculations. It keeps units attached to numbers and follows uncertainty through formulas. It also stores reusable definitions with a history of their changes.
+Metron is a calculator and small language for physical calculations. It checks units, samples uncertain inputs, and stores reusable definitions with a history of their changes.
 
 This tutorial starts with a cycling calculation. It then introduces measurement uncertainty, vectors, coordinate systems, and structured data. The final sections explain the saved database and demonstrate how a function update affects other definitions.
 
@@ -18,13 +18,13 @@ This opens the interactive calculator without a saved database. Enter the exampl
 
 Blocks marked `text` contain Metron input unless they are introduced as output. Blocks marked `sh` contain shell commands. Definitions normally produce no output, while expressions print their results.
 
-These examples use rational arithmetic to keep fractions exact. Select it first:
+Metron starts with double arithmetic, which uses fixed-precision floating-point numbers. These examples begin with rational arithmetic to keep fractions exact. Select it first:
 
 ```text
 :set arithmetic rational
 ```
 
-Elementary functions still require numerical approximation.
+Elementary functions, such as `sqrt` and `sin`, still require numerical approximation. Printing more digits does not prove that those digits are accurate.
 Continue in the same session through sections 2–8. Section 9 starts a separate session with a saved database.
 
 Useful commands include:
@@ -125,14 +125,25 @@ The result is `2 km`. A unit definition makes `lap` available as a quantity suff
 
 For a calculated number, attach a unit with multiplication, as in `(2 + 3) * km`. When passing a unit-sized amount to a function, write `1 km`. A bare unit is not a general value that you can pass around by itself.
 
+At multiplication and division, a bare unit means one unit-sized amount:
+
+```text
+5 * km to m
+4 km / 2 km
+4 km / km
+```
+
+These give `5000 m`, `2`, and `4`. A quantity suffix keeps each number and its unit together. For a compound unit, write `5 km/h` or `5 * (km/h)`.
+
 ## 3. Follow measurement uncertainty
 
-Describe a measurement with a probability distribution. A normal distribution
+Describe a measurement with a probability distribution, a model of possible values and their probabilities. A normal distribution
 uses a mean and a standard deviation. The standard deviation describes spread,
 not a guaranteed maximum error.
 
 ```text
 :set samples 1000
+:set seed 1
 let boardLength = sample (normal (2 m) (0.01 m))
 let boardWidth = sample (normal (1 m) (0.005 m))
 let perimeter = 2 * (boardLength + boardWidth)
@@ -141,11 +152,18 @@ mid perimeter
 sd perimeter
 ```
 
-Metron evaluates the formula for 1,000 input realizations. The report gives an
-empirical mean, sample standard deviation and central 95% outcome interval.
+An input realization is one set of sampled input values. Metron evaluates the formula for 1,000 realizations. The report gives a sample mean, sample standard deviation and central 95% outcome interval.
 The mean is near 6 m and the standard deviation is near 0.0224 m.
 These estimates vary with the seed and sample count.
 The outcome interval describes simulated measurements, not confidence in the mean.
+
+The number before the report is the ordinary value, not the sample mean.
+Use `mid perimeter` for the mean and `sd perimeter` for the sample standard deviation.
+The name `mid` does not mean an exact center or an interval midpoint.
+
+The seed selects a reproducible random sequence. With the same code, configuration and seed, repeated evaluations reproduce their draws.
+Change the seed to explore another finite sample. Increase `samples` to estimate the distribution from more draws.
+Neither change gives a guaranteed bound on all possible outcomes.
 
 ### Keep shared measurements shared
 
@@ -156,7 +174,9 @@ sd (boardLength - boardLength)
 
 The results are `true` and `0 m`. Both uses refer to the same sampled input.
 Two separate sample declarations have independent latent draws.
-A sample site inside a function reuses its latent draw across calls.
+A sample site is one place in the source that calls `sample`.
+A site inside a function reuses its random draw across calls.
+Repeatedly calling that function does not create independent measurements.
 Use distinct sample sites when you need independent inputs.
 
 A uniform distribution is useful when your measurement model assigns equal
@@ -170,6 +190,22 @@ clearance
 Distribution parameters must be deterministic scalars with matching dimensions.
 You cannot pass another sampled value as a distribution parameter.
 Build correlated quantities from shared sampled inputs instead.
+
+Standard deviation must be nonnegative. A uniform distribution needs its lower endpoint first.
+Equal endpoints and a zero standard deviation are valid.
+A distribution is a description that you can name before drawing from it:
+
+```text
+let sensorModel = normal (10 m) (0.2 m)
+let sensorA = sample sensorModel
+let sensorB = sample sensorModel
+sd (sensorA - sensorB)
+```
+
+The two sample sites draw independently from the same model.
+That model predicts a standard deviation of about `0.283 m` for their difference.
+The finite sample estimates it at about `0.294 m` with this seed and count.
+Reusing `sensorA` instead of sampling again preserves its correlation with quantities derived from it.
 
 ### Measure correlation
 
@@ -200,11 +236,26 @@ The ordinary double result is 0. Diagnostic repetitions can produce different
 results, such as 2. The report separates their spread from their displacement
 relative to the ordinary result. Neither value is a guaranteed numerical bound.
 
+The typical spread summarizes variation among repetitions of each fixed input.
+RMS displacement summarizes their distance from the ordinary result.
+If the repetitions agree, the report says “no variation observed.” This does not prove exactness.
+
+Run both kinds of sampling together:
+
+```text
+perimeter
+```
+
+This report contains input statistics and rounding diagnostics in separate fields.
+With 1,000 input draws and eight repetitions, it evaluates 1,000 ordinary outcomes and 8,000 diagnostic outcomes.
+
 For sampled inputs, Metron fixes each input realization across its rounding
 repetitions. Only ordinary runs contribute to the input statistics.
 Distribution generation and parameter evaluation are excluded from the diagnostic.
-Elementary functions use a one-ulp perturbation heuristic.
-Sample reductions such as `sd` reject rounding analysis.
+Elementary functions use a heuristic perturbation of one representable step.
+This models rounding sensitivity rather than every source of numerical error.
+Statistics such as `mid`, `sd` and `covariance` reject rounding analysis of their own calculations.
+Turn the diagnostic off before requesting those statistics.
 
 Return to the arithmetic used by the remaining examples:
 
@@ -212,6 +263,37 @@ Return to the arithmetic used by the remaining examples:
 :set roundingAnalysis off
 :set arithmetic rational
 ```
+
+### Choose the calculation controls
+
+Use `:set` without arguments to inspect the configuration.
+Arithmetic selects the number representation. Propagation selects how uncertain inputs pass through the calculation.
+Only Monte Carlo propagation is currently supported.
+
+| Control | Default | Accepted values and meaning |
+| --- | --- | --- |
+| `arithmetic` | `double` | `rational` or `double`. Rational operations preserve exact fractions. |
+| `propagation` | `montecarlo` | `montecarlo`. Input draws pass through the complete expression. |
+| `samples` | `10000` | 1–100000 input draws. Standard deviation and covariance need at least two. |
+| `seed` | `1` | A nonnegative integer that selects the random sequence. |
+| `roundingAnalysis` | `off` | `off` or `stochastic`. The latter requires double arithmetic. |
+| `roundingSamples` | `8` | 2–1000 repetitions per fixed input when analysis is on. |
+| `precision` | `20` | Controls rational approximations and decimal display, not double precision. |
+| `cores` | Runtime's available cores | A positive worker count for input-only double batches. |
+
+Changing `cores` does not change the draws or reports. Rational sampling and grouped rounding currently run serially.
+Input-only double calculations can use concurrent batches. Expressions containing cross-input statistics, such as `sd`, use one evaluation instead.
+The executable enables the available logical cores at startup. Use `:set cores 4` to request four batches.
+Its total size is capped at one million runs and also obeys the component limit.
+Step, memory and time limits can refuse a calculation before it finishes.
+
+The command line accepts the same configuration:
+
+```sh
+nix run . -- --no-codebase --set arithmetic double --set samples 1000 --set seed 1 'sample (normal (10 m) (0.2 m))'
+```
+
+Rounding analysis starts off. To return from stochastic analysis to rational arithmetic, turn the analysis off first, as shown above.
 
 ## 4. Work with vectors and matrices
 
@@ -270,6 +352,10 @@ u × v
 The wedge result is `[0, 1, 0; -1, 0, 0; 0, 0, 0]`. Both remaining expressions give `[0, 0, 1]`. In ASCII, write `u /\ v`, `u >< v`, and `star (u /\ v)`.
 
 The wedge product works with equal-length vectors beyond three dimensions. The cross product and this `star` operation are specific to three dimensions. Here, `∧` means wedge, while boolean “and” uses `&&`.
+
+These operations do not yet provide a full Grassmann algebra with arbitrary grades.
+`star` requires an alternating matrix, with zero diagonal and opposite entries across that diagonal.
+Constructing it with `wedge` preserves that structure in every sampled realization.
 
 ### Calculate speed and work
 
@@ -442,7 +528,15 @@ let paceLabel ride = if averageSpeed ride > 20 km/h then Brisk else Steady
 paceLabel morning
 ```
 
-The result is `Brisk`. The `if` expression chooses a value based on a condition. With sampled inputs, each realization takes its own branch. A result with different constructors prints an outcome table.
+The result is `Brisk`. The `if` expression chooses a value based on a condition. With sampled inputs, each realization takes its own branch:
+
+```text
+let uncertainRide = Ride {distance = sample (normal (10 km) (0.5 km)), duration = 30 min}
+paceLabel uncertainRide
+```
+
+The result includes an outcome table for `Brisk` and `Steady`. Their proportions estimate the chance of exceeding the 20 km/h threshold under this input model.
+Rounding-driven branch changes, when enabled, have separate diagnostic counts.
 
 Use `case` to calculate a result for each named choice:
 
@@ -512,7 +606,8 @@ The angle from the closest point of the orbit grows from about 92° to `127.1943
 
 ### See how far a solver went
 
-`propagate` solves Kepler's equation with a fixed number of Newton steps. The solver adds its remaining error as a bound, so the result is as reliable as any other. Vallado's example 2-1 asks for the eccentric anomaly:
+`propagate` solves Kepler's equation with 12 Newton steps. It does not attach a bound for the remaining solver error.
+A residual measures how far the result misses the original equation. Vallado's example 2-1 asks for the eccentric anomaly:
 
 ```text
 meanToEccentric 0.4 (235.4 deg) to deg
@@ -525,10 +620,14 @@ The first result is approximately 220.512074767522 degrees. The second expressio
 A measured input passes its uncertainty through the solver:
 
 ```text
+:set arithmetic double
 meanToEccentric 0.4 (sample (normal (235.4 deg) (0.01 deg))) to deg
+:set arithmetic rational
 ```
 
+Double arithmetic reduces the cost of the repeated solver calculations.
 The sample mean is near 220.5121 degrees and the standard deviation is near 0.0077 degrees.
+Input sampling does not measure solver truncation error or prove convergence for every orbit.
 
 ### Plan a transfer
 
@@ -573,6 +672,7 @@ The database is also called a codebase. It stores definitions and the names that
 Create some definitions:
 
 ```text
+:set arithmetic rational
 let five = 5
 let alsoFive = 5
 let addOne x = x + 1
@@ -641,6 +741,10 @@ Save the new definition before continuing:
 ```
 
 A hash also includes the identities of referenced definitions. Changing a dependency creates a new identity for an upgraded dependent, even when its displayed source still uses the same names.
+
+The arithmetic mode, sample count and seed belong to the evaluation configuration, not the stored term hash.
+Changing them can change a result without changing its definition's identity.
+Record the configuration alongside results that you need to reproduce.
 
 ## 11. Upgrade a function deliberately
 
@@ -769,6 +873,9 @@ The directory contains several kinds of files:
 | `history` | Holds interactive input history, separate from definition history. |
 
 Use Metron's commands to change the database. The content hashes identify stored definitions, while the name log records which definitions names refer to. This separation allows names to change without rewriting old definitions.
+
+The current format is 13. Metron refuses earlier store formats and provides no automatic migration.
+Use source written for the current language to create a new store.
 
 Without `--codebase`, Metron searches upward for a project-local `.metron/` directory. If it finds none, it uses the user data directory, normally `$XDG_DATA_HOME/metron` or the platform default. The `:store` command shows the active store path.
 

@@ -8,7 +8,7 @@ import Data.Vector qualified as V
 import Data.Vector.Unboxed qualified as VU
 import Metron.Codebase (emptyCodebase)
 import Metron.Compile (evalValueAs)
-import Metron.Double (Dbl (..), Estimate (..), Layout (..))
+import Metron.Double (Dbl (..), Estimate (..), Layout (..), sampleNote)
 import Metron.Driver (feed)
 import Metron.Eval (Config (..), ValueOf (..), defaultConfig)
 import Metron.Parser (parseExpr)
@@ -129,6 +129,17 @@ backendTests =
           forM_ [doubleConfig, analysis] $ \cfg -> case outputs cfg of
             a : rest -> all (== a) rest @? show (outputs cfg)
             [] -> assertFailure "missing core counts"
+      , testCase "grouped reports keep constants and diagnostic offsets aligned" $ do
+          let sampled = Dbl 1 (Copies (Layout 2 True) (VU.fromList [1, 0, 2, 3, 2, 4])) Nothing
+              constant = Dbl 7 NoSamples Nothing
+              layout ys = "[" <> T.intercalate ", " ys <> "]"
+          case sampleNote layout [sampled, constant] of
+            Nothing -> assertFailure "missing grouped report"
+            Just report -> do
+              T.isInfixOf "mean [2, 7]" report @? T.unpack report
+              T.isInfixOf "outcome 95% [[1.05, 7], [2.95, 7]]" report @? T.unpack report
+              T.isInfixOf "RMS displacement [1, 0]" report @? T.unpack report
+              T.isInfixOf "2 input samples" report @? T.unpack report
       , testCase "controls reject incompatible arithmetic and excessive combined work" $ do
           isLeft
             ( runWith

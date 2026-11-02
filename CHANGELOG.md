@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Remove quadratic allocation when sampled double arithmetic combines a
+  sampled value with a constant. Read deterministic operands directly in
+  arithmetic and per-realization matrix kernels. Grouped reports now use
+  indexed sample access instead of repeatedly traversing list prefixes.
+  Keep the existing async workers, random identities and output unchanged.
+  Regression tests cover allocation growth and grouped tensor reports.
+  This changes neither stored hashes nor the store format.
+
 - Replace affine and hard-bound propagation with rational/double arithmetic
   and explicit `sample (normal mean sd)` or `sample (uniform lo hi)` inputs.
   Remove the old uncertainty operators, backend controls and bound APIs.

@@ -29,6 +29,7 @@ import System.Mem (performMajorGC)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty
 import Test.Tasty.HUnit
+import Text.Read (readMaybe)
 
 limitTests :: Measured -> TestTree
 limitTests m =
@@ -42,6 +43,39 @@ limitTests m =
       , memoryTests m
       , timeTests
       , leakTests m
+      , testCase "sample arithmetic broadcasts constants without quadratic allocation" $ do
+          let allocated n = do
+                (code, _, diagnostics) <-
+                  readProcessWithExitCode
+                    "metron"
+                    [ "--no-codebase"
+                    , "--set"
+                    , "samples"
+                    , show n
+                    , "--set"
+                    , "cores"
+                    , "1"
+                    , "let x = sample (uniform 0 1) in (x+1)*2"
+                    , "+RTS"
+                    , "-N2"
+                    , "-t"
+                    , "--machine-readable"
+                    , "-RTS"
+                    ]
+                    ""
+                code @?= ExitSuccess
+                case (readMaybe diagnostics :: Maybe [(String, String)])
+                  >>= lookup "bytes allocated"
+                  >>= readMaybe of
+                  Just bytes -> pure (bytes :: Integer)
+                  Nothing -> assertFailure ("missing allocation statistics: " <> diagnostics)
+          small <- allocated (2048 :: Int)
+          large <- allocated (8192 :: Int)
+          -- Separate processes avoid allocations from other tests; subtracting
+          -- their totals removes the shared startup cost. The old path adds
+          -- about a gigabyte here. Allow ample headroom for linear sampling.
+          (large - small < 128 * 1024 * 1024)
+            @? ("allocation growth: " <> show (large - small) <> " bytes")
       ]
 
 -- Running sessions -------------------------------------------------------------------

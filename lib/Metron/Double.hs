@@ -105,6 +105,11 @@ wobble upward r
 
 copiesOf :: Int -> Dbl -> VU.Vector Double
 copiesOf n x = case x.estimate of Copies _ cs -> cs; NoSamples -> VU.replicate n x.value
+
+-- A constant broadcasts by value when reading one realization. Constructing
+-- its whole broadcast vector here would allocate once per output element.
+copyAt :: Int -> Dbl -> Double
+copyAt i x = case x.estimate of Copies _ cs -> cs VU.! i; NoSamples -> x.value
 copyCount :: [Dbl] -> Maybe Int
 copyCount xs = listToMaybe [VU.length cs | x <- xs, Copies _ cs <- [x.estimate]]
 originOf :: [Dbl] -> Double -> Text -> Maybe Text
@@ -129,7 +134,7 @@ operation s op name ordinary stochastic xs =
           Copies
             (foldMap layoutOf xs)
             ( VU.generate n $ \k ->
-                let global = globalOf s.copies k; ys = map (\x -> copiesOf n x VU.! k) xs
+                let global = globalOf s.copies k; ys = map (copyAt k) xs
                  in if randomAt s global then stochastic (coin s global op) ys else ordinary ys
             )
    in Dbl v estimate (originOf xs v name)
@@ -248,11 +253,9 @@ sampleNote layout xs
   copied = [(grid, cs) | x <- xs, Copies grid cs <- [x.estimate]]
   l = foldMap fst copied
   n = maximum (0 : map (VU.length . snd) copied)
-  groups x =
-    [ take (l.rounds + 1) (drop i (VU.toList (copiesOf n x)))
-    | i <- [0, l.rounds + 1 .. n - 1]
-    ]
-  ordinary x = [v | v : _ <- groups x]
+  starts = [0, l.rounds + 1 .. n - 1]
+  groups x = [[copyAt j x | j <- [i .. min (n - 1) (i + l.rounds)]] | i <- starts]
+  ordinary x = map (`copyAt` x) starts
   finiteInputs = all (all finite . ordinary) xs
   summaries = [Stats.summariseInputs 24 (map toRational (ordinary x)) | x <- xs]
   shown f = layout [either (const "unavailable") f q | q <- summaries]
@@ -618,7 +621,7 @@ perRealization kernel s a
       let nominal = kernel s (map (map (\x -> x{estimate = NoSamples})) a)
           sample i =
             let one x =
-                  let v = copiesOf count x VU.! i
+                  let v = copyAt i x
                    in x{value = v, estimate = Copies (layoutOf x) (VU.singleton v)}
                 settings = s{samples = 1, copies = Range (globalOf s.copies i) 1}
              in kernel settings (map (map one) a)
@@ -628,7 +631,7 @@ perRealization kernel s a
                 { estimate =
                     Copies
                       (foldMap layoutOf (concat a))
-                      (VU.fromList [copiesOf 1 (row !! k) VU.! 0 | row <- samples])
+                      (VU.fromList [copyAt 0 (row !! k) | row <- samples])
                 }
             | (k, x) <- zip [0 ..] (concat nominal)
             ]

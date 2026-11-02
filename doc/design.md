@@ -5780,6 +5780,14 @@ Each path receives the total steps budget divided by the number of runs.
 This conservative accounting prevents diagnostic work from bypassing the limit.
 The memory and time limits cover the entire evaluation.
 
+**Decided.** Keep `async` batch scheduling and the existing demand boundary.
+Reading one realization of a deterministic scalar must use its stored value,
+without allocating a broadcast vector. Numerical operations and per-realization
+matrix kernels use this scalar access path. Formatting grouped samples uses
+indexed access or a single forward traversal, never repeated traversal from
+the start of a list. These changes preserve operation order, random identities,
+batch merging and statistical definitions.
+
 #### 8.2.8 Display and units
 
 Input and rounding summaries retain output units and tensor shapes.
@@ -5798,6 +5806,9 @@ Unsupported capabilities fail explicitly rather than switching arithmetic.
 `Batch`, `Branch`, `Remark`, `Driver`, `Pretty`, `Numerical.SamplePlan`.
 **Tested by:** "independent arithmetic and grouped rounding",
 "separate sampling foundation", "limits (design §8.1)", "numerical review regressions".
+The allocation regression is "sample arithmetic broadcasts constants without
+quadratic allocation"; report alignment is covered by "grouped reports keep
+constants and diagnostic offsets aligned".
 
 ## 9. Module layout and libraries
 
