@@ -1,0 +1,28 @@
+error (ignored): SQLite database '/home/shaun/.cache/nix/eval-cache-v6/6680477a6296d20dd64ac657a4bd19e03d2acb9708396c0fa0db159dd1c0d1ce.sqlite' is busy
+These warnings may cause trouble when distributing the package:
+Warning: [missing-upper-bounds] On library, these packages miss upper bounds:
+- async
+- bytestring
+- containers
+- cryptohash-sha256
+- directory
+- filepath
+- megaparsec
+- mtl
+- parser-combinators
+- text
+- time
+- transformers
+- unicode-transforms
+- vector
+Please add them. There is more information at https://pvp.haskell.org/
+Warning: [missing-upper-bounds] On executable 'metron', these packages miss
+upper bounds:
+- haskeline
+- process
+Please add them. There is more information at https://pvp.haskell.org/
+The following errors will cause portability problems on other environments:
+Error: [option-o1] 'ghc-options: -O' is not needed. Cabal automatically adds
+the '-O' flag. Setting it yourself interferes with the --disable-optimization
+flag.
+Error: Hackage would reject this package.

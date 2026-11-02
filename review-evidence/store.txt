@@ -1,0 +1,7 @@
+Temporary store: /tmp/metron-review-store.nzL8by
+1
+Load with malformed scalar term:
+metron: Uncaught exception ghc-internal:GHC.Internal.Exception.Type.ArithException:
+
+Ratio has zero denominator
+exit=1

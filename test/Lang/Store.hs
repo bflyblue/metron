@@ -6,7 +6,7 @@ module Lang.Store (
 
 import Control.Monad (forM_)
 import Data.ByteString (ByteString)
-import Data.ByteString qualified as BS (readFile, writeFile)
+import Data.ByteString qualified as BS (pack, readFile, writeFile)
 import Data.List (isInfixOf, sort)
 import Data.Map.Strict qualified as Map (
   Map,
@@ -101,7 +101,7 @@ import Metron.Driver (
   exportSource,
   feed,
  )
-import Metron.Hash (decodeStored, encodeStored, hashTerm)
+import Metron.Hash (decodeStored, decodeTypeDef, encodeStored, hashTerm)
 import Metron.Prelude (stdlibDefaultUses)
 import Metron.Store (
   MergeReport (..),
@@ -134,6 +134,7 @@ import Test.Tasty.QuickCheck (
   counterexample,
   discard,
   testProperty,
+  within,
  )
 
 -- Persistence -----------------------------------------------------------------------
@@ -403,6 +404,33 @@ storeTests =
         (loaded, _) <- reload dir
         Map.member "y" loaded.codebase.names @?= False
         Map.member "x" loaded.codebase.names @?= True
+    , localOption (mkTimeout 10_000_000)
+        $ testProperty "arbitrary bytes decode without synchronous exceptions"
+        $ \raw ->
+          within 1_000_000
+            $ let input = BS.pack (take 256 raw)
+               in length (show (decodeStored input))
+                    `seq` length (show (decodeTypeDef input))
+                    `seq` True
+    , localOption (mkTimeout 10_000_000) $ testCase "malformed stored scalars return decoding errors" $ do
+        let malformed =
+              [ [3, 0, 0, 1, 1, 0] -- zero denominator
+              , [3, 0, 2, 1, 1, 1] -- invalid integer sign
+              , [3, 2, 128, 128, 128, 128, 128, 128, 128, 128, 128, 2, 0] -- dimension beyond Int, empty tensor
+              , [3, 2, 128, 128, 128, 128, 16, 128, 128, 128, 128, 16] -- shape product wraps a 64-bit Int
+              ]
+        forM_ malformed $ \raw -> case decodeStored (BS.pack raw) of
+          Left _ -> pure ()
+          Right t -> assertFailure ("accepted malformed scalar: " <> show t)
+    , localOption (mkTimeout 10_000_000) $ testCase "a zero denominator is skipped and unrelated definitions load" $ withTempStore $ \dir -> do
+        _ <- persistLines dir ["let x = 7", ":add"]
+        BS.writeFile
+          (dir </> "terms" </> replicate 64 '0')
+          (BS.pack [3, 0, 0, 1, 1, 0])
+        (loaded, notes) <- reload dir
+        length notes @?= 1
+        any (T.isInfixOf "zero denominator") notes @? show notes
+        linesIn loaded ["x"] @?= Right ["7"]
     , testCase "a corrupt term file and a dangling name are reported, the rest loads" $ withTempStore $ \dir -> do
         _ <- persistLines dir ["let x = 7", "let y = 11", ":add"]
         writeFile (dir </> "terms" </> "not-a-hash") "junk"

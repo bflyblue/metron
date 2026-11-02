@@ -400,9 +400,10 @@ instance Display Magnitude where
 
 {- | A double prints as the shortest digits that read back to it, then its
 error estimate, when it has one, to two digits: @0.30000000000000004 ±
-5.6e-17@. After the value, what kind of estimate it is, @(bound)@ or
-@(estimate, 3 samples)@, and where the first NaN or infinity came from
-(design §8.2). A value any of whose numbers' copies carry draws of a
+5.6e-17@, labelled @(bound)@. Stochastic rounding instead prints the
+sample mean's interval separately from the nominal value. A note identifies
+where the first NaN or infinity came from (design §8.2).
+A value any of whose numbers' copies carry draws of a
 declared σ prints its IEEE values alone, with the sample beside them,
 each number's mean and deviation in the value's shape and unit: @0
 (Monte Carlo: mean 1.015, sd 1.441, 10000 samples)@. Its spread is not
@@ -418,7 +419,7 @@ instance Display Dbl where
           isBound = case x.estimate of
             ErrorBound _ -> True
             Copies _ _ -> False
-       in if e == 0 || isNaN x.value || isInfinite x.value
+       in if not isBound || e == 0 || isNaN x.value || isInfinite x.value
             then showDouble x.value
             else showDouble x.value <> " ± " <> showEstimate isBound e
 

@@ -3,7 +3,7 @@ own, its IEEE cases and literal rounding, its running bound against the
 affine backend as the reference, its stochastic estimate, and how a
 session chooses a backend.
 -}
-module Backend (backendTests) where
+module Backend (backendTests, doubleOf, doubleConfig, runWith) where
 
 import Control.Monad (foldM)
 import Data.Foldable (for_)
@@ -439,7 +439,8 @@ printingTests =
         $ \case
           [out] ->
             ( "0.30000000000000004" `T.isPrefixOf` out
-                && " (estimate, 3 samples)" `T.isSuffixOf` out
+                && "stochastic: mean" `T.isInfixOf` out
+                && "3 samples)" `T.isSuffixOf` out
             )
               @? T.unpack out
           other -> assertFailure (show other)
@@ -1457,20 +1458,23 @@ monteCarloPrintingTests =
               ]
           runWith monteCarlo ["let n = 0 ±σ 1", "(n, 0.5)"]
             @?= Right ["(0 (Monte Carlo: mean -0.016, sd 1.0073, 10000 samples), 0.5)"]
-    , testCase "with rounding alone, printing, errorOf and digitsOf are as before" $ do
-        let random = monteCarlo{rounding = RoundRandom}
-        case runWith random ["0.1 + 0.2", "errorOf (0.1 + 0.2) > 0", "digitsOf 0.5"] of
-          Right [sum', positive, digits] -> do
-            ( "0.30000000000000004 ± " `T.isPrefixOf` sum'
-                && " (estimate, 10000 samples)" `T.isSuffixOf` sum'
-              )
-              @? T.unpack sum'
-            positive @?= "true"
-            digits @?= "15.954589770191003"
-          other -> assertFailure (show other)
-        -- Copies that agree, rounded to nearest, have no spread to show.
-        runWith monteCarlo ["0.1 + 0.2", "errorOf (0.1 + 0.2)"]
-          @?= Right ["0.30000000000000004", "0"]
+    , testCase
+        "rounding prints its sample mean; errorOf and digitsOf describe nominal accuracy"
+        $ do
+          let random = monteCarlo{rounding = RoundRandom}
+          case runWith random ["0.1 + 0.2", "errorOf (0.1 + 0.2) > 0", "digitsOf 0.5"] of
+            Right [sum', positive, digits] -> do
+              ( "0.30000000000000004 (" `T.isPrefixOf` sum'
+                  && "stochastic: mean" `T.isInfixOf` sum'
+                  && "10000 samples)" `T.isSuffixOf` sum'
+                )
+                @? T.unpack sum'
+              positive @?= "true"
+              digits @?= "15.954589770191003"
+            other -> assertFailure (show other)
+          -- Copies that agree, rounded to nearest, have no spread to show.
+          runWith monteCarlo ["0.1 + 0.2", "errorOf (0.1 + 0.2)"]
+            @?= Right ["0.30000000000000004", "0"]
     , testCase "errorOf and digitsOf refuse a value whose copies carry declared σ" $ do
         let refusal = "its copies carry declared σ; read `sd`"
         expectLeft refusal (runWith monteCarlo ["let x = 1 ±σ 0.1", "errorOf x"])

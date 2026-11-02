@@ -1,0 +1,27 @@
+
+CORES 1 determinant
+0
+
+CORES 1 branch
+-0 (Monte Carlo: mean 0.749, sd 0.845, 100 samples)
+note: the branch at `if x > 0` goes both ways across 100 samples (by the declared uncertainty):
+  then   52
+  else   48   ← taken (the nominal branch)
+
+CORES 2 determinant
+0
+
+CORES 2 branch
+-0 (Monte Carlo: mean 0.749, sd 0.845, 100 samples)
+note: the branch at `if x > 0` goes both ways across 100 samples (by the declared uncertainty):
+  then   52
+  else   48   ← taken (the nominal branch)
+
+CORES 4 determinant
+0
+
+CORES 4 branch
+-0 (Monte Carlo: mean 0.749, sd 0.845, 100 samples)
+note: the branch at `if x > 0` goes both ways across 100 samples (by the declared uncertainty):
+  then   52
+  else   48   ← taken (the nominal branch)

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Remaining numerical-review fixes (R2–R4, R6–R8, R10–R14): uncertain
+  widths propagate through multiplication; range-safe double bounds and
+  stochastic residual checks include subnormals; determinants preserve
+  samples and bounds; inverses pivot per copy; sample statistics scale
+  before summing squares; stochastic intervals describe the sample mean.
+  `star` requires an alternating matrix, and Cholesky consistently rejects
+  zero pivots. The design now distinguishes Gaussian/local statistical
+  diagnostics from rigorous bounds and describes the implemented inverse.
+- Hash-affecting: replace the unstable `astro.kepler.asinh` library
+  definition with the dimensionless `asinh` primitive. Hyperbolic orbital
+  functions now resolve that primitive and their hashes change. Recreate
+  stores from exports; no migration is provided. The wire format stays 12.
+  `linalg.cross` now contracts the Levi-Civita tensor with the wedge, rather than requiring
+  `star` to re-establish alternation of a statistical enclosure. Its hash
+  and dependent hashes also change.
+
+- Numerical review fixes (R1, R5, R9): nonlinear remainders involving
+  anonymous slack stay anonymous; combining recorded second-order sizes
+  is associative; malformed stored rationals, overflowing indices and
+  impossible lengths fail decoding instead of crashing or wrapping.
+  Regression tests cover nonlinear slack, combination laws, malformed
+  input and loading valid definitions beside a corrupt object. Valid
+  encodings, library hashes and store format 12 are unchanged.
+
 - Fixes from a design review. The store format stays 12: the encoding is
   unchanged, and no library hash moves. One change is hash-affecting for
   some user text (below).

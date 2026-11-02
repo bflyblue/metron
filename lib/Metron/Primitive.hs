@@ -40,6 +40,7 @@ primArity = \case
   "acos" -> Just 1
   "atan" -> Just 1
   "sinh" -> Just 1
+  "asinh" -> Just 1
   "cosh" -> Just 1
   "tanh" -> Just 1
   "exp" -> Just 1

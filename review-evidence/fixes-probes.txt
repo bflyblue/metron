@@ -1,0 +1,19 @@
+
+EXPR: let x = 0 +- (0 +- 1); let y = 0 +- (0 +- 1); (x-y, x*x-y*y)
+(0 ± 2, 0 ± 2)
+
+EXPR: let x = 0 +- (0 +- 1); let y = 0 +- (0 +- 1); exp x - exp y
+0.0 ± 3.4
+
+EXPR: let x = 0 +- (0 +- 1); (x, x*x, x*x == 0)
+error: cannot decide comparison at sigma 3: the difference is 0.0 ± 1.0
+Temporary store: /tmp/metron-review-store.ohxXTP
+1
+Load with malformed scalar term:
+note: terms/0000000000000000000000000000000000000000000000000000000000000000: zero denominator at offset 6, ignored
+1
+exit=0
+error (ignored): SQLite database '/home/shaun/.cache/nix/eval-cache-v6/0c82115b1ea4edb23c6769a8d0e3ba3e99cd3a14929c3a1ef258b7dc404fbac6.sqlite' is busy
+SecondOrder (fromList [("mul",Just (50601 % 50))])
+SecondOrder (fromList [("mul",Just (50601 % 50))])
+True

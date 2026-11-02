@@ -289,7 +289,14 @@ choleskyRows what decide p a = mapM_ symmetric pairs >> go 0 []
                   s = foldl (addM p) (Exact 0) [mulM p (prev !! k) (rowJ !! k) | k <- [0 .. j - 1]]
                   rest = subM p ((a !! i) !! j) s
               if i == j
-                then sqrtM p rest
+                then
+                  if midpoint rest <= boundRadius rest
+                    then
+                      Left
+                        ( Metron.Affine.Domain
+                            "cholesky needs a positive-definite matrix: a pivot's enclosure reaches zero or below"
+                        )
+                    else sqrtM p rest
                 else divM p rest ((done !! j) !! j)
     foldM (\acc j -> (\x -> acc ++ [x]) <$> entry j acc) [] [0 .. n - 1]
 

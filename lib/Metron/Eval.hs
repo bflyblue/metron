@@ -57,7 +57,7 @@ module Metron.Eval (
   TyEnv,
 ) where
 
-import Control.Monad (foldM, when)
+import Control.Monad (foldM, unless, when)
 import Data.Bifunctor (first)
 import Data.IntSet qualified as IntSet (
   IntSet,
@@ -1867,6 +1867,7 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("acos", [a]) -> angle (arith . acosM p) a
   ("atan", [a]) -> angle (Right . atanM p) a
   ("sinh", [a]) -> dimensionless (\x -> exponential abs x >> Right (sinhM p x)) a
+  ("asinh", [a]) -> dimensionless (arith . asinhM p) a
   ("cosh", [a]) -> dimensionless (\x -> exponential abs x >> Right (coshM p x)) a
   ("tanh", [a]) -> dimensionless (Right . tanhM p) a
   ("atan2", [a, b]) -> do
@@ -1940,7 +1941,20 @@ runPrim cfg rt prim ty args = case (prim, args) of
   ("star", [a]) -> do
     (dims, d, hint, buf) <- tensor =<< a
     case dims of
-      [3, 3] -> Right (VTensor [3] d hint (V.fromList [buf V.! 5, buf V.! 6, buf V.! 1]))
+      [3, 3] -> do
+        let alternating (i, j) = do
+              x <- buf V.! (3 * i + j)
+              y <- buf V.! (3 * j + i)
+              decision <- arith (equalM p x (negM y))
+              unless
+                (decision.holds && maybe True (VU.and . (.each)) decision.copies)
+                ( Left
+                    ( Metron.Eval.Domain
+                        "star needs an alternating matrix; use (m - transpose m)/2 to project explicitly"
+                    )
+                )
+        mapM_ alternating [(i, j) | i <- [0 .. 2], j <- [i .. 2]]
+        Right (VTensor [3] d hint (V.fromList [buf V.! 5, buf V.! 6, buf V.! 1]))
       _ -> Left (Internal "star of a non-3x3 matrix")
   ("transpose", [a]) -> do
     (dims, d, hint, buf) <- tensor =<< a
@@ -2075,8 +2089,8 @@ runPrim cfg rt prim ty args = case (prim, args) of
   -- vmap over two tensors of one shape, with the same strictness.
   ("vzipWith", [f, a, b]) -> do
     fv <- f
-    (dims, d1, _, xs) <- tensor =<< a
-    (_, d2, _, ys) <- tensor =<< b
+    (dims, d1, h1, xs) <- tensor =<< a
+    (_, d2, h2, ys) <- tensor =<< b
     let element u x = Right (VTensor [] u Nothing (V.singleton x))
         results =
           V.zipWith
@@ -2084,7 +2098,12 @@ runPrim cfg rt prim ty args = case (prim, args) of
             xs
             ys
     outDim <- resultDim
-    Right (VTensor dims outDim Nothing (V.map (>>= scalar) results))
+    -- A display unit remains valid when its dimension is unchanged.
+    let hint
+          | outDim == d1, Just h <- h1 = Just h
+          | outDim == d2 = h2
+          | otherwise = Nothing
+    Right (VTensor dims outDim hint (V.map (>>= scalar) results))
   -- vmap that first passes each component's multi-index, read off its
   -- row-major offset, as a vector of exact dimensionless naturals as long
   -- as the rank (design §3.3). Same strictness as vmap.

@@ -42,6 +42,7 @@ import Lang.Units (
 import Limits (limitTests, measure)
 import Operators (operatorTests)
 import Precision (precisionTests)
+import Review (reviewTests)
 import Test.Tasty (
   defaultMain,
   localOption,
@@ -96,6 +97,7 @@ main = do
       , respellTests
       , replTests
       , backendTests
+      , reviewTests
       , namespaceTests
       , editTests
       , stdlibTests

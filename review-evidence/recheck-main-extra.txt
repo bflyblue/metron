@@ -1,0 +1,46 @@
+
+EXPR: 0 +- (1 +-s 1)
+0 ± 1
+
+EXPR: 0 +-s (1 +-s 1)
+0 ±σ 1
+
+EXPR: 0 +-s (1 +- 1)
+0 ±σ 1 (bound 1)
+
+EXPR: cholesky [[0,0],[0,0]]
+error: division by zero
+
+EXPR: star [[1,2,3],[4,5,6],[7,8,9]]
+[6, 7, 2]
+
+EXPR: --backend double norm [1e200, 1e200]
+Infinity (the first infinity came from 1e200 * 1e200)
+
+EXPR: --backend double norm [1e-200, 1e-200]
+0 ± 9.7e-162 (bound)
+
+EXPR: --backend double --set samples 100 --set cores 1 1e-200 * 1e-200
+0
+
+EXPR: --backend double --set samples 100 --set cores 1 --set rounding nearest sd (0 +-s 1e200)
+Infinity
+
+EXPR: --backend double --set samples 100 --set cores 1 --set rounding nearest sd (0 +-s 1e-200)
+0
+
+EXPR: --backend double det [[0.1 + 0.2 - 0.3 - 5.551115123125783e-17]]
+0
+
+EXPR: --backend double fma (2^-537) (2^-538) 0
+0
+
+EXPR: --backend double atan2 (1e200 + 1e190) 1e200
+0.7853981634474483 ± 3.5e-16 rad (bound)
+Temporary store: /tmp/metron-review-store.68h1Ef
+1
+Load with malformed scalar term:
+metron: Uncaught exception ghc-internal:GHC.Internal.Exception.Type.ArithException:
+
+Ratio has zero denominator
+exit=1

@@ -249,6 +249,7 @@ strictPrimitives =
   , "acos"
   , "atan"
   , "sinh"
+  , "asinh"
   , "cosh"
   , "tanh"
   , "atan2"

@@ -138,7 +138,11 @@ preludeTests =
         runLinesP ["data F = F (Num N)", ":type F"]
           @?= Right ["Num (kg*m/s^2) -> F"]
     , testCase "cross is the Hodge dual of the wedge" $ do
-        runLinesP [":view cross"] @?= Right ["cross = \\a -> \\b -> star (a ∧ b)"]
+        case runLinesP [":view cross"] of
+          Right [definition] ->
+            T.isInfixOf "contract" definition && T.isInfixOf "vzipWith" definition
+              @? T.unpack definition
+          other -> assertFailure (show other)
         evalP "[1, 2, 3] × [4, 5, 6] == star ([1, 2, 3] ∧ [4, 5, 6])" @?= Right ["true"]
         -- Contracting ε's last index first gives b × a, so the arguments swap.
         evalP "(ε @ [0, 1, 0]) @ [1, 0, 0]" @?= Right ["[0, 0, 1]"]

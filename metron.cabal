@@ -145,6 +145,7 @@ test-suite metron-test
     , Limits
     , Operators
     , Precision
+    , Review
     , Support.ExactApprox
     , Support.References
     , Support.Render

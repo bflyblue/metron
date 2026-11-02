@@ -343,7 +343,7 @@ class (Eq s) => Scalar s where
   absM :: Settings -> s -> s
   divM :: Settings -> s -> s -> Either ArithError s
   powM :: Settings -> s -> Integer -> Either ArithError s
-  sqrtM, logM, tanM, asinM, acosM :: Settings -> s -> Either ArithError s
+  sqrtM, logM, tanM, asinM, acosM, asinhM :: Settings -> s -> Either ArithError s
   expM, sinM, cosM, atanM, sinhM, coshM, tanhM :: Settings -> s -> s
   atan2M :: Settings -> s -> s -> Either ArithError s
   piM :: Settings -> s
@@ -425,6 +425,7 @@ instance Scalar Magnitude where
   cosM s = A.cosM s.precision
   atanM s = A.atanM s.precision
   sinhM s = A.sinhM s.precision
+  asinhM s = A.asinhM s.precision
   coshM s = A.coshM s.precision
   tanhM s = A.tanhM s.precision
   atan2M s = A.atan2M s.precision
@@ -448,7 +449,7 @@ instance Scalar Magnitude where
     | otherwise = Nothing
   hintFactor = id
   noiseM _ k o = Right (A.unitNoise k o)
-  uncertainM _ k o x e = Right (A.uncertain k o x e)
+  uncertainM s k o x e = Right (A.uncertain s.precision k o x e)
   determinantM s = L.determinant s.precision
   invertM s = L.invert s.precision
   matrixExpM s = L.matrixExp s.precision

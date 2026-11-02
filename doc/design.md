@@ -918,7 +918,7 @@ its *nudge id* (§3.2.4), and one of two **kinds**:
   constants whose published uncertainty is a standard uncertainty (CODATA,
   IAU) use them.
 
-The guarantee: the true value lies in `mid ± (Σ_bound |cᵢ| + slack)`, up
+For a linear model, the true value lies in `mid ± (Σ_bound |cᵢ| + slack)`, up
 to a random error of standard deviation `√(Σ_stat cᵢ²)`. Both kinds
 propagate through linear arithmetic by the same rules. **Decided.** A
 non-linear operation keeps them apart.
@@ -932,12 +932,22 @@ Both suffer from the *dependency problem*: with `x` somewhere in
 it forgets that both `x`s are the same unknown. Affine forms keep the
 name, so `x - x` is exactly `0`.
 
-**The statistical model is the GUM's.** Each statistical nudge is an
-independent random variable of mean 0 and standard deviation 1. A shared
+**Decided: the statistical model.** Each statistical nudge is modelled as an
+independent standard Gaussian. A shared
 nudge is one variable. A value's statistical part is a linear model in
 the nudges. Statistical nudges propagate to first order only, by the GUM's
 law of propagation of uncertainty, `σ_f² = Σ (∂f/∂xᵢ)² σᵢ²`. This is the
 same model as the linear covariance propagation of `propagateCov2` (§3.7).
+
+The first-order covariance rule needs only independence and the first two
+moments. The Isserlis second-order formula additionally needs the Gaussian
+assumption stated here. Nonlinear marks based on derivatives within one
+sigma are local diagnostics, not rigorous global bounds on standard
+deviation over a Gaussian's unbounded support. A missing mark is not a
+certificate that a nonlinear result's printed sigma is its exact standard
+deviation. Monte Carlo also depends on the chosen input distribution.
+Published constants with omitted uncertainties or exact adopted numerical
+values are modelling inputs, not claims of physical certainty.
 
 **The bound enclosure.** Every non-linear remainder and every domain check
 uses the bound enclosure `mid ± (Σ_bound |cᵢ| + slack)` only. This covers
@@ -1008,6 +1018,12 @@ as it carries their coefficients:
 - a function scales them by the largest `|f'|` over the operand's bound
   enclosure widened by `σ + q` on each side. The result is unbounded when
   that reaches a pole or leaves the domain.
+
+**Decided.** Combining already recorded sizes uses exact addition, so
+`SecondOrder` combination is associative. Creating or scaling a size
+rounds it upward to three significant digits; combining sizes does not
+round again. These finite decimal sizes have power-of-ten denominators,
+so summing them does not multiply unrelated denominators.
 
 Sizes add. By Minkowski's inequality, the standard deviation of a sum of
 random terms is at most the sum of theirs, whatever their correlation, so
@@ -1199,6 +1215,11 @@ store.
   bytes. (Operand lists `[1, 12]` and `[1/11, 2]` written end to end as
   text would collide, and their remainders would cancel to an exact
   zero.) Declared nudges' ids use the same encoding.
+  **Decided.** When any operand carries anonymous slack, the operation's
+  bound remainder stays anonymous too. Equal slack radii do not identify
+  the same unknown, so hashing those radii must not introduce a shared
+  nudge. The midpoint's rounding joins this anonymous remainder as well.
+  Operands with no slack retain the deterministic sharing described above.
 - **Declared uncertainty** (`±`, `±σ`, `noise`, `gauss`). The id is the
   hash of the kind, the hash of the enclosing top-level definition, the
   path to the node inside it, the component index and the midpoint.
@@ -1258,8 +1279,12 @@ x ±σ err     =  x + err * gauss 1      -- standard uncertainty: σ = err
 ```
 
 The ASCII spellings are `+-` and `+-s`, and the prefix spellings are
-`within x err` and `sigma x err`. `err` must be exact, or its own radius is
-folded into slack. Both operands must share a dimension. On a vector or a
+`within x err` and `sigma x err`. **Decided.** An exact width keeps its
+declared nudge identity. A non-exact width is propagated as multiplication
+of `abs err` by that same unit nudge, followed by addition to `x`.
+Bound and statistical cross terms obey §3.2; an uncertain statistical
+coefficient is a nonlinear diagnostic, never an additive hard bound.
+Both operands must share a dimension. On a vector or a
 matrix, both operators apply per component, with independent nudges
 (§3.4). A matrix after `±σ` is a covariance (§3.5). A matrix after `±` is
 a type error, "a covariance matrix goes with ±σ, not ±: a bound has no
@@ -1470,7 +1495,7 @@ precision, since its value is rarely an exact rational. No built-in
 returns a rational longer than `p + 5` digits unless it is exact and
 short. Every rounding is in the result's bound. There is no `min` or `max`
 function (`min` is the minute). The library's functions (`cross`,
-`trace`, `asinh`, …) are compositions of these.
+`trace`, …) are compositions of these.
 
 | built-in | result | roundings | internals |
 |---|---|---|---|
@@ -1487,6 +1512,7 @@ function (`min` is the minute). The library's functions (`cross`,
 | `atan` | working precision | yes | fixed-point halvings and series |
 | `atan2` | working precision | yes | the larger operand divides, then `atan` |
 | `sinh`, `cosh` | working precision | yes | series near zero, `exp` beyond |
+| `asinh` | working precision | yes | odd logarithm identity on affine values; native range-safe libm under double |
 | `tanh` | working precision | yes | sine over cosine near zero, `(1 − q)/(1 + q)` beyond |
 | `pi` | working precision | yes | Machin in fixed point, kept per bucket |
 | `abs` | linear, or one nudge across zero | yes | — |
@@ -1494,7 +1520,7 @@ function (`min` is the minute). The library's functions (`cross`,
 | `==`, `/=`, `<`, `<=`, `>`, `>=` | booleans | the exact difference, never rounded | — |
 | `norm` | `sqrt` of a sum of products | yes | — |
 | `dot` (`·`, `@`), `contract`, `transformBy` | sums of products | yes | — |
-| `wedge`, `cross` (`star (a ∧ b)`), `star` | differences of products | yes | — |
+| `wedge`, `cross` (`(ε @ b) @ a`), `star` | differences of products | yes | — |
 | `inverse` | working precision | yes, and a settling nudge per entry | Gauss–Jordan |
 | `det` | working precision | yes | elimination, product of pivots |
 | `cholesky` | working precision | yes | Cholesky–Banachiewicz |
@@ -1784,6 +1810,12 @@ print by their current name through the same resolution as `:view`
 
 ### 3.3 Vectors, matrices and tensors
 
+**Open.** A proposed common indexed amount type extends tensors with
+exterior powers while preserving distinct products and explicit Core.
+See [Indexed amounts and exterior algebra](indexed-amount-proposal.md) for
+grade-zero/grade-one normalisation, inference limits and implementation
+scope. This is not adopted; the rules below describe the current design.
+
 There is one aggregate type, `Tensor s δ`. The shape `s` is a type-level
 list of lengths (§4.1). A number is a rank-zero tensor, a vector has rank
 one, a matrix rank two, and higher ranks (an inertia tensor's gradient)
@@ -1845,12 +1877,32 @@ correlates error correctly (§3.4).
 | `·`, `@` | `dot` | contracting product: the last index of the left with the first of the right. Dot product, Mat·Vec, Mat·Mat | `δ₁·δ₂` |
 | `∧`, `/\` | `wedge` | wedge product: the oriented plane of two vectors, any dimension | `δ₁·δ₂` |
 | `⋆` | `star` | 3D Hodge star: a bivector to its normal vector | same `δ` |
-| `×`, `><` | `cross` | 3D cross product, the library's `star (wedge a b)`. There is no binary cross product in other dimensions. The general tool is contraction with the Levi-Civita tensor `ε`: `a × b = (ε · b) · a` | `δ₁·δ₂` |
+| `×`, `><` | `cross` | 3D cross product, mathematically `(ε @ b) @ a`. There is no binary cross product in other dimensions. The general tool is contraction with the Levi-Civita tensor `ε`: `a × b = (ε · b) · a` | `δ₁·δ₂` |
 | `⊙`, `.*` | `emul` | elementwise product | `δ₁·δ₂` |
 | `⊘`, `./` | `ediv` | elementwise division | `δ₁/δ₂` |
 | `/` | `div` | division by a scalar | `δ₁/δ₂` |
 | `==`, `/=` | `eq`, `ne` | on tensors of one shape, points and data (§4.2): the one overloaded primitive | same type |
 | `to` | `to` | display unit on any tensor (§3.2.12) | same `δ` |
+
+**Decided.** `star` is the Euclidean 3D Hodge star on alternating
+matrices, with the standard orientation. It verifies diagonal zeros and
+`M + transpose M == 0`, including every double copy. Non-alternating or
+undecidable inputs are refused. To project a general matrix, write
+`star ((M - transpose M)/2)` explicitly. Multiplication's bound-remainder
+identity is commutative, so a bounded vector wedged with itself cancels
+exactly when its dependencies are identified. Anonymous slack and
+discarded statistical terms still cannot establish exact identities.
+General exterior grades, metric and orientation remain future work; this
+matrix boundary is not a general Grassmann representation.
+
+`cross a b` computes `contract 1 2 (ε @ (a ∧ b))/(-2)`. Its final
+`vzipWith (\_ z -> z) a` ties the output axes to the input axes in the
+type system; it does not change the coefficients. This contraction is
+known alternating by construction, so statistical vectors do not need a
+runtime `star` comparison that discarded remainders cannot prove.
+`vzipWith` retains the first input's display unit whose dimension matches
+the output, falling back to the second input's. This also preserves the
+cross product's compound unit through its shape-preserving projection.
 
 **Named functions:**
 
@@ -2203,15 +2255,15 @@ The box over-approximates a radial "known to 10 m in any direction" bound
 by up to √3 at the corners. **Open.** A ball-plus-zonotope representation
 that can express a radial bound (§10).
 
-**Compound-level bounds for nonlinear operations.** `inverse M`
-linearises as `-M⁻¹·ΔM·M⁻¹`, and needs `‖M⁻¹·ΔM‖ < 1` in a matrix norm
-for a rigorous remainder (Neumann series). If the enclosure can contain a
-singular matrix, the operation fails with "cannot decide inverse of a
-matrix whose enclosure may be singular". `norm`, `det`, `cross` and `dot`
-with both sides uncertain follow the multivariate version of the `sin`
-rule: the gradient at the midpoint, and a bounded second-order remainder.
-Linear algebra on affine magnitudes uses Gaussian elimination with
-pivots whose enclosure excludes zero.
+**Implemented nonlinear matrix arithmetic.** Affine `inverse` uses
+Gauss–Jordan elimination with pivots whose bound enclosures exclude zero,
+then settles each output entry. Its scalar affine operations account for
+their own remainders; it does not compute a compound Neumann remainder.
+This can lose dependencies or refuse a pivot even when every matrix in
+the input set is invertible. `norm`, `det`, `cross` and `dot` likewise
+compose scalar operations. **Open.** A compound inverse using
+`-M⁻¹·ΔM·M⁻¹` and a Neumann remainder when `‖M⁻¹·ΔM‖ < 1` would be a
+different algorithm, requiring its own containment tests.
 
 **Structure never carries error.** Shapes and lengths are types. Tuples
 and closures have no error of their own. `Bool` has none: an overlapping
@@ -2274,6 +2326,13 @@ ordinary function on a homogeneous vector, exact in the coefficients.
 `cholesky : Mat n n (d^2) -> Mat n n d` is its inverse on positive-definite
 matrices. It fails with a domain error when a pivot's enclosure reaches
 zero.
+
+**Decided.** Cholesky rejects a pivot whose enclosure reaches zero in
+every diagonal position, including the last. The double backend also
+requires positive pivots in every copy and symmetric copies. Covariance
+matrices are mathematically positive semidefinite, but this Cholesky API
+currently accepts only the positive-definite subset. General semidefinite
+factorisation is a separate extension, not implicit zero-pivot division.
 
 Both `cholesky` and `v ±σ P` read only the lower triangle, so they first
 check that the matrix is symmetric: every pair `P.i.j`, `P.j.i` must be
@@ -2688,15 +2747,19 @@ chart is turned by the sequence itself: `by rotz Ω then rotx i then rotz
 `transformBy`. It is not a generator. Euler angles have gimbal lock and
 twelve sequence conventions, so each sequence is its own function.
 Quaternions double-cover (`q` and `-q` are one rotation), so they are for
-input only and never stored. The generator has neither problem: one plane,
-one angle.
+input only and never stored. A 3D skew generator describes one plane and
+angle; in higher dimensions a general bivector can contain several
+independent planes. A logarithm need not be unique or continuous globally.
 
 **Open.** A `fromQuaternion q`, the logarithm of the rotor for input only,
 is designed and not built (§10).
 
-**A chart's orientation is a list of generators.** A composed rotation,
-such as an Euler sequence, is not `expm` of any single bivector. So `by`
-takes a list of generators applied in order, written with `then`. `by rotz
+**A chart's orientation is a list of generators.** Every 3D proper
+rotation has a skew-symmetric logarithm, including a composed rotation.
+However, `expm(A+B)` is generally not `expm A @ expm B` when the generators
+do not commute. **Decided.** We retain a sequence to preserve the supplied
+composition and uncertainty, without choosing a logarithm. `by`
+takes generators applied in order, written with `then`. `by rotz
 θ` is a list of one, and `by rotz Ω then rotx i then rotz ω` a list of
 three. `then` is a separator in the chart statement only, after `by` and
 outside brackets. An `if` inside a generator keeps its own `then`. The
@@ -4091,7 +4154,7 @@ ranks"):
 (·) (@)  dot   : Tensor (s1 ++ [n]) δ1 -> Tensor (n : s2) δ2 -> Tensor (s1 ++ s2) (δ1·δ2)   -- contracting product: dot, Mat·Vec, Mat·Mat
 (∧) (/\) wedge : Vec n δ1 -> Vec n δ2 -> Mat n n (δ1·δ2)                       -- antisymmetrised outer product; the general binary product of vectors
 (⋆)      star  : Mat 3 3 δ -> Vec 3 δ                                          -- 3D Hodge dual
-(×) (><) cross : Vec 3 δ1 -> Vec 3 δ2 -> Vec 3 (δ1·δ2)                         -- library: cross a b = star (wedge a b)
+(×) (><) cross : Vec 3 δ1 -> Vec 3 δ2 -> Vec 3 (δ1·δ2)                         -- mathematically: cross a b = (ε @ b) @ a
 (⊙) (.*) emul  : Tensor s δ1 -> Tensor s δ2 -> Tensor s (δ1·δ2)               -- elementwise
 (⊘) (./) ediv  : Tensor s δ1 -> Tensor s δ2 -> Tensor s (δ1/δ2)
 (/) (÷)  div   : Tensor s δ1 -> Num δ2 -> Tensor s (δ1/δ2)                     -- division by a scalar
@@ -5820,6 +5883,19 @@ by walking up from the current directory, shadows the user store.
 `:store` prints the directory in use. iapetus commits its `.metron/` to
 git.
 
+**Decided.** Decoding rejects zero rational denominators, invalid integer
+signs, and indices or dimensions outside the machine `Int` range before
+constructing values. Byte lengths and collection counts must fit the
+remaining input. Tensor element counts are computed as integers before
+checking their range, so shape multiplication cannot wrap. These are
+decoding errors: load and merge report and skip the corrupt object rather
+than raising an arithmetic exception. Valid encodings and hashes do not
+change.
+
+Decoder regression coverage: "store" › "malformed stored scalars return
+decoding errors", "arbitrary bytes decode without synchronous exceptions",
+and "a zero denominator is skipped and unrelated definitions load".
+
 **Export: the text form of a store.** `:export [ns] [file]` writes the
 stored codebase, or the namespace `ns`, as source that `:load` reads back.
 In a fresh session, `:load file` then `:add` gives the same labels on the
@@ -6546,8 +6622,8 @@ internal errors.
   and every rounding added to the operation's fresh nudge (§3.2.2,
   §3.2.8).
 - **Linear algebra** on affine magnitudes uses Gaussian elimination with
-  pivots whose enclosure excludes zero. `inverse` applies the Neumann
-  bound of §3.4.
+  pivots whose enclosure excludes zero. `inverse` uses scalar affine
+  operations and per-entry settling, as described in §3.4.
 
 **Open.** A compiler from Typed Core, with explicit dimension and length
 arguments telling it static shapes (§10).
@@ -6704,6 +6780,13 @@ error: the evaluation took more than 100000000 steps (`:set steps`)
 
 ### 8.2 Backends
 
+**Decided (future implementation).** Separate `arithmetic` (`rational` or
+`double`) from `propagation` (initially `montecarlo` only), with `samples`
+controlling statistical sampling. Sampling declared uncertainty is separate
+from floating-point rounding error. See [Monte Carlo first](montecarlo-first.md)
+for the agreed direction and open precision/reporting decisions. The
+implementation described below remains in the pre-refactor snapshot.
+
 **Decided.** One Typed Core, several evaluators of its scalars. A
 **backend** is the scalar arithmetic and the built-ins that belong to it.
 Everything else is shared: tensors, units and dimensions (checked
@@ -6769,7 +6852,7 @@ batches and has no samples, so `:set samples`, `seed`, `rounding` and
 `cores` do not change what it computes.
 
 **Implemented in:** `Metron.Scalar` (`instance Scalar Magnitude`, `affineCovariance`), `Metron.Affine`.
-**Tested by:** "affine"; "backends (design §8.2)" › ":backend chooses the evaluator of the scalars" › "the same expression under each".
+**Tested by:** "affine"; "numerical review regressions" (uncertain widths, inverse corner containment, alternation and Cholesky domains); "backends (design §8.2)" › ":backend chooses the evaluator of the scalars" › "the same expression under each".
 
 #### 8.2.2 The double backend: IEEE arithmetic and the running bound
 
@@ -6809,7 +6892,7 @@ N > 0`, N copies (§8.2.3).
 one extra double per value. It bounds the distance from the result to the
 exact value of the same formula on the exact literals, under the standard
 model of floating point. It is guaranteed under that model, pessimistic,
-and about twice the cost of plain doubles:
+with additional propagation work beyond plain doubles:
 
 - a literal's bound is its rounding, `|d − r|`, exactly, rounded up.
 - `x ± y` adds the bounds. `x · y` adds `|x|e_y + |y|e_x + e_x e_y`. `x /
@@ -6818,8 +6901,11 @@ and about twice the cost of plain doubles:
 - each then adds its own rounding, `u·|z| + 2⁻¹⁰⁷⁴` with `u = 2⁻⁵³`,
   unless an error-free transformation (TwoSum, or a fused multiply-add for
   a product or a quotient) proves the result exact. A product or a
-  quotient can be proved exact only above the subnormals, so `0.5 * 4`
-  stays exact.
+  quotient's FMA residual can itself underflow. **Decided.** A zero
+  residual is checked with exact rational arithmetic before treating it
+  as exact, including for stochastic neighbour selection. The square-root
+  direction has the same fallback. `fma` includes an absolute subnormal
+  rounding allowance.
 - a library function propagates its operand's interval. A monotone one
   (`exp`, `log`, `sqrt`, `sinh`, `tanh`, `atan`, `asin`, `acos`, and `tan`
   between poles) takes the larger change at the interval's ends, each
@@ -6836,8 +6922,21 @@ and about twice the cost of plain doubles:
 - the bound, computed in floating point, is widened by a relative `2⁻⁴⁸`
   and `4·2⁻¹⁰⁷⁴`, more than its own few roundings can lose.
 
-**Open.** Measure the library's error figures, or take glibc's documented
-9 units (§10).
+**Decided.** Basic propagation for addition, multiplication, division and
+FMA is computed exactly on the finite double inputs and bounds, then
+converted outward. This prevents intermediate overflow and underflow
+from silently erasing an error. `atan2` uses a lower radius based on
+`max(abs x, abs y)` rather than unscaled squares. These changes do not
+certify the platform's transcendental implementation.
+
+**Open.** Measure or certify the library's error figures. glibc's nine-ulp
+test threshold is not a universal accuracy guarantee (§10).
+
+**Decided.** Double determinants use the division-free Berkowitz
+characteristic-polynomial recurrence (O(n^4)), preserving bound and copy
+arithmetic without nominal pivot branches. Inversion chooses pivots
+separately for each copy, using its global copy number for rounding.
+Cholesky enforces its positive-definite contract for all copies.
 
 **Open.** `:trace`: the porting tool is to run an expression under
 `double`, shadowed by `affine` (the method of Herbgrind), and report each
@@ -6850,8 +6949,8 @@ of an `if` that the exact value does not take, is undecided (§10).
 running depends on the backend alone for them (§8.2.9):
 
 - `errorOf x`, the absolute error estimate, elementwise, in `x`'s
-  dimension: the bound under `samples 0`, the scaled spread under `samples
-  N`.
+  dimension: the bound under `samples 0`, the nominal-to-mean displacement
+  plus the mean interval width under `samples N`.
 - `digitsOf x`, the significant digits it implies, `−log₁₀(e/|x|)`, from 0
   to `log₁₀ 2⁵³ ≈ 15.95`. A check such as `digitsOf r < 10` is written once
   and runs either way.
@@ -6879,7 +6978,7 @@ NaN (the first NaN came from sqrt (-2))
 ```
 
 **Implemented in:** `Metron.Double` (`instance Scalar Dbl`, `libmUlps`, `ulpsOf`, `ulpsBetween`, `digitsOfDbl`).
-**Tested by:** "backends (design §8.2)" › "results equal GHC's Double", "IEEE 754: infinities, NaN and overflow are values", "a literal is rounded to the nearest double where it enters", "printing labels the kind of estimate", "the running bound contains the true error".
+**Tested by:** "backends (design §8.2)" › "results equal GHC's Double", "IEEE 754: infinities, NaN and overflow are values", "a literal is rounded to the nearest double where it enters", "printing labels the kind of estimate", "the running bound contains the true error"; "numerical review regressions" (exact-rational extreme grid, determinant permutation oracle, per-copy inverse pivots, scaled statistics, sample-mean intervals and extreme `asinh`).
 
 #### 8.2.3 Samples: stochastic rounding
 
@@ -6895,9 +6994,20 @@ spread estimates the significant digits that survive: realistic, since
 rounding errors partly cancel as they do in practice, and statistical
 rather than guaranteed, at about N times the cost in one pass.
 
-- **The estimate** is `τ·s/√N`: the copies' sample deviation scaled by
+- **The sample-mean interval** has width `τ·s/√N`: the copies' sample deviation scaled by
   Student's t at 97.5% for `N − 1` degrees of freedom (a table to 30, then
   its expansion about the normal).
+  **Decided.** This interval is printed around the sample mean, separately
+  from the nominal IEEE result. `errorOf` estimates nominal accuracy by
+  `abs(nominal - mean) + τ·s/√N`; `digitsOf` uses that same allowance.
+  These are conditional statistical diagnostics, not enclosure guarantees.
+  The interval also includes rounding of the displayed mean, checked
+  against the exact rational mean of the finite copies. Sample means
+  and deviations use scaled, compensated arithmetic to avoid squaring
+  unscaled extreme values.
+  More samples refine the mean estimate, not the nominal execution.
+  Coin reuse and equal-probability directed rounding do not themselves
+  establish unbiasedness or the independence assumptions of a Student interval.
 - **The coin** for each rounding is a hash (SplitMix's finaliser) of the
   seed, the copy's global number, the operation and its operands, so an
   estimate does not depend on the order in which lazy values are forced.
@@ -7271,9 +7381,9 @@ accepted batched and refused at K = 1 (§10).
 
 - **A value with rounding alone** prints the shortest digits that read
   back, written as Metron writes numbers (scientific outside `[10⁻⁴,
-  10¹⁵)`), then `± e` to two digits, rounded up for a bound, and once after
-  the value `(bound)` or `(estimate, 3 samples)`. An exact value prints
-  alone.
+  10¹⁵)`). With a running bound it adds `± e` rounded upward and `(bound)`.
+  With stochastic copies it shows a separate `(stochastic: mean … ± …,
+  N samples)` interval around their mean. An exact value prints alone.
 - **A display unit** divides the value and scales the estimate exactly,
   so `2 m * 3` prints `6 m`.
 - **A NaN or an infinity** prints with its origin: `NaN (the first NaN
@@ -7643,7 +7753,7 @@ chart pf on eci step km by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
 > rp to eci
 [887785.38831025442775…, 5462310.6012293745031…, 4286607.0498705616718…] eci
 > (rp to eci) to pf
-[6999.9999999999999999…, -1.3e-20 ± 8.9e-20, 6e-21 ± 2.4e-20] pf
+[6999.9999999999999999…, -1.3e-20 ± 8.9e-20, 6e-21 ± 2.3e-20] pf
 ```
 
 Periapsis lies on the perifocal x axis, 7000 km out. In eci it is 7000 km times the first column of `euler313 (30 deg) (45 deg) (60 deg)`. Read back on `pf`, by the generators negated in reverse order, it encloses `[7000, 0, 0]`: the zero components come back as enclosures of zero. So a round trip is tested with `bound`, not `==`.

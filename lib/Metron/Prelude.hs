@@ -107,7 +107,12 @@ algebra =
     , "[[[0, 0, 0], [0, 0, 1], [0, -1, 0]], [[0, 0, -1], [0, 0, 0], [1, 0, 0]], [[0, 1, 0], [-1, 0, 0], [0, 0, 0]]]"
     )
   , ("levi", "ε")
-  , ("cross", "\\a b -> star (a /\\ b)")
+  , -- The wedge ties the inputs' axes; vzipWith ties the contraction's
+    -- result to those same axes, rather than leaving epsilon's free.
+
+    ( "cross"
+    , "\\a b -> vzipWith (\\_ z -> z) a (contract 1 2 (ε @ (a /\\ b)) / (-2))"
+    )
   , ("trace", "\\a -> contract 0 1 a")
   , ("vimap", "\\f v -> vzipWith f (indices v) v")
   , ("e1", "[1, 0, 0]")
@@ -571,7 +576,6 @@ kepler =
       "eccentricToTrue"
       "\\e ea -> fullAngle (sqrt (1 - e^2) * sin ea) (cos ea - e)"
   , Let "eccentricToMean" "\\e ea -> ea - e * sin ea * 1 rad"
-  , Let "asinh" "\\x -> log (x + sqrt (x^2 + 1))"
   , Let
       "trueToHyperbolic"
       "\\e nu -> asinh (sqrt (e^2 - 1) * sin nu / (1 + e * cos nu)) * 1 rad"

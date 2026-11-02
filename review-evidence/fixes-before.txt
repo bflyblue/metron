@@ -1,0 +1,1273 @@
+Build profile: -w ghc-9.12.3 -O1
+In order, the following will be built (use -v for more details):
+ - metron-0.1.0.0 (test:metron-test) (file test/Main.hs changed)
+Preprocessing test suite 'metron-test' for metron-0.1.0.0...
+Building test suite 'metron-test' for metron-0.1.0.0...
+[24 of 27] Compiling Lang.Affine      ( test/Lang/Affine.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.3/metron-0.1.0.0/t/metron-test/build/metron-test/metron-test-tmp/Lang/Affine.o ) [Source file changed]
+[27 of 27] Compiling Main             ( test/Main.hs, dist-newstyle/build/x86_64-linux/ghc-9.12.3/metron-0.1.0.0/t/metron-test/build/metron-test/metron-test-tmp/Main.o ) [Source file changed]
+[28 of 28] Linking dist-newstyle/build/x86_64-linux/ghc-9.12.3/metron-0.1.0.0/t/metron-test/build/metron-test/metron-test [Objects changed]
+Running 1 test suites...
+Test suite metron-test: RUNNING...
+metron
+  core
+    alphaEq ignores hints:                                                                               OK
+    alphaEq distinguishes structure:                                                                     OK
+    alphaEq distinguishes indices:                                                                       OK
+    alphaEq compares projection positions:                                                               OK
+    alphaEq compares cycles by bodies:                                                                   OK
+    refs collects hashes:                                                                                OK
+    primitive arities:                                                                                   OK
+  traversal
+    mapChildren id is the identity:                                                                      OK
+      +++ OK, passed 200 tests:
+      57.0% a variable
+      51.0% a cycle
+      48.5% an alternative with fields
+      23.5% fifty nodes or more
+    children are the subterms foldChildren visits:                                                       OK
+      +++ OK, passed 400 tests:
+      53.0% a variable
+      47.8% a cycle
+      41.0% an alternative with fields
+      20.2% fifty nodes or more
+    rewriteRefs rewrites exactly the references the map names:                                           OK
+      +++ OK, passed 200 tests:
+      56.0% a variable
+      51.0% a cycle
+      46.0% a reference rewritten
+      44.0% an alternative with fields
+      21.5% fifty nodes or more
+    rewriteRefs with nothing to rewrite is the identity:                                                 OK (0.01s)
+      +++ OK, passed 400 tests:
+      57.5% a variable
+      50.5% a cycle
+      41.0% an alternative with fields
+      21.8% fifty nodes or more
+    inlineRef leaves no reference to its target:                                                         OK
+      +++ OK, passed 400 tests; 31 discarded:
+      52.2% a variable
+      50.5% a cycle
+      37.8% an alternative with fields
+      21.0% fifty nodes or more
+      11.5% a reference inlined
+    weakening by nothing is the identity:                                                                OK (0.01s)
+      +++ OK, passed 400 tests:
+      55.8% a cycle
+      52.5% a variable
+      41.5% an alternative with fields
+      21.2% fifty nodes or more
+    a closed term weakened is the same term:                                                             OK
+      +++ OK, passed 100 tests.
+    restamping with identities is the identity:                                                          OK
+      +++ OK, passed 100 tests:
+      68% a variable
+      55% a cycle
+      49% an alternative with fields
+      28% fifty nodes or more
+    rewriting no readings is the identity:                                                               OK
+      +++ OK, passed 100 tests:
+      61% a variable
+      52% a cycle
+      45% an alternative with fields
+      28% fifty nodes or more
+    blanking hints keeps the term:                                                                       OK
+      +++ OK, passed 400 tests:
+      58.8% a variable
+      52.2% a cycle
+      40.2% an alternative with fields
+      20.5% fifty nodes or more
+  evaluation
+    arithmetic is exact:                                                                                 OK
+    rationals render as fractions:                                                                       OK
+    lambda application:                                                                                  OK
+    curried application:                                                                                 OK
+    let binds and shadows by index:                                                                      OK
+    higher-order functions:                                                                              OK
+    polymorphic let used at two types:                                                                   OK
+    eta-expanded primitive as a value:                                                                   OK
+    if is lazy in the untaken branch:                                                                    OK
+    let is call-by-need:                                                                                 OK
+    unused lambda argument is never forced:                                                              OK
+    and is lazy on the right:                                                                            OK
+    division by zero:                                                                                    OK
+    integer power, negative exponent:                                                                    OK
+    zero to a negative power:                                                                            OK
+    comparisons and booleans:                                                                            OK
+    rounding primitives:                                                                                 OK
+    an ill-typed term is rejected before evaluation:                                                     OK
+    an unsaturated primitive is rejected by inference:                                                   OK
+    vector and matrix literals:                                                                          OK
+    projection of a vector component:                                                                    OK
+    projection of a matrix row, then a component:                                                        OK
+    projection is lazy in the other components:                                                          OK
+    projection out of range is a static error:                                                           OK
+    ref to a plain definition:                                                                           OK
+    unknown ref:                                                                                         OK
+    self-recursion through a cycle: factorial:                                                           OK
+    mutual recursion through a cycle: even and odd:                                                      OK
+    bad cycle index is a static error:                                                                   OK
+    a zero-width ± is exact:                                                                             OK
+  typed core
+    a polymorphic function gets an explicit type abstraction:                                            OK
+    a polymorphic let is instantiated explicitly at each use:                                            OK
+    length polymorphism is explicit too:                                                                 OK
+    shape polymorphism is explicit too:                                                                  OK
+    primitives record the type they are used at:                                                         OK
+    a slice's positions print as whole numbers, a fraction as a decimal:                                 OK
+    lint accepts everything elaboration produces:                                                        OK
+    lint rejects a badly annotated term:                                                                 OK
+    lint rejects a primitive at a type that is not an instance of its scheme:                            OK
+    lint rejects timap with an index shorter than the rank:                                              OK
+    lint rejects a mismatched let annotation:                                                            OK
+    lint rejects a type application without an abstraction:                                              OK
+  lexer
+    numbers are exact rationals:                                                                         OK
+    keywords and identifiers:                                                                            OK
+    an ASCII subscript is the unicode one (design §2.8):                                                 OK
+    unicode operators map to canonical tokens:                                                           OK
+    plus-minus spellings:                                                                                OK
+    glued superscripts:                                                                                  OK
+    superscript must be glued:                                                                           OK
+    projections:                                                                                         OK
+    a dot glued to a name is a field access, not composition:                                            OK
+    dot with spaces is composition, .xs is not a projection:                                             OK
+    projection must be glued to an atom:                                                                 OK
+    a glued ._ is a wildcard axis; ._name is not:                                                        OK
+    degree and primes are unit identifiers:                                                              OK
+    confusables fold: micro sign and ohm sign:                                                           OK
+    NFC: a decomposed accent becomes one character:                                                      OK
+    comments; a token after a comment on a new line is a continuation:                                   OK
+    a comment line between statements:                                                                   OK
+    layout: column-zero newlines separate statements:                                                    OK
+    layout: where block:                                                                                 OK
+  parser
+    precedence: * over +:                                                                                OK
+    left associativity of -:                                                                             OK
+    conversions chain from the left: x to a to b is (x to a) to b:                                       OK
+    application binds tighter than operators:                                                            OK
+    power binds tighter than unary minus and application looser than power:                              OK
+    negative literal exponent and superscript:                                                           OK
+    quantity rule: 9.81 m/s^2:                                                                           OK
+    quantity rule: 3 m^2 kg and superscripts:                                                            OK
+    quantity rule: 5 km/h:                                                                               OK
+    quantity rule: 3 f x is a product, 3 (f x) too:                                                      OK
+    a literal next to a literal is an error, not a product:                                              OK
+    rows with ; and planes with ;;:                                                                      OK
+    vector literal with units:                                                                           OK
+    degree sign:                                                                                         OK
+    lambda with several parameters extends right:                                                        OK
+    let in:                                                                                              OK
+    if then else:                                                                                        OK
+    comparison is non-associative:                                                                       OK
+    sections:                                                                                            OK
+    backtick infix and composition:                                                                      OK
+    projections:                                                                                         OK
+    slices: each wildcard skips an axis, left to right:                                                  OK
+    matrix literal:                                                                                      OK
+    a ragged literal parses; the type checker rejects it:                                                OK
+    sqrt prefix and ± operators:                                                                         OK
+    to has the lowest precedence:                                                                        OK
+    statements with where:                                                                               OK
+  desugar
+    operators become saturated primitives:                                                               OK
+    bound variables become indices:                                                                      OK
+    shadowing picks the innermost binder:                                                                OK
+    let with parameters becomes a lambda:                                                                OK
+    partial primitive is eta-expanded:                                                                   OK
+    bare primitive is eta-expanded to its arity:                                                         OK
+    over-applied primitive is applied further:                                                           OK
+    zero-arity primitive:                                                                                OK
+    unknown name:                                                                                        OK
+    composition:                                                                                         OK
+    provenance records the root span:                                                                    OK
+    provenance records children by path:                                                                 OK
+    a resolver turns free names into references:                                                         OK
+    codebase names shadow primitives:                                                                    OK
+  hash
+    alpha-equivalent terms hash equal:                                                                   OK
+    different terms hash differently:                                                                    OK
+    rationals in lowest terms share an encoding:                                                         OK
+    short hash form:                                                                                     OK
+    placeholder hash ignores which cycle variable is used:                                               OK
+    placeholder hash still sees structure:                                                               OK
+  pretty
+    integers:                                                                                            OK
+    terminating decimals print in full:                                                                  OK
+    repeating decimals are truncated with an ellipsis:                                                   OK
+    negative:                                                                                            OK
+    scale zero:                                                                                          OK
+    a primitive used as a value prints eta-reduced and reads back (design §2.9):                         OK
+  fixity
+    every pair of operators, nested either way, reads back:                                              OK (0.05s)
+    operator trees read back:                                                                            OK (0.01s)
+      +++ OK, passed 100 tests.
+  end to end
+    1 + 4.5 is exact:                                                                                    OK
+    exact thirds:                                                                                        OK
+    repeating decimal:                                                                                   OK
+    lambda:                                                                                              OK
+    unicode lambda and operators:                                                                        OK
+    if with booleans:                                                                                    OK
+    superscript power:                                                                                   OK
+    section:                                                                                             OK
+    projection:                                                                                          OK
+    elementwise arithmetic on tensors:                                                                   OK
+    tensor primitives:                                                                                   OK
+    a rank-three tensor:                                                                                 OK
+    constant literals fold into one node, constructions do not:                                          OK
+    a name defined twice in one group is an error:                                                       OK
+    statements in a group may refer to each other in any order:                                          OK
+    where:                                                                                               OK
+    function definitions:                                                                                OK
+    division by zero is a runtime error:                                                                 OK
+    an unknown unit is an unknown name:                                                                  OK
+    recursion:                                                                                           OK
+    mutual recursion in one group:                                                                       OK
+    recursion through a codebase reference across inputs:                                                OK (0.02s)
+    transcendentals print their certain digits:                                                          OK
+    parse error mentions the position:                                                                   OK
+    a dimension's exponent is an unbounded integer, never wrapped:                                       OK
+    a length, count or position past a machine integer is refused:                                       OK
+    a tensor past the components limit is refused when built:                                            OK (0.64s)
+    an empty tensor takes its element type from context:                                                 OK
+    an empty tensor nothing fixes is a type error, not an internal one:                                  OK
+    mapping takes its result's dimension from its type, forcing no element:                              OK
+  codebase
+    :ls lists names with their types, filtered by glob, kind or type query:                              OK (0.03s)
+    propagation follows a rebinding only through the name it was made under:                             OK (0.05s)
+    scratch definitions are usable before :add:                                                          OK
+    redefining a pending name replaces it with a notice:                                                 OK
+    :add stores new names and clears the scratch:                                                        OK
+    :add refuses a changed existing name:                                                                OK
+    :add of an identical definition is fine:                                                             OK
+    :update rebinds and upgrades dependents (design §7.5):                                               OK
+    :update --no-upgrade leaves dependents on the old version:                                           OK
+    :upgrade moves stale dependents to the current version:                                              OK
+    upgrading propagates transitively and through cycles:                                                OK
+    :history lists refs newest first after an update:                                                    OK
+    historical values and functions resolve in expressions and definitions:                              OK
+    hash arguments do not steal measurement labels:                                                      OK
+    historical names respect namespace lookup and explicit absolute paths:                               OK
+    hash references validate missing, malformed and ambiguous prefixes:                                  OK
+    recursive-group references select and validate members:                                              OK
+    bare hash arguments print with grouping and read back:                                               OK
+    historical references do not become dependencies on new local bindings:                              OK
+    historical record fields and tensor projections remain postfix operations:                           OK
+    historical unit and chart roles come from the referenced version:                                    OK (0.03s)
+    historical references survive a store reload:                                                        OK (0.06s)
+    alpha-equivalent definitions share a hash:                                                           OK
+    :names finds every label of a hash:                                                                  OK
+    :dependents lists definitions that mention the current ref:                                          OK
+    :view shows current references by name and prints with minimal parentheses:                          OK
+    :view of a cycle member names the other members:                                                     OK
+    cycle hash is independent of the order members are entered:                                          OK
+    a self-recursive definition is a one-member cycle:                                                   OK
+    :edit prints a definition as source:                                                                 OK
+    :alias and :unname manage labels only:                                                               OK
+    :forget drops a pending definition:                                                                  OK
+    :todo reports pending and clean states:                                                              OK
+    unknown name in a command:                                                                           OK
+  types
+    literals and arithmetic:                                                                             OK
+    identity is polymorphic:                                                                             OK
+    higher-order:                                                                                        OK
+    let-polymorphism:                                                                                    OK
+    vector and matrix literals:                                                                          OK
+    projection gives a lower bound on the length (design §4.1):                                          OK
+    elementwise operators are shape-polymorphic (core.md):                                               OK
+    products have one type each (design §4.2):                                                           OK
+    an unknown-rank product operand defaults at generalisation:                                          OK
+    contraction requires matching inner lengths:                                                         OK
+    mismatched lengths are a static error:                                                               OK
+    length-polymorphic primitives:                                                                       OK
+    indices, vzipWith and vimap (design §3.3):                                                           OK
+    timap's index is a Vec (rank s) (design §4.1):                                                       OK
+    a definition over timap generalises with its index demands:                                          OK
+    recursive definitions get types:                                                                     OK
+    mutually recursive definitions get types:                                                            OK
+    codebase references are instantiated freshly:                                                        OK
+    Num plus Bool is a static error with an excerpt:                                                     OK
+    out-of-range projection is static:                                                                   OK
+    too-short vector against a polymorphic projection is static:                                         OK
+    if condition must be Bool:                                                                           OK
+    applying a non-function:                                                                             OK
+    a type error in a definition names the definition:                                                   OK
+    well-typed programs never hit the evaluator's type checks:                                           OK
+    :update leaves a dependent that no longer typechecks on the old version:                             OK
+  soundness
+    functions cannot be compared:                                                                        OK
+    booleans compare through the equality instance:                                                      OK
+    an unknown equality type defaults to Num:                                                            OK
+    equality is shape-polymorphic on tensors:                                                            OK
+    comparing tensors of different shapes is a static error:                                             OK
+  products
+    tensor product covers scaling and plain multiplication:                                              OK
+    contracting product is dot, matrix-vector and matrix-matrix:                                         OK
+    cross product, both spellings:                                                                       OK
+    indices: a vector's positions as exact dimensionless values:                                         OK
+    vzipWith combines two tensors of one shape elementwise:                                              OK
+    timap maps with each component's multi-index (design §3.3):                                          OK
+    elementwise product and division:                                                                    OK
+    scalar division:                                                                                     OK
+    elementwise division by zero fails only for that element:                                            OK
+    quantity rule multiplies a literal by a declared unit:                                               OK
+    juxtaposition is for units and charts, by type:                                                      OK
+    names work prefix and infix:                                                                         OK
+  contraction and permutation
+    contract 0 1 is the trace of a matrix, in its unit:                                                  OK
+    contraction of a rank-3 tensor over each pair of positions:                                          OK
+    the contracting product is a contraction of the tensor product:                                      OK
+    permute [1, 0] is transpose:                                                                         OK
+    a rank-3 permutation moves lengths and components together:                                          OK
+    permuting the leading positions leaves the rest alone:                                               OK
+    types are computed from the literal positions:                                                       OK
+    the prelude's trace:                                                                                 OK
+    the tensor argument may be left off:                                                                 OK
+    positions must be literal naturals, distinct, a permutation:                                         OK
+    rank and length mismatches are type errors:                                                          OK
+    contraction sums nudges: two independent bounds on the diagonal:                                     OK
+    :view reads both back as written:                                                                    OK
+  slicing along an axis
+    m._.i is column i of a matrix:                                                                       OK
+    a column is a row of the transpose:                                                                  OK
+    a rank-3 tensor sliced on axis 1 and on axis 2:                                                      OK
+    the chain reads left to right: t._.0.1 is (slice 1 0 t).1:                                           OK
+    slice k i t written out is the same primitive:                                                       OK
+    a slice keeps the dimension and display unit:                                                        OK
+    types are computed from the axis and position:                                                       OK
+    range and rank are type errors:                                                                      OK
+    a wildcard needs a position; slice needs literals:                                                   OK
+    a slice gathers nudges without adding any:                                                           OK
+    :view reads a slice back with wildcards:                                                             OK
+  rotations
+    expm of a bivector is a right-handed rotation about each axis:                                       OK
+    expm of zero is the identity, exactly:                                                               OK
+    expm (-B) undoes expm B:                                                                             OK (0.01s)
+    a rotation is orthogonal: Rᵀ R encloses I:                                                           OK (0.02s)
+    an uncertain angle carries its nudge into the entries:                                               OK
+    four dimensions: two planes by the series, one plane by Rodrigues:                                   OK
+    expm of a general matrix: the scaled and squared series:                                             OK (0.05s)
+    expm is dimensionless:                                                                               OK
+    transformBy applies R along every axis:                                                              OK
+    transformBy keeps the dimension and the display unit:                                                OK
+    transformBy refuses an axis of another length, at run time:                                          OK
+    the constructors' types:                                                                             OK
+    rotz is θ (e2 ∧ e1): ∧ turns its second vector toward its first:                                     OK
+    axisAngle and dual:                                                                                  OK
+    rotation a b takes a to b:                                                                           OK (0.01s)
+    euler313 is the perifocal-to-inertial matrix:                                                        OK (0.01s)
+    every constructor's bivector is exactly antisymmetric, enclosures and all:                           OK
+    an uncertain angle makes a bivector with nudged entries:                                             OK
+  turnedCharts
+    one level: lvlh's x axis is eci's y, and back:                                                       OK
+    two levels: the rotations compose in order, the origin turns with the parent:                        OK (0.02s)
+    an origin is an amount along the parent's axes, not steps of the parent:                             OK
+    a sequence with then is the Euler product, applied in order:                                         OK (0.03s)
+    displacements within a frame are along its axes, exactly:                                            OK (0.02s)
+    a covariance and a Cov2 block through rotateCov are R P Rᵀ:                                          OK (0.02s)
+    an uncertain angle: the coordinates carry it, correlated:                                            OK (0.01s)
+    a chart used in 100 conversions computes its rotation once:                                          OK
+    :view and :edit of a sequence read back to the same hash:                                            OK
+    design §12: a perifocal chart:                                                                       OK (0.04s)
+    a sequence-turned chart survives a reload:                                                           OK (0.08s)
+  movingCharts
+    a moving chart declares, prints with its parameter and spin, and applies:                            OK (0.01s)
+    :edit reads a moving chart back to the same hash:                                                    OK
+    a moving chart without its arguments is refused, as a point's chart, a target or a parent:           OK (0.02s)
+    a body fixed on a spinning chart: at rest on it, ω × r in the parent:                                OK (0.01s)
+    stateFrom then velocityIn and the position back on the chart are the round trip:                     OK (0.03s)
+    a declared spin agrees with the rotation it goes with: a finite difference:                          OK (0.01s)
+    two levels: a station under a spinning Earth, a dish spinning on the station:                        OK (0.05s)
+    an uncertain spin rate gives a velocity whose bound grows with |r|:                                  OK
+    a moving chart survives a reload:                                                                    OK (0.06s)
+    design §12: a spinning Earth, for illustration:                                                      OK (0.02s)
+  axis slots
+    a named axis set does not unify with anonymous axes:                                                 OK
+    a literal takes the axes of what it meets (decision 5):                                              OK
+    a local value's free axes are anonymous (decision 5):                                                OK
+    two named axis sets do not unify:                                                                    OK
+    an axis variable binds to a named set:                                                               OK
+    dot's contracted positions share one axis variable:                                                  OK
+    an instance substitutes axis variables:                                                              OK
+    lint checks the contracted axes of dot:                                                              OK
+    an anonymous position keeps the bytes of a bare length:                                              OK
+    named and variable slots encode under their own tags and decode back:                                OK
+  named axes
+    a chart mints a frame, named as the chart:                                                           OK
+    a point is on its frame; rotationOf is Mat space frame:                                              OK (0.01s)
+    a literal takes its frame from use; a named value is anonymous:                                      OK (0.01s)
+    roots on one space convert; two spaces never meet:                                                   OK
+    scalar charts are typed by their frames too:                                                         OK
+    a moving chart has one frame for every time:                                                         OK
+    a written type names a frame, its axes and a space's:                                                OK (0.13s)
+    the library's states are typed by their spaces:                                                      OK
+  properties
+    blind programs
+      whatever inference accepts, lint accepts with the same type:                                       OK
+        +++ OK, passed 100 tests; 183 discarded.
+      printed Core re-parses to an alpha-equivalent term:                                                OK
+        +++ OK, passed 100 tests; 273 discarded.
+      printed Core in unicode re-parses to an alpha-equivalent term:                                     OK
+        +++ OK, passed 100 tests; 250 discarded.
+      hashes ignore hints:                                                                               OK
+        +++ OK, passed 100 tests.
+      the hash is stable across printing:                                                                OK
+        +++ OK, passed 100 tests; 294 discarded.
+      evaluating a linted term never reports an internal error:                                          OK
+        +++ OK, passed 100 tests; 245 discarded (100% value).
+      inference is deterministic:                                                                        OK
+        +++ OK, passed 100 tests.
+    typed programs
+      the generator's programs have the type they were built for:                                        OK (0.03s)
+        +++ OK, passed 100 tests:
+        88% dimensioned value
+        86% dimensioned tensor of rank >= 1
+        71% rank >= 2
+        62% higher-order function
+        61% polymorphic let
+        
+        depth (100 in total):
+        55% 10-14
+        16% 15-19
+        15% 1-4
+        14% 5-9
+        
+        target (100 in total):
+        16% Num
+        15% Num with a dimension
+        14% Vec
+        14% function
+        12% Bool
+        10% Vec with a dimension
+         8% Mat with a dimension
+         4% Mat
+         4% rank 3 with a dimension
+         3% rank 3
+      whatever inference accepts, lint accepts with the same type:                                       OK (0.04s)
+        +++ OK, passed 100 tests.
+      printed Core re-parses to an alpha-equivalent term:                                                OK (0.11s)
+        +++ OK, passed 100 tests.
+      printed Core in unicode re-parses to an alpha-equivalent term:                                     OK (0.11s)
+        +++ OK, passed 100 tests.
+      hashes ignore hints:                                                                               OK (0.01s)
+        +++ OK, passed 100 tests.
+      the hash is stable across printing:                                                                OK (0.11s)
+        +++ OK, passed 100 tests.
+      evaluating a linted term never reports an internal error:                                          OK (0.03s)
+        +++ OK, passed 100 tests:
+        89% value
+        10% division by zero
+         1% other error
+      inference is deterministic:                                                                        OK (0.03s)
+        +++ OK, passed 100 tests.
+    the dimension unifier: a solution solves, a refusal has none (design §4.4):                          OK
+      +++ OK, passed 100 tests:
+      72% solvable
+      28% no solution
+    replayed seeds
+      typed programs: a product's operand keeps the lengths it has:                                      OK
+        +++ OK, passed 1 test.
+  units
+    base units are primitives:                                                                           OK
+    quantity rule with powers:                                                                           OK
+    dimensions multiply and divide:                                                                      OK
+    adding different dimensions is a static error:                                                       OK
+    the circular functions take an angle:                                                                OK
+    a rank mismatch names both ranks:                                                                    OK
+    tensor literals need one dimension:                                                                  OK
+    dimension polymorphism:                                                                              OK
+    Kennedy's Euclid step: non-divisible exponents:                                                      OK
+    a dimension equation with no integer solution is an error, not a loop:                               OK
+    an uncertainty must share the value's dimension:                                                     OK
+    to keeps the value for now:                                                                          OK
+    a definition carries its dimension through the codebase:                                             OK
+  lint regressions
+    exp of a large negative argument keeps its digits, quickly:                                          OK (0.01s)
+    instantiation renames quantified variables simultaneously:                                           OK
+    a stored polymorphic definition instantiates at several dimensions:                                  OK
+    a let does not generalise variables a pending product constraint ties to the scope:                  OK
+    an unknown-rank product operand keeps the lengths it has:                                            OK
+    a let defaults only the constraints of its own right-hand side:                                      OK
+    printed Core never shows the desugarer's own binder names:                                           OK
+    a dimension variable flipped at generalisation is flipped in the term too:                           OK
+    a cycle's inferred schemes agree with lint's when a dimension is inverted:                           OK
+    the negation primitive applied to a constant prints as an application:                               OK
+  prelude
+    the prelude loads and defines its names:                                                             OK
+    derived units are coherent:                                                                          OK
+    prefixes:                                                                                            OK
+    accepted units:                                                                                      OK
+    conversions chain from the left, and print back so:                                                  OK
+    constants are exact where SI defines them so:                                                        OK
+    the hour is hr, with h an alias; Planck's h needs use physics:                                       OK
+    the library by domain: si names, prefixes, time, angle, imperial:                                    OK
+    cross is the Hodge dual of the wedge:                                                                OK
+    vimap maps with each component's position as a value:                                                OK
+    wedge works in any dimension:                                                                        OK
+    an orbital calculation with units end to end:                                                        OK
+  display units
+    :set unicode prints the unicode spellings, which read back:                                          OK
+    a quantity prints in the unit it was written in:                                                     OK
+    a sum takes the smaller unit, whichever side it is on:                                               OK
+    to converts for display:                                                                             OK
+    a user-declared unit:                                                                                OK
+    let-bound quantities are not units, their components are:                                            OK
+    the display unit must match the dimension or base units are used:                                    OK
+    units are codebase metadata: a renamed unit prints under its current name:                           OK
+  affine
+    exact values print in full or with an ellipsis:                                                      OK
+    certain digits of approximations end in an ellipsis, zeros included:                                 OK
+    the same operation twice gives the same nudge, so it cancels:                                        OK
+    a denominator that may be zero is refused before anything cancels:                                   OK
+    equal slack is not a shared unknown, so it does not cancel:                                          OK
+    anonymous slack stays anonymous through nonlinear operations:                                        FAIL
+      test/Lang/Affine.hs:191:
+      Exact (0 % 1)
+      Use -p '/anonymous slack stays anonymous through nonlinear operations/' to rerun this test only.
+    independent anonymous products enclose every corner:                                                 OK
+      +++ OK, passed 100 tests.
+    second-order combination is associative and has an identity:                                         FAIL
+      *** Failed! Falsified (after 1 test and 1 shrink):
+      Positive {getPositive = Small {getSmall = 1}}
+      Positive {getPositive = Small {getSmall = 1}}
+      Positive {getPositive = Small {getSmall = 1}}
+      (SecondOrder (fromList [("mul",Just (1010 % 1))]),SecondOrder (fromList [("mul",Just (101 % 100))]),SecondOrder (fromList [("mul",Just (101 % 100))]))
+      Use --quickcheck-replay="(SMGen 18005120526179939712 9660776582192256123,0)" to reproduce.
+      Use -p '/second-order combination is associative and has an identity/' to rerun this test only.
+    past 64 nudges, the bound ones beyond the 32 largest fold into slack (design §3.2.7):                OK
+    remainders of different operand lists never share a nudge:                                           OK
+    declared bounds print as mid ± r:                                                                    OK
+    a second-order term below the precision floor never marks:                                           OK
+    a shared nudge squares into a one-sided range:                                                       OK
+    standard uncertainties keep the σ marker and show a bound when it matters:                           OK
+    a statistical part non-linear through n*n is marked, never a bound:                                  OK
+    discarded statistical remainders cannot establish exact equality:                                    OK
+    expm refuses statistical inputs instead of erasing them:                                             OK
+    a small relative σ stays first order and unmarked:                                                   OK
+    a statistical coefficient is never a hard limit:                                                     OK
+    mid, bound and sd take an enclosure apart:                                                           OK
+    sigma a e is the prefix spelling of a ±σ e, beside within:                                           OK
+    noise and gauss are vectors of unit nudges:                                                          OK
+    tiny magnitudes keep their significant digits:                                                       OK
+    comparisons are decided only when the enclosures separate:                                           OK
+    :set sigma widens the margin for statistical nudges only:                                            OK
+    integer rounding needs an enclosure inside one step:                                                 OK
+    domain errors name the problem:                                                                      OK
+    abs, atan2 and the hyperbolics:                                                                      OK
+    linear algebra over enclosures:                                                                      OK
+    :set precision changes the digits printed and the working precision:                                 OK
+    :exact shows the midpoint, the nudges and their origins:                                             OK
+    :budget lists nudges by kind, source and share:                                                      OK
+    the library's G carries its σ and a mass derived from it inherits it:                                OK
+    a unit is its own term: an amount of the same size is not one:                                       OK
+    a let that rebinds a unit name makes it a quantity:                                                  OK
+    an alias of a unit is a unit, and a renamed unit prints under its new name:                          OK
+    :prefer sets a display unit per dimension; to still wins; it persists:                               OK
+    ± on tensors: one independent nudge per component:                                                   OK
+    covariance is the square-root factor's product; cholesky inverts it:                                 OK
+    cholesky and ±σ refuse a matrix that is provably not symmetric:                                      OK
+    v ±σ P is a vector with covariance P, stamped like any ±:                                            OK
+    :covariance separates the statistical part from the bound box:                                       OK
+    crossCovariance sums cᵢc'ⱼᵀ over the statistical nudges two vectors share:                           OK
+    jointCovariance and the block filter: the types:                                                     OK
+    propagateCov2 agrees exactly with the affine forms' own correlation:                                 OK
+    :covariance of a pair prints the blocks of jointCovariance and both boxes:                           OK
+    design §12: a filter step in blocks:                                                                 OK (0.01s)
+    points: charts, .+ and .-, printing on the written chart:                                            OK
+    points over vectors: frames, projection, conversion between frames:                                  OK
+    points compare and have no sum:                                                                      OK
+    chart declarations: user charts, :view and :edit read back as written:                               OK
+    chart is a keyword: a declaration, its type, :view and :ls:                                          OK
+    mkRoot and mkChart: a frame, a parent, a list of generators, antisymmetry:                           OK (0.01s)
+    charts with a parent: the translated tree, to and .- through it:                                     OK (0.02s)
+    a chart turned by a generator: by and then parse, and read back as written:                          OK (0.02s)
+    charts in a namespace block resolve their parent; the parent survives :export:                       OK
+    display units of one dimension cancel against each other:                                            OK
+    angle is a dimension: the circular functions take it, their inverses give it:                        OK
+    angles: deg is a unit built on pi:                                                                   OK
+    identical definitions are different measurements; a - a still cancels:                               OK
+    the owner stamp is implied: :view prints no label and the text round-trips:                          OK
+    a function-level tolerance is one unknown per input:                                                 OK
+    a #label names the unknown: shared across definitions and values:                                    OK
+    labels print, parse and hash:                                                                        OK
+    :budget names tagged and owned nudges:                                                               OK
+    sqrt of a dimension that is not a square is a type error, not a loop:                                OK
+    a product of enclosures encloses every product of their points:                                      OK
+      +++ OK, passed 100 tests.
+    the integer square root under sqrt is the floor of the root:                                         OK
+      +++ OK, passed 100 tests.
+    sqrt of a long rational is fast:                                                                     OK
+    Newton's method for Kepler's equation iterates quickly:                                              OK (0.01s)
+    an iteration's cost grows linearly with its steps:                                                   OK (0.03s)
+    an iteration's rationals stay short:                                                                 OK (0.10s)
+    sqrt, recip, exp and log enclose their true values:                                                  OK (0.03s)
+      +++ OK, passed 100 tests.
+  store
+    the storage encoding round-trips every generated program, hints included:                            OK (0.02s)
+      +++ OK, passed 100 tests.
+    a chart's parent and generator survive a reload:                                                     OK (0.07s)
+    definitions, history, units, labels and cycles survive a reload:                                     OK (0.06s)
+    a new store is seeded with the library; a reload is the library and the user's, from disk:           OK (0.08s)
+    a seeded store keeps the library's record type across a reload:                                      OK (0.06s)
+    a root binding shadows the library's on reload; :use and :unuse persist:                             OK (0.06s)
+    merging two seeded stores brings nothing across for the library:                                     OK (0.05s)
+    declared types, their names and a type that uses another survive a reload:                           OK (0.06s)
+    namespaced labels survive a reload with their paths, renamed or not:                                 OK (0.06s)
+    a let that takes over a unit name stays a quantity after a reload:                                   OK (0.06s)
+    a type indexed by rank survives a reload:                                                            OK (0.06s)
+    :unname persists:                                                                                    OK (0.06s)
+    malformed stored scalars return decoding errors:                                                     FAIL
+      Exception: Ratio has zero denominator
+      Use -p '/malformed stored scalars return decoding errors/' to rerun this test only.
+    a zero denominator is skipped and unrelated definitions load:                                        FAIL
+      Exception: Ratio has zero denominator
+      Use -p '/a zero denominator is skipped and unrelated definitions load/' to rerun this test only.
+    a corrupt term file and a dangling name are reported, the rest loads:                                OK (0.06s)
+    a store of another format is refused with one line and left as it is:                                OK (0.04s)
+    a store of the current format opens as it was seeded:                                                OK (0.08s)
+    merging two stores: both sides' definitions, one file per shared term:                               OK (0.09s)
+    merging: a name bound on both sides takes the later definition, whichever side it is on:             OK (0.16s)
+    merging: declared types and their type, con and field labels come across:                            OK (0.09s)
+    merging again adds nothing; the other store and both history files are left alone:                   OK (0.11s)
+    merging: corrupt files are not copied, a line without a time is reported:                            OK (0.07s)
+    metron --merge says what came across, and refuses with one line and a failure:                       OK (0.15s)
+    merging from what is not a store, or from a store of another format, is refused and touches nothing: OK (0.03s)
+  data
+    tuples: construction, types, fst and snd, equality:                                                  OK
+    lists: literals, cons, the prelude functions, laziness:                                              OK
+    case: one constructor deep, exhaustive, canonical order; _ and variables fill in:                    OK
+    case alternatives as a layout block:                                                                 OK
+    a state as a pair of vectors with different dimensions:                                              OK
+    declared types: constructors, case, types, printing:                                                 OK
+    declared types: parameters take their kinds from use; recursion:                                     OK
+    declared types: == and /= when every field compares:                                                 OK
+    records: named fields, construction, access, update, printing:                                       OK
+    record values print with their field names and read back:                                            OK (0.01s)
+    rank in type syntax: a data declaration can index by a shape's rank:                                 OK
+    declared types: identity is the stamped or structural definition:                                    OK
+    the built-in types are the structural declarations of their shape:                                   OK
+    declared types: what is refused:                                                                     OK
+    declared types: names are labels:                                                                    OK
+    constructors and definitions share one namespace; the newer label wins:                              OK
+    the type grammar:                                                                                    OK
+  it, the last result
+    it is the last expression:                                                                           OK
+    :type, :view and :exact see it:                                                                      OK
+    it before any expression is an unknown name:                                                         OK
+    a definition cannot store it, nor define it:                                                         OK
+    it is never stored or listed:                                                                        OK
+    an error leaves the previous it:                                                                     OK
+    it outlives the scratch definitions it used:                                                         OK
+    it names a reference only when nothing else does:                                                    OK
+  unicode echo
+    an input line in its unicode spelling:                                                               OK
+    nothing to respell gives nothing:                                                                    OK
+    superscripts for glued integer powers:                                                               OK
+    spans are kept when lengths differ:                                                                  OK
+    :set unicode on echoes statement lines:                                                              OK
+  repl
+    commands complete at the start of a line:                                                            OK
+    :help lists every command, :edit --file among them:                                                  OK
+    :set and :colour complete their arguments:                                                           OK
+    names complete from the session: units, constructors, keywords:                                      OK (0.04s)
+    fields complete after a dot:                                                                         OK
+    :load completes file names:                                                                          OK
+    a backslash name completes from the unicode table only:                                              OK
+    every unicode entry lexes as a documented ASCII spelling or is an identifier:                        OK
+    unicode lookup prefers an exact name:                                                                OK
+    classify: errors, notes, signatures, values:                                                         OK
+    classify: the ≡ echo and a function type:                                                            OK
+    splitUnits: the trailing unit of a value that does not lex:                                          OK
+    needsMore: brackets, trailing tokens, commands, comments:                                            OK
+    needsMore: a block after of runs to a blank line:                                                    OK
+    highlight: keywords magenta, units cyan, the rest plain:                                             OK
+    highlight: a data declaration, types and constructors yellow:                                        OK
+    paint: a signature's type, highlighted as a type:                                                    OK
+    paint: values, records, references, comments:                                                        OK
+    highlight: a variable named like a unit is plain where it is bound:                                  OK
+    paint: an error block keeps its carets under the excerpt:                                            OK
+    paint: what does not lex falls back to its kind:                                                     OK
+    colour off changes nothing; the scripted echo:                                                       OK
+    painting only adds escape codes:                                                                     OK (0.04s)
+  backends (design §8.2)
+    results equal GHC's Double
+      0.1 + 0.2:                                                                                         OK
+      (0.1 + 0.2) + 0.3:                                                                                 OK
+      0.1 + (0.2 + 0.3):                                                                                 OK
+      1 / 3:                                                                                             OK
+      2 / 3 * 3 - 2:                                                                                     OK
+      1 - 0.9:                                                                                           OK
+      sqrt 2:                                                                                            OK
+      sqrt 2 * sqrt 2 - 2:                                                                               OK
+      exp 1:                                                                                             OK
+      exp 1 - 1:                                                                                         OK
+      log 10:                                                                                            OK
+      sin (1 rad):                                                                                       OK
+      cos (0.5 rad):                                                                                     OK
+      tan (1.2 rad):                                                                                     OK
+      asin 0.3:                                                                                          OK
+      acos 0.3:                                                                                          OK
+      atan 3:                                                                                            OK
+      sinh 1.5:                                                                                          OK
+      cosh 1.5:                                                                                          OK
+      tanh 0.5:                                                                                          OK
+      atan2 1 2:                                                                                         OK
+      1.1^7:                                                                                             OK
+      1.1^10 - 1:                                                                                        OK
+      1.1^-3:                                                                                            OK
+      (1 + 1e-15) - 1:                                                                                   OK
+      1e16 + 1 - 1e16:                                                                                   OK
+      abs (-0.1):                                                                                        OK
+      floor 2.7:                                                                                         OK
+      ceil (-2.5):                                                                                       OK
+      round 2.5:                                                                                         OK
+      round 3.5:                                                                                         OK
+      pi:                                                                                                OK
+      pi * 2 / 3:                                                                                        OK
+    IEEE 754: infinities, NaN and overflow are values
+      division by zero is infinite, of either sign:                                                      OK
+      0/0 and the square root of a negative number are NaN:                                              OK
+      overflow is infinite, not an error:                                                                OK
+      underflow is gradual:                                                                              OK
+      printing says where the first NaN or infinity appeared:                                            OK
+      a comparison with NaN is false, and NaN is not itself:                                             OK
+      isNaN and isInfinite:                                                                              OK
+      eps, nextUp, ulps and fma describe the format:                                                     OK
+    a literal is rounded to the nearest double where it enters
+      0.1 is the nearest double, its rounding its error:                                                 OK
+      a literal a double holds exactly has no error:                                                     OK
+      the nearest double of a long literal, rounded once:                                                OK
+      a literal beyond the largest double is infinite:                                                   OK
+    printing labels the kind of estimate
+      an exact result prints alone:                                                                      OK
+      a rounded one prints its bound:                                                                    OK
+      under samples, the estimate and its count:                                                         OK
+      errorOf and digitsOf, the same under either setting:                                               OK
+      a quantity prints in its unit, an exact one exactly:                                               OK
+    the running bound contains the true error
+      against the affine enclosure, over generated arithmetic:                                           OK (0.04s)
+        +++ OK, passed 100 tests (9% the affine backend refuses it).
+      a cancellation's bound is as large as its result:                                                  OK
+    samples N: copies under random rounding
+      a cancellation keeps about one digit, at every seed tried:                                         OK
+      a stable sum keeps nearly all its digits:                                                          OK
+      :set seed: the same seed gives the same estimate, others others:                                   OK
+      at samples 3, the unstable branch of the default seed has its table:                               OK
+      a branch the copies disagree on has its table, and the nominal result decides:                     OK
+      a stable branch has none:                                                                          OK
+      under the running bound nothing has a table:                                                       OK
+    the table at a branch point
+      a row counts the copies whose own scrutinee selects its alternative:                               OK
+      an if and a case on its condition give the same table:                                             OK
+      the same at 1, 2 and 4 cores, with batches whose copies all agree:                                 OK
+      two branch points with the same condition are two tables:                                          OK
+      a branch point reached twice counts both evaluations:                                              OK
+      a branch point in a loop: one table over its evaluations:                                          OK
+      a branch point inside another: the copies that went the other way left earlier:                    OK
+      rounding alone: a short circuit's copies that would have gone on leave the path:                   OK
+      draws: a short circuit splits the copies, as an if does:                                           OK
+      copies that differ by rounding alone say so, with their count:                                     OK
+      `/=` reads as written, and a row of 0 needs no special wording:                                    OK
+      a case on data whose copies choose nothing has no table:                                           OK
+      a case on a list pattern: its scrutinee's samples have their own lengths:                          OK
+      a value shared with the evaluation around a split, at 1, 2, 4 and 32 cores:                        OK
+    splitting: each sample follows its own branch
+      if x > 0.9 then 1 else 2 at 10⁴ samples: a Bernoulli sample's mean and deviation:                  OK
+      each copy is its own branch's, keyed as before:                                                    OK
+      groups split again at a later branch point:                                                        OK
+      a tensor puts its components back together copy by copy:                                           OK
+      the same constructor recombines field by field:                                                    OK
+      an alternative no copy selects is not evaluated:                                                   OK
+      a loop whose condition carries draws: 10⁵ steps, each sample its own:                              OK (0.19s)
+      steps counts each path: a split's groups are not added together:                                   OK (0.03s)
+      1, 2 and 4 cores give the same copies, bit for bit:                                                OK
+      rounding alone does not split: the copies follow the nominal branch:                               OK
+      affine and samples 0 are unaffected:                                                               OK
+    mixtures of outcomes
+      classify: the outcomes' counts, and a case on them one numeric sample:                             OK
+      an outcome with numbers shows each one's own cluster:                                              OK
+      two mixtures combine copy by copy:                                                                 OK
+      lists of different lengths: outcomes by structure:                                                 OK
+      past `:set outcomes`, the usual limit error:                                                       OK
+      more than ten outcomes: the ten commonest, then the rest counted:                                  OK (0.02s)
+      a field of an outcome that nothing reads is never evaluated:                                       OK
+      1, 2 and 4 cores give the same mixtures, and the batches merge:                                    OK (0.24s)
+    :backend chooses the evaluator of the scalars
+      :backend names the current one and switches:                                                       OK
+      the same expression under each:                                                                    OK
+      --backend starts a session under one, as :backend would:                                           OK
+      an unknown backend is refused:                                                                     OK
+      :exact, :budget and :covariance are the affine backend's:                                          OK
+      the affine backend's built-ins are refused under double, ± at every setting:                       OK
+      noise is refused under double at every setting, as ± is; gauss is drawn:                           OK
+      the declared σ, gauss, mid and sd need samples under double:                                       OK
+      the double backend's are refused under affine:                                                     OK
+      :set samples takes 0 or at least two copies:                                                       OK
+    built-ins a backend lacks are refused before running
+      the refusal names the path through the definitions:                                                OK
+      and down a longer chain to the definition that uses it:                                            OK
+      a definition that uses one is entered under either backend; using it is refused:                   OK
+      an input whose closure is clean runs:                                                              OK
+      the check is conservative: a branch never taken counts:                                            OK
+      so is a definition the input never calls but refers to:                                            OK
+      a recursive group is one union:                                                                    OK
+      the memo holds names, not backends: the same session switches back and forth:                      OK
+      needs(h) is memoised by hash, and answers without the term:                                        OK
+      after switching, the memo refuses what it allowed before:                                          OK
+    :set samples, seed and rounding, and --set
+      samples goes up to 10⁵, and one copy has no spread:                                                OK
+      :set rounding is nearest or random, random by default:                                             OK
+      the backend's defaults are the session's: seed 1, as :set shows:                                   OK
+      rounding nearest: copies with no draws are the IEEE result, and print exact:                       OK
+      rounding random: the same copies do differ:                                                        OK
+      rounding has no effect under samples 0:                                                            OK
+      --set takes samples, seed and rounding, in order:                                                  OK
+      --set refuses what :set refuses, and names an unknown setting:                                     OK
+      --set still takes the limits:                                                                      OK
+    declared σ is sampled: Monte Carlo under double
+      a nearly linear formula: the orbital period with CODATA's G agrees with affine's σ:                OK (0.02s)
+      a product of small-σ values agrees with affine's σ:                                                OK
+      a non-linear value: n·n for n = 0 ±σ 1 has mean 1 and deviation √2:                                OK
+      the shown value is the IEEE result at the nominal inputs:                                          OK
+      x - x is exactly 0 in every copy, under either rounding:                                           OK (0.01s)
+      the same unknown is one draw across definitions, by its identity:                                  OK
+      two independent ±σ values are independent:                                                         OK
+      gauss draws standard normals, independent across components:                                       OK
+      a labelled unknown is one draw wherever the label appears:                                         OK
+      the same seed gives the same copies; another seed, others:                                         OK
+      the draws do not depend on the order things are forced in:                                         OK
+      rounding random adds rounding to the draws; nearest leaves the draws alone:                        OK
+      mid and sd under samples 0 are refused, naming the setting:                                        OK
+      the definitions that were refused run once samples are set:                                        OK
+      a bound ± stays refused with samples, through definitions too:                                     OK
+    printing under Monte Carlo: the sample beside the nominal value
+      n·n prints 0, its nominal value, with mean and sd, not ± a standard error:                         OK
+      units are kept, in the sample too:                                                                 OK (0.01s)
+      under random rounding too, and never with ±:                                                       OK
+      a tensor prints each component's mean and sd in its shape and unit:                                OK
+      a record and a tuple print per component, each with its own sample:                                OK
+      with rounding alone, printing, errorOf and digitsOf are as before:                                 OK
+      errorOf and digitsOf refuse a value whose copies carry declared σ:                                 OK
+      carrying draws propagates through arithmetic, and a mix carries them:                              OK (0.02s)
+      batches print what one evaluation prints:                                                          OK
+      a statistic's digits come from its standard error:                                                 OK
+    :set cores: the copies in parallel batches
+      batches of the copies: in order, sizes within one, at least two copies each:                       OK
+      the batches cover the copies exactly, in order:                                                    OK
+        +++ OK, passed 100 tests.
+      K = 1, 2 and 4 give the same copies, bit for bit, and the same statistics:                         OK
+      under random rounding too, with no declared σ:                                                     OK
+      an input that reads across the copies runs as one, with the same result:                           OK
+      the batches' tables come together:                                                                 OK
+      steps counts each path: accepted alike at every K:                                                 OK
+      a split near the limit: accepted or refused alike at K = 1, 2 and 4:                               OK (0.01s)
+      work shared before a split is on each path that forces it:                                         OK (0.02s)
+      the work after a join is on every path through it:                                                 OK (0.03s)
+      depth near the limit: refused or accepted alike at K = 1, 2 and 4:                                 OK
+      a runaway on one split path is still stopped:                                                      OK (0.02s)
+      :set cores and --set cores take a positive count:                                                  OK
+      affine and samples 0 never batch:                                                                  OK
+  namespaces
+    a multiline defines orbital.*, and a bare name inside resolves there first:                          OK
+    blocks nest:                                                                                         OK
+    a multiline's statements must be indented under it:                                                  OK
+    use: bare names from the namespace resolve, and :type names them:                                    OK
+    use … as: an alias prefix:                                                                           OK
+    two uses offering a name is an error, not a choice:                                                  OK
+    a command's name the uses offer as several: :view shows each, a query takes its kind:                OK
+    an absolute .name picks the root's:                                                                  OK
+    a full path works from the root without a use:                                                       OK
+    a data type in a multiline: its constructor and fields, inside and out:                              OK
+    a cycle inside a multiline:                                                                          OK
+    a name is never both a label and a namespace:                                                        OK
+    a ± definition's namespace reaches its hash; a plain one's does not:                                 OK
+    :namespace: single lines land under it, and :scratch shows the path:                                 OK
+    a use inside a block does not leak out of it:                                                        OK
+    a nominal type's namespace reaches its hash:                                                         OK
+    :ls of a namespace lists its labels relative to it:                                                  OK
+    :rename a definition, and a namespace with its units, types and fields:                              OK (0.01s)
+    :rename refuses a clash and changes nothing:                                                         OK
+    :move puts a definition or a namespace under another:                                                OK
+    :alias and :unname of a namespace:                                                                   OK
+    printing: relative inside the namespace, full outside:                                               OK
+    printing: the shortest spelling that resolves back:                                                  OK
+    a file's uses last for the file only:                                                                OK
+    completion: dotted names and used names:                                                             OK
+    the REPL waits for a namespace's block:                                                              OK
+    :export reads back to the same labels and hashes:                                                    OK
+    :export of a namespace, of nothing, and with a pending scratch:                                      OK
+    :export refuses a definition on a version no name points at:                                         OK
+    lexing: a dot not glued to a value is an absolute name:                                              OK
+    units and types across namespaces:                                                                   OK
+    a dotted name is plain in the highlighter:                                                           OK
+  :edit, the editor round trip
+    the file: a header that says what saving does, then the export:                                      OK
+    (a) an unchanged file changes nothing:                                                               OK (0.07s)
+    (b) a changed body is updated and its dependents upgraded:                                           OK (0.04s)
+    (c) a definition deleted from the file is removed; history keeps it:                                 OK (0.05s)
+    (d) a definition added inside a block is added there:                                                OK (0.04s)
+    (e) a definition moved between blocks is removed and added:                                          OK (0.02s)
+    (f) an edited type re-hashes; constructors and fields follow, dependents upgrade or are left:        OK (0.05s)
+    (g) a type error refuses the edit and changes nothing:                                               OK
+    (h) an emptied file is refused:                                                                      OK
+    (i) one name: its body updated, deleting it refused, others added:                                   OK (0.05s)
+    (j) :edit si includes the library; :edit alone never touches it:                                     OK (0.24s)
+    (k) :edit --file resumes from a file:                                                                OK (0.02s)
+    (l) a +- definition entered again under its path keeps its hash:                                     OK (0.02s)
+    without an editor, :edit prints the pasteable source and says so:                                    OK
+  standard library
+    a name outside the namespaces used by default needs its namespace:                                   OK
+    no name is ambiguous among the namespaces used by default:                                           OK
+    a ± definition is stamped with its full path: astro.G is not a root G:                               OK
+    std names Bool, Pair and List, the declarations the compiler holds:                                  OK
+    the built-in types print by hash, whatever names them:                                               OK
+    units resolve through the stored uses and print bare:                                                OK
+    :ls alone shows the root and a line per namespace; :ls si the SI:                                    OK
+    :ls lists a unit with a type that reads back: one of it (design §3.10, U9):                          OK
+    a root name shadows the library's: c and physics.c:                                                  OK
+    library names are names: :rename, :unname, :edit:                                                    OK
+    :uses, :unuse and :use for the stored uses:                                                          OK
+    :stdlib upgrade: up to date, added, updated, kept:                                                   OK
+    :rename and :move re-hash a stamped definition and upgrade its dependents:                           OK (0.08s)
+    :rename of a nominal type re-hashes it, its users and the types that use it:                         OK (0.04s)
+  limits (design §8.1)
+    settings
+      a count is written plainly, with separators, or with a power of ten:                               OK
+      :set changes a limit, and refuses what is not one:                                                 OK
+      a limit changes no value and no hash:                                                              OK
+    steps
+      an endless loop stops at the limit:                                                                OK (0.06s)
+      raising the limit lets a long loop finish:                                                         OK (0.18s)
+      each expression has its own steps:                                                                 OK (0.32s)
+    depth
+      deep recursion stops at the limit; raising it lets it finish:                                      OK
+      the default stops a runaway recursion:                                                             OK (0.07s)
+      a tail call is no deeper:                                                                          OK (0.06s)
+      a tail call through a split is no deeper (design §8.2):                                            OK (0.31s)
+      a loop through a split runs in a 1 MB Haskell stack (design §8.2):                                 OK (2.94s)
+      a case that splits in tail position passes its split on, in a 128 kB stack (design §8.2):          OK (2.05s)
+      a split whose value something waits for nests:                                                     OK (0.25s)
+    digits
+      a power's size is known before it is computed:                                                     OK
+      a literal's size is known before it is written out:                                                OK
+      an exponential's size is known before its series is summed:                                        OK
+      a result that grows past the limit is refused:                                                     OK
+      raising the limit lets the number be written:                                                      OK
+    memory
+      a heap overflow is an error, and the session goes on:                                              OK
+    time
+      an input past the time limit stops:                                                                OK (1.00s)
+      off by default:                                                                                    OK
+    constant memory
+      a lazy list consumed by length:                                                                    OK
+      a strict left fold over a large range:                                                             OK
+      a fold whose function is written inside another:                                                   OK
+      a loop with an accumulator:                                                                        OK
+      an endless loop stops at steps, not at memory:                                                     OK
+      a state vector carried through a loop:                                                             OK
+      a quantity with a unit carried through a loop:                                                     OK
+      the exact logistic map, at working precision after its first steps:                                OK
+      a loop whose condition carries draws, each sample stopping at its own step:                        OK
+      the margin is tight enough to see growth: a list kept whole overflows it:                          OK
+      foldl stays lazy in its accumulator; foldl' evaluates it:                                          OK
+      seq evaluates to a value and every component; a failing component fails only where used:           OK
+  type annotations
+    a signature may come before its definition, in a later input:                                        OK
+    a signature before or after its definition; :type and :ls print it:                                  OK
+    the scratch lists a signature; :add stores it; :forget drops it:                                     OK (0.02s)
+    a signature narrows: uses see it, an unsigned name of the same hash does not:                        OK
+    a signature more general than its definition is refused, at the signature:                           OK
+    an unknown type, a signature without a definition, two signatures:                                   OK
+    a redefinition is checked against the stored signature, unless the input gives one:                  OK
+    an upgrade a dependent's signature would not hold of leaves it on its version:                       OK
+    :rename of a namespace re-hashes its type, and the signature follows:                                OK
+    signatures over tuples, lists and declared types:                                                    OK
+    a cycle's member may be signed:                                                                      OK
+    a signature in a namespace block; :rename moves it, :alias does not copy it:                         OK
+    variables are written back with plain names, unless the type prints that unit:                       OK
+    :export and :load round-trip a signature:                                                            OK
+    a signature survives a reload; :unname writes it off:                                                OK (0.09s)
+    :edit --file adds and removes a signature:                                                           OK (0.05s)
+    highlighting: :: plain, the type after it as a type; completion offers types:                        OK
+    :edit of a type moves the signatures that name it, as it moves their definitions:                    OK (0.02s)
+    ascription: (e :: type) narrows the expression's type:                                               OK
+    ascription never widens: (1 :: forall a. a) is 1, of type Num:                                       OK
+    an ascription narrows the node it is written on, wherever it is:                                     OK
+    an ascription that does not unify is refused at the ascription:                                      OK
+    ascriptions inside definitions check, in a cycle too; :view shows the plain expression:              OK
+  forall
+    a variable must be bound: an unbound name is unknown:                                                OK
+    binders: the unicode spelling, and what a binder may not be:                                         OK
+    a sized binder is that many axes: Vec 3 is accepted, Vec 2 refused:                                  OK (0.02s)
+    a binder named like a unit shadows it within its type only:                                          OK
+    a signature's variables scope over its body's ascriptions:                                           OK
+    :type, :ls, :edit and :export print forall; :view shows the term:                                    OK
+    :ls : type queries stay implicit: unknown lowercase names are variables:                             OK
+    a sig line writes forall and reads back across a reload:                                             OK (0.06s)
+  dimension syntax
+    a printed dimension reads back as itself, in both spellings:                                         OK (0.04s)
+      +++ OK, passed 200 tests:
+      66.0% a power above one
+      45.5% a variable
+      24.0% several factors below
+      23.0% only negative powers
+      20.5% dimensionless
+    the written forms: powers, grouping, left to right, 1, units:                                        OK
+    a dimension standing alone prints without parentheses:                                               OK
+    a forall-bound name is a variable, any other a unit:                                                 OK
+    juxtaposition and @ are refused in a dimension:                                                      OK
+    brackets are shapes only:                                                                            OK
+    a point or chart takes a frame:                                                                      OK
+    an error names variables as :type does, never as a unit:                                             OK
+    :type's output reads back as a signature equal to itself:                                            OK (0.02s)
+  internal units and public amount arithmetic
+    Core arithmetic rejects internal units:                                                              OK
+    internal scale constructs amounts and unit wraps a scalar:                                           OK
+    generalised multiplication takes scalar times tensor:                                                OK
+    internal unit types still encode and decode:                                                         OK
+    a role is neither a kind nor a type: their encodings are refused:                                    OK
+  units are syntax
+    implicit one at multiplication and division:                                                         OK
+    unit syntax does not escape as a value:                                                              OK
+    quantity grouping is determined before implicit one:                                                 OK
+    aliases and shadowing distinguish units from amounts:                                                OK
+    unit contexts include declarations, suffixes, to and chart steps:                                    OK
+    charts remain first class and cannot enter arithmetic:                                               OK
+    display conversions remain unit syntax:                                                              OK
+    compound amounts print and read back:                                                                OK
+    implicit one preserves uncertainty and chart axes:                                                   OK
+    every library definition prints as source that reads back to its hash:                               OK (0.40s)
+    a case that more text follows prints in parentheses and reads back:                                  OK
+  spaces and frames (design §3.10, part F)
+    pointAt places an amount on a chart from its origin along its axes:                                  OK (0.01s)
+    shared chart configurations cancel before uncertainty arithmetic:                                    OK (0.01s)
+    a chart whose step may be zero is refused by name:                                                   OK (0.02s)
+    a negative step reverses a chart's direction:                                                        OK
+    restricted frame types print signatures that preserve their constraints:                             OK (0.07s)
+    F1: kinds; a binder names its frame's space:                                                         OK
+    F2: spaces are declared and nominal; a chart names its space:                                        OK
+    F3: what a chart declaration says decides whether it mints a frame:                                  OK
+    F3: two bodies are two declarations; what they share is a function:                                  OK (0.03s)
+    F4: Point, Chart, Diff and Axes; Diff reduces once the space is known:                               OK
+    F5: the primitives over frames; another frame is reported as one:                                    OK
+    F6: a point holds its coordinates on its frame, the step applied:                                    OK
+    F7: a chart with parameters is converted from a named configuration:                                 OK (0.04s)
+    F7: the three subtractions:                                                                          OK (0.03s)
+    F8: any chart after a literal writes a point; one with parameters unapplied is refused:              OK
+    F9: printing and encoding:                                                                           OK
+    F10: a chart's clauses, to as the one conversion, on:                                                OK
+    F10: conversions and on read back to their hashes:                                                   OK (0.04s)
+    F7: with no type to say so, a frame with parameters is refused when converting:                      OK
+  amount arithmetic
+    generic multiplication retains tensor polymorphism:                                                  OK
+    arithmetic types read back as signatures:                                                            OK
+    implicit amounts survive edit, export and reload:                                                    OK (0.08s)
+  astro (design §7.7)
+    constant sets
+      wgs84: TR8350.2 Table 3.1, and J2 from the EGM96 C20:                                              OK
+      iers2010: TN36 Tables 1.1 and 1.2, with their uncertainties:                                       OK
+      iau2015: Resolution B3's nominal values, exact:                                                    OK
+      de440: Park et al. (2021) Table 2 and the header's radii and J2:                                   OK
+      a set is chosen with a use, and two sets offering earth are ambiguous:                             OK
+    relations
+      period, mean motion, energy, momentum, circular and escape speed:                                  OK
+    elements and states
+      Vallado Ex 2-5: RV2COE:                                                                            OK
+      Vallado Ex 2-6: COE2RV, with the 2019 errata:                                                      OK (0.01s)
+      Curtis Ex 4.3: rv to elements, retrograde:                                                         OK
+      Curtis Ex 4.7: elements to rv, hyperbolic:                                                         OK
+      round trips: elements to a state and back, for each case:                                          OK (0.10s)
+      a circular orbit's state from toState is too uncertain to call circular:                           OK
+      the circular and equatorial cases keep the record's shape:                                         OK
+      a case too uncertain to decide is an error:                                                        OK
+      a measured state carries its bounds into the elements:                                             OK
+    anomalies and Kepler solvers
+      Vallado Ex 2-1: elliptic Kepler, E = 220.512074767522°:                                            OK
+      Vallado Ex 2-3: hyperbolic Kepler, H = 1.601376144 rad:                                            OK (0.02s)
+      Vallado Ex 2-2: Barker's equation, B = 0.817751:                                                   OK
+      Curtis Ex 3.4: parabolic, θ = 144.75° from Mp = 6.7737:                                            OK
+      Curtis Ex 3.1 and 3.2: true, eccentric and mean anomalies:                                         OK
+      Curtis Ex 3.5: hyperbolic anomalies at θ = 100°:                                                   OK
+      round trips through the mean anomaly, each conic:                                                  OK (0.02s)
+      a solver's result is rigorous, and carries its inputs' σ to first order:                           OK (0.02s)
+    propagation and J2
+      Vallado Ex 2-4: Kepler's problem over 40 min:                                                      OK (0.03s)
+      Curtis Ex 3.5: a hyperbola 3 h on, θ = 107.78°, r = 163180 km:                                     OK (0.03s)
+      Curtis Ex 4.8: J2 node regression and perigee advance:                                             OK
+      Curtis Ex 4.9 and Vallado Ex 11-2: sun-synchronous inclinations:                                   OK
+      Curtis Ex 4.11: secular J2 propagation over 4 days:                                                OK (0.05s)
+    manoeuvres
+      Vallado Ex 6-1: Hohmann, 191.34411 km to 35781.34857 km:                                           OK
+      Vallado Ex 6-2: bi-elliptic through 80 ER to 60 ER:                                                OK
+      Curtis Ex 6.3: bi-elliptic against Hohmann:                                                        OK
+      Vallado Ex 6-4: inclination only, circular and elliptic:                                           OK
+      Vallado Ex 6-5 and 6-6: node, and node with inclination:                                           OK
+      Vallado Ex 6-7: combined plane change with a Hohmann transfer:                                     OK
+      Vallado Ex 6-8: phasing within one orbit, 1 and 2 revolutions:                                     OK
+  working precision (design §3.2.8)
+    fixed-point series agree with the exact-rational ones within both bounds
+      decimalExponent:                                                                                   OK
+        +++ OK, passed 100 tests.
+      sqrt:                                                                                              OK
+        +++ OK, passed 100 tests.
+      exp:                                                                                               OK
+        +++ OK, passed 100 tests.
+      log:                                                                                               OK (0.04s)
+        +++ OK, passed 100 tests.
+      atan:                                                                                              OK
+        +++ OK, passed 100 tests.
+      sin:                                                                                               OK
+        +++ OK, passed 100 tests.
+      cos:                                                                                               OK (0.04s)
+        +++ OK, passed 100 tests.
+      sin, small:                                                                                        OK
+        +++ OK, passed 100 tests.
+      sinh:                                                                                              OK
+        +++ OK, passed 100 tests.
+      cosh:                                                                                              OK
+        +++ OK, passed 100 tests.
+      tan:                                                                                               OK (0.02s)
+        +++ OK, passed 100 tests.
+      tanh:                                                                                              OK
+        +++ OK, passed 100 tests.
+      tan′:                                                                                              OK (0.02s)
+        +++ OK, passed 100 tests.
+      tanh′:                                                                                             OK
+        +++ OK, passed 100 tests.
+      π:                                                                                                 OK (0.05s)
+        +++ OK, passed 100 tests.
+      sqrt is from below:                                                                                OK
+        +++ OK, passed 100 tests.
+      a long integer encodes as it did, byte for byte:                                                   OK
+        +++ OK, passed 100 tests.
+    exact while small
+      1/3 + 1/6 is exactly 1/2, and so prints:                                                           OK
+      a short exact result stays exact:                                                                  OK
+        +++ OK, passed 100 tests.
+      a long exact result is rounded into a bound that encloses it:                                      OK (0.02s)
+        +++ OK, passed 100 tests.
+      an exact power that grows long runs at working precision:                                          OK
+      a sum's operands in either order round to one unknown:                                             OK
+      linear operations on short forms are exact: x - x and (x + c) - x:                                 OK
+      a long value cancels with itself, and its rounding is a bound:                                     OK
+    linear results held to the length limit
+      x - x is exactly 0 however long x is:                                                              OK
+      (x + c) - x is c when the midpoints are short, an enclosure of c when not:                         OK
+      a long sum encloses the exact one, nudge by nudge:                                                 OK (0.02s)
+        +++ OK, passed 100 tests.
+      a long scaling encloses the exact one:                                                             OK
+        +++ OK, passed 100 tests.
+      a statistical coefficient is shortened, never made a bound:                                        OK
+      the rounding is content-addressed: a + b and b + a are one unknown:                                OK
+      the harmonic sum on a form, 30 000 terms, at working precision:                                    OK (0.07s)
+      the harmonic sum in the language, 30 000 terms, in a moment:                                       OK (0.31s)
+      a series of exact terms, Σ xᵏ/k to 5000 terms, in a moment:                                        OK (0.10s)
+    the exact logistic map runs at working precision
+      its enclosure holds the exact value for eighteen steps:                                            OK (0.21s)
+      its rationals stay short and its nudges few for a hundred steps:                                   OK (0.04s)
+      a hundred steps in the language finish in a moment:                                                OK (0.03s)
+    every built-in at precisions 20, 50 and 200 agrees with bc
+      sqrt: s2 = sqrt(2):                                                                                OK
+      sqrt of a fraction: sqrt(1/3):                                                                     OK
+      sqrt of a tiny number: sqrt(10) · 10^-50000:                                                       OK (0.12s)
+      exp: e(1/3):                                                                                       OK
+      exp of a large number: e(100):                                                                     OK
+      exp of a tiny number: e(10^-30):                                                                   OK
+      log: l(1/3):                                                                                       OK
+      log of a small number: -999 l(10):                                                                 OK
+      log of a very small number: -99999 l(10):                                                          OK (0.02s)
+      sin: s(1/3):                                                                                       OK
+      cos: c(1/3):                                                                                       OK
+      tan: s(1/3)/c(1/3):                                                                                OK
+      tan near a pole: s(1.5)/c(1.5):                                                                    OK
+      sin of a large angle: s(1000):                                                                     OK
+      sin of a very large angle: s(10^10):                                                               OK
+      asin: a(x/sqrt(1-x^2)) at 1/3:                                                                     OK
+      acos: pi/2 - asin(1/3):                                                                            OK
+      atan: a(1/3):                                                                                      OK
+      atan of a large number: a(100):                                                                    OK
+      atan of a tiny number: a(10^-30):                                                                  OK
+      atan2: a(7/3):                                                                                     OK
+      sinh: (e(x) - e(-x))/2 at 1/3:                                                                     OK
+      sinh of a tiny number, 10^-20:                                                                     OK
+      cosh: (e(x) + e(-x))/2 at 1/3:                                                                     OK
+      cosh of a large number, 50:                                                                        OK
+      tanh: sinh/cosh at 1/3:                                                                            OK
+      tanh near one: sinh/cosh at 5:                                                                     OK
+      pi: 4 a(1):                                                                                        OK
+      +, - and abs: 2 - s2:                                                                              OK
+      *: s2 s3:                                                                                          OK
+      /: s2/s3:                                                                                          OK
+      ^: s2^7:                                                                                           OK
+      ^ of an exact fraction stays exact:                                                                OK
+      + of exact fractions stays exact:                                                                  OK
+      norm: sqrt(2 + 3 + 1/49):                                                                          OK
+      dot: s2/7 + s3/3:                                                                                  OK
+      outer:                                                                                             OK
+      cross:                                                                                             OK
+      wedge:                                                                                             OK
+      inverse: the adjugate over the determinant:                                                        OK
+      det: by cofactors:                                                                                 OK
+      cholesky: sqrt(s3 - 1/36):                                                                         OK
+      expm of a rotation: c(1/3), s(1/3):                                                                OK
+      expm: the 2 × 2 closed form:                                                                       OK
+      floor, ceil and round:                                                                             OK
+      mid, sd and bound:                                                                                 OK
+      covariance:                                                                                        OK
+    every built-in's rationals are within the working precision
+      sqrt:                                                                                              OK
+      exp:                                                                                               OK
+      log:                                                                                               OK
+      sin:                                                                                               OK
+      cos:                                                                                               OK
+      tan:                                                                                               OK
+      asin:                                                                                              OK
+      acos:                                                                                              OK
+      atan:                                                                                              OK
+      sinh:                                                                                              OK
+      cosh:                                                                                              OK
+      tanh:                                                                                              OK
+      abs:                                                                                               OK
+      recip:                                                                                             OK
+      ^ 7:                                                                                               OK
+      ^ -3:                                                                                              OK
+      pi:                                                                                                OK
+      +:                                                                                                 OK
+      *:                                                                                                 OK
+      /:                                                                                                 OK (0.01s)
+      atan2:                                                                                             OK
+      det:                                                                                               OK
+      inverse:                                                                                           OK (0.01s)
+      expm:                                                                                              OK (1.36s)
+      cholesky:                                                                                          OK (0.01s)
+    the second-order estimate follows the true curvature
+      atan2 near 90°: the angle is nearly linear, 0.1%:                                                  OK
+      atan2 at 45° with σ a thirtieth of the radius: 2.4%, marked:                                       OK
+      atan far from zero: 0.2%:                                                                          OK
+      sin near zero and cos near its zero: 0.02% and 0.14%:                                              OK
+      tan near a pole: 2.8%, marked:                                                                     OK
+      tan near zero: nearly a line:                                                                      OK
+      tanh at 5: 20%, marked, where the quotient said 78000%:                                            OK
+      tanh far out is ±1 to every digit, unmarked, at once:                                              OK (0.01s)
+      asin near one: 5%, marked, lifted itself (it read 12%, then 31% as a sum):                         OK
+      tan refuses an enclosure that reaches a pole:                                                      OK
+      a σ that reaches a pole is unbounded:                                                              OK
+      a near-polar orbit's elements from a ±σ state are first order:                                     OK
+    the non-linear mark is re-judged at each operation
+      a product of two zero-mean ±σ values is marked:                                                    OK
+      that product in a sum with a far larger σ is not marked:                                           OK
+      a sum where the product is not dwarfed stays marked, by its size:                                  OK
+      a term is never dropped by a slope of zero or a cancelled σ:                                       OK
+      a carried term is never dropped by a large midpoint:                                               OK
+      a product of two zero-mean values in a sum marks iff σa σb / σc passes 1%:                         OK
+        +++ OK, passed 100 tests.
+      fromState with a 0 ±σ 1 component: el.e is first order:                                            OK
+
+4 out of 1024 tests failed (17.55s)
+Test suite metron-test: FAIL
+Test suite logged to:
+/tmp/metron-review/./dist-newstyle/build/x86_64-linux/ghc-9.12.3/metron-0.1.0.0/t/metron-test/test/metron-0.1.0.0-metron-test.log
+0 of 1 test suites (0 of 1 test cases) passed.
+Error: [Cabal-7125]
+Tests failed for test:metron-test from metron-0.1.0.0.
+

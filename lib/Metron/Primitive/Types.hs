@@ -81,6 +81,7 @@ primScheme name = case name of
   "acos" -> mono (TFun numT angleT)
   "atan" -> mono (TFun numT angleT)
   "sinh" -> num1
+  "asinh" -> num1
   "cosh" -> num1
   "tanh" -> num1
   "exp" -> num1
@@ -158,7 +159,7 @@ primScheme name = case name of
   -- Internal unit construction from a scalar amount.
   "unit" -> Just (Forall [dv] (TFun (numD d) (TUnit d)))
   -- The wedge product is the general binary product of vectors; the 3D
-  -- cross product is `star (wedge a b)` and lives in the prelude. Both
+  -- cross product equals `star (wedge a b)` and lives in the prelude. Both
   -- vectors and the matrix are along one axis set (design §3.9).
   "wedge" ->
     Just

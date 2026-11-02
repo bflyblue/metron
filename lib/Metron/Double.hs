@@ -20,20 +20,21 @@ its error, chosen by @:set samples@:
   operands' bounds through the operation over the whole interval they
   allow. A library function adds 'libmUlps' units in the last place,
   since GHC takes @sin@, @exp@ and the rest from the C library, which does
-  not round them correctly. The bound is computed in floating point and
-  then widened by a relative @2⁻⁴⁸@, more than the few roundings of its
-  own computation can lose.
+  need not round them correctly. Basic arithmetic propagates bounds in
+  exact rationals before an outward conversion. Other bounds use range-safe
+  floating formulas and widening; libm guarantees remain platform-dependent.
 
 * __N > 0__, N copies computed in lockstep with random rounding: each
   operation on each copy rounds the exact result down or up to a
   neighbouring double with equal probability (the CESTAC method behind
   CADNA). The direction of the exact result from the nearest double comes
-  from an error-free transformation (TwoSum; a fused multiply-add for
-  products, quotients and square roots); a library function's copy moves
+  from TwoSum or an FMA residual, with an exact rational fallback when
+  that residual is zero; a library function's copy moves
   one unit in the last place up or down. The choices are a hash of the
   seed, the copy, the operation and its operands, so the same input gives
   the same estimate whatever order lazy values are forced in. The
-  estimate is the copies' spread scaled by Student's t at 95 %: @τ·s/√N@.
+  sample-mean interval has width @τ·s/√N@ plus rounding of its centre.
+  Nominal accuracy additionally includes the displacement to that mean.
   @:set rounding nearest@ rounds each copy to nearest instead.
 
 With copies, a declared standard uncertainty is drawn (Monte Carlo, the
@@ -62,6 +63,7 @@ module Metron.Double (
   showSampled,
 ) where
 
+import Control.Monad (foldM)
 import Data.Bits (shiftR, testBit, xor)
 import Data.ByteString qualified as BS
 import Data.IntSet qualified as IntSet
@@ -86,6 +88,7 @@ import Metron.Remark (Cause (..))
 import Metron.Scalar (
   Backend (..),
   Decision (..),
+  Members (..),
   Outcomes (..),
   Own (..),
   Rel (..),
@@ -274,16 +277,51 @@ sumSide a b =
    in (s, if finite s then compare ((a - (s - bb)) + (b - bb)) 0 else EQ)
 productSide a b =
   let p = a * b
-   in (p, if finite p then compare (fmaDouble a b (negate p)) 0 else EQ)
+      residual = fmaDouble a b (negate p)
+   in ( p
+      , if finite p
+          then
+            if residual /= 0
+              then compare residual 0
+              else compare (toRational a * toRational b) (toRational p)
+          else EQ
+      )
 quotientSide a b =
   let q = a / b
       r = fmaDouble (negate q) b a
-   in (q, if finite q && b /= 0 then compare (r * signum b) 0 else EQ)
+   in ( q
+      , if finite q && finite a && finite b && b /= 0
+          then
+            if r /= 0
+              then compare (r * signum b) 0
+              else compare (toRational a / toRational b) (toRational q)
+          else EQ
+      )
 
 sqrtSide :: Double -> (Double, Ordering)
 sqrtSide a =
   let r = sqrt a
-   in (r, if finite r then compare (fmaDouble (negate r) r a) 0 else EQ)
+      residual = fmaDouble (negate r) r a
+   in ( r
+      , if finite r
+          then
+            if residual /= 0
+              then compare residual 0
+              else compare (toRational a) (toRational r * toRational r)
+          else EQ
+      )
+
+-- | Convert a nonnegative exact bound outward, including subnormal results.
+outward :: Rational -> Double
+outward r =
+  let d = fromRational r
+   in if finite d && toRational d < r then nextUpDouble d else d
+
+-- | Exact propagation avoids overflow/underflow in intermediate bounds.
+propagate :: ([Rational] -> Rational) -> [Double] -> Double
+propagate f xs
+  | all finite xs = outward (f (map toRational xs))
+  | otherwise = 1 / 0
 
 -- | The copies of a number, @n@ of them; a number with a bound is its value @n@ times.
 copiesOf :: Int -> Dbl -> VU.Vector Double
@@ -391,7 +429,14 @@ prefixOp f as = f <> " " <> T.unwords (map paren as)
   paren t = if T.any (== '-') t then "(" <> t <> ")" else t
 
 addD, subD, mulD :: Settings -> Dbl -> Dbl -> Dbl
-addD s = binary s 1 (infixOp "+") sumSide (\_ _ _ -> True) (\_ ea _ eb _ -> ea + eb)
+addD s =
+  binary
+    s
+    1
+    (infixOp "+")
+    sumSide
+    (\_ _ _ -> True)
+    (\_ ea _ eb _ -> propagate sum [ea, eb])
 subD s =
   binary
     s
@@ -399,7 +444,7 @@ subD s =
     (infixOp "-")
     (\a b -> sumSide a (negate b))
     (\_ _ _ -> True)
-    (\_ ea _ eb _ -> ea + eb)
+    (\_ ea _ eb _ -> propagate sum [ea, eb])
 mulD s =
   binary
     s
@@ -407,7 +452,11 @@ mulD s =
     (infixOp "*")
     productSide
     (\a b z -> abs z >= minNormal || a == 0 || b == 0)
-    (\a ea b eb _ -> abs a * eb + abs b * ea + ea * eb)
+    ( \a ea b eb _ ->
+        propagate
+          (\case [x, ex, y, ey] -> abs x * ey + abs y * ex + ex * ey; _ -> 0)
+          [a, ea, b, eb]
+    )
 
 {- | @x / y@: the quotient of the intervals, unbounded when the divisor's
 reaches zero.
@@ -424,7 +473,13 @@ divD s =
  where
   bound a ea b eb _
     | ea == 0 && eb == 0 = 0
-    | abs b > eb = (ea * abs b + abs a * eb) / (abs b * (abs b - eb))
+    | abs b > eb =
+        propagate
+          ( \case
+              [x, ex, y, ey] -> (ex * abs y + abs x * ey) / (abs y * (abs y - ey))
+              _ -> 0
+          )
+          [a, ea, b, eb]
     | otherwise = 1 / 0
 
 -- | Exact operations: the value and every copy changed alike, the bound kept.
@@ -589,7 +644,9 @@ atan2D s y0 x0 =
     | rmin <= 0 = 2 * pi
     | otherwise = min (2 * pi) ((ex + ey) / rmin) + ulpsOf (libmUlps "atan2") z
    where
-    rmin = sqrt (x * x + y * y) * (1 - 4 * u) - (ex + ey)
+    -- The distance is at least max(|x|,|y|); this weaker lower bound
+    -- avoids squares and square roots at extreme exponents.
+    rmin = nextDownDouble (max (abs x) (abs y) - up (ex + ey))
 
 {- | Rounding to a whole number, as Haskell's @floor@, @ceiling@ and
 @round@ (to even at a half) do; not a finite number stays as it is. Its
@@ -638,7 +695,12 @@ fmaD s a b c =
     (prefixOp "fma")
     (\case [x, y, z] -> fmaDouble x y z; _ -> 0 / 0)
     ( \case
-        [(x, ex), (y, ey), (_, ez)] -> \z -> abs x * ey + abs y * ex + ex * ey + ez + u * abs z
+        [(x, ex), (y, ey), (_, ez)] -> \z ->
+          propagate
+            (\case [a', ea, b', eb, ec] -> abs a' * eb + abs b' * ea + ea * eb + ec; _ -> 0)
+            [x, ex, y, ey, ez]
+            + u * abs z
+            + eta
         _ -> const (0 / 0)
     )
     ( \cn -> \case
@@ -763,27 +825,43 @@ copyStatistic name f s x = case x.estimate of
     | s.samples > 0 -> Right (exactDbl (f (VU.singleton x.value)))
     | otherwise -> Left (Domain (needsSamples name))
 
-{- | The copies' mean, taken about the first copy, @c₀ + Σ(cᵢ − c₀)/N@:
-copies that agree have their common value as their mean, exactly, where
-a plain sum of 10⁴ of them rounds in its last digits and makes a spread
-of its own.
+{- | A scaled, compensated mean. Constant samples retain their common
+value exactly; normalising first prevents overflow in sums/differences.
 -}
 meanOf :: VU.Vector Double -> Double
 meanOf cs = case VU.uncons cs of
   Just (c0, _)
-    | finite c0 -> c0 + VU.sum (VU.map (subtract c0) cs) / n
+    | VU.all (== c0) cs -> c0
+    | VU.all finite cs ->
+        scale * max (-1) (min 1 (compensated (VU.map (/ scale) cs) / n))
   _ -> VU.sum cs / n
  where
   n = fromIntegral (VU.length cs)
+  scale = VU.foldl' (\a b -> max a (abs b)) 0 cs
+
+-- | Neumaier summation, on scaled finite samples.
+compensated :: VU.Vector Double -> Double
+compensated xs = let (total, correction) = VU.foldl' step (0, 0) xs in total + correction
+ where
+  step (total, correction) x =
+    let t = total + x
+        e = if abs total >= abs x then (total - t) + x else (x - t) + total
+     in (t, correction + e)
 
 deviationOf :: VU.Vector Double -> Double
 deviationOf cs
   | n < 2 = 0
+  | scale == 0 = 0
+  | not (VU.all finite cs) = 0 / 0
   | otherwise =
-      sqrt (VU.sum (VU.map (\c -> (c - m) * (c - m)) cs) / fromIntegral (n - 1))
+      scale
+        * sqrt
+          (compensated (VU.map (\c -> (c - m) * (c - m)) scaled) / fromIntegral (n - 1))
  where
   n = VU.length cs
-  m = meanOf cs
+  scale = VU.foldl' (\a b -> max a (abs b)) 0 cs
+  scaled = VU.map (/ scale) cs
+  m = meanOf scaled
 
 -- Comparisons -------------------------------------------------------------------------
 
@@ -851,8 +929,8 @@ studentT k = case drop (k - 1) table of
     , 2.042
     ]
 
-{- | The error estimate: the bound, or the copies' spread scaled by
-Student's t, @τ·s/√N@.
+{- | The running bound, or a conditional nominal-accuracy diagnostic:
+displacement to the sample mean plus its Student interval and rounding.
 -}
 estimateOf :: Dbl -> Double
 estimateOf x = case x.estimate of
@@ -860,11 +938,20 @@ estimateOf x = case x.estimate of
   Copies _ cs
     | n < 2 -> 0
     | otherwise ->
-        studentT (n - 1) * sqrt (var / fromIntegral (n - 1)) / sqrt (fromIntegral n)
+        abs (x.value - meanOf cs) + meanError cs
    where
     n = VU.length cs
-    m = meanOf cs
-    var = VU.sum (VU.map (\c -> (c - m) * (c - m)) cs)
+
+meanError :: VU.Vector Double -> Double
+meanError cs
+  | n < 2 = 0
+  | not (VU.all finite cs) = 0 / 0
+  | otherwise =
+      (studentT (n - 1) / sqrt (fromIntegral n)) * deviationOf cs + centreError
+ where
+  n = VU.length cs
+  exactMean = VU.foldl' (\a x -> a + toRational x) 0 cs / fromIntegral n
+  centreError = outward (abs (toRational (meanOf cs) - exactMean))
 
 -- | The most significant decimal digits a double has, @log₁₀ 2⁵³@.
 maxDigits :: Double
@@ -976,9 +1063,21 @@ sampleNote layout xs = case [VU.length cs | x <- xs, Copies Drawn cs <- [x.estim
           <> T.pack (show n)
           <> " samples"
       )
-  [] -> Nothing
+  [] -> case [cs | x <- xs, estimateOf x > 0, Copies RoundingOnly cs <- [x.estimate]] of
+    cs : _ ->
+      Just
+        ( "stochastic: mean "
+            <> layout (map meanInterval xs)
+            <> ", "
+            <> T.pack (show (VU.length cs))
+            <> " samples"
+        )
+    [] -> Nothing
  where
   (means, deviations) = unzip (map statistics xs)
+  meanInterval x = case x.estimate of
+    Copies _ cs -> showDouble (meanOf cs) <> " ± " <> showEstimate False (meanError cs)
+    ErrorBound _ -> showDouble x.value
 
 {- | The mean and deviation of a group of samples, laid out as its numbers
 are: what an outcome of a mixture shows of each number it holds (design
@@ -1048,30 +1147,33 @@ decade x
   k = floor (logBase 10 x)
   exact = toRational x -------------------------------------------------------------------------
 
-{- | The determinant by Gaussian elimination with partial pivoting on the
-values; a zero pivot makes it zero.
+{- | The determinant by the division-free Berkowitz recurrence. Each copy
+evaluates the same polynomial; zero nominal entries never erase samples.
 -}
 determinantD :: Settings -> [[Dbl]] -> Dbl
-determinantD s = go (exactDbl 1)
+determinantD _ [[x]] = x
+determinantD s rows = if even (length rows) then result else exactly1 negate result
  where
-  go acc = \case
-    [] -> acc
-    rows ->
-      case pivotOf rows of
-        Nothing -> exactDbl 0
-        Just (k, prow) ->
-          let others = [r | (i, r) <- zip [0 :: Int ..] rows, i /= k]
-              p = headOr prow
-              sign = if even k then id else negD
-              reduced =
-                [ zipWith
-                    (\a b -> subD s a (mulD s (divD s (headOr r) p) b))
-                    (drop 1 r)
-                    (drop 1 prow)
-                | r <- others
-                ]
-           in go (sign (mulD s acc p)) reduced
-  negD = exactly1 negate
+  result = last (coefficients rows)
+  -- Berkowitz: coefficients of det(tI-A), using only + and *.
+  -- No nominal pivot decision can erase a bound or a sample.
+  coefficients [] = [exactDbl 1]
+  coefficients (r : rs) =
+    let lower = map (drop 1) rs
+        column = map headOr rs
+        powers = take (length rs) (iterate (\v -> map (`dot` v) lower) column)
+        toeplitz =
+          exactDbl 1
+            : exactly1 negate (headOr r)
+            : map (exactly1 negate . dot (drop 1 r)) powers
+        previous = coefficients lower
+     in [ foldl'
+            (addD s)
+            (exactDbl 0)
+            [mulD s (toeplitz !! (k - j)) c | (j, c) <- zip [0 ..] previous, j <= k]
+        | k <- [0 .. length r]
+        ]
+  dot a b = foldl' (addD s) (exactDbl 0) (zipWith (mulD s) a b)
 
 headOr :: [Dbl] -> Dbl
 headOr = \case
@@ -1086,11 +1188,34 @@ pivotOf rows = case [(abs (headOr r).value, (i, r)) | (i, r) <- zip [0 ..] rows]
     let (best, choice) = foldl1 (\a b -> if fst b > fst a then b else a) cs
      in if best == 0 || isNaN best then Nothing else Just choice
 
-{- | The inverse by Gauss–Jordan elimination with partial pivoting on the
-values. A zero pivot divides by zero, as IEEE arithmetic does.
+{- | Gauss–Jordan inversion, pivoting separately on the nominal values and
+each copy. Singular copies retain their IEEE nonfinite results.
 -}
 invertD :: Settings -> Int -> [[Dbl]] -> [[Dbl]]
-invertD s n a = map (drop n) (eliminate 0 augmented)
+invertD s n a
+  | Just count <- copyCount (concat a) =
+      let nominal = invertD s n (map (map (\x -> x{estimate = ErrorBound 0})) a)
+          sample i =
+            let one x =
+                  let v = copiesOf count x VU.! i
+                   in x{value = v, estimate = Copies (spreadOf x) (VU.singleton v)}
+                settings = s{samples = 1, copies = Range (globalOf s.copies i) 1}
+             in invertRows settings n (map (map one) a)
+          samples = map (concat . sample) [0 .. count - 1]
+          joined =
+            [ x
+                { estimate =
+                    Copies
+                      (foldMap spreadOf (concat a))
+                      (VU.fromList [copiesOf 1 (row !! k) VU.! 0 | row <- samples])
+                }
+            | (k, x) <- zip [0 ..] (concat nominal)
+            ]
+       in [take n (drop (i * n) joined) | i <- [0 .. n - 1]]
+  | otherwise = invertRows s n a
+
+invertRows :: Settings -> Int -> [[Dbl]] -> [[Dbl]]
+invertRows s n a = map (drop n) (eliminate 0 augmented)
  where
   augmented =
     [ row ++ [exactDbl (if i == j then 1 else 0) | j <- [0 .. n - 1]]
@@ -1100,7 +1225,7 @@ invertD s n a = map (drop n) (eliminate 0 augmented)
     | c >= n = rows
     | otherwise =
         let (above, rest) = splitAt c rows
-            k = maybe 0 fst (pivotOf (map (drop c) rest))
+            k = maybe 0 fst (pivotOf (map (map pivotValue . drop c) rest))
             prow = rowAt rest k
             others = above ++ [r | (i, r) <- zip [0 ..] rest, i /= k]
             p = entryAt prow c
@@ -1108,6 +1233,9 @@ invertD s n a = map (drop n) (eliminate 0 augmented)
             clear r = let f = entryAt r c in zipWith (\x y -> subD s x (mulD s f y)) r prow'
             (before, after) = splitAt c (map clear others)
          in eliminate (c + 1) (before ++ [prow'] ++ after)
+  pivotValue x = case x.estimate of
+    Copies _ cs | VU.length cs == 1 -> x{value = cs VU.! 0}
+    _ -> x
 
 -- | The @i@-th element, or the default past the end (unreachable for a square matrix).
 atOr :: a -> [a] -> Int -> a
@@ -1156,33 +1284,45 @@ matrixExpD s n a = atOr series (iterate square series) halvings
       )
   square m = product' m m
 
-{- | The lower Cholesky factor, @L Lᵀ = A@, of a matrix whose entries are
-symmetric in value. A negative pivot gives a NaN, as @sqrt@ does.
+{- | The lower Cholesky factor, @L Lᵀ = A@. Symmetry and positive pivots
+must hold nominally and in every copy; invalid matrices are refused.
 -}
 choleskyD :: Settings -> Text -> [[Dbl]] -> Either ArithError [[Dbl]]
 choleskyD s what a
   | or
-      [ (entryAt (rowAt a i) j).value /= (entryAt (rowAt a j) i).value
+      [ not (same (entryAt (rowAt a i) j) (entryAt (rowAt a j) i))
       | i <- [0 .. n - 1]
       , j <- [i + 1 .. n - 1]
       ] =
       Left (Domain what)
-  | otherwise = Right (foldl' row [] [0 .. n - 1])
+  | otherwise = foldM row [] [0 .. n - 1]
  where
   n = length a
-  row done i =
-    let entry j
-          | j > i = exactDbl 0
-          | j == i =
-              sqrtD s (subD s (entryAt (rowAt a i) i) (dotTo j (rowAt cur i) (rowAt cur i)))
+  same x y =
+    x.value == y.value
+      && maybe True (\k -> copiesOf k x == copiesOf k y) (copyCount [x, y])
+  positive x =
+    x.value > 0 && case x.estimate of
+      ErrorBound e -> x.value > e
+      Copies _ cs -> VU.all (> 0) cs
+  row done i = do
+    let entry prev j
+          | j > i = Right (prev ++ [exactDbl 0])
           | otherwise =
-              divD
-                s
-                (subD s (entryAt (rowAt a i) j) (dotTo j (rowAt cur i) (rowAt done j)))
-                (entryAt (rowAt done j) j)
-        cur = done ++ [new]
-        new = map entry [0 .. n - 1]
-     in done ++ [new]
+              let other = if j == i then prev else rowAt done j
+                  rest = subD s (entryAt (rowAt a i) j) (dotTo j prev other)
+               in if j == i
+                    then
+                      if positive rest
+                        then Right (prev ++ [sqrtD s rest])
+                        else
+                          Left
+                            ( Domain
+                                "cholesky needs a positive-definite matrix: a pivot's enclosure reaches zero or below"
+                            )
+                    else Right (prev ++ [divD s rest (entryAt (rowAt done j) j)])
+    new <- foldM entry [] [0 .. n - 1]
+    pure (done ++ [new])
   dotTo j xs ys = foldl' (addD s) (exactDbl 0) (take j (zipWith (mulD s) xs ys))
 
 -- Splitting the copies ------------------------------------------------------------------
@@ -1249,6 +1389,7 @@ instance Scalar Dbl where
   cosM = cosD
   atanM = atanD
   sinhM = sinhD
+  asinhM s = Right . libm s 23 "asinh" asinh (monotone "asinh" (const True) asinh)
   coshM = coshD
   tanhM = tanhD
   atan2M s y x = Right (atan2D s y x)

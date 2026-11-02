@@ -1,0 +1,97 @@
+Warning: The package list for 'hackage.haskell.org' does not exist. Run 'cabal
+update' to download it.
+Resolving dependencies...
+Build profile: -w ghc-9.12.3 -O1
+In order, the following will be built (use -v for more details):
+ - metron-0.1.0.0 (lib) (first run)
+Configuring library for metron-0.1.0.0...
+Preprocessing library for metron-0.1.0.0...
+Rec {
+-- RHS size: {terms: 3,606,
+              types: 5,478,
+              coercions: 556,
+              joins: 51/94}
+evalAt_$seval1 [Occ=LoopBreaker]
+  :: forall (n :: Nat).
+     Config
+     -> RuntimeOf Magnitude
+     -> TyEnv
+     -> Site
+     -> Env Magnitude n
+     -> TTerm n
+     -> ThunkOf Magnitude
+[GblId, Arity=2, Str=<L><L>, Unf=OtherCon []]
+evalAt_$seval1
+  = \ (@(n :: Nat)) (cfg :: Config) (rt :: RuntimeOf Magnitude) ->
+      let {
+        lvl731 :: Text
+        [LclId]
+        lvl731
+              joins: 331/484}
+$srunPrim
+  :: Config
+     -> RuntimeOf Magnitude
+     -> Text
+     -> Type
+     -> [ThunkOf Magnitude]
+     -> ThunkOf Magnitude
+[GblId, Arity=5, Str=<L><L><SL><L><SL>, Unf=OtherCon []]
+$srunPrim
+  = \ (cfg :: Config)
+      (rt :: RuntimeOf Magnitude)
+      (prim :: Text)
+      (ty :: Type)
+      (args :: [ThunkOf Magnitude]) ->
+      join {
+        fail [Dmd=MC(1,L)] :: (# #) -> ThunkOf Magnitude
+        [LclId[JoinId(1)(Nothing)], Arity=1, Str=<A>, Unf=OtherCon []]
+        fail _ [Occ=Dead, OS=OneShot]
+          = case prim of wild { Text bx bx1 bx2 ->
+            case lvl361 of { Text bx3 bx4 bx5 ->
+              types: 5,449,
+              coercions: 556,
+              joins: 50/96}
+evalAt_$seval [Occ=LoopBreaker]
+  :: forall (n :: Nat).
+     Config
+     -> RuntimeOf Dbl
+     -> TyEnv
+     -> Site
+     -> Env Dbl n
+     -> TTerm n
+     -> ThunkOf Dbl
+[GblId, Arity=2, Str=<L><L>, Unf=OtherCon []]
+evalAt_$seval
+  = \ (@(n :: Nat)) (cfg :: Config) (rt :: RuntimeOf Dbl) ->
+      let {
+        lvl731 :: Text
+        [LclId]
+        lvl731
+          = case cfg of
+            { Config ds ds1 ds2 ds3 ds4 ds5 ds6 ds7 ds8 ds9 ds10 ds11 ->
+evalAt_$seval [Occ=LoopBreaker]
+  :: forall (n :: Nat).
+     Config
+     -> RuntimeOf Dbl
+     -> TyEnv
+     -> Site
+     -> Env Dbl n
+     -> TTerm n
+     -> ThunkOf Dbl
+[GblId, Arity=2, Str=<L><L>, Unf=OtherCon []] =
+    {} \r [cfg rt]
+        let {
+          lvl731 [Occ=OnceL1] :: Text
+          [LclId] =
+              {cfg} \u []
+                  case cfg of wild {
+                  Config _ [Occ=Dead]
+                         _ [Occ=Dead]
+                         _ [Occ=Dead]
+                         _ [Occ=Dead]
+                         ds4 [Occ=Once1!]
+                         _ [Occ=Dead]
+                         _ [Occ=Dead]
+                         _ [Occ=Dead]
+                         _ [Occ=Dead]
+                         _ [Occ=Dead]

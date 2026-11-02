@@ -173,7 +173,7 @@ exactWhileSmallTests =
           @?= Exact 0
         run ["let big = 1/7^300", "big + 1/3 == 1/3 + big"] @?= Right ["true"]
     , testCase "linear operations on short forms are exact: x - x and (x + c) - x" $ do
-        let x = uncertain Bound (Tagged "x" 0) (Exact (17 / 7)) (Exact (1 / 100))
+        let x = uncertain 24 Bound (Tagged "x" 0) (Exact (17 / 7)) (Exact (1 / 100))
             c = Exact (1 / 7 ^ (30 :: Int))
         subM p24 x x @?= Exact 0
         subM p24 (addM p24 x c) x @?= c
@@ -194,15 +194,15 @@ heldLinearTests =
     "linear results held to the length limit"
     [ testCase "x - x is exactly 0 however long x is" $ do
         let long = 1 / 7 ^ (300 :: Int) + 1
-            x = uncertain Bound (Tagged "x" 0) (Exact long) (Exact (1 / 100))
-            s = uncertain Stat (Tagged "s" 0) (Exact long) (Exact long)
+            x = uncertain 24 Bound (Tagged "x" 0) (Exact long) (Exact (1 / 100))
+            s = uncertain 24 Stat (Tagged "s" 0) (Exact long) (Exact long)
         subM p24 x x @?= Exact 0
         subM p24 s s @?= Exact 0
         subM p24 (addM p24 x s) (addM p24 s x) @?= Exact 0
     , testCase
         "(x + c) - x is c when the midpoints are short, an enclosure of c when not"
         $ do
-          let x = uncertain Bound (Tagged "x" 0) (Exact (17 / 7)) (Exact (1 / 100))
+          let x = uncertain 24 Bound (Tagged "x" 0) (Exact (17 / 7)) (Exact (1 / 100))
               short = 1 / 7 ^ (30 :: Int)
               long = 1 / 7 ^ (300 :: Int) + 1 / 3
               d = subM p24 (addM p24 x (Exact long)) x
@@ -213,7 +213,7 @@ heldLinearTests =
     , testProperty "a long sum encloses the exact one, nudge by nudge"
         $ forAll longRational
         $ \m -> forAll longRational $ \c -> forAll longRational $ \k ->
-          let x = uncertain Bound (Tagged "x" 0) (Exact m) (Exact c)
+          let x = uncertain 24 Bound (Tagged "x" 0) (Exact m) (Exact c)
               y = addM p24 x (Exact k)
               cy = coefficientOf (Tagged "x" 0) y
               rest = radius y - abs cy
@@ -226,13 +226,13 @@ heldLinearTests =
     , testProperty "a long scaling encloses the exact one"
         $ forAll longRational
         $ \m -> forAll shortRational $ \k ->
-          let x = uncertain Bound (Tagged "x" 0) (Exact m) (Exact (1 / 1000))
+          let x = uncertain 24 Bound (Tagged "x" 0) (Exact m) (Exact (1 / 1000))
               y = scaleM p24 (k + 1 / 7) x
               exact = (k + 1 / 7) * m
            in counterexample (show y) $ encloses y exact .&&. longest y <= p24 + 5
     , testCase "a statistical coefficient is shortened, never made a bound" $ do
         let c = 1 / 7 ^ (300 :: Int) + 1
-            s = uncertain Stat (Tagged "s" 0) (Exact 0) (Exact c)
+            s = uncertain 24 Stat (Tagged "s" 0) (Exact 0) (Exact c)
             y = addM p24 s s
         -- its midpoint is zero, so nothing at all is a bound
         boundRadius y @?= 0
@@ -252,14 +252,14 @@ heldLinearTests =
           @?= Right ["0"]
     , testCase "the rounding is content-addressed: a + b and b + a are one unknown" $ do
         let long = 1 / 7 ^ (300 :: Int) + 1
-            a = uncertain Bound (Tagged "a" 0) (Exact long) (Exact (1 / 100))
-            b = uncertain Bound (Tagged "b" 0) (Exact (1 / 3)) (Exact (1 / 100))
+            a = uncertain 24 Bound (Tagged "a" 0) (Exact long) (Exact (1 / 100))
+            b = uncertain 24 Bound (Tagged "b" 0) (Exact (1 / 3)) (Exact (1 / 100))
         addM p24 a b @?= addM p24 b a
         subM p24 (addM p24 a b) (addM p24 b a) @?= Exact 0
     , localOption (mkTimeout 3_000_000)
         $ testCase "the harmonic sum on a form, 30 000 terms, at working precision"
         $ do
-          let x = uncertain Bound (Tagged "x" 0) (Exact 0) (Exact (1 / 1000))
+          let x = uncertain 24 Bound (Tagged "x" 0) (Exact 0) (Exact (1 / 1000))
               h = foldl' (\acc k -> addM p24 acc (Exact (1 / k))) x [1 .. 30000]
           longest h <= 8 * (p24 + 4) @? show (longest h)
           -- x's nudge and one rounding: earlier roundings join the latest
@@ -768,8 +768,8 @@ sizeTests =
   third = Exact (1 / 3)
   arguments =
     [ third
-    , uncertain Bound (Tagged "b" 0) third (Exact (1 / 10 ^ (12 :: Int)))
-    , uncertain Stat (Tagged "s" 0) third (Exact (1 / 10 ^ (6 :: Int)))
+    , uncertain 24 Bound (Tagged "b" 0) third (Exact (1 / 10 ^ (12 :: Int)))
+    , uncertain 24 Stat (Tagged "s" 0) third (Exact (1 / 10 ^ (6 :: Int)))
     ]
   unary :: [(String, Int -> Magnitude -> Either String Magnitude)]
   unary =
@@ -963,7 +963,7 @@ rejudgedTests =
         "a product of two zero-mean values in a sum marks iff σa σb / σc passes 1%"
         $ forAll size
         $ \sa -> forAll size $ \sb -> forAll size $ \sc ->
-          let v o s = uncertain Stat (Tagged o 0) (Exact 0) (Exact s)
+          let v o s = uncertain 24 Stat (Tagged o 0) (Exact 0) (Exact s)
               x = addM p24 (mulM p24 (v "a" sa) (v "b" sb)) (v "c" sc)
               ratio = sa * sb / sc
               isMarked = isJust (nonLinearAt (1 / 100) x)

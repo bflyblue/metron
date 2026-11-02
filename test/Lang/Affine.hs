@@ -177,13 +177,48 @@ affineTests =
           Right q -> radius q > 0 @? show q
           Left err -> assertFailure (show err)
         -- named nudges beside slack: the slack keeps it from cancelling
-        let named = uncertain Bound (Tagged "s" 0) (Exact 2) (Exact (1 / 2))
+        let named = uncertain 24 Bound (Tagged "s" 0) (Exact 2) (Exact (1 / 2))
             withSlack = addM 24 named anonymous
         case divM 24 withSlack withSlack of
           Right (Exact q) -> assertFailure ("cancelled to " <> show q)
           Right q -> radius q > 0 @? show q
           Left err -> assertFailure (show err)
         divM 24 (scaleM 24 3 named) named @?= Right (Exact 3)
+    , localOption (mkTimeout 10_000_000)
+        $ testCase "anonymous slack stays anonymous through nonlinear operations"
+        $ do
+          let x = Affine 0 Map.empty 1 mempty
+              squares = subM 24 (mulM 24 x x) (mulM 24 x x)
+          radius squares >= 1 @? show squares
+          let exponentials = subM 24 (expM 24 x) (expM 24 x)
+          radius exponentials > 2 @? show exponentials
+    , localOption (mkTimeout 10_000_000)
+        $ testProperty "independent anonymous products enclose every corner"
+        $ \(Small (m :: Integer)) (Positive (Small (r :: Integer))) ->
+          within 1_000_000
+            $ let x = Affine (fromInteger m) Map.empty (fromInteger r) mempty
+                  q = subM 24 (mulM 24 x x) (mulM 24 x x)
+                  ends = [m - r, m + r]
+                  corners = [fromInteger (u * v - w * z) | u <- ends, v <- ends, w <- ends, z <- ends]
+               in counterexample (show q) (all (\v -> abs (v - midpoint q) <= radius q) corners)
+    , localOption (mkTimeout 10_000_000)
+        $ testProperty "second-order combination is associative and has an identity"
+        $ \(Positive (Small (a :: Integer))) (Positive (Small (b :: Integer))) (Positive (Small (c :: Integer))) ->
+          within 1_000_000
+            $ let n tag = uncertain 24 Stat (Tagged tag 0) (Exact 0) (Exact 1)
+                  productNoise = mulM 24 (n "x") (n "y")
+                  size k = case scaleM 24 (fromInteger k) productNoise of
+                    Affine _ _ _ sk -> sk
+                    Exact _ -> mempty
+                  x = size (1000 * a)
+                  y = size b
+                  z = size c
+                  laws combine unit =
+                    combine (combine x y) z == combine x (combine y z)
+                      && combine unit x == x
+                      && combine x unit == x
+               in counterexample (show (x, y, z))
+                    $ laws (<>) mempty
     , localOption (mkTimeout 10_000_000)
         $ testCase
           "past 64 nudges, the bound ones beyond the 32 largest fold into slack (design §3.2.7)"
@@ -192,7 +227,7 @@ affineTests =
           -- statistical ones; sqrt adds its own remainder, a nudge smaller
           -- than any of them, and scales the others alike (by 1/20).
           let p = 24
-              term k tag i = uncertain k (Tagged tag i) (Exact 0) (Exact (fromIntegral i / 1000))
+              term k tag i = uncertain 24 k (Tagged tag i) (Exact 0) (Exact (fromIntegral i / 1000))
               form n m =
                 foldl
                   (addM p)
@@ -226,7 +261,7 @@ affineTests =
         -- the same operation twice is still one unknown
         subM 24 a (remainder [Exact 1, Exact 12]) @?= Exact 0
         -- an operand's kind and its count are part of the identity
-        let x = uncertain Bound (Tagged "s" 0) (Exact 1) (Exact (1 / 2))
+        let x = uncertain 24 Bound (Tagged "s" 0) (Exact 1) (Exact (1 / 2))
         subM 24 (remainder [x]) (remainder [x, Exact 0]) /= Exact 0 @? "count"
     , testCase "declared bounds print as mid ± r" $ do
         evalText "5 ± 0.1" @?= Right ["5.0 ± 0.1"]
@@ -601,7 +636,8 @@ affineTests =
         evalP "cholesky [[4, 2], [2, 3]]"
           @?= Right ["[2, 0; 1, 1.4142135623730950488…]"]
         evalP "cholesky [[1, 2], [2, 1]]"
-          @?= Left "error: sqrt of a value that may be negative"
+          @?= Left
+            "error: cholesky needs a positive-definite matrix: a pivot's enclosure reaches zero or below"
         typeOfTextP "covariance" @?= Right "forall n d. Vec n d -> Mat n n (d^2)"
         typeOfTextP "cholesky" @?= Right "forall n a d. Mat n a (d^2) -> Mat n a d"
     , testCase "cholesky and ±σ refuse a matrix that is provably not symmetric" $ do
@@ -1208,18 +1244,21 @@ affineTests =
         $ \(Small a) (Small b) (Small c) (Small d) (Small f) e1 e2 ->
           let x =
                 uncertain
+                  24
                   Bound
                   (Declared (Hash "x") [] 0)
                   (Exact (fromIntegral (a :: Int)))
                   (Exact (fromIntegral (c :: Int) / 7))
               y0 =
                 uncertain
+                  24
                   Bound
                   (Declared (Hash "x") [] 0)
                   (Exact (fromIntegral (b :: Int)))
                   (Exact (fromIntegral (d :: Int) / 7))
               y =
                 uncertain
+                  24
                   Bound
                   (Declared (Hash "y") [] 0)
                   y0
@@ -1271,6 +1310,7 @@ affineTests =
           let p = 24
               meanAnomaly =
                 uncertain
+                  24
                   Stat
                   (Tagged "m" 0)
                   (mulM p (Exact (1177 / 5)) (scaleM p (1 / 180) (piM p)))
@@ -1290,6 +1330,7 @@ affineTests =
           let r = fromIntegral (n :: Int) / fromIntegral (d :: Int) :: Rational
               x =
                 uncertain
+                  24
                   Bound
                   (Declared (Hash "x") [] 0)
                   (Exact r)

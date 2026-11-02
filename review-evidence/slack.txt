@@ -1,0 +1,9 @@
+
+EXPR: let x = 0 +- (0 +- 1); let y = 0 +- (0 +- 1); (x-y, x*x-y*y)
+(0 ± 2, 0)
+
+EXPR: let x = 0 +- (0 +- 1); let y = 0 +- (0 +- 1); exp x - exp y
+0 ± 2
+
+EXPR: let x = 0 +- (0 +- 1); (x, x*x, x*x == 0)
+error: cannot decide comparison at sigma 3: the difference is 0.0 ± 1.0

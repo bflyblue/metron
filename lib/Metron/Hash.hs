@@ -20,6 +20,7 @@ module Metron.Hash (
   hashFromHex,
 ) where
 
+import Control.Monad (replicateM, unless)
 import Crypto.Hash.SHA256 qualified as SHA256 (hash)
 import Data.Bifunctor (first)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
@@ -247,7 +248,7 @@ bytes :: Int -> Dec ByteString
 bytes n =
   Dec
     ( \bs i ->
-        if i + n <= BS.length bs
+        if n >= 0 && n <= BS.length bs - i
           then Right (BS.take n (BS.drop i bs), i + n)
           else Left "unexpected end of term"
     )
@@ -263,16 +264,46 @@ decVarint = go 0 0
 decSint :: Dec Integer
 decSint = do
   sign <- byte
-  len <- decVarint
-  mag <- bytes (fromIntegral len)
+  unless (sign == 0 || sign == 1) (failDec "invalid integer sign")
+  len <- decInt
+  mag <- bytes len
   let n = BS.foldl' (\acc b -> acc `shiftL` 8 .|. fromIntegral b) 0 mag
   pure (if sign == 1 then negate n else n)
 
 decText :: Dec Text
 decText = do
-  len <- decVarint
-  raw <- bytes (fromIntegral len)
+  len <- decInt
+  raw <- bytes len
   either (const (failDec "a name is not valid UTF-8")) pure (TE.decodeUtf8' raw)
+
+-- | Machine-sized fields must not wrap before scope/shape validation.
+decInt :: Dec Int
+decInt = do
+  n <- decVarint
+  if n <= toInteger (maxBound :: Int)
+    then pure (fromInteger n)
+    else failDec "integer exceeds Int range"
+
+{- | Each encoded item consumes at least one byte. Bound allocation by the
+input before traversing counts, including a tensor's Integer product.
+-}
+items :: Integer -> Dec a -> Dec [a]
+items n item = do
+  remaining <- Dec (\bs i -> Right (BS.length bs - i, i))
+  if n <= toInteger remaining
+    then replicateM (fromInteger n) item
+    else failDec "item count exceeds remaining input"
+
+decItems :: Dec a -> Dec [a]
+decItems item = decVarint >>= (`items` item)
+
+decRational :: Dec Rational
+decRational = do
+  num <- decSint
+  den <- decVarint
+  if den == 0
+    then failDec "zero denominator"
+    else pure (num % den)
 
 decKind :: Dec NudgeKind
 decKind =
@@ -305,15 +336,15 @@ term :: Depth n -> Dec (Term n)
 term d =
   byte >>= \case
     0x00 -> do
-      i <- decVarint
+      i <- decInt
       maybe
         (failDec ("variable " <> T.pack (show i) <> " escapes its scope"))
         (pure . Var)
-        (finAt d (fromIntegral i))
+        (finAt d i)
     0x01 -> do
       h <- bytes 32
-      idx <- decVarint
-      Ref (Hash h) (if idx == 0 then Nothing else Just (fromIntegral idx - 1))
+      idx <- decInt
+      Ref (Hash h) (if idx == 0 then Nothing else Just (idx - 1))
         <$> decHint
     0x02 -> do
       p <- decText
@@ -321,9 +352,8 @@ term d =
         Nothing -> failDec ("unknown primitive " <> p)
         Just n -> PrimApp p <$> traverse (const sub) [1 .. n]
     0x03 -> do
-      rank <- decVarint
-      dims <- traverse (const (fromIntegral <$> decVarint)) [1 .. rank]
-      rs <- traverse (const ((%) <$> decSint <*> decVarint)) [1 .. product dims]
+      dims <- decItems decInt
+      rs <- items (product (map toInteger dims)) decRational
       pure (Lit (LTensor (dims, rs)))
     0x05 -> Lam <$> decHint <*> term (DS d)
     0x06 -> App <$> sub <*> sub
@@ -331,29 +361,23 @@ term d =
     0x09 -> Pow <$> sub <*> decSint
     0x0A -> Noise <$> decKind <*> decLabel <*> decVarint
     0x0B -> Uncertain <$> decKind <*> decLabel <*> sub <*> sub
-    0x0C -> do
-      n <- decVarint
-      Pack <$> traverse (const sub) [1 .. n]
+    0x0C -> Pack <$> decItems sub
     0x0E -> do
-      k <- decVarint
-      hints <- traverse (const decHint) [1 .. k]
+      hints <- decItems decHint
       case vecFromList hints of
         SomeVec hs -> Cycle hs <$> vecTraverse (const (term (depthPlus hs d))) hs
-    0x0F -> Proj <$> sub <*> (fromIntegral <$> decVarint)
+    0x0F -> Proj <$> sub <*> decInt
     0x11 -> do
       c <- decConRef
-      k <- decVarint
-      Con c <$> traverse (const sub) [1 .. k]
+      Con c <$> decItems sub
     0x12 -> do
       s <- sub
-      n <- decVarint
-      alts <- traverse (const alt) [1 .. n]
+      alts <- decItems alt
       pure (Case s alts)
      where
       alt = do
         c <- decConRef
-        k <- decVarint
-        hints <- traverse (const decHint) [1 .. k]
+        hints <- decItems decHint
         case vecFromList hints of
           SomeVec hs -> Alt c hs <$> term (depthPlus hs d)
     0x10 -> failDec "a placeholder cannot be stored"
@@ -382,7 +406,7 @@ hashFromHex t
 
 -- | A constructor reference: the type's hash and the index.
 decConRef :: Dec ConRef
-decConRef = UserCon . Hash <$> bytes 32 <*> (fromIntegral <$> decVarint)
+decConRef = UserCon . Hash <$> bytes 32 <*> decInt
 
 -- | Read a declared type in the storage encoding.
 decodeTypeDef :: ByteString -> Either Text TypeDef
@@ -393,13 +417,8 @@ decodeTypeDef bs = do
     else Left "trailing bytes after the type definition"
  where
   typeDef = do
-    np <- decVarint
-    kinds <- traverse (const decKindByte) [1 .. np]
-    nc <- decVarint
-    cons <-
-      traverse
-        (const (decVarint >>= \nf -> traverse (const decType) [1 .. nf]))
-        [1 .. nc]
+    kinds <- decItems decKindByte
+    cons <- decItems (decItems decType)
     TypeDef (zip [0 ..] kinds) cons <$> decLabel
   decKindByte =
     byte >>= \case
@@ -428,11 +447,10 @@ decType =
                 k -> failDec ("unknown dimension option " <> T.pack (show k))
             )
     0x26 -> TFun <$> ty <*> ty
-    0x27 -> TVar . fromIntegral <$> decVarint
+    0x27 -> TVar <$> decInt
     0x28 -> do
       h <- bytes 32
-      n <- decVarint
-      TData (Hash h) <$> traverse (const decArg) [1 .. n]
+      TData (Hash h) <$> decItems decArg
     tag -> failDec ("unknown type tag " <> T.pack (show tag))
  where
   ty = decType
@@ -450,7 +468,7 @@ decType =
     byte >>= \case
       0 -> pure SNil
       1 -> (`SCons` AAnon) <$> decLen <*> decShape
-      2 -> SVar . fromIntegral <$> decVarint
+      2 -> SVar <$> decInt
       3 -> SCons <$> decLen <*> decAxis <*> decShape
       k -> failDec ("unknown shape tag " <> T.pack (show k))
   decFrame = Frame <$> decFrameSlot <*> decAxis <*> decSpace
@@ -458,39 +476,35 @@ decType =
   decFrameSlot =
     byte >>= \case
       0 -> FrNamed . Hash <$> bytes 32
-      1 -> FrVar . fromIntegral <$> decVarint
+      1 -> FrVar <$> decInt
       k -> failDec ("unknown frame tag " <> T.pack (show k))
   decSpaceSlot =
     byte >>= \case
       0 -> SpNamed . Hash <$> bytes 32
-      1 -> SpVar . fromIntegral <$> decVarint
+      1 -> SpVar <$> decInt
       k -> failDec ("unknown space tag " <> T.pack (show k))
   decAxis =
     byte >>= \case
       0 -> pure AAnon
       1 -> ANamed . Hash <$> bytes 32
-      2 -> AVar . fromIntegral <$> decVarint
+      2 -> AVar <$> decInt
       k -> failDec ("unknown axis tag " <> T.pack (show k))
   decLen =
     byte >>= \case
-      0 -> LLit . fromIntegral <$> decVarint
-      1 -> LVar . fromIntegral <$> decVarint <*> (fromIntegral <$> decVarint)
-      2 -> LRank . fromIntegral <$> decVarint <*> (fromIntegral <$> decVarint)
+      0 -> LLit <$> decInt
+      1 -> LVar <$> decInt <*> decInt
+      2 -> LRank <$> decInt <*> decInt
       k -> failDec ("unknown length tag " <> T.pack (show k))
   decDim = do
-    n <- decVarint
     atoms <-
-      traverse
-        ( const
-            ( byte >>= \case
-                0 -> do
-                  b <- byte
-                  case lookup b (zip [0 ..] [minBound .. maxBound]) of
-                    Just base -> (Base base,) <$> decSint
-                    Nothing -> failDec ("unknown base dimension " <> T.pack (show b))
-                1 -> (\v k -> (DVar (fromIntegral v), k)) <$> decVarint <*> decSint
-                k -> failDec ("unknown dimension atom " <> T.pack (show k))
-            )
+      decItems
+        ( byte >>= \case
+            0 -> do
+              b <- byte
+              case lookup b (zip [0 ..] [minBound .. maxBound]) of
+                Just base -> (Base base,) <$> decSint
+                Nothing -> failDec ("unknown base dimension " <> T.pack (show b))
+            1 -> (\v k -> (DVar v, k)) <$> decInt <*> decSint
+            k -> failDec ("unknown dimension atom " <> T.pack (show k))
         )
-        [1 .. n]
     pure (dimFromAtoms atoms)

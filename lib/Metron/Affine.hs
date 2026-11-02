@@ -60,6 +60,7 @@ module Metron.Affine (
   atanM,
   atan2M,
   sinhM,
+  asinhM,
   coshM,
   tanhM,
   piM,
@@ -203,9 +204,11 @@ instance Semigroup SecondOrder where
 instance Monoid SecondOrder where
   mempty = SecondOrder Map.empty
 
--- | Two sizes added, rounded up to three digits; 'Nothing' is unbounded.
+{- | Exact addition of recorded sizes; 'Nothing' is unbounded. Rounding
+belongs at creation/scaling, not in the associative combination.
+-}
 plusSize :: Maybe Rational -> Maybe Rational -> Maybe Rational
-plusSize a b = roundUpSig 3 <$> ((+) <$> a <*> b)
+plusSize = liftA2 (+)
 
 -- | One operation's second-order term of a size; none of size zero.
 secondTerm :: Text -> Maybe Rational -> SecondOrder
@@ -635,7 +638,7 @@ mulM p x y =
       quadratic = (pos - neg) / 2 + (boundRadius x * boundRadius y - sum (map abs shared))
       cross = boundRadius x * statSigma p y + boundRadius y * statSigma p x
       -- The statistical leftover's standard deviation, for independent
-      -- unit nudges: √((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²), carried as a size.
+      -- standard Gaussian nudges: √((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²), carried as a size.
       a = statTerms t1
       b = statTerms t2
       ab = sum (Map.elems (Map.intersectionWith (*) a b))
@@ -652,7 +655,7 @@ mulM p x y =
       carried =
         scaledBy (factorSize y) (secondOf x) <> scaledBy (factorSize x) (secondOf y)
       base = affine mid linear (abs m2 * s1 + abs m1 * s2) mempty
-   in opResult "mul" p [x, y] quadratic cross (carried <> measured) base
+   in opResult "mul" p (inOrder [x, y]) quadratic cross (carried <> measured) base
  where
   sumSq = sum . map (\c -> c * c) . Map.elems
   factorSize z =
@@ -864,6 +867,8 @@ linearise x f slope carried = case x of
 precision, so that identical computations share it (design §3.2.4). Its
 size is rounded up to 'shortDigits' significant digits: a bound stays
 one, and a remainder summed from long series errors stays short.
+If an operand has anonymous slack, the remainder instead joins slack,
+rounded upward on the result's precision grid.
 -}
 withFresh ::
   Text -> Precision -> [Magnitude] -> Rational -> Magnitude -> Magnitude
@@ -902,19 +907,32 @@ withFreshRounded rounding name p operands size base =
           | Map.null ts && s == 0 -> shorten p m
           | otherwise -> roundAt (precisionExponent p m) m
       size' = roundUpSig (shortDigits p) (size + abs (m - m'))
+      -- As in shortenLinear, slack uses the result's scale. Rounding it
+      -- only relative to its own tiny size retains unnecessary digits.
+      slackGrid = precisionExponent (shortDigits p) (max (abs m') (radius base + size'))
    in if size' == 0
         then base
         else
-          affine
-            m'
-            ( Map.insertWith
-                addCoeff
-                (builtinId Bound name p operands)
-                (size', Nudge Bound (Builtin name))
-                ts
-            )
-            s
-            (secondOf base)
+          if any anonymous operands
+            then affine m' ts (roundUpAt slackGrid (s + size')) (secondOf base)
+            else
+              affine
+                m'
+                ( Map.insertWith
+                    addCoeff
+                    (builtinId Bound name p operands)
+                    (size', Nudge Bound (Builtin name))
+                    ts
+                )
+                s
+                (secondOf base)
+ where
+  -- Equal anonymous radii do not identify equal unknowns. In particular,
+  -- a quadratic remainder must not become cancellable after its linear
+  -- part vanished at a zero midpoint.
+  anonymous = \case
+    Exact _ -> False
+    Affine _ _ s _ -> s /= 0
 
 -- | A value known only as an enclosure @m ± size@ from one operation.
 fresh :: Text -> Precision -> [Magnitude] -> Rational -> Rational -> Magnitude
@@ -1427,6 +1445,16 @@ atan2M p y x
     (_, Just r) -> r
     _ -> Left (Domain "atan2 of an enclosure that contains the origin")
 
+{- | Choose the odd identity with a positive midpoint before taking the
+logarithm, avoiding subtraction of two large nearly equal values.
+-}
+asinhM :: Precision -> Magnitude -> Either ArithError Magnitude
+asinhM p x = do
+  let y = if midpoint x < 0 then negM x else x
+  root <- sqrtM p (addM p (Exact 1) (mulM p y y))
+  answer <- logM p (addM p y root)
+  pure (if midpoint x < 0 then negM answer else answer)
+
 sinhM, coshM :: Precision -> Magnitude -> Magnitude
 sinhM p = \case
   Exact 0 -> Exact 0
@@ -1635,12 +1663,21 @@ equalM decide p a b = (== EQ) <$> compareM decide p a b
 -- Declared uncertainty --------------------------------------------------------------------
 
 {- | @x ± e@ / @x ±σ e@ (design §3.2.5). The nudge's identity is its origin
-and the midpoint; its size is the error's midpoint, and any bound radius
-the error itself carries goes to slack. The error's own statistical part
-is second order (a σ of a σ) and, like any, never becomes a bound.
+and the midpoint. Non-exact widths use the same multiplication rules as
+explicit noise: statistical coefficient uncertainty is never a hard bound.
 -}
-uncertain :: NudgeKind -> Origin -> Magnitude -> Magnitude -> Magnitude
-uncertain k origin x e =
+uncertain ::
+  Precision -> NudgeKind -> Origin -> Magnitude -> Magnitude -> Magnitude
+uncertain p k origin x e
+  | not (isExact e) =
+      let noise =
+            affine
+              0
+              (Map.singleton (originId k origin (midpoint x)) (1, Nudge k origin))
+              0
+              mempty
+       in addM p x (mulM p (absM p e) noise)
+uncertain _ k origin x e =
   let (m, ts, s) = parts x
       size = abs (midpoint e)
    in affine

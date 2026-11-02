@@ -1,0 +1,3 @@
+this derivation will be built:
+  /nix/store/hi7wpf0zkbwl2l8250v2m4b8y6ngzvyj-metron-0.1.0.0.drv
+building '/nix/store/hi7wpf0zkbwl2l8250v2m4b8y6ngzvyj-metron-0.1.0.0.drv'...

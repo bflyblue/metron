@@ -1,0 +1,18 @@
+
+EXPR: let a = [1 +- 0.1, 2 +- 0.1, 3 +- 0.1]; let b = [4 +- 0.1, 5 +- 0.1, 6 +- 0.1]; let w = wedge a b; w + transpose w == 0 * w
+true
+
+EXPR: let a = [1 +- 0.1, 2 +- 0.1, 3 +- 0.1]; let w = wedge a a; w == 0 * w
+error: cannot decide comparison at sigma 3: the difference is 0.0 ± 2.0e-2
+
+EXPR: cholesky [[1,0],[0,0]]
+[1, 0; 0, 0]
+
+EXPR: star [[0,1,0],[0,0,0],[0,0,0]]
+[0, 0, 1]
+
+EXPR: let a = [1 +- 0.1, 2 +- 0.1, 3 +- 0.1]; let b = [4 +- 0.1, 5 +- 0.1, 6 +- 0.1]; space S = Vec 3 m; chart c on S by wedge a b; rotationOf c
+[1 ± 22, -1 ± 15, -1 ± 12; 0 ± 14, 0.8 ± 9.8, -1 ± 15; 1 ± 13, 0 ± 14, 1 ± 23]
+
+EXPR: --backend double astro.kepler.asinh (-1e20)
+-Infinity (the first infinity came from log 0)
