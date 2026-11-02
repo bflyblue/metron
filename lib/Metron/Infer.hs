@@ -85,7 +85,6 @@ import Metron.Core (
   Term (..),
   Vec (..),
   foldTerm,
-  lengthLimit,
   mapChildren,
   showHash,
   vecAppend,
@@ -162,7 +161,6 @@ import Metron.Type (
   rankLen,
   renderType,
   substOnce,
-  vecT,
   withBuiltins,
  )
 

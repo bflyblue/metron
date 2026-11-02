@@ -118,7 +118,6 @@ import Metron.Type (
   selfType,
   substOnce,
   varArg,
-  vecT,
  )
 import Metron.Type.Match (isInstanceOf)
 
