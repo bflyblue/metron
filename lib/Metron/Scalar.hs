@@ -87,7 +87,7 @@ ownerOf name = case [b | b <- [minBound .. maxBound], name `elem` backendOwn b] 
 
 -- | Input sampling and statistics shared by both arithmetic implementations.
 sampledOwn :: [Text]
-sampledOwn = ["sample", "mid", "sd", "covariance", "crossCovariance"]
+sampledOwn = ["sample", "mean", "sd", "covariance", "crossCovariance"]
 
 -- | Why a backend, at a setting, cannot run a built-in.
 data Refusal

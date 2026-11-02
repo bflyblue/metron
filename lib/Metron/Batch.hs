@@ -14,7 +14,7 @@ statistics, computed from them in the same order. (The design names
 Chan's parallel update of means and variances; it sums in an order that
 depends on K, so its last bits would.)
 
-What reads across a number's copies, @mid@, @sd@ and covariance, would read only its own batch's, so an input that reaches
+What reads across a number's copies, @mean@, @sd@ and covariance, would read only its own batch's, so an input that reaches
 them runs as one evaluation ('acrossCopies'), as does one whose batches
 do not merge ('merged').
 -}
@@ -69,7 +69,7 @@ batchesOf n k0 =
 
 -- | The built-ins that read across a number's copies.
 acrossCopies :: Set Text
-acrossCopies = Set.fromList ["mid", "sd", "covariance", "crossCovariance"]
+acrossCopies = Set.fromList ["mean", "sd", "covariance", "crossCovariance"]
 
 {- | Force what a value will print ("Metron.Pretty"), down to the copies,
 and no further: the elements of a tensor in order and the fields of a

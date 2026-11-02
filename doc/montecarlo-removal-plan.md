@@ -156,7 +156,7 @@ Keep exact arithmetic used to determine stochastic neighbours, even when it rese
 Internal approximation intervals can remain if they serve rational numerical kernels rather than a user-visible bound mode.
 
 Remove `bound`, affine budgets, compaction, nonlinear statistical markers, sigma-based comparison policies and affine-only commands.
-Inventory `mid`, `sd`, covariance and correlation functions individually.
+Inventory `mean`, `sd`, covariance and correlation functions individually.
 Retain a useful statistic only under an explicit sample-based definition, including its reduction axis.
 Do not silently retain an affine formula under a new name.
 

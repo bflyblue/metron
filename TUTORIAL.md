@@ -16,7 +16,9 @@ nix run . -- --no-codebase
 
 This opens the interactive calculator without a saved database. Enter the examples at its prompt. Do not type the prompt itself.
 
-Blocks marked `text` contain Metron input unless they are introduced as output. Blocks marked `sh` contain shell commands. Definitions normally produce no output, while expressions print their results.
+Blocks marked `text` contain Metron input. Comments beginning with `-- =>` show the important results, so you can copy whole blocks. Results marked “about” or “rounded” summarize longer output. Sample statistics vary with the seed and sample count. Blocks marked `sh` contain shell commands.
+
+Definitions normally produce no output, while expressions print their results. Continue in order: later examples reuse earlier definitions.
 
 Metron starts with double arithmetic, which uses fixed-precision floating-point numbers. These examples begin with rational arithmetic to keep fractions exact. Select it first:
 
@@ -50,12 +52,7 @@ let distance = 12 km
 let duration = 30 min
 let speed = distance / duration
 speed to km/h
-```
-
-The result is:
-
-```text
-24 km h^-1
+-- => 24 km h^-1
 ```
 
 `h^-1` means “per hour.” Metron divides both the values and their units. The `to` expression chooses the units used to display the result.
@@ -64,6 +61,7 @@ Try another display unit:
 
 ```text
 speed to m/s
+-- => 6.6666666666666666666… m s^-1
 ```
 
 The result starts with `6.6666666666666666666… m s^-1`. Metron retains the exact fraction internally. The ellipsis means that the decimal display continues beyond the printed digits.
@@ -75,7 +73,9 @@ A function takes inputs and calculates a result. Define one that takes both dist
 ```text
 let travelTime distance speed = distance / speed
 travelTime (18 km) speed to min
+-- => 45 min
 travelTime (18 km) (15 km/h) to min
+-- => 72 min
 ```
 
 The two calls give `45 min` and `72 min`. The parameter named `speed` belongs to the function. Each call supplies its value explicitly.
@@ -87,6 +87,7 @@ You can reuse the same approach for energy:
 ```text
 let kineticEnergy mass speed = mass * speed^2 / 2
 kineticEnergy (80 kg) (18 km/h) to J
+-- => 1000 J
 ```
 
 This gives `1000 J`. The calculation includes the conversion from kilometers per hour to meters per second.
@@ -99,6 +100,7 @@ Try this deliberate mistake:
 
 ```text
 1 m + 1 s
+-- => Type error: length and time cannot be added (summary).
 ```
 
 Metron refuses it because length and time cannot be added. Multiplication and division can combine dimensions, as they do in the speed and energy formulas.
@@ -107,10 +109,14 @@ Use `:type` to inspect the information Metron infers:
 
 ```text
 :type speed
+-- => Num (m/s)
 :type travelTime
+-- => forall s d d1. Tensor s d -> Num d1 -> Tensor s (d/d1)
 ```
 
 A function can have a more general type than its example calls suggest. Metron infers relationships between input and output dimensions instead of assuming every argument is a plain number.
+
+Here, `s` describes the first input's shape, while `d` and `d1` describe the inputs' dimensions. Dividing by a scalar preserves that shape and divides the dimensions.
 
 ### Define a useful unit
 
@@ -119,6 +125,7 @@ Suppose one lap of your track is 400 meters:
 ```text
 unit lap = 400 m
 5 lap to km
+-- => 2 km
 ```
 
 The result is `2 km`. A unit definition makes `lap` available as a quantity suffix and as a conversion target. Ordinary values use `let` instead.
@@ -129,13 +136,18 @@ At multiplication and division, a bare unit means one unit-sized amount:
 
 ```text
 5 * km to m
+-- => 5000 m
 4 km / 2 km
+-- => 2
 4 km / km
+-- => 4
 ```
 
 These give `5000 m`, `2`, and `4`. A quantity suffix keeps each number and its unit together. For a compound unit, write `5 km/h` or `5 * (km/h)`.
 
 ## 3. Follow measurement uncertainty
+
+Suppose you need edging for a rectangular board. Its measured length is 2 meters and its width is 1 meter, each with some uncertainty. Calculate the total edging and how much its length varies.
 
 Describe a measurement with a probability distribution, a model of possible values and their probabilities. A normal distribution
 uses a mean and a standard deviation. The standard deviation describes spread,
@@ -148,8 +160,11 @@ let boardLength = sample (normal (2 m) (0.01 m))
 let boardWidth = sample (normal (1 m) (0.005 m))
 let perimeter = 2 * (boardLength + boardWidth)
 perimeter
-mid perimeter
+-- => 5.9773770050871360472… m (Monte Carlo: mean 6.00009711344… m, sd 0.0232502928741… m, outcome 95% [5.95344474321… m, 6.04522466963… m], 1000 input samples)
+mean perimeter
+-- => About 6 m.
 sd perimeter
+-- => About 0.0233 m with this seed and sample count.
 ```
 
 An input realization is one set of sampled input values. Metron evaluates the formula for 1,000 realizations. The report gives a sample mean, sample standard deviation and central 95% outcome interval.
@@ -158,18 +173,32 @@ These estimates vary with the seed and sample count.
 The outcome interval describes simulated measurements, not confidence in the mean.
 
 The number before the report is the ordinary value, not the sample mean.
-Use `mid perimeter` for the mean and `sd perimeter` for the sample standard deviation.
-The name `mid` does not mean an exact center or an interval midpoint.
+Use `mean perimeter` for the mean and `sd perimeter` for the sample standard deviation.
+`mean` is a function, so you can use it inside another expression, such as `mean perimeter / 2`.
 
 The seed selects a reproducible random sequence. With the same code, configuration and seed, repeated evaluations reproduce their draws.
 Change the seed to explore another finite sample. Increase `samples` to estimate the distribution from more draws.
 Neither change gives a guaranteed bound on all possible outcomes.
 
+The same measurements also tell you how much surface needs paint:
+
+```text
+let boardArea = boardLength * boardWidth
+mean boardArea to m^2
+-- => About 2 m^2.
+sd boardArea to m^2
+-- => 0.0147 m^2 (rounded).
+```
+
+Multiplication carries the sampled measurements through the area formula. You can reuse the inputs without defining a separate uncertainty formula for area.
+
 ### Keep shared measurements shared
 
 ```text
 boardLength == boardLength
+-- => true
 sd (boardLength - boardLength)
+-- => 0 m
 ```
 
 The results are `true` and `0 m`. Both uses refer to the same sampled input.
@@ -185,6 +214,7 @@ probability across an interval:
 ```text
 let clearance = sample (uniform (0.9 mm) (1.1 mm))
 clearance
+-- => 0.97502617066127309011… mm (Monte Carlo: mean 1.00010990720… mm, sd 0.0583593015156… mm, outcome 95% [0.905578421044… mm, 1.09501816390… mm], 1000 input samples)
 ```
 
 Distribution parameters must be deterministic scalars with matching dimensions.
@@ -200,6 +230,7 @@ let sensorModel = normal (10 m) (0.2 m)
 let sensorA = sample sensorModel
 let sensorB = sample sensorModel
 sd (sensorA - sensorB)
+-- => About 0.294 m.
 ```
 
 The two sample sites draw independently from the same model.
@@ -213,7 +244,9 @@ Reusing `sensorA` instead of sampling again preserves its correlation with quant
 let reading = sample (normal (10 m) (0.2 m))
 let doubled = 2 * reading
 sd doubled
+-- => About 0.408 m.
 covariance [reading, doubled]
+-- => [0.0416, 0.0831; 0.0831, 0.1663] m^2 (rounded).
 ```
 
 The standard deviation is near 0.4 m. The covariance matrix is near
@@ -230,6 +263,7 @@ It measures sensitivity to that perturbation model.
 :set roundingAnalysis stochastic
 :set roundingSamples 8
 (1e16 + 1) - 1e16
+-- => 0 (stochastic rounding: typical spread 1.0690449676496976, RMS displacement 1.4142135623730951, 8 repetitions per input; distribution generation excluded; libm perturbations are heuristic)
 ```
 
 The ordinary double result is 0. Diagnostic repetitions can produce different
@@ -244,6 +278,7 @@ Run both kinds of sampling together:
 
 ```text
 perimeter
+-- => 5.977377005087137 m (Monte Carlo: mean 6.000097113444719 m, sd 0.02325029287419864 m, outcome 95% [5.953444743218191 m, 6.045224669639076 m]; 1000 input samples; stochastic rounding: typical spread 5.392138636769817e-16 m, RMS displacement 7.397785161770224e-16 m, 8 repetitions per input; distribution generation excluded; libm perturbations are heuristic)
 ```
 
 This report contains input statistics and rounding diagnostics in separate fields.
@@ -254,7 +289,7 @@ repetitions. Only ordinary runs contribute to the input statistics.
 Distribution generation and parameter evaluation are excluded from the diagnostic.
 Elementary functions use a heuristic perturbation of one representable step.
 This models rounding sensitivity rather than every source of numerical error.
-Statistics such as `mid`, `sd` and `covariance` reject rounding analysis of their own calculations.
+Statistics such as `mean`, `sd` and `covariance` reject rounding analysis of their own calculations.
 Turn the diagnostic off before requesting those statistics.
 
 Return to the arithmetic used by the remaining examples:
@@ -284,7 +319,7 @@ Only Monte Carlo propagation is currently supported.
 Changing `cores` does not change the draws or reports. Rational sampling and grouped rounding currently run serially.
 Input-only double calculations can use concurrent batches. Expressions containing cross-input statistics, such as `sd`, use one evaluation instead.
 The executable enables the available logical cores at startup. Use `:set cores 4` to request four batches.
-Its total size is capped at one million runs and also obeys the component limit.
+Grouped rounding execution is capped at one million runs and also obeys the component limit.
 Step, memory and time limits can refuse a calculation before it finishes.
 
 The command line accepts the same configuration:
@@ -304,6 +339,7 @@ let velocity = [3, 4, 0] m/s
 let elapsed = 10 s
 let displacement = velocity * elapsed
 displacement
+-- => [30, 40, 0] m
 ```
 
 The result is `[30, 40, 0] m`. Multiplying by time changes velocity into displacement. Each component carries the same physical dimension.
@@ -333,8 +369,11 @@ Compare three products of the same vectors:
 let a = [1, 2]
 let b = [3, 4]
 a ⊗ b
+-- => [3, 4; 6, 8]
 a · b
+-- => 11
 a ⊙ b
+-- => [3, 8]
 ```
 
 The results are a matrix `[3, 4; 6, 8]`, a number `11`, and a vector `[3, 8]`, respectively. In ASCII, the same expressions are `a * b`, `a @ b`, and `a .* b`.
@@ -345,8 +384,11 @@ The wedge product stores the matrix `a ⊗ b - b ⊗ a`. An antisymmetric matrix
 let u = [1, 0, 0]
 let v = [0, 1, 0]
 u ∧ v
+-- => [0, 1, 0; -1, 0, 0; 0, 0, 0]
 u × v
+-- => [0, 0, 1]
 ⋆ (u ∧ v)
+-- => [0, 0, 1]
 ```
 
 The wedge result is `[0, 1, 0; -1, 0, 0; 0, 0, 0]`. Both remaining expressions give `[0, 0, 1]`. In ASCII, write `u /\ v`, `u >< v`, and `star (u /\ v)`.
@@ -363,6 +405,7 @@ A dot product multiplies matching components and adds the results. Metron writes
 
 ```text
 sqrt (velocity · velocity) to m/s
+-- => 5 m s^-1
 ```
 
 The result is `5 m s^-1`. The units follow the square and square root operations.
@@ -372,9 +415,21 @@ Work is the dot product of force and displacement:
 ```text
 let force = [10, 0, 0] N
 force · displacement to J
+-- => 300 J
 ```
 
 The result is `300 J`. Only the displacement component in the force's direction contributes.
+
+The cross product answers a different question: how does a force turn an object about a pivot? Torque is this turning effect. Apply the same force half a meter along the second axis from the pivot:
+
+```text
+let leverArm = [0, 0.5, 0] m
+let torque = leverArm × force
+torque to N*m
+-- => [0, 0, -5] N m
+```
+
+The negative third component gives the direction by the right-hand rule. Torque and work share physical dimensions, but torque is a vector here and work is a scalar.
 
 ### Apply a matrix
 
@@ -383,6 +438,7 @@ Semicolons separate a matrix's rows. The `@` operator performs matrix multiplica
 ```text
 let swap = [0, 1, 0; 1, 0, 0; 0, 0, 1]
 swap @ displacement
+-- => [40, 30, 0] m
 ```
 
 This gives `[40, 30, 0] m`, with the first two components exchanged. This matrix is dimensionless, so the result retains the displacement's units.
@@ -390,11 +446,12 @@ This gives `[40, 30, 0] m`, with the first two components exchanged. This matrix
 You can also solve a small linear system using an inverse:
 
 ```text
-let a = [2, 0; 0, 4]
-inverse a @ [6, 8]
+let coefficients = [2, 0; 0, 4]
+inverse coefficients @ [6, 8]
+-- => [3, 2]
 ```
 
-Because `a` was defined earlier in the session, the new definition first prints ``replaced pending definition of `a` ``. The result is `[3, 2]`. This solves `a @ x = [6, 8]` for `x`. An inverse requires a suitable square matrix and can fail for a singular matrix.
+This solves `coefficients @ x = [6, 8]` for `x`. An inverse requires a suitable square matrix and can fail for a singular matrix.
 
 Tensors extend vectors and matrices to more axes. Metron tracks their shapes and dimensions. Shape mistakes, such as incompatible matrix sizes, are errors rather than implicit resizing.
 
@@ -408,16 +465,37 @@ Celsius and Fahrenheit have different zero points. Convert a temperature point w
 
 ```text
 20 degC to degF
+-- => 68 degF
 ```
 
 The result is `68 degF`. Find a temperature change with `.-`, or add a change to a point with `.+`:
 
 ```text
 25 degC .- 20 degC
+-- => 5 K
 20 degC .+ (5 K)
+-- => 25 degC
 ```
 
 These give `5 K` and `25 degC`. A temperature point and a temperature change have different roles. Adding two Celsius points with ordinary `+` is rejected.
+
+The same point operations have Unicode spellings:
+
+| Operation | Unicode | ASCII | Result |
+| --- | --- | --- | --- |
+| Move a point by a displacement | `p ⊞ v` | `p .+ v` | A point |
+| Find the displacement between points | `p ⊟ q` | `p .- q` | A displacement from `q` to `p` |
+
+```text
+20 degC ⊞ (5 K)
+-- => 25 degC
+25 degC ⊟ 20 degC
+-- => 5 K
+```
+
+These give `25 degC` and `5 K`.
+Type `\boxplus` or `\boxminus`, then press TAB, to enter the symbols in the REPL.
+With `:set unicode on`, Metron prints these spellings. Both forms have the precedence of ordinary addition and subtraction.
 
 Conversions chain from left to right. `20 degC to degF to kelvin` converts to Fahrenheit first and then to kelvin, and gives `293.15 kelvin`.
 
@@ -438,6 +516,7 @@ Place a tool one meter along the bench's first axis:
 ```text
 let tool = [1, 0, 0] bench
 tool to room
+-- => [3, 1, 0] room
 ```
 
 The result is `[3, 1, 0] room`. The conversion includes the bench's origin offset.
@@ -446,7 +525,9 @@ To place a calculated amount, use `pointAt`. It measures the amount from the cha
 
 ```text
 pointAt bench ([0.5, 0, 0] m * 2)
+-- => [1, 0, 0] bench
 pointAt bench ([0.5, 0, 0] m * 2) to room
+-- => [3, 1, 0] room
 ```
 
 These give `[1, 0, 0] bench` and `[3, 1, 0] room`. A named vector, such as `let reach = [1, 0, 0] m`, has no axes of its own. Give it the bench's axes first: `pointAt bench (withAxes bench reach)`.
@@ -456,7 +537,9 @@ Find a displacement in bench coordinates and use it to move a point:
 ```text
 let shift = [2, 0, 0] bench .- [1, 0, 0] bench
 shift
+-- => [1, 0, 0] m
 ([1, 0, 0] bench .+ shift) to room
+-- => [4, 1, 0] room
 ```
 
 The displacement prints as `[1, 0, 0] m`. The moved point becomes `[4, 1, 0] room`. A displacement does not include the chart's origin offset.
@@ -468,6 +551,7 @@ A rotated chart changes the directions of its axes. Define a chart turned 90 deg
 ```text
 chart turned on room by rotz (90 deg)
 [1, 0, 0] turned to room
+-- => About [0, 1, 0] room.
 ```
 
 The result is approximately `[0, 1, 0] room`. Rotation calculations can print tiny residuals near zero. Those values reflect numerical approximation.
@@ -477,7 +561,9 @@ Now convert a displacement between the same axes:
 ```text
 let turnDelta = [1, 0, 0] turned .- [0, 0, 0] turned
 :type turnDelta
+-- => Vec turned m
 turnDelta from turned to room
+-- => About [0, 1, 0] m.
 ```
 
 The type of `turnDelta` is `Vec turned m`. The converted result is approximately `[0, 1, 0] m`, and its type is `Vec Workshop m`: it now lies along the target's axes, although both display only meters.
@@ -492,15 +578,17 @@ A list is a sequence of values. Lists use braces, while tensors use square brack
 
 ```text
 let times = map (\d -> travelTime d (18 km/h)) {3 km, 6 km, 9 km}
-times
+map (\t -> t to min) times
+-- => {10 min, 20 min, 30 min}
 ```
 
-The results are one-sixth, one-third, and one-half of an hour. Metron prints the first two as repeating decimals. The expression `\d -> ...` is a function written without giving it a name.
+The rides take 10, 20, and 30 minutes. Converting each time makes the list easier to read. The expression `\d -> ...` is a function written without giving it a name.
 
 Use `foldl` to combine the results from left to right:
 
 ```text
 foldl (\total time -> total + time) (0 s) times to min
+-- => 60 min
 ```
 
 This gives `60 min`. The initial total is `0 s`, with a time unit. Each step adds one time to that total.
@@ -514,6 +602,7 @@ data Ride = Ride {distance :: Num m, duration :: Num s}
 let morning = Ride {distance = 12 km, duration = 30 min}
 let averageSpeed ride = ride.distance / ride.duration
 averageSpeed morning to km/h
+-- => 24 km h^-1
 ```
 
 The result is `24 km h^-1`. The field types require length and time, but they do not require a particular display unit. A distance in kilometers fits `Num m` because both describe length.
@@ -526,6 +615,7 @@ A data type can also describe a choice. Here, a pace is either `Brisk` or `Stead
 data Pace = Brisk | Steady
 let paceLabel ride = if averageSpeed ride > 20 km/h then Brisk else Steady
 paceLabel morning
+-- => Brisk
 ```
 
 The result is `Brisk`. The `if` expression chooses a value based on a condition. With sampled inputs, each realization takes its own branch:
@@ -533,6 +623,7 @@ The result is `Brisk`. The `if` expression chooses a value based on a condition.
 ```text
 let uncertainRide = Ride {distance = sample (normal (10 km) (0.5 km)), duration = 30 min}
 paceLabel uncertainRide
+-- => Brisk and Steady outcome table, about half the draws in each case.
 ```
 
 The result includes an outcome table for `Brisk` and `Steady`. Their proportions estimate the chance of exceeding the 20 km/h threshold under this input model.
@@ -543,6 +634,7 @@ Use `case` to calculate a result for each named choice:
 ```text
 let restMinutes pace = case pace of Brisk -> 10 min; Steady -> 5 min
 restMinutes (paceLabel morning)
+-- => 10 min
 ```
 
 This gives `10 min`. Both branches return a time. The compiler checks that the alternatives agree on their result type.
@@ -560,6 +652,7 @@ You can call the function by its full name:
 
 ```text
 cycling.travelTime (18 km) (24 km/h) to min
+-- => 45 min
 ```
 
 The result is `45 min`. Commands such as `:ls cycling` and `:view cycling.travelTime` help you inspect the group.
@@ -575,6 +668,7 @@ The `astro` library holds orbital mechanics. It is not in use by default. Make i
 :use astro.wgs84
 :use astro.kepler
 earth.mu
+-- => 398600441800000 m^3 s^-2
 ```
 
 Each `:use` prints a confirmation, such as `stored use astro`. The last line prints `398600441800000 m^3 s^-2`. This is the Earth's gravitational parameter, GM, in the WGS 84 system that GPS uses. A set of constants is a namespace. `astro.iers2010`, `astro.iau2015` and `astro.de440` define the same names from other sources.
@@ -588,21 +682,26 @@ let r0 = [6524.834, 6862.875, 6448.296] km
 let v0 = [4.901327, 5.533756, -1.976341] km/s
 let orbit = fromState earth r0 v0
 orbit.e
+-- => 0.83285339848752133549…
 orbit.i to deg
+-- => 87.869126177026452698… deg
 period earth orbit.a to h
+-- => 18.982893721345285847… h
 ```
 
-The eccentricity `orbit.e` is `0.83285339848752133549…`, so the orbit is a long ellipse. The inclination is `87.869126177026452698… deg`, nearly over the poles. One revolution takes `18.982893721345285847… h`. The function names the Earth as its first argument, so the constants come from one place.
+The eccentricity is close to one, so the orbit is a long ellipse. Its inclination is nearly 90 degrees, taking it close to the poles. One revolution takes about 19 hours. The function names the Earth as its first argument, so the constants come from one place.
 
 Move the satellite 40 minutes along its orbit, and convert it back to a position:
 
 ```text
 let later = propagate earth orbit (40 min)
 later.nu to deg
+-- => 127.19430471529450586… deg
 fst (toState earth later) to km
+-- => [14937.7215, 16543.3922, -225.1884] km (rounded).
 ```
 
-The angle from the closest point of the orbit grows from about 92° to `127.19430471529450586… deg`. The new position is `[14937.721530124251323…, 16543.392236976731964…, -225.18839913716800185…] km`.
+The angle from the closest point of the orbit grows from about 92° to 127°. The position remains in the same coordinate axes as the original state.
 
 ### See how far a solver went
 
@@ -611,8 +710,10 @@ A residual measures how far the result misses the original equation. Vallado's e
 
 ```text
 meanToEccentric 0.4 (235.4 deg) to deg
+-- => 220.51207476752206740… deg
 let ea = meanToEccentric 0.4 (235.4 deg)
 eccentricToMean 0.4 ea - 235.4 deg
+-- => About -4.37e-37 deg.
 ```
 
 The first result is approximately 220.512074767522 degrees. The second expression checks the solver's residual. A small residual is useful evidence, but it does not certify every displayed digit.
@@ -622,6 +723,7 @@ A measured input passes its uncertainty through the solver:
 ```text
 :set arithmetic double
 meanToEccentric 0.4 (sample (normal (235.4 deg) (0.01 deg))) to deg
+-- => 220.51372965014176 deg (Monte Carlo: mean 220.51205436334467 deg, sd 0.007511635643720007 deg, outcome 95% [220.49717765127667 deg, 220.52637099774964 deg]; 1000 input samples)
 :set arithmetic rational
 ```
 
@@ -639,12 +741,16 @@ let leo = earth.radius + 191.34411 km
 let geo = earth.radius + 35781.34857 km
 let climb = hohmann earth leo geo
 climb.dv1 to km/s
+-- => 2.4570375641775748610… km s^-1
 climb.dv2 to km/s
+-- => 1.4781866251255600022… km s^-1
 total climb to km/s
+-- => 3.9352241893031348632… km s^-1
 climb.tof to h
+-- => 5.2567133281852289025… h
 ```
 
-The burns are `2.4570375641775748610… km s^-1` and `1.4781866251255600022… km s^-1`, `3.9352241893031348632… km s^-1` in total. The transfer takes `5.2567133281852289025… h`.
+The first burn enters the transfer orbit. The second burn makes the destination orbit circular. Together they require about 3.94 kilometers per second of velocity change, with about 5.26 hours between burns.
 
 ### Change the constants
 
@@ -652,7 +758,9 @@ A full name selects another set without a new `:use`:
 
 ```text
 period iau2015.earth (7000 km) to min
+-- => 97.141949054922148437… min
 period earth (7000 km) to min
+-- => 97.141943961433593065… min
 ```
 
 These give `97.141949054922148437… min` with the IAU 2015 value and `97.141943961433593065… min` with WGS 84. If you enter `:use astro.iau2015` instead, Metron refuses it: `earth` would then name two bodies, and the pending definitions use `earth`.
@@ -698,23 +806,30 @@ Compare the two values:
 
 ```text
 :hash five
+-- => #ico3k
 :hash alsoFive
+-- => #ico3k
 ```
 
 Both commands print the same hash. Compare the functions too:
 
 ```text
 :hash addOne
+-- => #uija9
 :hash increment
+-- => #uija9
 ```
 
 These also share a hash. Renaming a function parameter from `x` to `y` does not change its meaning or its identity. The parameter names help people read the source, but do not distinguish these definitions.
+
+The hashes shown here come from this version of Metron. Language changes can change hashes, so use the identifiers printed in your own session.
 
 You can add another label explicitly:
 
 ```text
 :alias fiveAgain five
 fiveAgain
+-- => 5
 ```
 
 The result is `5`. The alias gives an existing definition another name. It does not copy or recalculate its body.
@@ -728,8 +843,11 @@ Define another expression that evaluates to five:
 ```text
 let computedFive = 2 + 3
 computedFive
+-- => 5
 :hash computedFive
+-- => #8vm89
 :hash five
+-- => #ico3k
 ```
 
 The result is still `5`, but these definitions have different hashes. Metron identifies stored expressions, not every mathematical equivalence between them. It does not prove that two arbitrary programs always produce the same result.
@@ -755,6 +873,7 @@ let journeyTime distance speed = distance / speed
 let commute = journeyTime (12 km) (24 km/h)
 :add
 commute to min
+-- => 30 min
 ```
 
 The result is `30 min`. The saved `commute` refers to this specific version of `journeyTime`. It does not look up whichever definition happens to have that name each time it runs.
@@ -763,8 +882,11 @@ Inspect the relationship:
 
 ```text
 :hash journeyTime
+-- => #ma5cf
 :hash commute
+-- => #2c6m8
 :dependents journeyTime
+-- => commute
 ```
 
 The final command lists `commute`. A dependent is a definition that refers to another definition. Note the two hashes so you can compare them after an upgrade.
@@ -785,7 +907,9 @@ Compare direct use of the new function with the saved calculation:
 
 ```text
 journeyTime (12 km) (24 km/h) to min
+-- => 35 min
 commute to min
+-- => 30 min
 ```
 
 The results are `35 min` and `30 min`. This difference is intentional. Updating a label without upgrading dependents preserves the saved calculation's original dependency.
@@ -794,8 +918,12 @@ Inspect the old reference and the history:
 
 ```text
 :view commute
+-- => commute = journeyTime#ma5cf (12 km) (24 km / h)
 :todo
+-- => stale: commute uses journeyTime#ma5cf (use :upgrade journeyTime)
 :history journeyTime
+-- => #1ilgc  (current)
+--    #ma5cf
 ```
 
 The view contains a reference resembling `journeyTime#ma5cf`. The suffix identifies the older version. The history lists the current version first, followed by earlier versions.
@@ -804,6 +932,7 @@ You can call that older function directly. Replace `ma5cf` below with the old ha
 
 ```text
 journeyTime#ma5cf (12 km) (24 km/h) to min
+-- => 30 min
 ```
 
 The result is `30 min`, even though a call to the current `journeyTime` gives `35 min`. Keep the name and `#` together. A named hash searches versions previously or currently associated with that name.
@@ -812,6 +941,7 @@ A bare hash searches the stored definitions without requiring a name:
 
 ```text
 #ma5cf (12 km) (24 km/h) to min
+-- => 30 min
 ```
 
 This also gives `30 min`. A prefix must identify one definition, or Metron reports the ambiguity and shows the full matching hashes. A bare hash that refers to a recursive function group needs a member suffix, such as `#dlcnc.0`, because the hash names the whole group; `:hash` prints it with the suffix. A named reference such as `fact#dlcnc` needs no suffix.
@@ -829,8 +959,11 @@ Move the dependent calculation to the new function:
 ```text
 :upgrade journeyTime
 commute to min
+-- => 35 min
 :hash commute
+-- => #l75j3
 :todo
+-- => nothing to do
 ```
 
 The result is now `35 min`. The hash of `commute` changes because its dependency changes. The todo command now reports `nothing to do`.
@@ -845,6 +978,7 @@ Now increase preparation time to ten minutes:
 let journeyTime distance speed = distance / speed + 10 min
 :update
 commute to min
+-- => 40 min
 :history commute
 ```
 
@@ -906,6 +1040,7 @@ Enter:
 ```text
 :load /tmp/metron-learning.metron
 commute to min
+-- => 40 min
 ```
 
 The result is `40 min`. Loading source gives you definitions to work with. In a saved session, use `:add` or `:update` to accept them as appropriate.

@@ -359,7 +359,9 @@ symbol =
     , char '|' $> TBar
     , string "∘" $> TOp "."
     , string ".+" $> TOp ".+"
+    , string "⊞" $> TOp ".+"
     , string ".-" $> TOp ".-"
+    , string "⊟" $> TOp ".-"
     , string ".*" $> TOp ".*"
     , string "./" $> TOp "./"
     , string "⊙" $> TOp ".*"

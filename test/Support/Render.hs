@@ -10,9 +10,9 @@ import Metron.Eval
 import Metron.Rational (Rat (..))
 import Metron.Type (conText)
 
-{- | A plain rendering for tests. Forces every element. Exact magnitudes
-print as @n/d@ in base units, affine ones as an approximate @mid±r@, and
-dimensions are omitted; decimal output with units is "Metron.Pretty"'s job.
+{- | A plain rendering for tests. Forces every element. Rational values
+print as @n/d@ and dimensions are omitted; decimal output with units and
+sampling summaries is "Metron.Pretty"'s job.
 -}
 render :: Value -> Either EvalError Text
 render = \case

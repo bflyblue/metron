@@ -115,7 +115,7 @@ constantTests =
           , "wgs84.earth.rate == 7292115e-11 rad/s"
           , -- J2 = -√5 C̄20 = 1.0826266836e-3 (EGM96, tide-free); Vallado
             -- uses 0.0010826267.
-            near "5e-11" "mid wgs84.earth.j2" "1.0826266836e-3"
+            near "5e-11" "mean wgs84.earth.j2" "1.0826266836e-3"
           , near "4e-11" "sd wgs84.earth.j2" "sqrt 5 * 0.35610635e-10"
           ]
         -- The defining values are exact; only J2 is measured.
@@ -124,19 +124,19 @@ constantTests =
     , testCase "iers2010: TN36 Tables 1.1 and 1.2, with their uncertainties" $ do
         holds
           []
-          [ near "5e5 m^3/s^2" "mid iers2010.earth.mu" "3.986004418e14 m^3/s^2"
+          [ near "5e5 m^3/s^2" "mean iers2010.earth.mu" "3.986004418e14 m^3/s^2"
           , near "4e5 m^3/s^2" "sd iers2010.earth.mu" "8e5 m^3/s^2"
-          , near "0.06 m" "mid iers2010.earth.radius" "6378136.6 m"
+          , near "0.06 m" "mean iers2010.earth.radius" "6378136.6 m"
           , near "0.05 m" "sd iers2010.earth.radius" "0.1 m"
-          , near "6e-11" "mid iers2010.earth.j2" "1.0826359e-3"
+          , near "6e-11" "mean iers2010.earth.j2" "1.0826359e-3"
           , near "5e-11" "sd iers2010.earth.j2" "1e-10"
-          , near "0.00002" "mid (1 / iers2010.earth.flattening)" "298.25642"
+          , near "0.00002" "mean (1 / iers2010.earth.flattening)" "298.25642"
           , "iers2010.earth.rate == 7.292115e-5 rad/s"
           , -- the Moon's GM is the mass ratio times the Earth's
-            near "3e-10" "mid (iers2010.moon.mu / iers2010.earth.mu)" "0.0123000371"
+            near "3e-10" "mean (iers2010.moon.mu / iers2010.earth.mu)" "0.0123000371"
           , near "2e-10" "sd (iers2010.moon.mu / iers2010.earth.mu)" "4e-10"
           , "iers2010.moon.radius == 0 m"
-          , near "6e9 m^3/s^2" "mid iers2010.sun.mu" "1.32712442099e20 m^3/s^2"
+          , near "6e9 m^3/s^2" "mean iers2010.sun.mu" "1.32712442099e20 m^3/s^2"
           , near "5e9 m^3/s^2" "sd iers2010.sun.mu" "1e10 m^3/s^2"
           , "iers2010.sun.j2 == 2.0e-7"
           ]
@@ -334,7 +334,7 @@ elementTests =
           [ "use astro.wgs84"
           , "let el = fromState earth ((vmap (\\x -> sample (normal x 0.1)) [6524.834, 6862.875, 6448.296]) * 1 km) ((vmap (\\x -> sample (normal x 0.0001)) [4.901327, 5.533756, -1.976341]) * 1 km/s)"
           ]
-          [ near "10 km" "mid el.a" "36127.343 km"
+          [ near "10 km" "mean el.a" "36127.343 km"
           , "sd el.a > 0 km && sd el.a < 20 km"
           , "sd el.nu > 0 rad && sd el.nu < 0.1 deg"
           ]
@@ -408,7 +408,7 @@ anomalyTests =
           ]
           [ -- dE/dM = 1 / (1 - e cos E)
             near "0.005 deg" "sd ea" "0.01 deg / (1 - 0.4 * cos e0)"
-          , near "0.01 deg" "mid ea" "e0"
+          , near "0.01 deg" "mean ea" "e0"
           , "hard > 0 rad && hard < 1 rad"
           , near "1e-18 rad" "hard - 0.999 * sin hard * 1 rad" "0.01 rad"
           ]

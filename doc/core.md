@@ -165,8 +165,8 @@ Making `Num` the rank-zero tensor raises the question of which primitives work
 on every tensor. The answer is decided by whether the operation has one meaning
 at every rank:
 
-- **Elementwise, shape-polymorphic**: `+`, `-`, `⊙`, `⊘`, `neg`, `abs`, `mid`,
-  `mid`, `sd`, `vmap`, `vzipWith`, `timap`, and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
+- **Elementwise, shape-polymorphic**: `+`, `-`, `⊙`, `⊘`, `neg`, `abs`,
+  `mean`, `sd`, `vmap`, `vzipWith`, `timap`, and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
   flat buffer. Scalars are the rank-zero instance of the same path. `timap`
   also passes each component's multi-index, typed `Vec (rank s)` with the
   type-level `rank` of design §4.1; it is an ordinary primitive (arity 2) with

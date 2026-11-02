@@ -405,8 +405,7 @@ typeOfText src =
     other -> Left (T.pack (show other))
 
 {- | An expression that is @true@ when every component of the dimensionless
-tensor @e@ encloses the matching component of @t@ (@|mid d| ≤ bound d@ for
-@d = e − t@) with a bound of at most @tol@.
+tensor @e@ differs from the matching component of @t@ by at most @tol@.
 -}
 encloses :: Text -> Text -> Text -> Text
 encloses tol e t =

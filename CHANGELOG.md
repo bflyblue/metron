@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add `⊞` and `⊟` as Unicode spellings of `.+` and `.-`, including
+  Unicode printing, source echo and `\boxplus`/`\boxminus` TAB entry.
+  Both spellings produce identical Core; hashes and store format are unchanged.
+
+- Rename the empirical input-mean function from `mid` to `mean`, with no
+  compatibility alias. Use it in expressions, for example `mean perimeter / 2`.
+  Hash-affecting: primitive names are part of Core encoding, so definitions
+  rewritten to use `mean` get new hashes. Store format 13 is unchanged;
+  stored expressions using the removed primitive are no longer supported.
+
 - Remove quadratic allocation when sampled double arithmetic combines a
   sampled value with a constant. Read deterministic operands directly in
   arithmetic and per-realization matrix kernels. Grouped reports now use

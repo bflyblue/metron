@@ -649,6 +649,12 @@ The lexer maps unicode to canonical tokens. Every construct has an ASCII
 spelling, so a plain keyboard is never a barrier, and the pretty-printer can
 emit either.
 
+**Decided.** `⊞` and `⊟` are Unicode spellings of `.+` and `.-`.
+They use the same point operations, precedence and associativity, and produce
+the same Core and hashes. Unicode printing and echo use the box symbols;
+ASCII printing uses the dotted operators. REPL entry supports `\boxplus`
+and `\boxminus` followed by TAB.
+
 | Unicode | ASCII | Meaning |
 |---|---|---|
 | `λ` | `\` | lambda |
@@ -659,6 +665,8 @@ emit either.
 | `⊙` | `.*` | elementwise product; name `emul` |
 | `⊘` | `./` | elementwise division; name `ediv` |
 | `÷` | `/` | division by a scalar; name `div` |
+| `⊞` | `.+` | point plus displacement; name `pointAdd` |
+| `⊟` | `.-` | displacement between points; name `pointSub` |
 | `≤` `≥` `≠` | `<=` `>=` `/=` | comparison |
 | `∨` `¬` | `\|\|` `not` | boolean or and not. Boolean and is `&&` only, because `∧` is the wedge product |
 | `∧` | `/\` | wedge (exterior) product; name `wedge` |
@@ -927,7 +935,9 @@ The finite generator approximates the requested distribution.
 
 #### 3.2.6 Statistical summaries
 
-`mid x` is the empirical mean of ordinary input results.
+**Decided.** `mean x` is the empirical mean of ordinary input results.
+It is a composable expression function, not a REPL command. There is no alias
+for the former name.
 `sd x` is their sample standard deviation, with denominator N−1.
 They require sampled inputs. Sample deviation and covariance require N≥2.
 They reject stochastic rounding analysis of reductions until that model is specified.
@@ -3387,7 +3397,7 @@ atan2       : Num d -> Num d -> Num rad
 pi          : Num
 e ^ n       : Num d -> Num (d^n)            -- a special form: n an integer literal
 v.i         : Tensor (n + i + 1 : s) d -> Tensor s d   -- a special form: i a literal position (2.10, 4.1)
-mid sd      : Tensor s d -> Tensor s d       -- empirical input statistics
+mean sd      : Tensor s d -> Tensor s d       -- empirical input statistics
 nextUp      : Tensor s d -> Tensor s d   -- the double backend's (8.2)
 ulps        : Num d -> Num d -> Num         eps : Num
 fma         : Num d1 -> Num d2 -> Num (d1*d2) -> Num (d1*d2)
@@ -5768,7 +5778,7 @@ The implementation does not silently discard failed runs or summarize survivors.
 Different result constructors produce an ordinary-input outcome table.
 Diagnostic constructor counts appear separately. Conditional numeric rounding
 summaries for mixed constructors are unavailable.
-`mid`, `sd` and covariance reject rounding analysis of reductions.
+`mean`, `sd` and covariance reject rounding analysis of reductions.
 
 #### 8.2.7 Batching and resources
 

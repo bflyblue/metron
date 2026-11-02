@@ -224,7 +224,7 @@ turnedChartTests =
           , "sd v.1 > 0.4 && sd v.1 < 1.4"
           , -- the norm is 1000 whatever the angle: the first-order terms cancel
             "sd (norm v) < sd v.0 / 100"
-          , "abs (mid (norm v) - 1000) < 1e-3"
+          , "abs (mean (norm v) - 1000) < 1e-3"
           , -- on its own frame the point is exact
             "[1000, 0, 0] tilt .- [0, 0, 0] tilt"
           ]

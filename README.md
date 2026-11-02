@@ -39,7 +39,9 @@ The result is `5000 m`. The executable is called `metron`, so an installed copy 
 
 ## A short example: planning a ride
 
-Suppose you cycle 12 kilometers in 30 minutes. Enter these lines in the interactive calculator:
+Suppose you cycle 12 kilometers in 30 minutes. How long will an 18-kilometer route take at the same speed?
+
+Enter these lines in the interactive calculator. Comments beginning with `-- =>` show results, so you can copy the whole block.
 
 ```text
 :set arithmetic rational
@@ -48,37 +50,56 @@ let duration = 30 min
 let speed = distance / duration
 
 speed to km/h
+-- => 24 km h^-1
+
+let travelTime distance speed = distance / speed
+travelTime (18 km) speed to min
+-- => 45 min
+
+travelTime (18 km) (15 km/h) to min
+-- => 72 min
 ```
 
-The first line selects exact rational arithmetic. Double arithmetic, which uses fixed-precision floating-point numbers, is the default. Metron prints `24 km h^-1`, which means 24 kilometers per hour. Use `to` to choose another unit:
+Use `let` to define a value or function. Parentheses keep a quantity together when passing it to a function. The units follow the calculation: distance divided by speed gives time. The notation `h^-1` means “per hour.”
+
+Rational arithmetic preserves exact fractions. Double arithmetic, which uses fixed-precision floating-point numbers, is the default.
 
 ```text
 speed to m/s
+-- => 6.6666666666666666666… m s^-1
 ```
 
-The result starts with `6.6666666666666666666… m s^-1`. Metron keeps the exact fraction internally, even when its decimal display cannot fit on one line.
+The ellipsis marks a decimal that continues. Internally, this rational result is exactly 20/3 meters per second.
 
-You can turn the calculation into a function that takes both distance and speed as inputs:
+### What if the route length is uncertain?
 
-```text
-let travelTime distance speed = distance / speed
-travelTime (18 km) speed to min
-```
-
-The result is `45 min`. Use `let` to define a value or function. Put a quantity in parentheses when passing it to a function, as in `(18 km)`.
-
-Now describe the distance as a normally distributed measurement, with a standard deviation of 0.1 kilometers:
+Suppose the route estimate has a normal distribution with a mean of 18 kilometers and a standard deviation of 0.3 kilometers:
 
 ```text
 :set samples 1000
-let measuredDistance = sample (normal (12 km) (0.1 km))
-measuredDistance / duration to km/h
+:set seed 1
+let routeDistance = sample (normal (18 km) (0.3 km))
+let arrivalTime = travelTime routeDistance speed
+
+arrivalTime to min
+-- => 44.863475507699178832… min (Monte Carlo: mean 45.0084226974… min, sd 0.740787289689… min, outcome 95% [43.5287705890… min, 46.4427261886… min], 1000 input samples)
+
+mean arrivalTime to min
+-- => 45.0084 min (rounded).
+sd arrivalTime to min
+-- => 0.7408 min (rounded).
+
+sd (arrivalTime - arrivalTime) to min
+-- => 0 min
 ```
 
-The sample mean is near 24 km/h and the sample standard deviation is near 0.2 km/h.
-The report describes simulated outcomes. It does not give a guaranteed error bound.
+The same function now estimates a distribution of journey times. The block includes the actual report for this session. Results vary with the seed and sample count.
 
-Reusing `measuredDistance` reuses the same draws, so `measuredDistance - measuredDistance` is zero in every draw. Use `sample (uniform lower upper)` for a uniform input model.
+The leading value, about 44.86 minutes, is the ordinary result from one input realization. The `mean` summarizes all 1,000 draws. The `sd` measures their spread. The `outcome 95%` interval contains the central 95% of simulated journey times. It is neither a guaranteed bound nor a confidence interval for the mean.
+
+The input model predicts a mean of 45 minutes and a standard deviation of 0.75 minutes. A finite sample gives estimates near those values.
+
+Reusing `arrivalTime` reuses the same input draws, so subtracting it from itself cancels every draw. Separate `sample` sites describe independent inputs.
 
 ## Explore rounding separately
 
@@ -87,9 +108,12 @@ Ordinary double arithmetic rounds each operation to a representable number. For 
 ```text
 :set arithmetic double
 (1e16 + 1) - 1e16
+-- => 0
 :set roundingAnalysis stochastic
 :set roundingSamples 8
 (1e16 + 1) - 1e16
+-- => 0, plus rounding diagnostics (rounded):
+--    typical spread 1.0690, RMS displacement 1.4142.
 :set roundingAnalysis off
 ```
 
@@ -123,7 +147,19 @@ Metron carries more information than a number alone:
 
 Rational fractions stay exact under rational operations. Roots, trigonometric functions and normal random draws still require approximation. Increasing the display precision does not increase double precision.
 
-For a basic chart conversion, try `20 degC to degF`. The result is `68 degF`. Points have no ordinary sum. Use `25 degC .- 20 degC` for a difference of `5 K`, or `20 degC .+ (5 K)` to move a point.
+For example, temperature points and temperature changes obey different rules:
+
+```text
+:set arithmetic rational
+20 degC to degF
+-- => 68 degF
+25 degC ⊟ 20 degC
+-- => 5 K
+20 degC ⊞ (5 K)
+-- => 25 degC
+```
+
+Use `.-` and `.+` for the ASCII spellings of `⊟` and `⊞`. Adding two Celsius points with ordinary `+` is rejected.
 
 ## Keeping your work
 

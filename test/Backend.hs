@@ -123,12 +123,39 @@ backendTests =
       , testCase "sample reductions reject rounding analysis" $ do
           isLeft (doubleOf analysis "sd (sample (normal 1 0.1))")
             @? "reduction must refuse diagnostics"
+          isLeft (doubleOf analysis "mean (sample (normal 1 0.1))")
+            @? "mean must refuse diagnostics"
+      , testCase "mean averages ordinary draws and composes as a function" $ do
+          let cfg = doubleConfig{samples = 32}
+              source = "sample (uniform 1 2) #reading"
+          x <- get cfg source
+          result <- get cfg ("mean (" <> source <> ")")
+          result.value
+            @?= fromRational (sum (map toRational (baselines x)) / 32)
+          forM_ ["rational", "double"] $ \arithmetic -> do
+            runWith
+              cfg
+              [ ":set arithmetic " <> arithmetic
+              , "let x = sample (normal (10 m) (0 m))"
+              , "mean x / 2"
+              , "mean [x, 2*x]"
+              ]
+              @?= Right ["5 m", "[10, 20] m"]
+          isLeft (runWith cfg ["mid (sample (normal 1 0))"])
+            @? "removed name must be unavailable"
       , testCase "cores cannot change either axis or reports" $ do
           let src = "let x = sample (uniform 1 2) in if x < 1.5 then x/3 else x*x"
               outputs cfg = [runWith cfg{samples = 12, cores = k} [src] | k <- [1, 2, 4]]
           forM_ [doubleConfig, analysis] $ \cfg -> case outputs cfg of
             a : rest -> all (== a) rest @? show (outputs cfg)
             [] -> assertFailure "missing core counts"
+          let means =
+                [ runWith doubleConfig{samples = 32, cores = k} ["mean (sample (uniform 1 2))"]
+                | k <- [1, 2, 4]
+                ]
+          case means of
+            Right first : rest -> all (== Right first) rest @? show means
+            _ -> assertFailure (show means)
       , testCase "grouped reports keep constants and diagnostic offsets aligned" $ do
           let sampled = Dbl 1 (Copies (Layout 2 True) (VU.fromList [1, 0, 2, 3, 2, 4])) Nothing
               constant = Dbl 7 NoSamples Nothing

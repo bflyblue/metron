@@ -102,7 +102,7 @@ primArity = \case
   "covariance" -> Just 1
   "crossCovariance" -> Just 2
   -- Statistics over ordinary input realizations (design §3.2.9).
-  "mid" -> Just 1
+  "mean" -> Just 1
   "sd" -> Just 1
   -- The double backend's own (design §8.2).
   "nextUp" -> Just 1

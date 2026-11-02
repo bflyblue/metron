@@ -36,6 +36,8 @@ completions =
     , ("odot", "⊙")
     , ("oslash", "⊘")
     , ("div", "÷")
+    , ("boxplus", "⊞")
+    , ("boxminus", "⊟")
     , ("le", "≤")
     , ("leq", "≤")
     , ("ge", "≥")

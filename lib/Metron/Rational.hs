@@ -158,7 +158,7 @@ instance Scalar Rat where
           ]
      in Rat baseline (Just (V.replicate n 0 V.// entries))
   own = \case
-    "mid" -> Just (Each Keep False (statistic (Just . (.mean))))
+    "mean" -> Just (Each Keep False (statistic (Just . (.mean))))
     "sd" -> Just (Each Keep False (statistic (.deviation)))
     "covariance" -> Just (Covariance sampleCovariance)
     "crossCovariance" -> Just (Covariance sampleCovariance)

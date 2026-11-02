@@ -398,7 +398,7 @@ instance Scalar Dbl where
     NoSamples -> x
   scatterM = scatterD
   own = \case
-    "mid" -> Just (Each Keep False (statistic "mid" (Just . (.mean))))
+    "mean" -> Just (Each Keep False (statistic "mean" (Just . (.mean))))
     "sd" -> Just (Each Keep False (statistic "sd" (.deviation)))
     "covariance" -> Just (Covariance sampleCovariance)
     "crossCovariance" -> Just (Covariance sampleCovariance)

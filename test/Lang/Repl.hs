@@ -90,6 +90,8 @@ asciiSpellings =
   , ("⊙", ".*")
   , ("⊘", "./")
   , ("÷", "/")
+  , ("⊞", ".+")
+  , ("⊟", ".-")
   , ("≤", "<=")
   , ("≥", ">=")
   , ("≠", "/=")
@@ -240,6 +242,10 @@ replTests =
           | (name, u) <- U.completions
           ]
     , testCase "unicode lookup prefers an exact name" $ do
+        U.lookupName "boxplus" @?= Just "⊞"
+        U.lookupName "boxminus" @?= Just "⊟"
+        replacements seeded "\\boxplus" @?= ["⊞"]
+        replacements seeded "\\boxminus" @?= ["⊟"]
         U.lookupName "pm" @?= Nothing
         map fst (U.matching "pm") @?= []
         map fst (U.matching "pr") @?= ["prime"]

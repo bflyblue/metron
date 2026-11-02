@@ -254,7 +254,7 @@ strictPrimitives =
   , "tanh"
   , "atan2"
   , "norm"
-  , "mid"
+  , "mean"
   , "bound"
   , "sd"
   , "seq"

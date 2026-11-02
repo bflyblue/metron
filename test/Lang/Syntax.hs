@@ -136,6 +136,10 @@ lexerTests =
     , testCase "removed uncertainty spellings are rejected"
         $ map (either (const True) (const False) . toks) ["a ± 1", "a ±σ 1"]
           @?= [True, True]
+    , localOption (mkTimeout 10_000_000) $ testCase "box operators are affine operator spellings" $ do
+        toks "p⊞v⊟q" @?= toks "p .+ v .- q"
+        runLinesP ["20 degC ⊞ (5 K)", "25 degC ⊟ 20 degC", "20 degC ⊞ (5 K) ⊟ 10 degC"]
+          @?= Right ["25 degC", "5 K", "15 K"]
     , testCase "glued superscripts"
         $ toks "m² s⁻² x³"
           @?= Right [TIdent "m", TSup 2, TIdent "s", TSup (-2), TIdent "x", TSup 3]
@@ -414,6 +418,23 @@ prettyTests =
   testGroup
     "pretty"
     [ testCase "integers" $ renderRational 20 42 @?= "42"
+    , localOption (mkTimeout 10_000_000) $ testCase "point operators print in either spelling with unchanged hashes" $ do
+        forM_ [(".+", "⊞"), (".-", "⊟")] $ \(ascii, unicode) -> do
+          let definition op = "let h p x = p " <> op <> " x"
+          case runLinesP
+            [ definition ascii
+            , ":hash h"
+            , ":set unicode on"
+            , ":view h"
+            , ":set unicode off"
+            , ":view h"
+            ] of
+            Right [hash, unicodeView, asciiView] -> do
+              T.isInfixOf unicode unicodeView @? T.unpack unicodeView
+              T.isInfixOf ascii asciiView @? T.unpack asciiView
+              runLinesP [definition unicode, ":hash h"] @?= Right [hash]
+              runLinesP ["let " <> unicodeView, ":hash h"] @?= Right [hash]
+            other -> assertFailure (show other)
     , testCase "terminating decimals print in full"
         $ renderRational 20 (11 / 2) @?= "5.5"
     , testCase "repeating decimals are truncated with an ellipsis"
@@ -460,6 +481,8 @@ respellTests =
         respell "sample (uniform 0.9 1.1)" @?= Nothing
         respell "u >< v @ w" @?= Just "u × v · w"
         respell "a /\\ b .* c ./ d" @?= Just "a ∧ b ⊙ c ⊘ d"
+        respell "p .+ v .- q" @?= Just "p ⊞ v ⊟ q"
+        respell "p ⊞ v ⊟ q" @?= Nothing
         respell "f . g" @?= Just "f ∘ g"
         respell "a /= b || c" @?= Just "a ≠ b ∨ c"
     , testCase "nothing to respell gives nothing" $ do

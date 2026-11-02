@@ -223,7 +223,7 @@ primScheme name = case name of
       )
   -- Input sample statistics (design §3.2.9), elementwise, in the
   -- operand's dimension.
-  "mid" -> Just (Forall [sv, dv] (TFun sd sd))
+  "mean" -> Just (Forall [sv, dv] (TFun sd sd))
   "sd" -> Just (Forall [sv, dv] (TFun sd sd))
   -- The double backend's own (design §8.2): its error estimate and the
   -- significant digits that leave, elementwise; the next double up; the

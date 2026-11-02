@@ -77,8 +77,8 @@ binaryOperators =
         , (Sub, "sub", ["-"], "-", "-")
         , -- A point and an amount (design §3.6): `.+` and `.-` are the
           -- primitives always, so they read back as they are written.
-          (PAdd, "pointAdd", [".+"], ".+", ".+")
-        , (PSub, "pointSub", [".-"], ".-", ".-")
+          (PAdd, "pointAdd", [".+"], ".+", "⊞")
+        , (PSub, "pointSub", [".-"], ".-", "⊟")
         ]
       )
     ,

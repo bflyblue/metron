@@ -1355,6 +1355,8 @@ respellEdits text = go Nothing
     L.TOp "/\\" -> Just ("/\\", "∧")
     L.TOp ".*" -> Just (".*", "⊙")
     L.TOp "./" -> Just ("./", "⊘")
+    L.TOp ".+" -> Just (".+", "⊞")
+    L.TOp ".-" -> Just (".-", "⊟")
     L.TOp "." -> Just (".", "∘")
     _ -> Nothing
 
