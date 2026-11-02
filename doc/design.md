@@ -5729,7 +5729,7 @@ editor does not redraw an entry that contains a newline, so the lines are
 not joined into one entry.
 
 **Implemented in:** `Metron.Command` (`commandDescriptions`, `commandHelp`), `Metron.Driver` (`feed`, `feedFile`, `setSetting`, `settingValues`, `settingNames`), `Metron.Limits` (`limitSettings`), `Metron.Edit` (`editRequest`, `applyEdit`, `editorNote`), `Metron.Repl` (`complete`, `continuation`, `needsMore`, `classify`, `paint`, `highlight`, `echoInput`), `Metron.Unicode` (`completions`, `lookupName`), `Metron.Pretty` (`respell`). The editor, `:store`, `:colour`, `:load` and the history file are in `src/Main.hs`.
-**Tested by:** "repl"; ":edit, the editor round trip"; "unicode echo"; "it, the last result"; "codebase" › ":edit prints a definition as source".
+**Tested by:** "repl"; ":edit, the editor round trip"; "unicode echo"; "it, the last result"; "codebase" › ":edit prints a definition as source", ":ls lists names with their types, filtered by glob, kind or type query"; "standard library" › ":ls lists a unit with a type that reads back: one of it (design §3.10, U9)"; "backends (design §8.2)" › ":set samples, seed and rounding, and --set" › "the backend's defaults are the session's: seed 1, as :set shows"; "display units" › ":set unicode prints the unicode spellings, which read back".
 
 ### 7.4 CLI and persistence
 

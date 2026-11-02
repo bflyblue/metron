@@ -2,10 +2,16 @@
 
 ## Unreleased
 
-- Fixes from a design review; no hash moves and the store format stays 12.
-  - The ASCII subscript is the unicode one (design §2.8): `v_0` is the
-    identifier `v₀`, `x_12` is `x₁₂`, so after `let v₀ = 1`, `v_0`
-    resolves; names given to commands fold the same way.
+- Fixes from a design review. The store format stays 12: the encoding is
+  unchanged, and no library hash moves. One change is hash-affecting for
+  some user text (below).
+  - Hash-affecting: the ASCII subscript is the unicode one (design §2.8):
+    `v_0` is the identifier `v₀`, `x_12` is `x₁₂`, so after `let v₀ = 1`,
+    `v_0` resolves; names given to commands fold the same way. A
+    definition whose name has `_digit` and that holds a `±`, `±σ`, `noise`
+    or `gauss`, or a `data` type so named, is stamped with the folded name
+    and so hashes differently when entered again. A store with such names
+    can no longer address them: recreate it, from its export.
   - The printer eta-reduces a primitive used as a value (design §2.9):
     `let h = vmap sqrt` views as `h = vmap sqrt`, not `\x -> vmap (\x' ->
     sqrt x') x`, and reads back to the same hash. The desugarer's
