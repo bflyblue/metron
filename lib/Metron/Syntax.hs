@@ -37,13 +37,18 @@ module Metron.Syntax (
   renderSpanError,
 ) where
 
-import Data.List.NonEmpty ( NonEmpty )
-import Data.Text ( Text )
-import Metron.Core ( NudgeKind )
-import GHC.Records ( HasField(..) )
-import Data.List.NonEmpty qualified as NE ( toList )
-import Data.Text qualified as T
-    ( pack, intercalate, length, lines, replicate, splitOn )
+import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty qualified as NE (toList)
+import Data.Text (Text)
+import Data.Text qualified as T (
+  intercalate,
+  length,
+  lines,
+  pack,
+  replicate,
+  splitOn,
+ )
+import GHC.Records (HasField (..))
 
 -- | A 1-based line and column.
 data Pos = Pos {line :: !Int, col :: !Int}
@@ -98,8 +103,6 @@ data Op
   | Ge
   | And
   | Or
-  | -- | @±@ (bound) or @±σ@ (statistical)
-    PlusMinus NudgeKind
   | To
   | -- | @b .- a on c@: subtract in a frame (design §3.10, F10)
     On

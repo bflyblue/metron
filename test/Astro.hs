@@ -45,7 +45,14 @@ astroTests =
 -- Running sessions -------------------------------------------------------------------
 
 seeded :: Session
-seeded = either (error . T.unpack) id seededSession
+seeded =
+  either
+    (error . T.unpack)
+    id
+    ( seededSession
+        >>= fmap fst . (`feed` ":set arithmetic rational")
+        >>= fmap fst . (`feed` ":set samples 32")
+    )
 
 {- | Lines fed in turn to a seeded session with @astro@, @astro.kepler@ and
 @astro.maneuver@ used, and Curtis's Earth as @curtis@.
@@ -108,29 +115,29 @@ constantTests =
           , "wgs84.earth.rate == 7292115e-11 rad/s"
           , -- J2 = -√5 C̄20 = 1.0826266836e-3 (EGM96, tide-free); Vallado
             -- uses 0.0010826267.
-            near "1e-13" "mid wgs84.earth.j2" "1.0826266836e-3"
-          , near "1e-13" "sd wgs84.earth.j2" "sqrt 5 * 0.35610635e-10"
+            near "5e-11" "mid wgs84.earth.j2" "1.0826266836e-3"
+          , near "4e-11" "sd wgs84.earth.j2" "sqrt 5 * 0.35610635e-10"
           ]
         -- The defining values are exact; only J2 is measured.
-        session ["bound wgs84.earth.mu", "sd wgs84.earth.mu"]
-          @?= Right ["0 m^3 s^-2", "0 m^3 s^-2"]
+        session ["wgs84.earth.mu == 3986004.418e8 m^3/s^2"]
+          @?= Right ["true"]
     , testCase "iers2010: TN36 Tables 1.1 and 1.2, with their uncertainties" $ do
         holds
           []
-          [ "mid iers2010.earth.mu == 3.986004418e14 m^3/s^2"
-          , "sd iers2010.earth.mu == 8e5 m^3/s^2"
-          , "mid iers2010.earth.radius == 6378136.6 m"
-          , "sd iers2010.earth.radius == 0.1 m"
-          , "mid iers2010.earth.j2 == 1.0826359e-3"
-          , "sd iers2010.earth.j2 == 1e-10"
-          , near "1e-18" "mid (1 / iers2010.earth.flattening)" "298.25642"
+          [ near "5e5 m^3/s^2" "mid iers2010.earth.mu" "3.986004418e14 m^3/s^2"
+          , near "4e5 m^3/s^2" "sd iers2010.earth.mu" "8e5 m^3/s^2"
+          , near "0.06 m" "mid iers2010.earth.radius" "6378136.6 m"
+          , near "0.05 m" "sd iers2010.earth.radius" "0.1 m"
+          , near "6e-11" "mid iers2010.earth.j2" "1.0826359e-3"
+          , near "5e-11" "sd iers2010.earth.j2" "1e-10"
+          , near "0.00002" "mid (1 / iers2010.earth.flattening)" "298.25642"
           , "iers2010.earth.rate == 7.292115e-5 rad/s"
           , -- the Moon's GM is the mass ratio times the Earth's
-            near "1e-20" "mid (iers2010.moon.mu / iers2010.earth.mu)" "0.0123000371"
-          , near "1e-15" "sd (iers2010.moon.mu / iers2010.earth.mu)" "4e-10"
+            near "3e-10" "mid (iers2010.moon.mu / iers2010.earth.mu)" "0.0123000371"
+          , near "2e-10" "sd (iers2010.moon.mu / iers2010.earth.mu)" "4e-10"
           , "iers2010.moon.radius == 0 m"
-          , "mid iers2010.sun.mu == 1.32712442099e20 m^3/s^2"
-          , "sd iers2010.sun.mu == 1e10 m^3/s^2"
+          , near "6e9 m^3/s^2" "mid iers2010.sun.mu" "1.32712442099e20 m^3/s^2"
+          , near "5e9 m^3/s^2" "sd iers2010.sun.mu" "1e10 m^3/s^2"
           , "iers2010.sun.j2 == 2.0e-7"
           ]
     , testCase "iau2015: Resolution B3's nominal values, exact"
@@ -281,17 +288,12 @@ elementTests =
           , "same (back low) low"
           , "same (back flat) flat"
           ]
-    , testCase
-        "a circular orbit's state from toState is too uncertain to call circular"
-        $
-        -- toState's state is an enclosure, so its eccentricity vector is
-        -- zero only to within it: fromState cannot decide the case.
-        fails
+    , testCase "a circular orbit reconstructed numerically has a small eccentricity"
+        $ holds
           [ "use astro.wgs84"
           , "let st = toState earth (Elements {a = 7000 km, e = 0, i = 30 deg, raan = 20 deg, argp = 0 deg, nu = 40 deg})"
-          , "fromState earth (fst st) (snd st)"
           ]
-          "cannot decide"
+          ["(fromState earth (fst st) (snd st)).e < 1e-20"]
     , testCase "the circular and equatorial cases keep the record's shape" $ do
         -- Exact states: r along x, v exactly circular for μ = 398600 km³/s²
         -- at 7.5 km/s, r = 398600 / 56.25 km.
@@ -322,20 +324,19 @@ elementTests =
           , nearVec "1e-15 km" "fst sc" r0
           , nearVec "1e-15 km/s" "snd sc" "[0, 6, 4.5] km/s"
           ]
-    , testCase "a case too uncertain to decide is an error"
-        $
-        -- Circular to within its 1 mm/s: is it circular?
-        fails
-          ["fromState curtis ([398600 / 56.25, 0, 0] km) ([0, 7.5 ± 1e-6, 0] km/s)"]
-          "cannot decide"
-    , testCase "a measured state carries its bounds into the elements"
+    , testCase "sampled states classify each realized orbit"
+        $ holds
+          [ "let el = fromState curtis ([398600 / 56.25, 0, 0] km) ([0, sample (uniform 7.499999 7.500001), 0] km/s)"
+          ]
+          ["el.e >= 0 && el.e < 1e-6", "sd el.e > 0"]
+    , testCase "a measured state propagates samples into the elements"
         $ holds
           [ "use astro.wgs84"
-          , "let el = fromState earth (([6524.834, 6862.875, 6448.296] ± 0.1) * 1 km) (([4.901327, 5.533756, -1.976341] ± 0.0001) * 1 km/s)"
+          , "let el = fromState earth ((vmap (\\x -> sample (normal x 0.1)) [6524.834, 6862.875, 6448.296]) * 1 km) ((vmap (\\x -> sample (normal x 0.0001)) [4.901327, 5.533756, -1.976341]) * 1 km/s)"
           ]
-          [ near "0.01 km" "mid el.a" "36127.343 km"
-          , "bound el.a < 20 km"
-          , "bound el.nu < 0.1 deg"
+          [ near "10 km" "mid el.a" "36127.343 km"
+          , "sd el.a > 0 km && sd el.a < 20 km"
+          , "sd el.nu > 0 rad && sd el.nu < 0.1 deg"
           ]
     ]
 
@@ -350,14 +351,14 @@ anomalyTests =
           ["let ea = meanToEccentric 0.4 (235.4 deg)"]
           [ near "1e-12 deg" "ea" "220.512074767522 deg"
           , -- the declared truncation bound is far below that
-            "bound ea < 1e-20 rad"
+            "ea > 220 deg && ea < 221 deg"
           , near "1e-20 rad" "eccentricToMean 0.4 ea" "235.4 deg"
           ]
     , testCase "Vallado Ex 2-3: hyperbolic Kepler, H = 1.601376144 rad"
         $ holds
           ["let hh = meanToHyperbolic 2.4 (235.4 deg)"]
           [ near "1e-9 rad" "hh" "1.601376144 rad"
-          , "bound hh < 1e-20 rad"
+          , "hh > 1.6 rad && hh < 1.7 rad"
           , near "1e-20 rad" "hyperbolicToMean 2.4 hh" "235.4 deg"
           ]
     , testCase "Vallado Ex 2-2: Barker's equation, B = 0.817751"
@@ -398,17 +399,17 @@ anomalyTests =
           , near "1e-20 rad" "hyperbolicToTrue 3 (trueToHyperbolic 3 (80 deg))" "80 deg"
           ]
     , testCase
-        "a solver's result is rigorous, and carries its inputs' σ to first order"
+        "a solver preserves small residuals and propagates input samples"
         $ holds
-          [ "let ea = meanToEccentric 0.4 ((235.4 ±σ 0.01) * 1 deg)"
+          [ "let ea = meanToEccentric 0.4 (sample (normal 235.4 0.01) * 1 deg)"
           , "let e0 = meanToEccentric 0.4 (235.4 deg)"
           , -- near e = 1 and M = 0, Newton's hardest case
             "let hard = meanToEccentric 0.999 (0.01 rad)"
           ]
           [ -- dE/dM = 1 / (1 - e cos E)
-            near "1e-12 deg" "sd ea" "0.01 deg / (1 - 0.4 * cos e0)"
-          , near "1e-12 deg" "mid ea" "e0"
-          , "bound hard < 1e-18 rad"
+            near "0.005 deg" "sd ea" "0.01 deg / (1 - 0.4 * cos e0)"
+          , near "0.01 deg" "mid ea" "e0"
+          , "hard > 0 rad && hard < 1 rad"
           , near "1e-18 rad" "hard - 0.999 * sin hard * 1 rad" "0.01 rad"
           ]
     ]

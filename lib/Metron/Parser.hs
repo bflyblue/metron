@@ -31,7 +31,6 @@ import Data.Text qualified as T (
   unwords,
  )
 import Data.Void (Void)
-import Metron.Core (NudgeKind)
 import Metron.Fixity (
   Assoc (L, N, R),
   Fixity (..),
@@ -765,7 +764,6 @@ opExpr = do
     , [Prefix (foldr1 (.) <$> P.some (negP P.<|> sqrtP))]
     , InfixN (binop Cross <$ opTok "×") : fixities 7
     , fixities 6
-    , [InfixN plusMinus]
     , [Postfix labelP]
     , [InfixR (binop Cons <$ opTok ":")]
     , fixities 4
@@ -792,9 +790,6 @@ opExpr = do
     n <- name
     _ <- tok TBacktick
     pure (binop (Infix n.text))
-  plusMinus = do
-    (_, k) <- match "±" (\case TPlusMinus k -> Just k; _ -> Nothing)
-    pure (binop (PlusMinus k))
   labelP = do
     (sp, l) <- match "#label" (\case THashLabel l -> Just l; _ -> Nothing)
     pure (\e -> Expr (spanUnion e.span sp) (Labelled l e))
@@ -1056,13 +1051,9 @@ sectionOp allowMinus =
          , Compose <$ tok (TOp ".")
          , Cons <$ tok (TOp ":")
          , To <$ kw KTo
-         , PlusMinus <$> plusMinusKind
          , Infix . (.text) <$> (tok TBacktick *> name <* tok TBacktick)
          ]
       ++ [Sub <$ tok (TOp "-") | allowMinus]
- where
-  plusMinusKind :: Parser NudgeKind
-  plusMinusKind = snd <$> match "±" (\case TPlusMinus k -> Just k; _ -> Nothing)
 
 {- | A bracket literal (§2.4). Commas separate elements, @;@ separates rows,
 @;;@ separates planes, and so on: @[1, 2; 3, 4]@ is @[[1, 2], [3, 4]]@. The

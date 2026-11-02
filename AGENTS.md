@@ -4,7 +4,7 @@ This file tells a coding agent how to work on Metron. Read it before you change 
 
 ## What Metron is
 
-Metron is a unit-aware calculator language, written in Haskell (GHC 9.12, cabal, a nix flake). Every number carries a dimension that the type checker checks, and every approximate number carries an affine error form, so a result prints with an honest bound or a standard uncertainty. Definitions live in a content-addressed codebase, as in Unison: a name is a label that points at the hash of a term. The project was called `eval` before. It is a proof of concept, and its language and store format can change.
+Metron is a unit-aware calculator language, written in Haskell (GHC 9.12, cabal, a nix flake). Every number carries a dimension that the type checker checks, and uncertain inputs use explicit distributions with Monte Carlo propagation. Optional stochastic rounding analysis on doubles is separate from input statistics. Neither reports guaranteed error bounds. Definitions live in a content-addressed codebase, as in Unison: a name is a label that points at the hash of a term. The project was called `eval` before. It is a proof of concept, and its language and store format can change.
 
 ## Documents
 
@@ -31,7 +31,7 @@ If direnv loaded the shell, `cabal` works directly. After a dependency change, d
 
 `cabal test` builds the `metron` executable before it runs the suite, because some tests run it (`build-tool-depends` in the cabal file). Before you run the binary by hand after a change, run `cabal build all` (or `cabal test`), or you run an old build.
 
-To run part of the suite, give tasty a pattern, for example `cabal test --test-options='-p "/affine/"'`. To run the QuickCheck properties at more cases, add `--quickcheck-tests 2000`.
+To run part of the suite, give tasty a pattern, for example `cabal test --test-options='-p "/separate sampling foundation/"'`. To run the QuickCheck properties at more cases, add `--quickcheck-tests 2000`.
 
 ## Safety rules
 

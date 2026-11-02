@@ -88,7 +88,6 @@ import Metron.Lexer (
   tokenize,
  )
 import Metron.NameResolution (LabelKind (..), shortestName, shortestNameOf)
-import Metron.Scalar (roundingName)
 import Metron.Syntax (Pos (..), Span (..), lastSegment)
 import Metron.Unicode qualified as U (matching)
 
@@ -200,9 +199,10 @@ completions session prev word = case word of
     ]
   _ -> case words (reverse prev) of
     [":set"] -> plain (map T.unpack settingNames)
-    [":set", "rounding"] -> plain (map (T.unpack . roundingName) [minBound .. maxBound])
+    [":set", "arithmetic"] -> plain ["rational", "double"]
+    [":set", "propagation"] -> plain ["montecarlo"]
+    [":set", "roundingAnalysis"] -> plain ["off", "stochastic"]
     [":set", "unicode"] -> plain ["on", "off"]
-    [":backend"] -> plain ["affine", "double"]
     [c] | c `elem` [":colour", ":color"] -> plain ["on", "off"]
     _
       | null word -> []
@@ -809,7 +809,6 @@ continuation src
     TBacktick -> True
     TSqrt -> True
     TOp _ -> True
-    TPlusMinus _ -> True
     _ -> False
 
 -- | Whether the input so far goes on at a continuation line: 'continuation'.

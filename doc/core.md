@@ -131,7 +131,7 @@ express. Where a constructor is a *special form* that a more general mechanism
 would later subsume, that is said, because it marks a place where Core is
 larger than it will eventually need to be.
 
-### Core (`Term n`, 15 constructors)
+### Core (`Term n`, 14 constructors)
 
 | Constructor | Why it exists | Status |
 |---|---|---|
@@ -145,15 +145,14 @@ larger than it will eventually need to be.
 | `Con con [Term n]` | a saturated data constructor: constructor `i` of a declared type, referenced by the type's definition hash, `true`, tuples and lists among them (the declarations the compiler holds, design §2.3); structured data with fields of different types, which no tensor can hold | fundamental |
 | `Case scrutinee [Alt]` | first-class choice between alternatives, one per constructor in canonical order, each binding the fields; lazy in the bodies. Cannot be a primitive because a primitive cannot select which argument to evaluate | fundamental; absorbed `If` and the boolean literal |
 | `Pow t Integer` | `e ^ n` with a literal exponent, so the dimension of the result is static | special form: stays, because the exponent is syntax, not a value |
-| `Noise kind n` | `n` fresh nudges with definition-site identity (design §3.2.4); the identity depends on the node's path, which no primitive can see | special form: stays |
-| `Uncertain kind x e` | `x ± e`; expressible as `x + e * noise 1` but kept as a node so identity and `:view` are exact | special form: candidate for removal once `Noise` identity is settled |
+| `Sample label distribution` | realization of a distribution with stable source identity, which an ordinary primitive cannot recover from value arguments | special form: stays |
 | `Pack [Term n]` | construction of a tensor from component terms: `k` tensors of shape `s` become shape `k : s`; a bracket literal whose elements are all constants is folded into `Lit` by the desugarer, so the two never describe the same value | special form: stays, `Tensor` is a built-in type with a shape index no data declaration can express |
 | `Proj t i` | component at a literal position, peeling the first length off the shape, checked statically | special form: stays, for the same reason |
 | `Cycle (Vec k hint) (Vec k (Term (k + n)))` | `k` mutually recursive definitions hashed as one term (design §6.2) | fundamental for the codebase |
 
-### Typed Core (`TTerm n`, 17 constructors)
+### Typed Core (`TTerm n`, 16 constructors)
 
-The fifteen above with types on `TLam`, `TLet`, `TPrimApp`, `TCon`, `TCase`
+The fourteen above with types on `TLam`, `TLet`, `TPrimApp`, `TCon`, `TCase`
 (the result type, since `Nil` alone fixes no element type) and `TCycle`, plus
 two kinded type forms: `TTyLam v kind body` and `TTyApp body arg`, where the
 argument is a type, a length, a shape, a dimension or the name slot of a
@@ -167,7 +166,7 @@ on every tensor. The answer is decided by whether the operation has one meaning
 at every rank:
 
 - **Elementwise, shape-polymorphic**: `+`, `-`, `⊙`, `⊘`, `neg`, `abs`, `mid`,
-  `bound`, `sd`, `vmap`, `vzipWith`, `timap`, and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
+  `mid`, `sd`, `vmap`, `vzipWith`, `timap`, and `==`. One type, `Tensor s -> Tensor s -> Tensor s`, one code path over the
   flat buffer. Scalars are the rank-zero instance of the same path. `timap`
   also passes each component's multi-index, typed `Vec (rank s)` with the
   type-level `rank` of design §4.1; it is an ordinary primitive (arity 2) with
@@ -181,7 +180,7 @@ at every rank:
 - **Rank-specific**: `×` (`cross`), `norm`, `transpose`, `inverse`, `det`,
   `indices` (`Vec n d -> Vec n`, a vector's positions as values),
   `covariance` (`Vec n d -> Mat n n (d^2)`), `crossCovariance` (`Vec n d1 ->
-  Vec m d2 -> Mat n m (d1*d2)`, the statistical nudges two vectors share,
+  Vec m d2 -> Mat n m (d1*d2)`, the input samples two vectors share,
   design §3.5; arity 2, no Core change), `cholesky` and `expm` (`Mat n n ->
   Mat n n`, dimensionless, the matrix exponential; arity 1), each with a
   fixed-rank signature.
@@ -199,7 +198,7 @@ at every rank:
   exponent (design §4.2). No Core change was needed: the positions are
   ordinary `Lit` arguments of a `PrimApp` (`contract` and `slice` have arity
   3, `permute` 2), the desugarer insists that they are literals as it does for
-  `noise n`, inference builds the scheme from them, and lint rebuilds it from
+  an exponent, inference builds the scheme from them, and lint rebuilds it from
   the `TLit` arguments and checks the recorded instance against it. `Proj`
   keeps its own node: `slice 0 i t` is the same tensor as `t.i` but a
   different term. The §7 test stops at step 1.
@@ -207,7 +206,7 @@ at every rank:
   tuples and lists among the declared types), through an instance constraint. Everything else in the language
   has one type.
 - **Scalar only**: `/` takes a scalar divisor; comparisons `< <= > >=`, `floor`,
-  `ceil`, `round`, the transcendental functions, `^`, and `±`. A tensor has no
+  `ceil`, `round`, the transcendental functions, and `^`. A tensor has no
   order, and these would otherwise be ambiguous between elementwise and aggregate
   readings.
 
@@ -306,9 +305,9 @@ The policy, now that stores exist (design §7.4):
   again gets the new hash, which the codebase treats as a new version like
   any other. Such changes are still listed in the changelog as hash-affecting,
   because the same text no longer reproduces the stored hash.
-  The owner stamp of a `±` and of a nominal type becoming the full path
+  The owner stamp of a `sample` and of a nominal type becoming the full path
   (`std.G`, `orbital.Body`) rather than the bare name is such a change: a
-  stored `±` definition keeps its hash, and the same text entered again, or
+  stored `sample` definition keeps its hash, and the same text entered again, or
   under a namespace, gets the new one.
 - **Encoding and Core changes are versioned.** The store carries a format
   number (`format`, currently 12; design §7.4). Any change to the canonical
@@ -329,6 +328,19 @@ The policy, now that stores exist (design §7.4):
   answers, and is listed in the changelog.
 
 ## 7. Changing Core
+
+### Sampling transition
+
+**Decided.** The Monte Carlo refactor uses `Sample label distribution` and its
+typed counterpart. Distribution descriptions use ordinary structural data;
+only the sampling operation needs special treatment. A saturated primitive
+cannot obtain its definition-site identity from ordinary value arguments.
+The labelled node preserves sharing, explicit labels and content-addressed
+identity without exposing an implementation token to programs.
+
+The `Sample` node replaces the two uncertainty forms.
+Its canonical tag is 0x14. Store format 13 rejects earlier formats.
+The runtime contract is in [design §3.2 and §8.2](design.md).
 
 Any proposal to add, remove or change a constructor goes through this test
 before code:
@@ -367,13 +379,13 @@ and leaves every other constructor to the traversal:
 
 | Walk | Module | Its own clauses |
 |---|---|---|
-| `refs`, `refsWithIndex`, `directUses` | `Metron.Core` | `Ref`, `PrimApp`, `Noise`, `Uncertain` |
+| `refs`, `refsWithIndex`, `directUses` | `Metron.Core` | `Ref`, `PrimApp`, `Sample` |
 | `refsWritten`, `rewriteRefs`, `rewriteRefsWritten` | `Metron.Core` | `Ref` |
 | `inlineRef` | `Metron.Core` | `Ref` |
 | `conTypes` | `Metron.Core` | `Con`, `Case` |
 | `renameTerm`, `weakenBy`, `strengthen`, `closedIn` | `Metron.Core` | `Var`, through the variable hook |
 | `rewriteReadings`, `hasReadingMarkers` | `Metron.Infer` | `PrimApp` |
-| `restampTerm` | `Metron.Update` | `Con`, `Case`, `Noise`, `Uncertain` |
+| `restampTerm` | `Metron.Update` | `Con`, `Case`, `Sample` |
 | `child` | `Metron.Branch` | none: a subterm's number is its place in `children` |
 
 A new constructor is therefore added to `traverseChildren` once. Because a
@@ -450,13 +462,10 @@ Applying the test to the roadmap, in order:
   static reading went and the quantity rule and `to` are the only readings
   left. No Core change, and no hash moved, since a term's hash does not
   cover its type.
-- **Affine arithmetic, units, printing, covariance.** Runtime and prelude work.
-  `Noise` and `Uncertain` already existed for it, and the arithmetic itself
-  landed without touching Core: `Metron.Affine` sits entirely under the
-  evaluator's elements. One field was added afterwards: the label (owner
-  stamp or `#tag`, design §3.2.4) on both nodes, because measurement identity
-  is part of a term's meaning and so must be in the hash. It is the one place
-  a definition's hash depends on its name.
+- **Arithmetic and sampling.** Rational and double implementations sit below
+  the generic evaluator. Distribution descriptions use structural data.
+  The labelled `Sample` node preserves lexical identity through hashing,
+  storage and re-elaboration. Ordinary input and rounding streams remain separate.
 - **Persistence (design §7.4).** Done: the encoding is the on-disk format,
   and the decoder (`Metron.Hash.decodeStored`) reconstructs a well-scoped
   term from bytes, which is a scope check, not a Core change.
@@ -495,7 +504,7 @@ Core is small so that it can be made correct, and these are the means:
   see the rank of, and makes an unseen one visible (`e + 0 [m]`) unless the
   default is what was meant. Building it and its first runs found six bugs
   in inference and the printer (see the changelog). *Known gaps:* no recursion (`Cycle`) and
-  no codebase references are generated, and affine arithmetic is only typed,
+  no codebase references are generated, and sampled arithmetic is checked,
   never evaluated.
 - **Unit tests pin the special forms**: laziness of `case` (and so of `if`)
   and of `&&` and `||`, saturation, projection bounds, cycle knot-tying.
@@ -517,7 +526,7 @@ Core is small so that it can be made correct, and these are the means:
 
 | | System FC | Ours |
 |---|---|---|
-| Term constructors | about 10 | 15 untyped, 17 typed |
+| Term constructors | about 10 | 14 untyped, 16 typed |
 | Typing | explicit, Lint-checked | explicit, lint-checked |
 | Polymorphism | type abstraction and application | same, plus lengths; dimensions next |
 | Data | `case` over constructors; `Bool` is data | `case` over constructors; `Bool`, tuples and lists are declared data; vectors and matrices built in |
@@ -568,9 +577,9 @@ operations separate. These are the starting points for changes:
 | Which arguments a call certainly evaluates | `Metron.Strictness` |
 | Resource limits, the step and depth budget | `Metron.Limits` |
 | The scalar class a backend implements, its settings and built-ins | `Metron.Scalar` |
-| Rational approximations and matrix algorithms | `Metron.Numerical.Approx`, `Metron.Numerical.Linear` |
-| Affine uncertainty propagation (the affine backend) | `Metron.Affine` |
-| IEEE doubles, the running bound, copies and draws (the double backend) | `Metron.Double` |
+| Rational approximations and matrix algorithms | `Metron.Numerical.Approx`, `Metron.Numerical.Rational` |
+| Rational arithmetic and input realizations | `Metron.Rational` |
+| IEEE doubles, input realizations and grouped rounding diagnostics | `Metron.Double` |
 | The copies in parallel batches | `Metron.Batch` |
 | Records of the copies at each branch point | `Metron.Remark` |
 | The branch table as text | `Metron.Branch` |

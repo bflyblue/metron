@@ -128,7 +128,7 @@ demanded ext env = \case
         ]
   TPow t _ -> demanded ext env t
   TProj t _ -> demanded ext env t
-  TUncertain _ _ a b -> demanded ext env a <> demanded ext env b
+  TSample _ a -> demanded ext env a
   _ -> IntSet.empty
  where
   call t =
@@ -161,7 +161,7 @@ mark ext env = \case
   TPrimApp p ty args -> TPrimApp p ty (map (mark ext env) args)
   TCon c ty args -> TCon c ty (map (mark ext env) args)
   TPow t n -> TPow (mark ext env t) n
-  TUncertain k l a b -> TUncertain k l (mark ext env a) (mark ext env b)
+  TSample l a -> TSample l (mark ext env a)
   TPack ax ty ts -> TPack ax ty (map (mark ext env) ts)
   TProj t i -> TProj (mark ext env t) i
   TTyLam v k b -> TTyLam v k (mark ext env b)

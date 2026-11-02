@@ -54,7 +54,6 @@ import Metron.Core (
   Label (..),
   Lit (..),
   Nat (..),
-  NudgeKind (..),
   Plus,
   SomeVec (..),
   Term (..),
@@ -880,11 +879,7 @@ tensorProds sc ls d n =
   -- Typed, but evaluate to "not implemented"; kept rare so that most
   -- programs evaluate to a value.
   scalarUnimplemented =
-    [ do
-        a <- gen sc t half
-        b <- gen sc t half
-        pure (G (binop (S.PlusMinus Bound) a.expr b.expr) True)
-    , (\a -> G (app (var "sqrt") a.expr) True) <$> gen sc (numD (dimPow 2 d)) (n - 1)
+    [ (\a -> G (app (var "sqrt") a.expr) True) <$> gen sc (numD (dimPow 2 d)) (n - 1)
     , do
         k <- genLen
         a <- gen sc (tensor [k] d) (n - 1)
@@ -1058,14 +1053,12 @@ genCoreTerm d size
   under :: Vec k Hint -> Gen (Term (Plus k n))
   under hs = genCoreTerm (depthPlus hs d) smaller
   some g = choose (0, 3) >>= (`vectorOf` g)
-  kind = elements [Bound, Stat]
   atomic =
     oneof
       $ [Var <$> elements (fins d) | not (null (fins d))]
         ++ [ genCoreRef
            , (\r -> Lit (LTensor ([], [r]))) . fromInteger <$> choose (-3, 3)
            , pure (Lit (LTensor ([2], [1, 2])))
-           , Noise <$> kind <*> genLabel <*> choose (1, 3)
            , (`PrimApp` []) <$> elements corePrims
            ]
   node =
@@ -1077,7 +1070,7 @@ genCoreTerm d size
       , Con <$> genConRef <*> some sub
       , Case <$> sub <*> some alt
       , Pow <$> sub <*> choose (-3, 3)
-      , Uncertain <$> kind <*> genLabel <*> sub <*> sub
+      , Sample <$> genLabel <*> sub
       , Pack <$> some sub
       , Proj <$> sub <*> choose (0, 2)
       , cycleOf

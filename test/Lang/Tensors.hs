@@ -55,8 +55,9 @@ productTests =
           @?= Right ["[4, 6] m"]
         evalText "vzipWith (\\a b -> a * b) [[1, 2], [3, 4]] [[1, 0], [0, 1]]"
           @?= Right ["[1, 0; 0, 4]"]
-        evalText "bound (vzipWith (\\a b -> a + b) ([1, 2] ± 0.1) [0, 0])"
-          @?= Right ["[0.1, 0.1]"]
+        evalText
+          "let x = sample (normal 1 0.1) in vzipWith (\\a b -> a + b) [x, x] [0, 0] == [x, x]"
+          @?= Right ["true"]
         case evalText "vzipWith (\\a b -> a * b) [1, 2] [1, 2, 3]" of
           Left err -> T.isInfixOf "lengths differ: 2 and 3" err @? T.unpack err
           Right v -> assertFailure (show v)
@@ -78,7 +79,8 @@ productTests =
         -- Units ride along, and the result's dimension is the function's.
         evalText "timap (\\i x -> x) ([1, 2] m)" @?= Right ["[1, 2] m"]
         evalText "timap (\\i x -> i.0 * x / 1 s) ([1, 2] m)" @?= Right ["[0, 2] m s^-1"]
-        evalText "bound (timap (\\i x -> x) ([1, 2] ± 0.1))" @?= Right ["[0.1, 0.1]"]
+        evalText "let x = sample (normal 1 0.1) in timap (\\i y -> y) [x, x] == [x, x]"
+          @?= Right ["true"]
         -- The index is exact.
         evalText "timap (\\i x -> i.0 / 3) [0, 0] == [0, 1/3]" @?= Right ["true"]
         case evalText "timap (\\i x -> i.1 * x) [1, 2, 3]" of
@@ -135,8 +137,7 @@ productTests =
     , testCase "names work prefix and infix" $ do
         evalText "outer 2 [1, 2]" @?= Right ["[2, 4]"]
         evalText "[1, 2] `dot` [3, 4]" @?= Right ["11"]
-        evalText "within 5 1 == (5 ± 1)"
-          @?= Left "error: cannot decide comparison at sigma 3: the difference is 0.0 ± 2.0"
+        evalText "normal 5 1 == (5 `normal` 1)" @?= Right ["true"]
     ]
 
 {- | Contraction and index permutation with literal positions (design §3.3,
@@ -245,11 +246,13 @@ contractionTests =
           "permute [2, 0, 1] needs a tensor of rank at least 3"
         fails "contract 0 1 [[1, 2, 3], [4, 5, 6]]" "lengths differ: 2 and 3"
         fails "contract 0 1 [1, 2]" "needs a tensor of rank at least 2"
-        fails "contract 0 1 (noise 2)" "needs a tensor of rank at least 2"
+        fails "contract 0 1 (indices [0, 0])" "needs a tensor of rank at least 2"
     , testCase "contraction sums nudges: two independent bounds on the diagonal" $ do
-        evalText "bound (contract 0 1 ([[1, 2], [3, 4]] ± 0.1))" @?= Right ["0.2"]
-        evalText "bound (permute [1, 0] ([[1, 2], [3, 4]] ± 0.1))"
-          @?= Right ["[0.1, 0.1; 0.1, 0.1]"]
+        evalText "let x = sample (normal 1 0.1) in contract 0 1 [x, 2; 3, x] == 2 * x"
+          @?= Right ["true"]
+        evalText
+          "let x = sample (normal 1 0.1) in permute [1, 0] [x, 2; 3, x] == [x, 3; 2, x]"
+          @?= Right ["true"]
     , testCase ":view reads both back as written" $ do
         runLines
           ["let f a = contract 0 1 (permute [1, 0] a)", ":view f", "f [[1, 2], [3, 4]]"]
@@ -332,7 +335,8 @@ sliceTests =
           "slice 1"
           "slice takes a literal axis and a literal position and then a tensor"
     , testCase "a slice gathers nudges without adding any" $ do
-        evalText "bound (([1, 2; 3, 4] ± 0.1)._.0)" @?= Right ["[0.1, 0.1]"]
+        evalText "let x = sample (normal 1 0.1) in [x, 2; x, 4]._.0 == [x, x]"
+          @?= Right ["true"]
     , testCase ":view reads a slice back with wildcards" $ do
         runLines ["let col m = m._.0", ":view col", "col [1, 2; 3, 4]"]
           @?= Right ["col = \\m -> m._.0", "[1, 3]"]

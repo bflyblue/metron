@@ -66,6 +66,7 @@ import Data.Text qualified as T (
  )
 import Metron.Builtin (
   boolT,
+  distributionT,
   frameDefMoving,
   pattern ConsC,
   pattern FalseC,
@@ -81,7 +82,6 @@ import Metron.Core (
   Hint (..),
   Lit (LTensor),
   Nat (Z),
-  NudgeKind (Stat),
   Term (..),
   Vec (..),
   foldTerm,
@@ -1528,48 +1528,11 @@ infer look p ctx = \case
     d <- freshDim
     unify (0 : p) (numD d) tb
     pure (numD (dimPow n d), TPow b' n)
-  Noise k l n
-    | n > lengthLimit ->
-        failAt p ("a tensor has at most " <> "2^40" <> " components")
-    | otherwise -> pure (vecT (LLit (fromInteger n)), TNoise k l n)
-  -- x ± e over any shape (design §3.4): the uncertainty is a scalar applied
-  -- to every component, or a tensor of the value's shape; in both cases one
-  -- independent nudge per component.
-  Uncertain k l x e -> do
+  Sample l x -> do
     d <- freshDim
-    s <- freshShape
     (tx, x') <- infer look (0 : p) ctx x
-    unify (0 : p) (TTensor s d) tx
-    (te, e') <- infer look (1 : p) ctx e
-    te' <- resolve te
-    s' <- resolveShape s
-    case (te', s') of
-      (TTensor SNil _, _) ->
-        unifyMsg
-          (1 : p)
-          (numD d)
-          te
-          "the uncertainty must have the dimension of the value"
-      -- v ±σ P: a vector with covariance P (design §3.5).
-      -- The covariance pairs the value's axes with themselves.
-      (TTensor (SCons _ _ (SCons _ _ SNil)) _, SCons n a SNil)
-        | k == Stat ->
-            unifyMsg
-              (1 : p)
-              (TTensor (SCons n a (SCons n a SNil)) (dimPow 2 d))
-              te
-              "a covariance must be an n×n matrix of the value's dimension squared"
-        | otherwise ->
-            failAt
-              (1 : p)
-              "a covariance matrix goes with ±σ, not ±: a bound has no covariance"
-      _ ->
-        unifyMsg
-          (1 : p)
-          (TTensor s d)
-          te
-          "the uncertainty must be a scalar, have the shape and dimension of the value, or be its covariance matrix"
-    pure (TTensor s d, TUncertain k l x' e')
+    unify (0 : p) (distributionT d) tx
+    pure (numD d, TSample l x')
   Pack ts -> do
     elemShape <- freshShape
     elemDim <- freshDim
@@ -1759,8 +1722,7 @@ zonk s = go
             alts
         )
     TPow b n -> TPow (go b) n
-    TNoise k l n -> TNoise k l n
-    TUncertain k l x e -> TUncertain k l (go x) (go e)
+    TSample l x -> TSample l (go x)
     TPack ax ty ts -> TPack (applyAxis s ax) (applyType s ty) (map go ts)
     TProj t i -> TProj (go t) i
     TTyLam v k b -> TTyLam v k (go b)

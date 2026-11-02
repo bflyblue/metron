@@ -37,7 +37,6 @@ module Metron.Core (
   hashHasPrefix,
   Hint (..),
   etaHint,
-  NudgeKind (..),
   Label (..),
   renderLabel,
   Lit (..),
@@ -195,12 +194,6 @@ user wrote, and print the primitive as it was written.
 etaHint :: Hint
 etaHint = Hint "§eta"
 
-{- | The kind of a nudge (design §3.2): a rigorous bound, or a 1σ standard
-uncertainty.
--}
-data NudgeKind = Bound | Stat
-  deriving stock (Eq, Ord, Show)
-
 {- | Who a declared uncertainty belongs to (design §3.2.4). The desugarer
 stamps every @±@, @ and @ with the name of the definition it is
 written in, so two definitions with identical bodies are different terms
@@ -268,10 +261,8 @@ data Term (n :: Nat) where
   Case :: Term n -> [Alt n] -> Term n
   -- | @e ^ n@ with a literal integer exponent.
   Pow :: Term n -> Integer -> Term n
-  -- | @noise n@ or @gauss n@: @n@ fresh unit nudges as a dimensionless vector.
-  Noise :: NudgeKind -> Label -> Integer -> Term n
-  -- | @x ± err@ or @x ±σ err@, with its owner or tag.
-  Uncertain :: NudgeKind -> Label -> Term n -> Term n -> Term n
+  -- | Draw from a distribution, with a stable lexical owner or explicit tag.
+  Sample :: Label -> Term n -> Term n
   {- | @[a, b, c]@: stack @k@ tensors of shape @s@ into one of shape @k : s@.
   A literal whose elements are all constants is folded into 'Lit' by the
   desugarer, so the two never describe the same value.
@@ -328,8 +319,7 @@ alphaEq = go
   go (Con c as) (Con c' bs) = c == c' && goList as bs
   go (Case s as) (Case s' bs) = go s s' && length as == length bs && and (zipWith goAlt as bs)
   go (Pow t n) (Pow t' n') = n == n' && go t t'
-  go (Noise k l n) (Noise k' l' n') = k == k' && l == l' && n == n'
-  go (Uncertain k l x e) (Uncertain k' l' x' e') = k == k' && l == l' && go x x' && go e e'
+  go (Sample l x) (Sample l' x') = l == l' && go x x'
   go (Pack as) (Pack bs) = goList as bs
   go (Proj t i) (Proj t' i') = i == i' && go t t'
   go (Cycle _ bs) (Cycle _ bs') = goList (vecToList bs) (vecToList bs')
@@ -369,8 +359,7 @@ traverseChildren var child = \case
   Case s alts ->
     Case <$> plain s <*> traverse (\(Alt c hs b) -> Alt c hs <$> child hs b) alts
   Pow t n -> (`Pow` n) <$> plain t
-  Noise k l n -> pure (Noise k l n)
-  Uncertain k l x e -> Uncertain k l <$> plain x <*> plain e
+  Sample l x -> Sample l <$> plain x
   Pack ts -> Pack <$> traverse plain ts
   Proj t i -> (`Proj` i) <$> plain t
   Cycle hs bs -> Cycle hs <$> vecTraverse (child hs) bs
@@ -428,8 +417,7 @@ directUses :: (Text -> Bool) -> Term n -> (Set (Hash, Maybe Int), Set Text)
 directUses picked = foldTerm $ \case
   Ref h i _ -> (Set.singleton (h, i), Set.empty)
   PrimApp p _ -> named p
-  Noise k _ _ -> named (case k of Bound -> "noise"; Stat -> "gauss")
-  Uncertain k _ _ _ -> named (case k of Bound -> "±"; Stat -> "±σ")
+  Sample _ _ -> named "sample"
   _ -> mempty
  where
   named p = (Set.empty, if picked p then Set.singleton p else Set.empty)

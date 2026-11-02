@@ -5,13 +5,10 @@ Core terms back to surface syntax for @:view@.
 -}
 module Metron.Pretty (
   renderRational,
-  renderRough,
   renderValue,
   renderValueWith,
   Display (..),
   displayParts,
-  renderExact,
-  renderBudget,
   renderTerm,
   renderTermIn,
   renderTermUnits,
@@ -29,7 +26,7 @@ import Data.Char (intToDigit, isAlphaNum)
 import Data.Either (fromRight)
 import Data.List (sortOn, unsnoc)
 import Data.Map.Strict qualified as Map (lookup)
-import Data.Maybe (fromMaybe, isJust, mapMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Ratio (denominator, numerator, (%))
 import Data.Text (Text)
 import Data.Text qualified as T (
@@ -66,25 +63,6 @@ import Data.Vector.Unboxed qualified as VU (
   null,
   toList,
  )
-import Metron.Affine (
-  Collapsed (bound, mid, variance),
-  Magnitude (Affine, Exact),
-  Nudge (kind, origin),
-  Origin (Declared, Tagged),
-  Precision,
-  Skew (operation, ratioSq),
-  collapse,
-  decimalExponent,
-  divM,
-  midpoint,
-  nonLinearAt,
-  nudges,
-  roundAt,
-  sigmaOf,
-  skewOf,
-  sqrtApprox,
- )
-import Metron.Affine qualified as A (Origin (Builtin))
 import Metron.Builtin (
   pattern ConsC,
   pattern FalseC,
@@ -100,7 +78,6 @@ import Metron.Core (
   Hint (Hint),
   Lit (LTensor),
   Nat (S, Z),
-  NudgeKind (..),
   Term (..),
   Vec (..),
   etaHint,
@@ -121,13 +98,11 @@ import Metron.Dimension (
 import Metron.Double (
   Dbl (..),
   Estimate (..),
-  carriesDraws,
+  Layout (rounds),
   clusterNote,
-  estimateOf,
   originNote,
   sampleNote,
   showDouble,
-  showEstimate,
  )
 import Metron.Eval (
   Applied (Applied),
@@ -155,7 +130,6 @@ import Metron.Lexer qualified as L (
     TLambda,
     TNum,
     TOp,
-    TPlusMinus,
     TProj,
     TRBracket,
     TRParen,
@@ -166,8 +140,15 @@ import Metron.Lexer qualified as L (
   tokenize,
  )
 import Metron.Limits (Limit (OutcomeCount), inSorted)
+import Metron.Numerical.Approx (Precision, decimalExponent)
+import Metron.Numerical.Statistics qualified as Statistics
 import Metron.Primitive (baseUnit)
-import Metron.Scalar (Scalar (hintFactor, scatterM), settingsAt)
+import Metron.Rational (Rat (..))
+import Metron.Scalar (
+  Scalar (hintFactor, scatterM),
+  Settings (inputSampling),
+  settingsAt,
+ )
 import Metron.Syntax qualified as S (Pos (Pos), Span (from, to))
 import Metron.TCore (patternText)
 import Metron.Type (conText)
@@ -190,7 +171,7 @@ renderRational :: Int -> Rational -> Text
 renderRational scale = renderDecimal scale False
 
 {- | As 'renderRational', optionally marking the value approximate even when
-its digits end: the certain digits of an affine midpoint.
+its digits end: the selected display precision.
 -}
 renderDecimal :: Int -> Bool -> Rational -> Text
 renderDecimal scale approx r
@@ -227,91 +208,6 @@ fractionDigitsOf n frac
           (more, exact) = fractionDigitsOf (n - 1) rest
        in (intToDigit (fromInteger d) : more, exact)
 
-{- | Print a magnitude at a scale (design §3.2.10). An affine value is
-collapsed to a midpoint, a bound radius @r@ and a standard deviation @σ@:
-
-* @σ = 0@ and @r@ below the last printed digit: @precision@ significant
-  digits of the midpoint and @…@, each correct to within one unit in the
-  last place;
-* @σ = 0@ otherwise: @mid ± r@, @r@ to two significant digits and the
-  midpoint to the same position;
-* @σ > 0@: @mid ±σ σ@ the same way, then @(bound r)@ unless @r@ is
-  negligible against @σ@. The marker is never omitted, so a 1σ band is
-  never mistaken for a certainty.
--}
-renderMagnitude :: Int -> Magnitude -> Text
-renderMagnitude scale = \case
-  Exact r -> renderRational scale r
-  m ->
-    let c = collapse m
-        sigma = sigmaOf (scale + 4) c
-        lastDigit = decimalExponent c.mid - scale + 1
-     in if sigma == 0 && c.bound < 10 ^^ lastDigit
-          then
-            -- A first-order σ of zero after a non-linear statistical step
-            -- (design §3.2) is no certainty: the midpoint alone, without
-            -- the ellipsis that promises every digit.
-            if isJust (skewOf m)
-              then renderDecimal scale False c.mid
-              else renderDecimal scale True c.mid
-          else
-            if sigma == 0
-              then uncertainAt c.mid c.bound "±"
-              else
-                -- The midpoint goes to the last digit of the coarser of σ
-                -- and the bound, so no digit beyond either is shown.
-                let (q, _) = roundUncertainty (max sigma c.bound)
-                 in renderFixed q (roundAt q c.mid)
-                      <> " ±σ "
-                      <> renderRadius sigma
-                      <> (if c.bound * 100 >= sigma then " (bound " <> renderRadius c.bound <> ")" else "")
-
-{- | @mid ± u@ with the uncertainty to two significant digits (one when the
-second is zero) and the midpoint rounded to the same position. The
-rounding of the midpoint widens the uncertainty, so it is folded in
-before the uncertainty itself is rounded up.
--}
-uncertainAt :: Rational -> Rational -> Text -> Text
-uncertainAt mid u marker =
-  let (q0, _) = roundUncertainty u
-      mid' = roundAt q0 mid
-      (q, u') = roundUncertainty (u + abs (mid - mid'))
-      mid'' = roundAt q mid
-   in renderFixed q mid'' <> " " <> marker <> " " <> renderRadius u'
-
-{- | Round an uncertainty to two significant digits, or one when the second
-is zero; returns the exponent of its last digit. Nearest, not up: the
-printed radius is within half a unit in its last place of the true one.
--}
-roundUncertainty :: Rational -> (Int, Rational)
-roundUncertainty u =
-  let e = decimalExponent u
-      two = roundAt (e - 1) u
-   in if roundAt e u == two then (e, two) else (e - 1, two)
-
--- | An uncertainty to two significant digits.
-renderRadius :: Rational -> Text
-renderRadius u = let (q, u') = roundUncertainty u in renderFixed q u'
-
-{- | A value that is a multiple of @10^q@, with exactly the digits down to
-@10^q@; scientific notation outside @[10^-4, 10^15)@.
--}
-renderFixed :: Int -> Rational -> Text
-renderFixed q v
-  | v < 0 = "-" <> renderFixed q (negate v)
-  | v /= 0 && (e < -4 || e >= 15) =
-      plain (q - e) (v / 10 ^^ e) <> "e" <> tshow e
-  | otherwise = plain q v
- where
-  e = decimalExponent v
-  plain q' x
-    | q' >= 0 = tshow (round x :: Integer)
-    | otherwise =
-        let digits = negate q'
-            scaled = round (x * 10 ^ digits) :: Integer
-            (whole, frac) = scaled `divMod` (10 ^ digits)
-         in tshow whole <> "." <> T.justifyRight digits '0' (tshow frac)
-
 tshow :: (Show a) => a -> Text
 tshow = T.pack . show
 
@@ -333,33 +229,15 @@ data Printer = Printer
   , spelling :: Spelling
   , unitName :: Text -> Text
   -- ^ how the full name of a unit or chart prints (design §7.6)
-  , nonlinear :: Rational
-  -- ^ the threshold over which a value prints marked non-linear (design §3.2)
   , samples :: Int
   -- ^ the double backend's copies, of which a mixture's outcomes are groups (design §8.2)
+  , roundingRuns :: Int
+  , samplingInputs :: Bool
   , outcomes :: Int
   -- ^ the most outcomes a mixture may print with (@:set outcomes@)
   , typeNames :: Text -> Text
   -- ^ declared types and constructors written by hash, named (design §7.2)
   }
-
-{- | A measure of non-linearity (design §3.2): the operation, and its
-second-order statistical term as a percentage of the first-order σ.
--}
-skewText :: Skew -> Text
-skewText sk =
-  sk.operation
-    <> ", second-order term "
-    <> maybe
-      "unbounded"
-      (\r -> renderRadius (100 * fst (sqrtApprox 4 r)) <> "% of the first-order σ")
-      sk.ratioSq
-
--- | The warning a value prints with when a component is marked non-linear.
-nonLinearNote :: Rational -> [Magnitude] -> Text
-nonLinearNote threshold ms = case mapMaybe (nonLinearAt threshold) ms of
-  [] -> ""
-  sk : _ -> " (non-linear: " <> skewText sk <> "; a mean and a σ do not describe it)"
 
 {- | How a backend's numbers print (design §8.2): the rest of a value, its
 shape, units, charts and data, prints the same under every backend.
@@ -372,7 +250,7 @@ class (Scalar s) => Display s where
   renderNumbers :: Int -> [s] -> [Text]
 
   -- | A number in a display unit: divided by the unit's factor, at a working precision.
-  inUnit :: Precision -> Magnitude -> s -> Maybe s
+  inUnit :: Precision -> Rational -> s -> Maybe s
 
   {- | What a value adds after its numbers and its unit: a mark of
   non-linearity over the threshold, the kind of an error estimate, a
@@ -387,44 +265,64 @@ class (Scalar s) => Display s where
   nominalOnly :: s -> s
   nominalOnly = id
 
+  inputRunsOnly :: s -> s
+  inputRunsOnly = id
+
   {- | What an outcome of a mixture shows of its numbers (design §8.2): the
   copies' mean and deviation, laid out as the numbers are.
   -}
   clusterText :: ([Text] -> Text) -> [s] -> Text
   clusterText _ _ = ""
 
-instance Display Magnitude where
-  renderNumbers scale = map (renderMagnitude scale)
-  inUnit p f r = either (const Nothing) Just (divM p r f)
-  numbersNote threshold _ = nonLinearNote threshold
+instance Display Rat where
+  renderNumbers scale = map (renderRational scale . (.value))
+  inUnit _ f x
+    | f == 0 = Nothing
+    | otherwise =
+        Just
+          x{value = x.value / f, samples = fmap (fmap (/ f)) x.samples}
+  numbersNote _ layout xs = case [V.length values | x <- xs, Just values <- [x.samples]] of
+    [] -> ""
+    n : _ ->
+      " (Monte Carlo: "
+        <> rationalCluster layout xs
+        <> ", "
+        <> tshow n
+        <> " input samples)"
+  nominalOnly x = Rat x.value Nothing
+  clusterText = rationalCluster
 
-{- | A double prints as the shortest digits that read back to it, then its
-error estimate, when it has one, to two digits: @0.30000000000000004 ±
-5.6e-17@, labelled @(bound)@. Stochastic rounding instead prints the
-sample mean's interval separately from the nominal value. A note identifies
-where the first NaN or infinity came from (design §8.2).
-A value any of whose numbers' copies carry draws of a
-declared σ prints its IEEE values alone, with the sample beside them,
-each number's mean and deviation in the value's shape and unit: @0
-(Monte Carlo: mean 1.015, sd 1.441, 10000 samples)@. Its spread is not
-rounding, so no @± e@ prints.
--}
+rationalCluster :: ([Text] -> Text) -> [Rat] -> Text
+rationalCluster layout xs =
+  "mean "
+    <> layout means
+    <> ", sd "
+    <> layout deviations
+    <> ", outcome 95% ["
+    <> layout (map (shown . fmap (.lower95)) summaries)
+    <> ", "
+    <> layout (map (shown . fmap (.upper95)) summaries)
+    <> "]"
+ where
+  shown = either (const "unavailable") (renderRational 12)
+  n = maximum (1 : [V.length values | x <- xs, Just values <- [x.samples]])
+  summary x =
+    Statistics.summariseInputs 24 (maybe (replicate n x.value) V.toList x.samples)
+  summaries = map summary xs
+  means =
+    map
+      (either (const "unavailable") (renderRational 12 . (.mean)))
+      summaries
+  deviations =
+    map
+      ( either
+          (const "unavailable")
+          (maybe "unavailable" (renderRational 12) . (.deviation))
+      )
+      summaries
+
 instance Display Dbl where
-  renderNumbers _ xs
-    | any carriesDraws xs = map (showDouble . (.value)) xs
-    | otherwise = map withEstimate xs
-   where
-    withEstimate x =
-      let e = estimateOf x
-          isBound = case x.estimate of
-            ErrorBound _ -> True
-            Copies _ _ -> False
-       in if not isBound || e == 0 || isNaN x.value || isInfinite x.value
-            then showDouble x.value
-            else showDouble x.value <> " ± " <> showEstimate isBound e
-
-  -- Divided by the unit's factor, the estimate scaled with it: a quantity
-  -- known exactly stays exact in any unit it prints in.
+  renderNumbers _ = map (showDouble . (.value))
   inUnit _ f x
     | fd == 0 || isNaN fd || isInfinite fd = Nothing
     | otherwise =
@@ -432,20 +330,23 @@ instance Display Dbl where
           x
             { value = x.value / fd
             , estimate = case x.estimate of
-                ErrorBound e -> ErrorBound (if e == 0 then 0 else e / abs fd * (1 + 1.0e-15))
+                NoSamples -> NoSamples
                 Copies sp cs -> Copies sp (VU.map (/ fd) cs)
             }
    where
-    fd = fromRational (midpoint f) :: Double
+    fd = fromRational f
   numbersNote _ layout xs =
-    let estimated = [x | x <- xs, estimateOf x > 0, not (isNaN x.value || isInfinite x.value)]
-        kind = case (sampleNote layout xs, [x.estimate | x <- estimated]) of
-          (Just sample, _) -> [sample]
-          (Nothing, []) -> []
-          (Nothing, ErrorBound _ : _) -> ["bound"]
-          (Nothing, Copies _ cs : _) -> ["estimate, " <> tshow (VU.length cs) <> " samples"]
-     in T.concat [" (" <> t <> ")" | t <- kind ++ maybe [] pure (originNote xs)]
-  nominalOnly x = x{estimate = ErrorBound 0}
+    T.concat
+      [ " (" <> t <> ")"
+      | t <- maybe [] pure (sampleNote layout xs) ++ maybe [] pure (originNote xs)
+      ]
+  nominalOnly x = x{estimate = NoSamples}
+  inputRunsOnly x =
+    x
+      { estimate = case x.estimate of
+          NoSamples -> NoSamples
+          Copies l cs -> Copies l{rounds = 0} cs
+      }
   clusterText = clusterNote
 
 {- | Print a value. A tensor with a display unit whose dimension matches
@@ -520,7 +421,28 @@ renderMixture ::
   (Display s) =>
   Printer -> Int -> Preferences -> ValueOf s -> Either EvalError Text
 renderMixture printer scale prefs v = do
-  outs <- outcomesOf (VU.enumFromN 0 printer.samples) True v
+  allOuts <- outcomesOf (VU.enumFromN 0 printer.samples) True v
+  let stride = printer.roundingRuns + 1
+      select o =
+        let members = VU.filter (\i -> i `mod` stride == 0) o.members
+            value =
+              mapNumbers
+                inputRunsOnly
+                (narrow (Narrowing (placesWithin o.members members) members o.nominal) o.value)
+         in Outcome members o.nominal value
+      outs = filter (\o -> o.nominal || not (VU.null o.members)) (map select allOuts)
+      diagnosticRows =
+        [ "  " <> printer.typeNames (outcomeLabel printer o.value) <> ": " <> tshow count
+        | o <- allOuts
+        , let count = VU.length (VU.filter (\i -> i `mod` stride /= 0) o.members)
+        , count > 0
+        ]
+      diagnostics =
+        if printer.roundingRuns == 0
+          then ""
+          else
+            "\nstochastic rounding outcomes (diagnostic runs only; numeric summaries unavailable for mixed constructors):\n"
+              <> T.intercalate "\n" diagnosticRows
   let byLabel =
         foldl'
           ( \acc o ->
@@ -573,9 +495,12 @@ renderMixture printer scale prefs v = do
     ( T.intercalate
         "\n"
         ( ( shownNominal
-              <> " (Monte Carlo over "
+              <> ( if printer.samplingInputs
+                     then " (Monte Carlo over "
+                     else " (ordinary baseline over "
+                 )
               <> tshow total
-              <> " samples, "
+              <> (if printer.samplingInputs then " input samples, " else " run, ")
               <> tshow (length byLabel)
               <> " outcomes):"
           )
@@ -590,6 +515,7 @@ renderMixture printer scale prefs v = do
               ]
             ++ ["  and " <> tshow others <> " others" | others > 0]
         )
+        <> diagnostics
     )
  where
   -- An outcome's copies and the summary of each number it holds, over
@@ -627,7 +553,10 @@ renderMixture printer scale prefs v = do
       elements <-
         traverse
           ( \k ->
-              scatterM (VU.length union') Nothing
+              scatterM
+                (settingsAt (scale + 4)){inputSampling = True}
+                (VU.length union')
+                Nothing
                 <$> traverse
                   (\(ms, leaf) -> (placesWithin union' ms,) <$> (bufferOf leaf V.! k))
                   parts
@@ -713,11 +642,14 @@ leavesOf printer = go ""
 
 -- | A value's numbers as their nominal values alone.
 stripped :: (Display s) => ValueOf s -> ValueOf s
-stripped = \case
-  VTensor dims d hint buf -> VTensor dims d hint (fmap (fmap nominalOnly) buf)
-  VPoint dims d c buf -> VPoint dims d c (fmap (fmap nominalOnly) buf)
-  VUnit v -> VUnit (stripped v)
-  VData c fields -> VData c (map (fmap stripped) fields)
+stripped = mapNumbers nominalOnly
+
+mapNumbers :: (s -> s) -> ValueOf s -> ValueOf s
+mapNumbers f = \case
+  VTensor dims d hint buf -> VTensor dims d hint (fmap (fmap f) buf)
+  VPoint dims d c buf -> VPoint dims d c (fmap (fmap f) buf)
+  VUnit v -> VUnit (mapNumbers f v)
+  VData c fields -> VData c (map (fmap (mapNumbers f)) fields)
   v -> v
 
 {- | 'renderValue' with a chosen rendering for the magnitudes of one value,
@@ -768,10 +700,10 @@ renderValueWith printer scale prefs showMagnitudes = \case
     pure $ case (chartName s, coordinatesOn (settingsAt (scale + 4)) s xs) of
       (Just named, Right steps) ->
         let laid ts = renderNested id dims ts <> " " <> named
-         in laid (showMagnitudes steps) <> numbersNote printer.nonlinear laid steps
+         in laid (showMagnitudes steps) <> numbersNote 0 laid steps
       _ ->
         let laid ts = renderNested id dims ts <> unitSuffix d
-         in laid (showMagnitudes xs) <> " (point)" <> numbersNote printer.nonlinear laid xs
+         in laid (showMagnitudes xs) <> " (point)" <> numbersNote 0 laid xs
   VChart s ->
     Right $ case chartName s of
       Just named -> "chart " <> named
@@ -791,13 +723,13 @@ renderValueWith printer scale prefs showMagnitudes = \case
       | h.dim == d
       , not (null h.atoms)
       , Right m <- V.head buf
-      , midpoint (hintFactor m) == midpoint h.factor ->
+      , hintFactor m == h.factor ->
           Right (unitExpressionText printer h)
     _ -> (<> " (a unit)") <$> recur v
   v -> do
     (dims, scaled, units) <- displayParts printer scale prefs v
     let laid ts = renderNested id dims ts <> (if T.null units then "" else " " <> units)
-    pure (laid (showMagnitudes scaled) <> numbersNote printer.nonlinear laid scaled)
+    pure (laid (showMagnitudes scaled) <> numbersNote 0 laid scaled)
  where
   recur = renderValueWith printer scale prefs showMagnitudes
   -- A chart's name; an instant of a moving chart is the chart applied, as
@@ -865,7 +797,7 @@ displayParts printer scale prefs = \case
     pure $ case chosen of
       Just h
         | h.dim == d
-        , midpoint h.factor /= 0
+        , h.factor /= 0
         , Just converted <- mapM (inUnit (scale + 4) h.factor) rs ->
             (dims, converted, renderHint h)
       _ -> (dims, rs, renderUnitsIn printer.spelling d)
@@ -878,90 +810,6 @@ displayParts printer scale prefs = \case
           <> (if u.power == 1 then "" else exponentText printer.spelling u.power)
       | u <- filter ((> 0) . (.power)) h.atoms ++ filter ((< 0) . (.power)) h.atoms
       ]
-
-{- | The raw form of a magnitude for @:exact@ (design §3.2.10): the rational,
-or the midpoint, every nudge with its kind and origin, and the slack.
--}
-renderExact :: RefNamer -> Int -> Magnitude -> Text
-renderExact namer scale = \case
-  Exact r -> renderRational scale r
-  m@(Affine mid _ slack _) ->
-    renderRational scale mid
-      <> T.concat
-        [ " + " <> renderRational 6 c <> "·e[" <> renderNudge namer n <> "]"
-        | (c, n) <- nudges m
-        ]
-      <> (if slack > 0 then "  ± " <> renderRational 6 slack else "")
-
-renderNudge :: RefNamer -> Nudge -> Text
-renderNudge namer n = kindName n.kind <> ", " <> originName namer n.origin
-
-kindName :: NudgeKind -> Text
-kindName = \case
-  Bound -> "bound"
-  Stat -> "σ"
-
-originName :: RefNamer -> Origin -> Text
-originName namer = \case
-  Tagged l i -> l <> (if i == 0 then "" else "." <> tshow i)
-  Declared h path i ->
-    namer h Nothing ""
-      <> (if null path then "" else " @" <> T.intercalate "." (map tshow path))
-      <> (if i == 0 then "" else "." <> tshow i)
-  A.Builtin name -> name
-
-{- | The error budget of a magnitude (design §3.2.6): the collapsed value,
-then every nudge with its contribution and share, largest first. Bound
-nudges share the bound radius, statistical nudges the variance.
--}
-renderBudget :: RefNamer -> Int -> Rational -> Text -> Magnitude -> [Text]
-renderBudget namer scale threshold units m = case m of
-  Exact _ -> [renderMagnitude scale m <> suffix, "exact"]
-  _ ->
-    let c = collapse m
-        rows =
-          [ (kindName n.kind, originName namer n.origin, contribution, share)
-          | (coeff, n) <- nudges m
-          , let contribution = renderRadius (abs coeff) <> suffix
-          , let share = case n.kind of
-                  Bound -> percent (abs coeff) c.bound <> " of bound"
-                  Stat -> percent (coeff * coeff) c.variance <> " of σ²"
-          ]
-        slackRow = case m of
-          Affine _ _ s _
-            | s > 0 ->
-                [("bound", "slack", renderRadius s <> suffix, percent s c.bound <> " of bound")]
-          _ -> []
-        -- The operation that marked it, which no nudge holds (design §3.2).
-        marked = case nonLinearAt threshold m of
-          Just sk ->
-            ["  non-linear: " <> skewText sk <> "; a mean and a σ do not describe it"]
-          Nothing -> []
-     in (renderMagnitude scale m <> suffix)
-          : table (("kind", "source", "contribution", "share") : rows ++ slackRow)
-          ++ marked
- where
-  suffix = if T.null units then "" else " " <> units
-  percent part whole
-    | whole == 0 = "0%"
-    | otherwise = tshow (round (100 * part / whole) :: Integer) <> "%"
-  table rows =
-    let (wa, wb, wc) =
-          foldr
-            ( \(a, b, c, _) (x, y, z) -> (max x (T.length a), max y (T.length b), max z (T.length c))
-            )
-            (0, 0, 0)
-            rows
-     in [ "  "
-            <> T.justifyLeft wa ' ' a
-            <> "  "
-            <> T.justifyLeft wb ' ' b
-            <> "  "
-            <> T.justifyLeft wc ' ' c
-            <> "  "
-            <> d
-        | (a, b, c, d) <- rows
-        ]
 
 -- | Print a flat row-major buffer as nested brackets according to its shape.
 renderNested :: (a -> Text) -> [Int] -> [a] -> Text
@@ -1126,16 +974,7 @@ renderTermUnits spelling namer isUnitRef = go 0
        in paren
             (prec > 9)
             (base <> exponentText (if glues then spelling else Ascii) n)
-    Noise Bound l n -> "noise " <> tshow n <> renderLabel l
-    Noise Stat l n -> "gauss " <> tshow n <> renderLabel l
-    Uncertain k l x e ->
-      paren
-        (prec > 5)
-        ( go 6 ctx x
-            <> (if k == Bound then " ± " else " ±σ ")
-            <> go 6 ctx e
-            <> renderLabel l
-        )
+    Sample l x -> paren (prec > 10) ("sample " <> go 11 ctx x <> renderLabel l)
     Pack ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
     Proj b i -> go 11 ctx b <> "." <> tshow i
     Cycle hints bodies ->
@@ -1358,8 +1197,6 @@ renderTermUnits spelling namer isUnitRef = go 0
     (FS j, VCons _ xs) -> lookupVar j xs
 
 -- | A magnitude to two significant digits, for radii and bias boxes.
-renderRough :: Magnitude -> Text
-renderRough m = renderRadius (abs (midpoint m))
 
 -- | The elements of a list value, forcing its spine.
 listItems :: ValueOf s -> Either EvalError [ValueOf s]
@@ -1507,8 +1344,6 @@ respellEdits text = go Nothing
   -- Tokens with a unicode form (design §2.8): the ASCII text and its replacement.
   spelled :: L.Token -> Maybe (Text, Text)
   spelled = \case
-    L.TPlusMinus Stat -> Just ("+-s", "±σ")
-    L.TPlusMinus Bound -> Just ("+-", "±")
     L.TArrow -> Just ("->", "→")
     L.TLambda -> Just ("\\", "λ")
     L.TOp "<=" -> Just ("<=", "≤")

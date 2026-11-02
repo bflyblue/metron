@@ -59,16 +59,16 @@ stable versioning of definitions over years.
   surprise at run time.
 - Expressions are pure and bindings are immutable, with Haskell-like
   semantics.
-- Approximation error and declared uncertainty are tracked rigorously through
-  arbitrary user code, with an error budget per source (§3.2).
+- Input distributions propagate through arbitrary user code by Monte Carlo sampling.
+  Double rounding sensitivity is analyzed separately (§3.2).
 - Vectors, matrices and tensors are first-class dimensioned values (§3.3).
 - Every definition has a nominal form with a content hash. Names are labels
   that point at hashes. Versioning is label management, as in Unison (§7).
 - Interactive use (the REPL) and one-shot use (`metron 'expr'`) are both
   supported (§7.3, §7.4).
 
-**Implemented in:** `Metron.Affine` (`addM`, `mulM`), `Metron.Infer` (`elaborateClosed`), `Metron.Hash` (`hashTerm`), `Metron.Codebase` (`bindName`), `Metron.Driver` (`feed`).
-**Tested by:** "affine"; "units"; "hash"; "codebase"; "end to end".
+**Implemented in:** `Metron.Rational` (`addM`, `mulM`), `Metron.Infer` (`elaborateClosed`), `Metron.Hash` (`hashTerm`), `Metron.Codebase` (`bindName`), `Metron.Driver` (`feed`).
+**Tested by:** "separate sampling foundation"; "units"; "hash"; "codebase"; "end to end".
 
 ### 1.3 Non-goals
 
@@ -156,14 +156,14 @@ chapter, so the type checker never sees it.
   A bare hash as an application argument or after a quantity needs
   parentheses, as in `f (#hash)`, so that a trailing `#label` (§3.2.4) stays
   unambiguous: `f #hash` is read as a label and refused with "a #label must
-  follow ±, ±σ, noise or gauss; `#hash` labels nothing here".
+  follow sample; `#hash` labels nothing here".
 - **Keywords**: `let`, `in`, `where`, `if`, `then`, `else`, `to`, `true`,
   `false`, `unit`, `chart`, `space`, `on`, `from`, `at`, `case`, `of`, `data`,
   `namespace`, `use` and `forall` (also `∀`). `structural` is a word only
   before `data`. `as` in `use a as k` is not a keyword, because it is also the
   attosecond. `step`, `by`, `then` and `spinning` are clause words inside a
   chart statement only (§3.10, F10).
-- **Operators**: `+ - * / ^ ± == /= < <= > >= && || :` and the others of
+- **Operators**: `+ - * / ^ == /= < <= > >= && || :` and the others of
   §2.5, with their unicode spellings (§2.8). A name in backticks is an infix
   operator: ``a `dot` b``.
 - **Statement separators**: a newline at indentation zero, or `;`. A line that
@@ -475,42 +475,27 @@ From tightest to loosest:
 | 9 | `*`/`⊗` `·`/`@` `∧`/`/\` `⊙`/`.*` `⊘`/`./` `/`/`÷` | left | tensor product, contracting product, wedge product, elementwise product and division, division by a scalar (§4.2) |
 | 9 | `×`/`><` | none | cross product |
 | 8 | `+` `-` `.+` `.-` | left | amounts of one shape (§3.3), point plus amount and point from point (§3.6) |
-| 7 | `±` `±σ` | none | `value ± bound`, `value ±σ stddev` (§3.2.5) |
-| 6 | `#label` | postfix | names the unknown of a `±`, `±σ`, `noise` or `gauss` (§3.2.4) |
 | 5 | `:` | right | list cons |
 | 4 | `==` `/=` `<` `<=` `>` `>=` | none | ordering on `Num` only; equality on any type with equality (§4.2) |
 | 3 | `&&` | right | |
 | 2 | `\|\|` | right | |
 | 1 | `to`, `from … to`, `on` | left, through `to` | conversion and subtraction in a frame (below) |
 
-**Levels in the code.** This table is the parser's ladder. `Metron.Fixity`
-numbers the binary primitives on the printer's own scale (`Metron.Pretty`),
-which leaves out the forms that desugar away: there an argument is 11, an
-application 10, `^` 9, unary `-` 8, the products 7, the sums 6, `±` 5, and
-`:` and the comparisons 4. So levels 9 and 8 here are 7 and 6 there, and
-levels 4 to 1 are the same in both.
+**Levels in the code.** `Metron.Fixity` defines operator precedence for the
+parser and printer. A `#label` labels a complete `sample distribution`
+expression. Labels on other expressions are refused.
 
-`#label` is a postfix on a whole `±` expression, below `±` and above the
-comparisons. So `x == 5 ± 0.1 #s7` labels the `±`, not the comparison. A
-label anywhere else is refused: "a #label must follow ±, ±σ, noise or gauss;
-`#s7` labels nothing here".
+Level 1 is conversion. `to` converts a display unit, a point or an amount's axes.
+`from` names a chart configuration. `b .- a on c` subtracts in frame c.
+Conversions associate left: `x to a to b` means `(x to a) to b`.
 
-Level 1 is conversion. `to` converts to a unit, a point to a chart, or an
-amount along a chart's axes. `from` names a configuration, and `on` subtracts
-in a frame, `b .- a on c` (§3.10, F7, F10). It is the loosest level, so
-`5 km / h to m/s` reads naturally. Any of the three can be followed by more
-`to`s, which chain from the left: `x to a to b` is `(x to a) to b`, and
-`v from c to c1 to km/s` converts, then displays.
+Products and sums work on amounts of every rank. Named functions include
+`dot`, `cross`, `norm`, `transpose`, `inverse`, `det`, `vmap`,
+`covariance` and `cholesky`. Component access uses literal projections
+such as `v.0` and `m.1.2`.
 
-`+ - * /` work on amounts of every rank, each with one type (§4.2).
-Everything else that works on vectors or matrices is a named function:
-`dot`, `cross`, `norm`, `transpose`, `inverse`, `det`, `vmap`, `noise`,
-`gauss`, `covariance`, `cholesky` and the others of §3.3. Component access
-is the postfix projection `v.0`, `m.1.2` (§2.10), never a function that takes
-a computed index.
-
-**Implemented in:** `Metron.Fixity` (`binaryOperators`, the one table of the binary primitives the parser, the desugarer and the printer read), `Metron.Parser` (`opExpr`, `binop`, `term`, `withPower`, `sectionOp`), `Metron.Desugar` (`opPrim`), `Metron.Pretty` (`renderTermUnits`).
-**Tested by:** "parser"; "products"; "fixity".
+**Implemented in:** `Fixity`, `Parser`, `Desugar`, `Pretty`.
+**Tested by:** "parser", "products", "fixity".
 
 ### 2.6 The quantity rule
 
@@ -678,8 +663,6 @@ emit either.
 | `∨` `¬` | `\|\|` `not` | boolean or and not. Boolean and is `&&` only, because `∧` is the wedge product |
 | `∧` | `/\` | wedge (exterior) product; name `wedge` |
 | `⋆` | `star` | 3D Hodge star, prefix; name `star` |
-| `±` | `+-` | declared hard bound |
-| `±σ` | `+-s` | declared standard uncertainty (1σ) |
 | `°C` `°F` | `degC` `degF` | temperature charts (§3.6). `°` alone is `deg` |
 | `√` | `sqrt` | prefix: `√x`, `√(a² + b²)` |
 | `∘` | `.` | composition |
@@ -709,7 +692,7 @@ the exact set for output, and the echo, which re-spells each statement line
 as typed.
 
 In the REPL a character can be typed by name, as in Julia: `\mu` then TAB
-becomes `μ`, `\pm` becomes `±`, `\^2` becomes `²`. §7.3 has the table. Every
+becomes `μ`, `\^2` becomes `²`. §7.3 has the table. Every
 entry lexes as its ASCII spelling here, or is an identifier letter.
 
 **Implemented in:** `Metron.Lexer` (`symbol`, `superscript`, `isSuperscriptDigit`, `subscripted`, `prepare`), `Metron.Session.Names` (`argPaths`), `Metron.Unicode` (`completions`, `lookupName`), `Metron.Pretty` (`respell`).
@@ -734,9 +717,6 @@ written in surface notation.
 | `45°` | `scale 45 deg` |
 | `√e` | `sqrt e` |
 | `a + b`, `a * b`, `a · b`, … | `add a b`, `outer a b`, `dot a b`, …: every operator is a saturated application of the primitive of the same name, and the names work prefix and in backticks |
-| `a ± b`, `a ±σ b` | the Core nodes `Uncertain Bound a b` and `Uncertain Stat a b`. Also spelled `within a b` and `sigma a b` |
-| `a ± e #s7` | the same, with the unknown labelled `s7` (§3.2.4) |
-| `noise n`, `gauss n` | the Core node `Noise`, `n` a natural literal |
 | `v.2` | `Proj v 2` (a node with a literal position, §5.1) |
 | `m.1.2` | `Proj (Proj m 1) 2` |
 | `m._.0`, `t._._.2`, `t._.0.1` | `slice 1 0 m`, `slice 2 2 t`, `Proj (slice 1 0 t) 1`: the primitive applied to the axis (the number of wildcards) and the position as constants (§2.10), whatever `slice` names in scope |
@@ -878,8 +858,7 @@ accesses, and the desugarer decides what it is:
 There is no unit type `()`, because there are no effects. There are no
 strings, because nothing consumes them. There is no `Int` separate from
 `Num`. An integer is an exact rational with denominator 1. The positions
-that need an integer (the exponent of `^`, the argument of `noise` and
-`gauss`) are syntactic restrictions, not types.
+that need an integer (the exponent of `^` and tensor indices) are syntactic restrictions, not types.
 
 Declared types are the data types, and `case` (§2.3) consumes them. `Bool`,
 tuples and lists are declared types that the compiler holds (§2.3). They
@@ -889,789 +868,105 @@ boolean is a constructor with no fields, like any other.
 **Implemented in:** `Metron.Eval` (`ValueOf`, `evalClosed`), `Metron.Builtin` (`boolDef`, `pairDef`, `listDef`, `tupleDef`).
 **Tested by:** "evaluation"; "data".
 
-### 3.2 Magnitudes: exact rationals and affine forms
+### 3.2 Arithmetic and sampled inputs
 
-A magnitude is one of two things.
+**Decided.** Arithmetic and uncertainty propagation are separate. Choose rational
+or IEEE double arithmetic. Describe uncertain inputs with explicit distributions.
+Monte Carlo propagation evaluates the expression for each input realization.
+It does not certify a numerical error bound.
 
-**`Exact Rational`.** Literals, units, `+ - * /`, integer `^`, `abs`,
-`floor`, `ceil` and `round` produce exact values, and so does any
-operation whose inputs are all exact. Exact values compare exactly. They
-stay exact while they are short: an exact result longer than a limit tied
-to the precision is rounded to working precision, and the rounding is a
-bound nudge (§3.2.8, "exact while small").
+#### 3.2.1 Rational operations
 
-**`Affine { mid, nudges, slack }`.** An approximate value, written
+Rational addition, subtraction, multiplication, division and integer powers
+operate exactly on represented operands. Division by zero fails explicitly.
+The digits limit refuses excessive rational growth rather than rounding it silently.
 
-```
-mid + c₁·e₁ + c₂·e₂ + … + cₖ·eₖ   (± slack)
-```
+#### 3.2.2 Double operations
 
-`mid` and every coefficient `cᵢ` are rationals. Every `eᵢ` is an unknown
-number. `slack ≥ 0` is an anonymous leftover radius. Each `eᵢ` has a name,
-its *nudge id* (§3.2.4), and one of two **kinds**:
-
-- A **bound** nudge: `eᵢ` lies somewhere in `[-1, 1]`, guaranteed.
-  Rounding, series truncation, linearisation remainders and `±` produce
-  bound nudges.
-- A **statistical** nudge: `eᵢ` has mean 0 and standard deviation 1, with
-  no hard limit. `±σ` and `gauss` produce statistical nudges. Measured
-  constants whose published uncertainty is a standard uncertainty (CODATA,
-  IAU) use them.
-
-For a linear model, the true value lies in `mid ± (Σ_bound |cᵢ| + slack)`, up
-to a random error of standard deviation `√(Σ_stat cᵢ²)`. Both kinds
-propagate through linear arithmetic by the same rules. **Decided.** A
-non-linear operation keeps them apart.
-
-This is affine arithmetic in the sense of Comba and Stolfi, with a hashed
-naming scheme for the noise symbols and a kind tag, so that a 1σ input is
-never printed as a certainty. A plain radius ("ball arithmetic") or an
-exact/inexact bit is a degenerate affine form with one anonymous nudge.
-Both suffer from the *dependency problem*: with `x` somewhere in
-`[0.8, 0.9]`, interval subtraction gives `x - x` in `[-0.1, 0.1]`, because
-it forgets that both `x`s are the same unknown. Affine forms keep the
-name, so `x - x` is exactly `0`.
-
-**Decided: the statistical model.** Each statistical nudge is modelled as an
-independent standard Gaussian. A shared
-nudge is one variable. A value's statistical part is a linear model in
-the nudges. Statistical nudges propagate to first order only, by the GUM's
-law of propagation of uncertainty, `σ_f² = Σ (∂f/∂xᵢ)² σᵢ²`. This is the
-same model as the linear covariance propagation of `propagateCov2` (§3.7).
-
-The first-order covariance rule needs only independence and the first two
-moments. The Isserlis second-order formula additionally needs the Gaussian
-assumption stated here. Nonlinear marks based on derivatives within one
-sigma are local diagnostics, not rigorous global bounds on standard
-deviation over a Gaussian's unbounded support. A missing mark is not a
-certificate that a nonlinear result's printed sigma is its exact standard
-deviation. Monte Carlo also depends on the chosen input distribution.
-Published constants with omitted uncertainties or exact adopted numerical
-values are modelling inputs, not claims of physical certainty.
-
-**The bound enclosure.** Every non-linear remainder and every domain check
-uses the bound enclosure `mid ± (Σ_bound |cᵢ| + slack)` only. This covers
-the remainders of `mul`, `recip`, `sqrt`, `exp`, `log`, the circular and
-hyperbolic functions, `abs`, the Rodrigues series and the norm bound of
-`expm` (§3.3). It also covers the refusals of division, `sqrt`, `log`,
-`asin` and `atan2`, a chart's step (§3.6), and the pivots of `det` and
-`inverse`. So `1 / (1 ±σ 1)` is not a division by zero. It is `1 ±σ 1`,
-marked non-linear by `recip`.
-
-**A σ never becomes a bound.** The remainder of a non-linear operation has
-three parts:
-
-1. Bound by bound. The part that comes from bound nudges and slack alone
-   is a rigorous bound. It becomes the operation's fresh bound nudge, with
-   the rounding of the midpoint (§3.2.2).
-2. Bound by statistical. A part that is first order in a statistical nudge
-   but scaled by a bound one has a size. For a product it is
-   `rB(x)·σ(y) + rB(y)·σ(x)`, with `rB` the bound radius. For a function
-   it is the slope's largest change over the bound enclosure times σ,
-   plus the slope's own approximation error times σ. This correction
-   shares the original randomness, so it is not an independent nudge. It
-   is carried as a second-order term (below), named
-   `<operation>: uncertain statistical coefficient`.
-3. Statistical by statistical. This part is second order. It is carried
-   as a second-order term, never as a nudge.
-
-Treating a statistical nudge as lying in `[-1, 1]` turns a σ into a
-certainty: `n*n` for `n = 0 ±σ 1` becomes `0.5 ± 0.5`, and `(n*n) < 2`
-becomes `true`. So no part that involves a statistical nudge
-is folded into a bound.
-
-**Second-order terms.** A value carries, for each operation that made a
-second-order statistical term, an upper bound on that term's standard
-deviation in the value's own unit, rounded up to three digits, or
-"unbounded". The term an operation makes:
-
-- a product of `a` and `b`, with statistical coefficients `aᵢ` and `bᵢ`:
-  `√((Σaᵢ²)(Σbᵢ²) + (Σaᵢbᵢ)²)`. This is exact for a product of two linear
-  forms (Isserlis). A quotient, `*` of a reciprocal, overstates by about
-  √2.
-- a function: the largest change of `f'` from `m` to `m − σ` or `m + σ`,
-  times σ, or its curvature bound across the σ-widened enclosure times
-  σ², whichever is larger. It is unbounded when either point leaves the
-  domain (`recip`, `sqrt`, `log`) or the widened enclosure reaches a pole.
-- a function with a second-derivative bound (`sin`, `cos`, `tan`, `atan`,
-  `tanh`, `asin`) uses the largest `|f''|` over the bound enclosure
-  widened by σ on each side, so equal endpoint derivatives cannot hide
-  oscillation.
-- `abs`: none, unless its kink lies within σ of the bound enclosure. Then
-  the term is unbounded.
-- a mixed correction (part 2 above): its size.
-
-`tan`, `tanh` and `asin` are lifted as functions of their own, with their
-own curvature (`asin`'s is `|t| / (1 − t²)^(3/2)`), not as quotients or
-compositions. `atan2` takes the arctangent of the smaller operand over the
-larger, by midpoint, and falls back to the other quotient when the
-divisor's enclosure can be zero.
-
-**Carrying the terms.** Every later operation carries its operands' terms
-as it carries their coefficients:
-
-- a scaling by `k` multiplies them by `|k|`. A sum adds them, term by term
-  under each operation's name.
-- a product scales each operand's terms by the other factor's largest
-  size, `|m| + r + σ + q`: its midpoint, bound radius, σ and the total of
-  its own terms.
-- a function scales them by the largest `|f'|` over the operand's bound
-  enclosure widened by `σ + q` on each side. The result is unbounded when
-  that reaches a pole or leaves the domain.
-
-**Decided.** Combining already recorded sizes uses exact addition, so
-`SecondOrder` combination is associative. Creating or scaling a size
-rounds it upward to three significant digits; combining sizes does not
-round again. These finite decimal sizes have power-of-ten denominators,
-so summing them does not multiply unrelated denominators.
-
-Sizes add. By Minkowski's inequality, the standard deviation of a sum of
-random terms is at most the sum of theirs, whatever their correlation, so
-a term that two operands share (`n*n + n*n`) counts at its full size. A
-term is scaled by the largest slope over the widened enclosure, not by the
-slope at the midpoint. At a stationary point the midpoint slope is zero,
-and scaling by it drops a term that the next order keeps. The price is
-overstatement where terms of opposite sign cancel: the steps of a
-composition add. **Open.** Signed second-order coefficients can remove
-this overstatement (§10).
-
-**The mark is re-judged, not inherited.** **Decided.** Where a value is
-used (printing, `:budget`, a comparison, `floor`, `mid`, `sd`, the
-covariances), the sum of its terms is compared with its own first-order σ
-(`skewOf`). The judgement is the ratio, squared and exact, rounded up to
-three digits, with the operation whose term is largest. It is unbounded
-when σ is zero. A term that later operations make negligible against a σ
-that has grown stops marking. A product of two zero-mean `±σ` values marks
-what it makes directly, but not every value computed from it.
-
-**The floor.** A second-order term whose absolute size is within the last
-of `p` significant digits at the value's midpoint (§3.2.8) is arithmetic
-noise. It is not recorded where it is made, whatever the first-order σ. A
-carried term is never dropped, only re-judged: dropping carried terms
-against the floor of a later midpoint hides a real term. At a
-midpoint of zero there is no floor, so `n*n` is all second order and
-stays marked. The floor does not unmark a term that is significant but
-cancels against another discarded term. For example, `G * m` with a mass
-`m = iau2015.earth.mu / G` is exactly the GM, but its product's term,
-`−GM (δG/G)²`, about `7e-10` of the value, is cancelled only by the
-`+GM (δG/G)²` that `recip` discarded. It stays marked. Write the GM.
-
-**The threshold** is `:set nonlinear` in percent, default 1. It applies
-where a value is used, not where it is computed:
-
-- printing adds `(non-linear: mul, second-order term 7.1% of the
-  first-order σ; a mean and a σ do not describe it)`, or `second-order term
-  unbounded`.
-- `:budget` adds the same line.
-- a comparison refuses, and so do `floor`, `ceil` and `round`, which are
-  comparisons with the integers (§3.2.9).
-- `mid`, `sd`, `covariance`, `crossCovariance` and `:covariance` refuse,
-  so that `sd (n*n)` is not a misleading `0`.
-- `bound` still answers, because the bound part is rigorous.
-
-A value whose first-order σ is zero after such a step prints its midpoint
-without the `…` that promises every digit (§3.2.10): `n*n + 5` prints
-`5 (non-linear: mul, second-order term unbounded; …)`.
-
-A zero first-order model does not establish equality if it discarded a
-statistical remainder, even below the threshold. So `n*n == n*n` cannot be
-decided, because discarded remainders have no identity. Linear
-cancellation, such as `n - n`, stays exact.
-
-Examples, with `a`, `b` and `n` each `0 ±σ 1`, at the default threshold:
-
-| value | result |
-|---|---|
-| `a * b`, `n * n`, `n * n * n`, `n * n + n * n`, `cos ((n * n) * 1 rad)` | marked by `mul`, unbounded |
-| `a * b + (0 ±σ 1000)` | `0 ±σ 1000`, not marked. `< 5000` is `true` |
-| `a * b + (0 ±σ 10)` | `0 ±σ 10`, marked 10% |
-| `1 / (1 ±σ 1)` | `1 ±σ 1`, marked by `recip`, unbounded |
-| `x * (4 - x)` at `x = 2 ±σ 1e-3` | `4`, marked by `mul`, unbounded: its first order cancels |
-| `x * (4 - x)` at `x = 2 ±σ 1e-15` | `4`: its term `1.4e-30` is below the floor |
-| `tanh (5 ±σ 0.1)`, `exp (0 ±σ 0.1)`, `(1 ±σ 0.1) * (1 ±σ 0.1)` | marked 24%, 11%, 7.1% |
-| `exp`, `log`, `sqrt`, `sinh`, `cosh` at `5 ±σ 0.1` | marked 11%, 2%, 1%, 11%, 11% |
-| `asin (0.99 ±σ 0.001)` | marked 5.8% |
-| `tan (1.5 rad ±σ 0.001 rad)` | marked 2.9% |
-| `atan2 (1 m ±σ 0.001 m) (0.03 m ±σ 0.001 m)`, `atan (75 ±σ 0.075)` | not marked |
-| `sin (0.01 rad ±σ 0.02 rad)`, `cos (1.5 rad ±σ 0.02 rad)` | not marked |
-| `atan2` at 45°, σ a thirtieth of the radius | marked 13% by `recip`, for a true term of 2.4% |
-| `G * (2 ± 0.1)` | marked 5% by `mul: uncertain statistical coefficient` |
-
-**Monte Carlo is the answer for a non-linear value.** The double backend
-with `:set samples N` draws the statistical nudges and gives a skewed
-result's real spread (§8.2). Quantiles and a built-in that returns the
-raw samples are open (§10).
-
-**Implemented in:** `Metron.Affine` (`Magnitude`, `SecondOrder`, `skewOf`, `nonLinearAt`, `mulM`, `recipM`, `linearise`, `liftBounded`, `tanM`, `tanhM`, `asinM`, `atan2M`, `absM`, `collapse`, `sigmaOf`, `compareM`), `Metron.Pretty` (`renderMagnitude`, `renderBudget`).
-**Tested by:** "affine"; "working precision (design §3.2.8)" › "the second-order estimate follows the true curvature"; "working precision (design §3.2.8)" › "the non-linear mark is re-judged at each operation".
-
-#### 3.2.1 Linear operations are exact on nudges
-
-Addition, subtraction and multiplication by an exact value combine
-coefficients term by term, like collecting like terms. With
-`x = 0.85 + 0.05·e₁`:
-
-```
-x - x        = (0.85 - 0.85) + (0.05 - 0.05)·e₁ = 0            exactly
-(x + 1) - x  = 1                                              exactly
-3x - x       = (2.55 - 0.85) + (0.15 - 0.05)·e₁ = 1.7 + 0.1·e₁
-```
-
-No nudge is created. Slack combines worst-case: it adds under `+` and `-`,
-and scales by `|k|` under multiplication by an exact `k`. Only the
-coefficients two forms share can cancel, so only those are checked for
-zero. A linear result is held to the length limit of §3.2.8.
-
-A quotient of proportional forms is exact for the same reason: `x / x` is
-`1` and `(3 * x) / x` is `3`, because the same named nudges are the same
-unknowns. Two conditions come first:
-
-- The denominator's enclosure must exclude zero. With `x = 1 ± 1`,
-  `x / x` and `0 / x` are `error: division by zero`, as `1 / x` is,
-  because some value in the enclosure is zero.
-- Only named nudges cancel. Slack is anonymous, so two forms with equal
-  slack are not one unknown. A denominator with slack takes the general
-  path, a product with the reciprocal (§3.2.2).
-
-**Implemented in:** `Metron.Affine` (`addM`, `subM`, `negM`, `scaleM`, `addLinear`, `scaleLinear`, `divM`).
-**Tested by:** "affine" › "a denominator that may be zero is refused before anything cancels"; "affine" › "equal slack is not a shared unknown, so it does not cancel".
-
-#### 3.2.2 Nonlinear operations add one fresh nudge
-
-The nonlinear operations are `x * y` with both operands affine, `/` by an
-affine value, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`,
-`atan2`, `sinh`, `cosh`, `tanh`, `exp`, `log`, and `norm`, `inverse`,
-`det` and `cross` with uncertain inputs (§3.4). The recipe:
-
-1. Evaluate the function at the midpoint.
-2. Replace the function by its tangent line (or plane) at the midpoint.
-   This is linear in the existing nudges and so keeps them.
-3. Bound the gap between the curve and the line over the bound enclosure.
-   That bound becomes the coefficient of **one fresh bound nudge**.
-4. Add the rigorous truncation and rounding error of the numerical
-   evaluation to the same fresh nudge. This includes the rounding that
-   keeps the result's rationals short (§3.2.8).
-
-The parts of the remainder that involve a statistical nudge are carried
-as second-order terms (§3.2), never added to the fresh nudge.
-
-Worked example, `x * x` with `x = 0.85 + 0.05·e₁`:
-
-```
-(0.85 + 0.05·e₁)² = 0.7225 + 0.085·e₁ + 0.0025·e₁²
-```
-
-The term `0.0025·e₁²` does not have the allowed shape. Since
-`e₁² ∈ [0, 1]`, it lies in `[0, 0.0025]`, which is `0.00125 ± 0.00125`. So
-
-```
-x * x = 0.72375 + 0.085·e₁ + 0.00125·e₂
-```
-
-Its range is `0.72375 ± 0.08625 = [0.6375, 0.81]`, which encloses the true
-range `[0.64, 0.81]`. The `e₁` term survives, so the result still
-remembers that it came from `x`. Only the small nonlinear leftover became
-the fresh `e₂`.
-
-**Implemented in:** `Metron.Affine` (`mulM`, `linearise`, `withFresh`, `opResult`, `sqrtM`, `expM`, `logM`, `sinM`, `cosM`, `tanM`, `asinM`, `acosM`, `atanM`, `atan2M`, `sinhM`, `coshM`, `tanhM`).
-**Tested by:** "affine" › "a shared nudge squares into a one-sided range"; "affine" › "a product of enclosures encloses every product of their points"; "affine" › "sqrt, recip, exp and log enclose their true values".
+Double arithmetic follows IEEE nearest rounding in the ordinary evaluation.
+NaN, infinity and underflow remain visible. Optional stochastic rounding runs
+are separate diagnostics (§8.2), not replacements for the ordinary result.
 
 #### 3.2.3 Where approximation enters
 
-Exact values become affine only at:
+Irrational constants, elementary functions and normal random variates require
+approximation. Rational arithmetic uses precision-controlled rational kernels,
+without silently converting to doubles. Internal approximation intervals serve
+those kernels only. The final value carries no guaranteed enclosure.
 
-- the nonlinear built-ins of §3.2.2 on arguments whose results are not
-  exact rationals.
-- the constant `pi`. There is no constant `e`, because `e` is the
-  eccentricity in most orbital code. Euler's number is `exp 1`.
-- `sqrt` of a rational that is not a square (`sqrt 4` is `2`,
-  `sqrt (9/4)` is `1.5`).
-- `±`, `±σ`, `noise` and `gauss`.
-- an exact result too long to keep (§3.2.8, "exact while small").
+#### 3.2.4 Sample identity is content-addressed
 
-Approximation is contagious through arithmetic. A program that never
-touches these, and whose exact numbers stay short, stays exact.
+A Core `Sample label distribution` has a lexical source identity. An explicit
+`#label` names a shared source. Otherwise the declaration owner and Core path
+identify it. Two sample sites are independent. Reusing a sampled value reuses
+the same realization, including through closures, storage and chart conversions.
+Repeated calls to one lexical sample site reuse its latent draw. To request
+independent inputs, use distinct sample sites.
 
-**Implemented in:** `Metron.Affine` (`exactResult`, `sqrtM`, `piM`, `uncertain`, `unitNoise`).
-**Tested by:** "end to end" › "exact thirds"; "affine" › "exact values print in full or with an ellipsis".
+Rounding identities are separate: they include the operation site, application
+path, component and internal operation index. Input index and rounding repetition
+index select separate random streams. Branches do not advance a global generator.
 
-#### 3.2.4 Nudge identity is content-addressed
+#### 3.2.5 Distributions and sampling
 
-There is no global counter. Evaluation is pure, so a nudge id is a
-function of what created it. Nudge ids live only in values, never in the
-store.
-
-- **Built-in approximations.** The id is the hash of the built-in, its
-  operand midpoints, the operands' nudge ids and coefficients, and the
-  working precision. Two evaluations of `sin (1 rad)` at the same
-  precision produce the same nudge, so `sin (1 rad) - sin (1 rad)` is `0`.
-  The approximation error of a deterministic algorithm on identical input
-  is the same error. The hash is over a tagged, length-delimited encoding
-  of the whole operation: the built-in's name, the precision, the number
-  of operands, and each operand with a tag for its kind (exact, or affine
-  with its midpoint, its nudges' ids and coefficients, and its slack).
-  Every field is length-prefixed, and rationals are a numerator and a
-  denominator. So two different operations never encode to the same
-  bytes. (Operand lists `[1, 12]` and `[1/11, 2]` written end to end as
-  text would collide, and their remainders would cancel to an exact
-  zero.) Declared nudges' ids use the same encoding.
-  **Decided.** When any operand carries anonymous slack, the operation's
-  bound remainder stays anonymous too. Equal slack radii do not identify
-  the same unknown, so hashing those radii must not introduce a shared
-  nudge. The midpoint's rounding joins this anonymous remainder as well.
-  Operands with no slack retain the deterministic sharing described above.
-- **Declared uncertainty** (`±`, `±σ`, `noise`, `gauss`). The id is the
-  hash of the kind, the hash of the enclosing top-level definition, the
-  path to the node inside it, the component index and the midpoint.
-  Re-evaluating the same `±` with the same inputs gives the same nudge.
-  `let f x = x ± 0.01` gives `f 2` one unknown and `f 3` another, because
-  the midpoint is part of the identity: a function's declared tolerance
-  is not one number across all inputs. So `f 2 - f 2` is `0`, and
-  `f 2 - f 3` is `-1.00 ± 0.02`.
-
-  **Decided.** The codebase is content-addressed, so two definitions with
-  identical text would be one definition and therefore one unknown. To
-  keep `let a = 5 ± 0.1` and `let b = 5 ± 0.1` independent, as two parts
-  from one batch are, the desugarer stamps every `±`, `noise` and `gauss`
-  with the **full path of the definition it is written in**
-  (`Owner "a"` at the root, `Owner "lab.offset"` in `namespace lab`). The
-  stamp is a field of the Core node, and so is in the hash. It is never
-  printed: `:view a` shows `5 ± 0.1`. Re-adding that text under the name
-  `a` reproduces the same term. Adding it under another name, or under
-  the same name in another namespace, makes a new measurement. The stamp
-  is the full path, not the last segment, because `lab.offset = 1 ± 0.1`
-  and `field.offset = 1 ± 0.1` are two instruments. If they were one term
-  and one unknown, their difference would print as exactly `0`. The price
-  is that renaming or moving a stamped definition changes its hash
-  (§7.2). An expression typed at the prompt has owner `""` and its own
-  hash as the site. This is a deterministic, text-visible version of
-  Unison's `unique type` salt: the text of a measurement is the whole
-  `let name = body`, not only the body.
-- **Labelled uncertainty.** `x ± r #s7` names the unknown itself. The tag
-  replaces the owner stamp (`Tag "s7"`, also hashed), and the nudge's id
-  is the hash of the kind, the label and the component, with no
-  definition, path or midpoint. So every `±` written `#s7`, in any
-  definition and at any midpoint, is `… + r·e_s7` with one `e_s7`:
-  `10 mm ± 0.01 mm #s7` and `12 mm ± 0.01 mm #s7` differ by exactly
-  `2 mm`. This is how a systematic error that several readings share, a
-  sensor offset or a calibration, is written. A label can follow `±`,
-  `±σ`, `noise` or `gauss` only. Anywhere else it is an error. The label
-  also names the source in `:budget`.
-
-Each nudge also records an **origin** for the error budget: the current
-name of the definition that created it (`G`, `iers2010.earth`) with the
-node's path, `input` for the expression itself, or the built-in and
-reason (`sin`, `mul: rounding`).
-
-**Implemented in:** `Metron.Affine` (`originId`, `builtinId`, `nudgeId`, `operandBytes`, `Origin`, `uncertain`, `unitNoise`), `Metron.Desugar` (`desugarDefinition`).
-**Tested by:** "affine" › "the same operation twice gives the same nudge, so it cancels"; "affine" › "remainders of different operand lists never share a nudge"; "affine" › "identical definitions are different measurements; a - a still cancels"; "affine" › "a function-level tolerance is one unknown per input"; "affine" › "a #label names the unknown: shared across definitions and values"; "affine" › "labels print, parse and hash".
-
-#### 3.2.5 Declared uncertainty: `±`, `±σ`, `noise` and `gauss`
-
-`noise n : Vec n 1` yields `n` fresh unit **bound** nudges as a
-dimensionless vector: each component is `0 + 1·eᵢ` with `eᵢ ∈ [-1, 1]`.
-`gauss n : Vec n 1` does the same with **statistical** nudges. These are
-the primitives, and `n` is a literal natural. The operators are sugar:
-
-```
-x ± err      =  x + err * noise 1      -- hard bound: |error| ≤ err, guaranteed
-x ±σ err     =  x + err * gauss 1      -- standard uncertainty: σ = err
+```text
+let length = sample (normal (2 m) (0.01 m))
+let width = sample (uniform (0.995 m) (1.005 m))
+let area = length * width
 ```
 
-The ASCII spellings are `+-` and `+-s`, and the prefix spellings are
-`within x err` and `sigma x err`. **Decided.** An exact width keeps its
-declared nudge identity. A non-exact width is propagated as multiplication
-of `abs err` by that same unit nudge, followed by addition to `x`.
-Bound and statistical cross terms obey §3.2; an uncertain statistical
-coefficient is a nonlinear diagnostic, never an additive hard bound.
-Both operands must share a dimension. On a vector or a
-matrix, both operators apply per component, with independent nudges
-(§3.4). A matrix after `±σ` is a covariance (§3.5). A matrix after `±` is
-a type error, "a covariance matrix goes with ±σ, not ±: a bound has no
-covariance".
+`normal mean sd` and `uniform lower upper` produce `Distribution d`.
+Their scalar parameters must have matching dimensions and must be deterministic.
+Standard deviation must be nonnegative. Uniform endpoints must be ordered.
+A zero-width distribution is valid. The parameter expressions and distribution
+generation are excluded from stochastic rounding analysis.
 
-Add `#label` to name the unknown when several readings share one error
-(§3.2.4): `let r1 = 10 mm ± 0.01 mm #batch7`.
+Uniform inputs use rational midpoint cells from deterministic 64-bit random words.
+Normal inputs use rational Box–Muller calculations at the configured precision.
+The finite generator approximates the requested distribution.
 
-Use `±` for what you can promise: a solver tolerance, a truncated series,
-a manufacturing limit. Use `±σ` for what you measured or looked up with a
-standard uncertainty: CODATA constants, an observed state vector with a
-covariance. **Decided.** A bound is never derived from a σ, and a σ is
-never printed as a bound.
+#### 3.2.6 Statistical summaries
 
-A function author uses `±` to declare the tolerance of an approximation of
-their own:
+`mid x` is the empirical mean of ordinary input results.
+`sd x` is their sample standard deviation, with denominator N−1.
+They require sampled inputs. Sample deviation and covariance require N≥2.
+They reject stochastic rounding analysis of reductions until that model is specified.
+These names do not extract an exact center or a guaranteed error.
 
-```
-let kepler_E m e = iterate_newton m e 50 ± 1e-12
-```
+#### 3.2.7 Storage and limits
 
-Callers see that error propagate like any other. There is no separate
-mechanism: `±` is a Core node, so it is hashed, viewable with `:view` and
-versioned. The library's Kepler solvers declare their truncation bound so
-(§7.7).
-
-**Implemented in:** `Metron.Affine` (`uncertain`, `unitNoise`), `Metron.Desugar` (`desugarDefinition`), `Metron.Eval` (`runPrim`).
-**Tested by:** "affine" › "noise and gauss are vectors of unit nudges"; "affine" › "sigma a e is the prefix spelling of a ±σ e, beside within"; "affine" › "declared bounds print as mid ± r"; "affine" › "± on tensors: one independent nudge per component".
-
-#### 3.2.6 Error budget
-
-`:budget expr` evaluates the expression and collapses it to a scalar. For
-a vector or matrix result it sums over the components. Use
-`:budget norm v` for the length instead. It lists the nudges sorted by
-`|cᵢ|`, with kind, origin and share. Bound nudges share the bound radius
-(`Σ|cᵢ|`). Statistical nudges share the variance (`Σcᵢ²`), so their shares
-are fractions of `σ²`. A value marked non-linear (§3.2) adds the mark's
-line. With `:set precision 6`, `:use astro`, `let mu = iers2010.earth.mu`
-(the IERS GM⊕, `±σ 8e5 m³/s²`) and
-`let period a = 2 * pi * sqrt (a^3 / mu)`:
-
-```
-> :budget period (7000 km)
-5828.5166380 ±σ 5.8e-6 (bound 3.4e-7) s
-  kind   source               contribution  share
-  σ      iers2010.earth @0.0  5.8e-6 s      100% of σ²
-  bound  mul                  1.8e-7 s      51% of bound
-  bound  recip                1.3e-7 s      39% of bound
-  bound  pi                   1.9e-8 s      6% of bound
-  bound  sqrt                 1.5e-8 s      4% of bound
-```
-
-`:budget` is the affine backend's (§8.2).
-
-**Implemented in:** `Metron.Pretty` (`renderBudget`), `Metron.Driver` (`feed`).
-**Tested by:** "affine" › ":budget lists nudges by kind, source and share"; "affine" › ":budget names tagged and owned nudges".
-
-#### 3.2.7 Compaction and slack
-
-A long computation accumulates nudges. When a value carries more than 64
-nudges, its bound nudges beyond the 32 largest are folded into `slack`,
-which is a plain worst-case radius. This is always correct and slightly
-loose: the folded nudges cannot cancel. **Decided.** Statistical
-nudges are never folded, because a σ must not quietly become a bound.
-
-Rounding error from midpoint arithmetic and from shortening coefficients
-(§3.2.8) does not go into slack. It joins the fresh nudge of the operation
-that did the rounding. That nudge's id is content-addressed (§3.2.4), so
-two evaluations of the same operation round the same way, and
-`sin (1 rad) - sin (1 rad)` is still exactly `0`. Slack never shrinks
-under any operation.
-
-**Open.** Whether the threshold of 64 is right, and whether `:set` exposes
-it (§11).
-
-**Implemented in:** `Metron.Affine` (`finish`, `nudgeLimit`).
-**Tested by:** "affine" › "equal slack is not a shared unknown, so it does not cancel", "past 64 nudges, the bound ones beyond the 32 largest fold into slack (design §3.2.7)".
+Each scalar carries ordinary arithmetic and, where needed, its indexed realizations.
+There is no affine coefficient map, slack, compaction or hard-bound representation.
+The combined run count is checked before allocation. Memory, time, digits, depth
+and component limits still apply. See §8.1 and §8.2.
 
 #### 3.2.8 Working precision
 
-**Precision means significant digits.** "`p` digits" means `p`
-significant digits: an error of at most `10^-p` relative to the value.
-This is what scientists and engineers mean by the word (and SQL,
-BigDecimal and Mathematica: *precision* is significant digits, *scale* or
-*accuracy* is decimal places), not bc's `scale`. Magnitudes live in SI
-base units, where Planck's constant is `6.6e-34` and `G` is `6.7e-11`.
-An absolute `p` keeps only three significant digits of `sqrt` of a
-quantity near `1e-34`. Every series is summed to a tolerance scaled by the
-size of its result (the sine of a tiny angle relative to the angle, `sinh`
-by its own series near zero rather than the cancelling difference of
-exponentials), and midpoint rounding follows the same rule.
-
-**Working precision.** `:set precision n` (default 20) sets the digits
-printed. The working precision `p` is `n + 4`, the guard digits. A value
-is a pure function of the term and `p`. Midpoints are rounded to `p`
-digits after every nonlinear operation, with the rounding error accounted
-for (§3.2.7). This is the approach of the Arb library.
-
-**Short rationals.** Every other rational a nonlinear operation produces
-is kept at `p + 4` significant digits:
-
-- the function's value and slope at the midpoint, whose rounding joins
-  their error bounds.
-- the size of the fresh nudge, rounded up, so that a bound stays a bound.
-- the bound coefficients of the result, rounded to a grid of `p + 4`
-  digits of the value's size (the larger of its midpoint and its
-  radius), and its slack, rounded up onto that grid. Their rounding joins
-  the operation's fresh nudge. A coefficient below the grid becomes zero,
-  and its nudge leaves the value.
-- the statistical coefficients, each to `p + 4` digits of its own size,
-  so none vanishes. Their rounding is an error in a coefficient, like a
-  slope's. It is measured against the first-order σ (§3.2), never made a
-  bound.
-- the midpoint of a product whose every linear coefficient fell below the
-  grid.
-- the result of `enclose`, so that `expm`'s series does not keep the
-  digits of `lcm (1, …, K)`.
-- the entries of `inverse` that are not exact, each with a rounding nudge
-  named by its position.
-
-Without this, lengths compound: a product's coefficients have the digits
-of both factors, and a sum of rationals with different denominators has
-the digits of both. With every rational short, each step of an iteration
-costs the same, and the converged steps' leftovers fall below the grid.
-
-**Exact while small.** **Decided.** Every number is made of rationals.
-Working precision bounds how long they get, not what they are. An exact
-result of `+`, `-`, `*`, `/` or an integer power stays exact while it is
-short:
-
-- An exact result's *length* is the shorter of its numerator and
-  denominator. The limit is **eight times `p + 4` digits**, 224 at the
-  default precision (`exactLimit`). `1/3 + 1/6` is exactly `0.5`, and
-  exact inputs give exact answers in ordinary use.
-- Past the limit, the result is rounded to `p + 4` significant digits, and
-  the rounding is a fresh bound nudge named `add`, `mul` or `div`, with
-  the operands (in order for a sum or a product, so `a + b` and `b + a`
-  are one unknown) and the precision.
-- An integer power squares through `mul`, so `(2/3)^1000` is exact until a
-  square passes the limit, and at working precision after.
-- A comparison takes the exact difference of its operands, never rounded.
-- A long exact value is an enclosure: `(1/3)^500 + 1 - 1` prints
-  `0.0000000000000000000…`, within one unit of the true `2.7e-239`.
-- A value's *size* is a separate matter. A number too large or too small
-  to write (`2^(2^64)`) is refused by the `digits` limit (§8.1), which
-  bounds the exponent, not the significant digits. So `2^100000`,
-  `1e-99999` and `1/3^300` are short.
-
-The limit of 224 digits is about twice the longest exact result of
-ordinary arithmetic in the test suite, 122 digits, the products of a
-spinning chart's exact rotation. A product of eight values at working
-precision stays exact. An exact operation at the limit costs about
-sixty-four times one at working precision (microseconds). An iteration
-that doubles its length reaches the limit within `log₂ (8 (p + 4))`
-steps. The exact logistic map `x ↦ 3.7·x·(1 − x)` from `1/3` is exact
-through its seventh step and at working precision after, every step the
-same cost. It is chaotic: its enclosure grows at its Lyapunov rate, about
-`e^0.35` a step, and after compaction (§3.2.7) its slack grows by up to
-3.7 a step. It is meaningful for about 100 steps at precision 20 and 250
-at precision 200. Beyond that it covers more than `[0, 1]`, its square
-diverges, and the `digits` limit stops it. That is the rigorous answer.
-
-**Linear results are held to the same length.** **Decided.** A linear
-operation on an affine form never rounds, which keeps `x - x` exactly 0.
-But its midpoint and coefficients can still grow: `x + 1/k` summed over
-`k` gives a midpoint whose denominator grows like `lcm (1, …, k)`. So
-`addM`, `subM` and `scaleM` on a form compute the linear result exactly,
-equal terms cancelling first, and then measure the length of its
-midpoint, every coefficient and the slack. Past `exactLimit` they round
-all of them as a non-linear result's are (`shortenLinear`):
-
-- the midpoint to `p + 4` significant digits.
-- the bound coefficients to a grid of `p + 4` digits of the value's size,
-  and the slack up onto it.
-- the statistical coefficients to `p + 4` digits of their own, away from
-  zero, so that the σ is never understated nor made a bound, and no
-  correction is left to carry.
-
-The bound rounding is a fresh nudge named `add: rounding` or
-`mul: rounding`, addressed by the operation, its operands (a sum's in the
-order of their encodings) and the precision. A value's earlier roundings
-of linear results join the new one. Without this rule, a loop that rounds
-every few dozen steps would add a nudge each time until compaction folded
-them into slack, which does not cancel. Joining is sound, because a
-coefficient becomes part of a bound. It forgets only those roundings'
-correlation with other values. So:
-
-- `x - x` is `0` for every form without slack, however long.
-- `(x + c) - x` is `c` when the midpoints are short (`(x + 1/3) - x` is
-  `1/3`), and an enclosure of `c` when they are not (`c = 1/7^300 + 1/3`).
-
-A series written in the language from exact terms, `Σ xᵏ/k!`, still pays
-each step for the size of `k!`, which the `digits` limit bounds (§8.1).
-
-**Series run in fixed point.** Every series is summed in fixed point, an
-integer counting units of `2^-b`, with each step's rounding counted in the
-bound (`fixedSum`, `oddPowerSeries`). π and `ln 2` are computed once per
-precision bucket (64, 128, 256, … digits), kept, and rounded to the
-precision asked. `sin` and `cos` reduce modulo `π/2`, with π to as many
-more digits as the angle has before its point, and again as many as the
-reduced angle has zeros after it. `log` puts its reduced argument in fixed
-point at once. `sqrt` takes the integer root of a number of about `2p`
-digits, whatever the argument's length.
-
-**The built-ins.** **Decided.** Every built-in operation and function is
-held to this. A non-linear function's result is always at working
-precision, since its value is rarely an exact rational. No built-in
-returns a rational longer than `p + 5` digits unless it is exact and
-short. Every rounding is in the result's bound. There is no `min` or `max`
-function (`min` is the minute). The library's functions (`cross`,
-`trace`, …) are compositions of these.
-
-| built-in | result | roundings | internals |
-|---|---|---|---|
-| `+`, `-`, `neg` | exact while short; a form linear, held to the limit | an exact result's rounding is a nudge, `add`; a form's, `add: rounding` | — |
-| `*`, `emul`, `scale`, `outer` | exact while short; a form scaled is held to the limit; a product of forms is shortened | `mul`; `mul: rounding`; the product's remainder | — |
-| `/`, `ediv`, `to` | exact while short; otherwise `*` and `recip` | `div`; `recip` | — |
-| `^` (integer) | squaring through `*` | each square's | `log₂ n` products |
-| `sqrt` | working precision; exact for squares | yes | integer root of `2p` digits |
-| `exp` | working precision | yes | fixed point; squares rounded at their own digit |
-| `log` | working precision | yes | fixed point; `ln 2` kept |
-| `sin`, `cos` | working precision | yes | reduction modulo `π/2`, π kept; fixed point |
-| `tan` | working precision | yes | sine over cosine, at more digits near a pole |
-| `asin`, `acos` | working precision; `acos` is `π/2 − asin` | yes | lifted itself: its value `atan (x / √(1 − x²))` at the midpoint, its curvature `\|t\| / (1 − t²)^(3/2)` |
-| `atan` | working precision | yes | fixed-point halvings and series |
-| `atan2` | working precision | yes | the larger operand divides, then `atan` |
-| `sinh`, `cosh` | working precision | yes | series near zero, `exp` beyond |
-| `asinh` | working precision | yes | odd logarithm identity on affine values; native range-safe libm under double |
-| `tanh` | working precision | yes | sine over cosine near zero, `(1 − q)/(1 + q)` beyond |
-| `pi` | working precision | yes | Machin in fixed point, kept per bucket |
-| `abs` | linear, or one nudge across zero | yes | — |
-| `floor`, `ceil`, `round` | exact integers | decided as comparisons (§3.2.9) | — |
-| `==`, `/=`, `<`, `<=`, `>`, `>=` | booleans | the exact difference, never rounded | — |
-| `norm` | `sqrt` of a sum of products | yes | — |
-| `dot` (`·`, `@`), `contract`, `transformBy` | sums of products | yes | — |
-| `wedge`, `cross` (`(ε @ b) @ a`), `star` | differences of products | yes | — |
-| `inverse` | working precision | yes, and a settling nudge per entry | Gauss–Jordan |
-| `det` | working precision | yes | elimination, product of pivots |
-| `cholesky` | working precision | yes | Cholesky–Banachiewicz |
-| `expm` | working precision | yes | Rodrigues for one plane, else the scaled and squared series (§3.3) |
-| `covariance`, `crossCovariance` | exact: products of coefficients of `p + 4` digits | none | — |
-| `mid`, `bound`, `sd` | exact; `sd` a root at working precision unless the variance is a square | `sd`'s root | — |
-| `noise`, `gauss`, `±`, `±σ` | unit or declared coefficients | — | — |
-| `seq`, `vmap`, `vzipWith`, `timap`, `indices`, `transpose`, `permute`, `slice`, the chart primitives | structural, or sums and products above | inherited | — |
-
-`tan` of an enclosure that reaches a pole is a domain error, "tan of an
-enclosure that reaches a pole, an odd multiple of π/2". A σ that reaches a
-pole makes the second-order term unbounded (§3.2).
-
-The tests check each built-in at precisions 20, 50 and 200 against bc to
-260 digits: every printed digit is within one unit of the last, for as
-many digits as the precision. They check the length of every rational at
-working precisions 24, 54 and 204, from an exact argument, one with a
-bound and one with a σ. The exact-rational series are kept in the tests as
-an oracle: for random arguments, the two enclosures overlap.
-
-**Open.** A composition overstates its second-order term (§3.2). `expm`
-with uncertain entries is slow at high precision (§10).
-
-**Implemented in:** `Metron.Affine` (`exactResult`, `exactLength`, `exactLimit`, `heldLinear`, `shortenLinear`, `shortDigits`, `shorten`, `withFresh`, `enclose`, `powM`), `Metron.Numerical.Approx` (`fixedSum`, `oddPowerSeries`, `piApprox`, `logApprox`, `sqrtApprox`, `sinCosApprox`, `tanApprox`, `tanhApprox`, `atanApprox`, `expApprox`), `Metron.Numerical.Linear` (`invert`, `determinant`, `choleskyRows`, `matrixExp`), `Metron.Eval` (`precisionOf`).
-**Tested by:** "working precision (design §3.2.8)", with its groups "exact while small", "linear results held to the length limit", "the exact logistic map runs at working precision", "fixed-point series agree with the exact-rational ones within both bounds", "every built-in at precisions 20, 50 and 200 agrees with bc" and "every built-in's rationals are within the working precision"; "affine" › "an iteration's rationals stay short".
+`:set precision P` controls rational approximations and decimal display.
+It does not increase double precision or the accuracy of input measurements.
+Exact rational operations do not shorten their operands automatically.
+Matrix exponential kernels shorten intermediate rational approximations to control cost.
 
 #### 3.2.9 Comparison
 
-On exact values, comparison is exact. On affine values, `a < b` forms
-`a - b`, cancels, and collapses it to a midpoint `mid`, a bound radius `r`
-and a standard deviation `σ`. The comparison is decided if
-`|mid| > r + k·σ`, where `k` is the setting `:set sigma k` (default 3).
-Otherwise evaluation fails:
-
-```
-error: cannot decide comparison at sigma 3: the difference is 0.0 ± 3.962126632363423e-27
-```
-
-The difference prints as `mid ± r`, followed by `±σ σ` when there is a
-variance. So a comparison that depends on statistical inputs is decided at
-a stated confidence, never silently. A comparison with only bound inputs
-is rigorous.
-
-- A difference marked non-linear (§3.2) is never decided, because a mean
-  and a σ do not describe it: "cannot decide comparison at sigma 3: the
-  difference is marked non-linear by mul: a mean and a σ do not describe
-  it (design §3.2)".
-- `floor`, `ceil` and `round` are comparisons with the integers and are
-  decided the same way, at the stated sigma: `floor (2.5 ±σ 0.17)` is
-  "cannot decide floor of an enclosure that straddles a rounding
-  boundary".
-- `a == b` is true if `a - b` is exactly zero after cancellation (so
-  `x == x` holds for affine `x`), false if decided non-zero, and
-  undecidable otherwise. There is no third truth value, and error never
-  leaks into control flow silently.
-
-`sqrt 2 * sqrt 2 == 2` can never be decided by finite-precision
-arithmetic. The idiom for computed values is an explicit tolerance,
-`abs (a - b) < 1e-9`, which the enclosure then decides rigorously.
-
-**Accessors.** Any other policy is written with three accessors that take
-a value apart the way printing collapses it (§3.2.10), per component on a
-tensor, keeping the operand's dimension and display unit:
-
-- `mid x` is the midpoint.
-- `bound x` is the bound radius `r = Σ_bound |cᵢ| + slack`.
-- `sd x` is the standard deviation `σ = √(Σ_stat cᵢ²)`.
-
-On an exact value they are the value, `0` and `0`. `mid` and `bound` are
-always exact. `sd` is exact when the variance is the square of a rational
-(`sd (1 ±σ 0.1)` is `0.1`), and otherwise an enclosure of the square root,
-as `sqrt` gives. So `bound (10 mm ± 0.1 mm)` is `0.1 mm`, and "consistent
-within the bound and three σ" is
-
-```
-let consistent a b = let d = a - b in abs (mid d) <= bound d + 3 * sd d
-```
-
-`mid` and `sd` refuse a value marked non-linear (§3.2). The three are the
-affine backend's (§8.2).
-
-**Open.** Refining an undecided comparison by re-evaluating at a higher
-`p` (§10). It can tighten `r`, never `σ`. Comparison operators beyond `<`
-and `==` (§11).
-
-**Implemented in:** `Metron.Affine` (`compareM`, `equalM`, `floorM`, `ceilM`, `roundM`, `roundingWith`, `collapse`, `sigmaOf`), `Metron.Scalar` (`backendOwn`).
-**Tested by:** "affine" › "comparisons are decided only when the enclosures separate"; "affine" › ":set sigma widens the margin for statistical nudges only"; "affine" › "integer rounding needs an enclosure inside one step"; "affine" › "mid, bound and sd take an enclosure apart"; "affine" › "discarded statistical remainders cannot establish exact equality".
+Each realization follows its own comparisons and branches. Shared values cancel
+within each realization. Double comparisons follow IEEE rules, including NaN.
+Different constructors produce a mixture of outcomes rather than an undecidable
+comparison caused by overlapping error bounds.
 
 #### 3.2.10 Printing
 
-A value prints in its display unit (§3.2.12), followed by its unit. Exact
-values print in full, or cut at `precision` significant digits with `…`
-when the decimal goes on. The integer part is always complete. An affine
-value is collapsed to a midpoint, a bound radius `r = Σ_bound|cᵢ| + slack`
-and a standard deviation `σ = √(Σ_stat cᵢ²)`, then printed as follows:
+Print the ordinary value first. Input reports show empirical mean, sample standard
+deviation and the central 95% outcome interval, with the input count.
+Quantiles use linear interpolation at (N−1)p (type 7).
+Rounding reports show within-input spread and displacement from ordinary results.
+Neither report is a confidence interval for the mean or a guaranteed bound.
+Nonfinite results and unsupported conditional summaries are explicit.
 
-- `σ = 0` and `r` below the last printed digit: print `precision`
-  significant digits of the midpoint and `…`, zeros included. Every
-  printed digit is correct to within one unit in the last place, because
-  the enclosure is narrower than that place.
-- `σ = 0` otherwise: print `mid ± r`. `r` is rounded to two significant
-  digits (one when the second is zero), and the midpoint to the position
-  of `r`'s last digit. The rounding of the midpoint is folded into `r`
-  first, so the printed band still encloses the value.
-- `σ > 0`: print `mid ±σ σ` the same way, followed by `(bound r)` when `r`
-  is at least a hundredth of `σ`. The midpoint goes to the last digit of
-  the coarser of the two. The `σ` marker is never omitted, so a 1σ band
-  can never be mistaken for a certainty.
-- A value marked non-linear adds its mark (§3.2).
-
-Values below `10^-4` print in scientific notation (`6.62607015e-34`),
-uncertain or not, so a Planck-scale quantity is not a row of zeros.
-
-```
-> 1/3
-0.33333333333333333333…
-> sin (1 rad)
-0.84147098480789650665…
-> let x = 5 ± 0.1 in x - x
-0
-> 5 ± 0.1
-5.0 ± 0.1
-> (5 ± 0.1) * (5 ± 0.1)
-25 ± 1
-> let x = 5 ± 0.1 in x * x
-25 ± 1
-> :use astro
-stored use astro
-> G
-6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2
-> G * (2 ± 0.1)
-1.335e-10 ±σ 3e-15 (bound 6.7e-12) m^3 kg^-1 s^-2 (non-linear: mul: uncertain statistical coefficient, second-order term 5% of the first-order σ; a mean and a σ do not describe it)
-> sqrt 2 * sqrt 2 == 2
-error: cannot decide comparison at sigma 3: the difference is 0.0 ± 3.962126632363423e-27
-> :exact sin (1 rad)
-0.84147098480789650665… + 3.02989…e-29·e[bound, sin]
-> :exact 2 ± 0.1
-2 + 0.1·e[bound, input]
-```
-
-`:exact e` shows the raw rational, or the midpoint, the nudge list with
-kinds and origins (a definition's current name, `input` for the
-expression itself, or the built-in), and the slack. On a tensor it shows
-each component, the component index in the origin (`input.1`). `:exact`
-is the affine backend's (§8.2).
-
-**Open.** Whether `…` marks both "exact but cut short" and "approximate"
-(§11).
-
-**Implemented in:** `Metron.Pretty` (`renderMagnitude`, `renderRational`, `renderValue`, `renderExact`), `Metron.Affine` (`collapse`), `Metron.Numerical.Approx` (`roundAt`).
-**Tested by:** "affine" › "exact values print in full or with an ellipsis"; "affine" › "certain digits of approximations end in an ellipsis, zeros included"; "affine" › "tiny magnitudes keep their significant digits"; "affine" › ":exact shows the midpoint, the nudges and their origins"; "pretty".
+**Implemented in:** `Rational`, `Double`, `Scalar`, `Numerical.Rational`,
+`Numerical.Sampling`, `Numerical.Statistics`, `Eval`, `Pretty`.
+**Tested by:** "separate sampling foundation", "independent arithmetic and grouped rounding",
+"rational approximation kernels", "numerical review regressions".
 
 #### 3.2.11 Units and dimensions at runtime
 
@@ -1715,24 +1010,17 @@ So `90 deg` prints as itself, and `sin (90 deg)` is
 24 prefixes applied to every base and derived unit, and the accepted units
 iapetus needs. `Metron.Prelude` generates the prefix table.
 
-**Decided.** Measured constants are library definitions with `±σ`, taken
-from published standard uncertainties, so uncertainty is present by
-default, carries the statistical kind, and `:budget` can name it:
-`astro.G = (6.67430e-11 ±σ 1.5e-15) * 1 m^3 kg^-1 s^-2` (CODATA 2018,
-unchanged in 2022). CODATA publishes 1σ values, which are not hard bounds.
-Under `±`, a 68% band prints as a certainty, so the library never ships
-them under `±`. A mass is derived where it is wanted:
-`iau2015.earth.mu / G` from the exact IAU nominal GM is
-`5.97217e24 ±σ 1.3e20 kg`, and its uncertainty is `G`'s. Constants that
-are exact by definition ship as exact rationals with no uncertainty: `c`,
-`h`, `k_B`, `N_A` and `e_charge` in `physics` (SI 2019), the IAU nominal
-values in `astro.iau2015`, and the defining parameters of `astro.wgs84`.
+**Decided.** Measured constants use explicit normal distributions with the
+published mean and standard uncertainty. For example,
+`astro.G = sample (normal 6.67430e-11 1.5e-15) * 1 m^3/kg/s^2`.
+Derived quantities share their sampled constants. SI defining constants,
+IAU nominal values and WGS84 defining parameters remain deterministic.
 
 The run-time errors are listed in §4.7. Everything else, including a
 component access out of range, is caught statically.
 
 **Implemented in:** `Metron.Dimension` (`BaseDim`, `baseSymbol`), `Metron.Primitive` (`baseUnit`), `Metron.Prelude` (`stdlibSource`, `prefixNames`, `coherent`).
-**Tested by:** "units" › "base units are primitives"; "units" › "the circular functions take an angle"; "prelude" › "derived units are coherent"; "prelude" › "accepted units"; "prelude" › "constants are exact where SI defines them so"; "affine" › "angles: deg is a unit built on pi"; "affine" › "the library's G carries its σ and a mass derived from it inherits it".
+**Tested by:** "units" › "base units are primitives"; "units" › "the circular functions take an angle"; "prelude" › "derived units are coherent"; "prelude" › "accepted units"; "prelude" › "constants are exact where SI defines them so"; "separate sampling foundation"; "astro (design §7.7)".
 
 #### 3.2.12 Display units
 
@@ -1806,7 +1094,7 @@ print by their current name through the same resolution as `:view`
 (§7.6).
 
 **Implemented in:** `Metron.UnitHint` (`UnitHint`, `mkHint`, `hintMul`, `unitHintMul`, `unitHintDiv`, `unitHintPow`, `smallerUnit`, `combine`, `hintProduct`), `Metron.Session.Preferences` (`preferenceHint`, `refreshPreferences`), `Metron.Eval` (`asUnit`), `Metron.Pretty` (`renderValue`).
-**Tested by:** "display units"; "affine" › "display units of one dimension cancel against each other"; "affine" › "a unit is its own term: an amount of the same size is not one"; "affine" › "a let that rebinds a unit name makes it a quantity"; "affine" › ":prefer sets a display unit per dimension; to still wins; it persists".
+**Tested by:** "units"; "display units"; "spaces and frames (design §3.10, part F)"; "turnedCharts"; "movingCharts"; "standard library".
 
 ### 3.3 Vectors, matrices and tensors
 
@@ -1848,10 +1136,9 @@ type, as in ([] :: Vec 0 m)". (`Empty` of `data Box d = Empty | Full
 **Size.** Lengths, counts and index positions are machine integers. A
 length a type or a literal names is at most `2^40` (`lengthLimit`), so
 that a definition checks the same in every session. One written past it
-(`noise 18446744073709551616`, `Vec 18446744073709551616` in a signature,
+(`Vec 18446744073709551616` in a signature,
 a projection `.18446744073709551616`, a position of `contract` or
-`slice`) is refused where it is written, never wrapped: "noise
-18446744073709551616: a tensor has at most 2^40 components". How many
+`slice`) is refused where it is written, never wrapped: "a tensor has at most 2^40 components". How many
 components a tensor can have when it is built is the session's
 `components` limit, default 10⁷ (§8.1). A product whose operands are
 within it but whose result is not (`outer`, `dot`, `wedge`) is refused
@@ -1864,9 +1151,8 @@ dimension. A position is `Vec 3 m`, a velocity `Vec 3 (m/s)`, a rotation
 covariance and state-transition matrix, whose entries mix dimensions, are
 written as homogeneous blocks (§3.7).
 
-Each component is an independent magnitude with its own nudge set.
-Because nudges are shared by name across components, `norm (r1 - r0)`
-correlates error correctly (§3.4).
+Each component carries indexed realizations. Shared sources preserve correlation
+across components through the complete calculation (§3.4).
 
 **Operators**, each with one type (§4.2):
 
@@ -1888,10 +1174,9 @@ correlates error correctly (§3.4).
 matrices, with the standard orientation. It verifies diagonal zeros and
 `M + transpose M == 0`, including every double copy. Non-alternating or
 undecidable inputs are refused. To project a general matrix, write
-`star ((M - transpose M)/2)` explicitly. Multiplication's bound-remainder
-identity is commutative, so a bounded vector wedged with itself cancels
-exactly when its dependencies are identified. Anonymous slack and
-discarded statistical terms still cannot establish exact identities.
+`star ((M - transpose M)/2)` explicitly. The wedge computes one triangle and negates it for the other.
+Identical finite operands produce a zero wedge in ordinary arithmetic.
+Under diagnostic rounding, arithmetic identities are subject to the perturbation model.
 General exterior grades, metric and orientation remain future work; this
 matrix boundary is not a general Grassmann representation.
 
@@ -1922,8 +1207,6 @@ timap      : (Vec (rank s) -> Num d1 -> Num d2) -> Tensor s d1 -> Tensor s d2
                                              -- the multi-index as an exact vector, any rank (§4.1)
 v.i        : Vec (n + i + 1) d -> Num d      -- projection, i a literal (§2.10, §4.1)
 m.i        : Mat (k + i + 1) n d -> Vec n d  -- row projection
-noise      : Vec n 1                         -- n a literal; bound nudges
-gauss      : Vec n 1                         -- n a literal; statistical nudges
 covariance : Vec n d -> Mat n n (d^2)        -- §3.5
 crossCovariance : Vec n d1 -> Vec m d2 -> Mat n m (d1*d2)   -- §3.5
 cholesky   : Mat n n (d^2) -> Mat n n d      -- §3.5
@@ -1959,7 +1242,7 @@ them:
 
 ```
 > expm (rotz (90 deg)) @ [1, 0, 0]
-[3.0e-24 ± 3.8e-24, 1.0000000000000000000…, 0]
+[1.6412796919477191898…e-27, 1.0000000000000000000…, 0]
 > rotz (30 deg) == axisAngle [0, 0, 1] (30 deg)
 true
 > rotation e1 e2 == rotz (90 deg)
@@ -1997,20 +1280,11 @@ anonymous.
   pair gives the zero bivector. An antiparallel pair, for which every
   plane through `a` would do, gives half a turn in the plane through `a`
   and `e3`, or through `a` and `e1` when `a` is along `e3`. Vectors that
-  are nearly parallel within their enclosures make `==` undecided, which
-  is reported. A zero vector divides by zero.
-- Every constructor's bivector is *exactly* antisymmetric as affine
-  forms. `rotx`, `roty` and `rotz` scale an exact matrix. `axisAngle` and
-  `rotation` form one vector, angle included, and take its dual, whose
-  entries are that vector's components and their negations. So
-  `B + Bᵀ == 0` is decided true even for an uncertain angle or axis, which
-  is what a chart's generator is checked against (§3.8). Written as
-  `θ * dual …`, the scalar product would give each entry and its partner
-  fresh nudges of their own, and the sum would be `0 ± 10⁻²⁷`, undecided.
-  One caveat: an angle whose `±` radius is itself inexact
-  (`30 deg ± 1 deg`, with `π` in the radius) carries that radius as slack
-  (§3.2.7), which never cancels, so `B + Bᵀ == 0` is then undecided. A
-  radius such as `± 0.001 rad` is exact and cancels.
+  are nearly parallel can be sensitive to numerical approximation. A zero vector divides by zero.
+- Constructors build antisymmetric matrices from shared components and their
+  negations. The wedge computes one triangle and negates it for the other,
+  including under stochastic rounding. Chart generators are checked for
+  antisymmetry in every realized value.
 - `euler313 Ω i ω = expm (rotz Ω) @ expm (rotx i) @ expm (rotz ω)` is the
   matrix of the classical 3-1-3 sequence (the orbital elements' node,
   inclination and argument). It takes perifocal components to inertial
@@ -2018,40 +1292,11 @@ anonymous.
   different planes do not add as bivectors. Each Euler sequence is its own
   function, with the sequence in its name.
 
-**`expm` is exact where it can be and rigorous everywhere.** It splits `B`
-into its antisymmetric part `A` and its symmetric part `S`.
-
-- When `A` is a single plane (always for `n ≤ 3`, checked exactly for an
-  exact `A` beyond), it uses Rodrigues' formula `I + f(t) A + g(t) A²`,
-  with `t = Σ_{i<j} a_ij²` the square of the angle, and `f = sin θ / θ`,
-  `g = (1 − cos θ) / θ²` written as their series in `t`. These have no
-  singularity, so an angle whose enclosure holds zero
-  (`rotz (0 rad ± 0.001 rad)`) divides by nothing.
-- `S` is exactly zero for every constructor's bivector. When it is not
-  zero but its bound `σ` is below `10^-p` (a bivector built entry by entry
-  through products, whose two halves got fresh nudges of their own, or
-  one carrying slack), each entry gets a fresh nudge of `2σ`, because
-  `‖exp (A + S) − exp A‖₂ ≤ e^σ − 1` (`exp (τA)` is orthogonal, and the
-  logarithmic norm of `A + S` is at most `σ`).
-- Any other matrix takes the exponential series with scaling and
-  squaring. `β` is the ∞-norm (largest row sum) of
-  `|midpoint| + radius`, which bounds the norm of every matrix in the
-  enclosure. `B / 2ˢ` has `β' = β / 2ˢ ≤ 1/2`. The series is summed to the
-  first term `K` with `β'ᴷ / K!` below the working precision plus a digit
-  per squaring. The remainder, at most `2 β'ᴷ / K!` in ∞-norm and so in
-  every entry, is a fresh nudge of each entry's own, named with its
-  position. The result is squared `s` times. Each product's coefficients
-  are shortened as every nonlinear operation's are (§3.2.8).
-- An angle's nudges reach the entries: `expm (rotz (90 deg ± 0.001 rad))`
-  has a bound of 0.001 on its cosine entries and only a second-order one
-  on its sine entries.
-- `expm (−B)` is the inverse of `expm B` within the enclosures, and
-  `expm` of zero is exactly the identity.
-- **Open.** `expm` refuses statistical inputs, including marked results
-  with no surviving statistical coefficient: "expm with statistical
-  uncertainty is not supported; its statistical remainder cannot yet be
-  propagated". The bounded series does not propagate a statistical
-  remainder. This also applies to chart rotations (§3.8) (§10).
+**Matrix exponential.** Both arithmetic implementations use scaling and squaring.
+Each realization chooses its own scale. Rational kernels use precision-controlled
+Taylor terms. Double kernels use twenty terms after scaling the norm below one half.
+Zero maps exactly to the identity. General and sampled matrices use the same
+mathematical operation. No residual enclosure is attached to the result.
 
 **`transformBy R t`** contracts `R` into every axis of `t`: `R v` for a
 vector, `R P Rᵀ` for a matrix such as a covariance, and `R` on each index
@@ -2086,10 +1331,8 @@ matrix.
 and `slice 0 i t` is `t.i`. It is written `t._.i` with `k` wildcards
 (§2.10).
 
-All three are linear. They create no nudge. `contract` sums the
-diagonal's affine forms, so the nudges they share cancel as in `norm`
-(§3.4). `slice`, like a projection, gathers components without touching
-them, so it keeps the dimension, the display unit and every nudge.
+All three are linear. Contraction sums realized components.
+Slicing and permutation preserve component values and their sample identities.
 
 ```
 > contract 0 1 [[1, 2], [3, 4]]
@@ -2151,7 +1394,7 @@ result only when that component is read, and give the result no display
 unit of its own. So `(vmap (\x -> 1/x) [0, 2]).1` is `0.5`, because the
 division by zero in the other component is never forced. A map over an
 empty tensor has the dimension the function gives:
-`vmap (\x -> x * 1 m) (noise 0)` is `[] m`. Inside a polymorphic function
+`vmap (\x -> x * 1 m) ([] :: Vec 0)` is `[] m`. Inside a polymorphic function
 the dimension is the caller's, passed as a type-level argument. `vimap`
 stays the vector form with a scalar position, and `timap` is the general
 one. A diagonal mask:
@@ -2179,231 +1422,39 @@ of rank at least two. Applied directly, `timap (\i x -> i.1 * x) [1, 2, 3]`
 is refused the same way at the vector.
 
 **Printing** factors the common unit: `[1, 2, 3] m`, `[[1, 0], [0, 1]]`
-printed as `[1, 0; 0, 1]` (§2.4). Affine components print with their own
-certain digits.
+printed as `[1, 0; 0, 1]` (§2.4). Sampled components print with separate empirical summaries.
 
-**Implemented in:** `Metron.Eval` (`runPrim`, `matrixProduct`, `identityMatrix`, `rotateVector`, `positions`, `strides`, `unflatten`, `sized`), `Metron.Numerical.Linear` (`matrixExp`, `invert`, `determinant`, `choleskyRows`), `Metron.Affine` (`sincSqM`, `coscSqM`, `rodriguesSeries`, `enclose`), `Metron.Prelude` (`algebra`), `Metron.Core` (`lengthLimit`), `Metron.Primitive.Types` (`primScheme`, `primSchemeFor`).
-**Tested by:** "products"; "contraction and permutation"; "slicing along an axis"; "rotations"; "types" › "indices, vzipWith and vimap (design §3.3)"; "types" › "timap's index is a Vec (rank s) (design §4.1)"; "end to end" › "a tensor past the components limit is refused when built"; "end to end" › "an empty tensor takes its element type from context"; "end to end" › "an empty tensor nothing fixes is a type error, not an internal one"; "affine" › "expm refuses statistical inputs instead of erasing them"; "affine" › "linear algebra over enclosures".
+**Implemented in:** `Metron.Eval` (`runPrim`, `matrixProduct`, `identityMatrix`, `rotateVector`, `positions`, `strides`, `unflatten`, `sized`), `Metron.Numerical.Rational` (`matrixExp`, `invert`, `determinant`, `choleskyRows`), `Metron.Rational` (matrix kernels), `Metron.Prelude` (`algebra`), `Metron.Core` (`lengthLimit`), `Metron.Primitive.Types` (`primScheme`, `primSchemeFor`).
+**Tested by:** "products"; "contraction and permutation"; "slicing along an axis"; "rotations"; "types" › "indices, vzipWith and vimap (design §3.3)"; "types" › "timap's index is a Vec (rank s) (design §4.1)"; "end to end" › "a tensor past the components limit is refused when built"; "end to end" › "an empty tensor takes its element type from context"; "end to end" › "an empty tensor nothing fixes is a type error, not an internal one"; "separate sampling foundation".
 
-### 3.4 Error on compound values
+### 3.4 Sampling compound values
 
-**Storage is per component, but meaning is not.** Because nudges are named and
-shared, a vector of affine forms over common nudges describes a
-*zonotope* (a sum of line segments in space), not a box. Take a rotation
-by an uncertain angle, `t = 45 deg ± 0.001 rad`, ignoring the sub-`1e-20`
-nudges from `pi` and the series:
+**Decided.** Tensor components share input identities. A rotation of one sampled
+vector preserves those dependencies through the complete nonlinear calculation.
+Construct separate inputs with separate sample sites. A single site inside a
+mapping function shares its latent variate across calls.
 
-```
-expm (rotz t) @ [1, 0, 0] km
-  x = 0.70710… km - 0.000707·e_t km
-  y = 0.70710… km + 0.000707·e_t km
-  z = 0
-```
+A sampled chart parameter gives each realization its own frame transformation.
+A zero chart step in any realized input is invalid. No interval enclosure
+can establish invertibility for unsampled inputs.
 
-Both components carry the *same* `e_t`, with opposite signs. The error
-region is a segment tangent to the unit circle, 2 m long. A naive interval
-box would also include the corner where both x and y are large, a point
-at a radius greater than 1 km, which no rotation can produce. Now take
-`norm` of the result. Its tangent plane at the midpoint is
-`(x·Δx + y·Δy)/|r|`, and the `e_t` coefficients cancel:
-`0.7071·(-0.000707) + 0.7071·(0.000707) = 0`. The result is `1 km` plus a
-second-order remainder: `norm (expm (rotz t) @ [1, 0, 0] km)` prints
-`1.00000000 ± 5.8e-7 km`. Interval arithmetic on the box would report
-`1 km ± 1 m`.
+**Implemented in:** `Eval`, `Rational`, `Double`.
+**Tested by:** "rotations", "frames", "separate sampling foundation".
 
-Tuples behave the same way: `(r, v)` produced by one propagation share
-nudges, so a later `r + v * dt` cancels the shared nudges.
+### 3.5 Sample covariance
 
-**The algebraic reason.** `Affine` is itself a container:
-`Affine a ≅ (a, Map NudgeId a)`. It commutes with the shape functors up to
-zero coefficients:
+**Decided.** Covariance uses paired ordinary input realizations with denominator N−1.
+`covariance` returns the component covariance matrix.
+`crossCovariance` returns the paired block between two tensors.
+`jointCovariance` builds the library's `Cov2` record from those blocks.
+Shared samples preserve correlation. Distinct declarations provide independent
+latent draws, whose empirical covariance need not be exactly zero.
 
-```
-Vec n (Affine Num) ≅ Affine (Vec n Num)
-```
+Rounding repetitions do not contribute to these statistics.
+Requested rounding analysis of a covariance reduction fails explicitly.
 
-The left side is the implementation, one affine form per component. The
-right side is the meaning: a midpoint vector plus one direction vector
-per nudge. They carry the same information, so per-component storage
-loses nothing at the compound level.
-
-**Linear versus nonlinear is the organising principle.** Linear
-operations lift through `Affine` exactly: `fmap f` for a linear `f` is the
-correct lifting and creates no nudge. Every nonlinear primitive is a
-controlled failure of that law: it linearises at the midpoint and adds one
-fresh nudge whose size is the amount by which the law fails. So each
-built-in is in one of two lists:
-
-| Lift exactly (no new nudge) | Linearise (one new nudge) |
-|---|---|
-| `+`, `-` | `*`, `dot`, `cross` with both sides uncertain |
-| `*` with one exact side | `/` by an affine value |
-| `/` by an exact value | `sqrt sin cos tan asin acos atan atan2 sinh cosh tanh exp log` |
-| `M * v`, `M * N` with one exact side | `norm`, `det`, `inverse` |
-| `transpose`, `contract`, `permute`, `slice`, projection `.i`, `to` | `cholesky`, `expm` |
-| `vmap` of a function that is itself in the left column | `vmap` otherwise |
-| integer `^` of an exact value, `abs` away from zero | integer `^` of an affine value (through `*`), `abs` across zero |
-
-Each list holds subject to §3.2.8: a linear result past the length limit
-is rounded with a fresh nudge.
-
-**`±` on a compound is an indexed map, not a plain `fmap`.** There is one
-independent nudge per component, with the component position in the nudge
-identity. Without the index, `[1, 1, 1] m ± 0.1 m` would give all three
-components the same nudge, a segment along `(1, 1, 1)` instead of a box.
-The box over-approximates a radial "known to 10 m in any direction" bound
-by up to √3 at the corners. **Open.** A ball-plus-zonotope representation
-that can express a radial bound (§10).
-
-**Implemented nonlinear matrix arithmetic.** Affine `inverse` uses
-Gauss–Jordan elimination with pivots whose bound enclosures exclude zero,
-then settles each output entry. Its scalar affine operations account for
-their own remainders; it does not compute a compound Neumann remainder.
-This can lose dependencies or refuse a pivot even when every matrix in
-the input set is invertible. `norm`, `det`, `cross` and `dot` likewise
-compose scalar operations. **Open.** A compound inverse using
-`-M⁻¹·ΔM·M⁻¹` and a Neumann remainder when `‖M⁻¹·ΔM‖ < 1` would be a
-different algorithm, requiring its own containment tests.
-
-**Structure never carries error.** Shapes and lengths are types. Tuples
-and closures have no error of their own. `Bool` has none: an overlapping
-comparison is a run-time error, not a third truth value.
-
-**Implemented in:** `Metron.Affine` (`uncertain`, `originId`), `Metron.Numerical.Linear` (`invert`, `determinant`), `Metron.Eval` (`runPrim`).
-**Tested by:** "affine" › "± on tensors: one independent nudge per component"; "affine" › "linear algebra over enclosures"; "rotations" › "an uncertain angle carries its nudge into the entries"; "turnedCharts" › "an uncertain angle: the coordinates carry it, correlated".
-
-### 3.5 Covariance: the statistical nudges, collected
-
-Nothing extra is carried. A result `x = x₀ + Σ cᵢ·eᵢ` with vector
-coefficients `cᵢ` has, over its **statistical** nudges (independent,
-variance 1),
-
-```
-Cov(x) = Σ_stat cᵢ cᵢᵀ = C Cᵀ
-```
-
-where `C` has the statistical `cᵢ` as columns. The nudge coefficients
-already *are* a square-root factor of the covariance. Bound nudges are not
-part of `Cov`. They are reported beside it as a worst-case bias box,
-because a rigorous bound has no variance. Check it on two nudges and two
-components, with `c₁ = (1, 2)` and `c₂ = (3, 0)`:
-
-```
-C = [[1, 3], [2, 0]]      C Cᵀ = [[1 + 9, 2 + 0], [2 + 0, 4 + 0]] = [[10, 2], [2, 4]]
-```
-
-Var(x₁) = 1² + 3² = 10, Var(x₂) = 2² = 4, and Cov(x₁, x₂) = 1·2 + 3·0 = 2.
-Through linear steps this is exactly the textbook `J P Jᵀ`, because the
-coefficients transform by `J`. Through nonlinear steps it is first-order
-propagation, the approximation an extended Kalman filter makes (§3.2).
-Only the remainder from bound inputs is a rigorous bound. Discarded
-statistical corrections are carried as sizes and judged against the σ
-(§3.2), and the covariance summaries refuse a marked result: "covariance
-of a value marked non-linear is not supported".
-
-There is no "reading" to choose: each nudge knows its kind. `±`
-contributes to the bound and `±σ` to the covariance, and the printing,
-comparison, budget and covariance rules all consult the kind.
-
-**Correlated inputs are ordinary linear algebra.** A full 6×6 state
-covariance `P` enters as its square-root factor `L` with `P = L Lᵀ`, split
-into homogeneous blocks:
-
-```
-let e = gauss 6
-let r = r0 + Lr @ e           -- Lr : Mat 3 6 m
-let v = v0 + Lv @ e           -- Lv : Mat 3 6 (m/s)
-```
-
-For the single-vector case, `v ±σ P`, with `P : Mat n n (d^2)` the
-covariance matrix, is `v + cholesky P · gauss n`: one statistical nudge
-per component, identified by the definition site like every `±`, so two
-identical declarations are independent and a `#label` shares one. A bound
-has no covariance, so `v ± P` with a matrix is a type error (§3.2.5).
-
-**Getting covariance out.** `covariance v : Vec n d -> Mat n n (d^2)` is an
-ordinary function on a homogeneous vector, exact in the coefficients.
-`cholesky : Mat n n (d^2) -> Mat n n d` is its inverse on positive-definite
-matrices. It fails with a domain error when a pivot's enclosure reaches
-zero.
-
-**Decided.** Cholesky rejects a pivot whose enclosure reaches zero in
-every diagonal position, including the last. The double backend also
-requires positive pivots in every copy and symmetric copies. Covariance
-matrices are mathematically positive semidefinite, but this Cholesky API
-currently accepts only the positive-definite subset. General semidefinite
-factorisation is a separate extension, not implicit zero-pivot division.
-
-Both `cholesky` and `v ±σ P` read only the lower triangle, so they first
-check that the matrix is symmetric: every pair `P.i.j`, `P.j.i` must be
-established equal. Unequal and undecidable pairs are refused by their
-entries: `cholesky [1, 100; 0, 1]` fails with "cholesky needs a symmetric
-matrix: entries .0.1 and .1.0 differ", and `[0, 0] ±σ [1, 100; 0, 1]` with
-"±σ needs a symmetric covariance: entries .0.1 and .1.0 differ".
-Overlapping enclosures alone do not prove symmetry. Use the same uncertain
-value for both entries.
-
-The REPL view `:covariance e` prints the covariance of a vector, or the
-variance of a number, followed by the **bound box**: each component's
-rigorous radius from the bound nudges, which has no variance and is
-reported beside it:
-
-```
-> let t = 45 deg ± 0.001 rad
-> :covariance [cos t, sin t, 0] km
-covariance [0, 0, 0; 0, 0, 0; 0, 0, 0] km^2
-bound box [0.00071, 0.00071, 0] km
-```
-
-**Between two vectors.** `crossCovariance a b : Vec n d1 -> Vec m d2 ->
-Mat n m (d1*d2)` is the same sum over the statistical nudges the two
-vectors share. With `cᵢ` the coefficients of `aᵢ` and `c'ⱼ` those of
-`bⱼ`, entry `(i, j)` is `Σ_k cᵢₖ c'ⱼₖ`. It is exact, its dimension is the
-product of the operands', and it takes its display unit from both as `*`
-does: `crossCovariance r v` of a `km` and a `km/s` vector prints in
-`km^2 s^-1`. `covariance v` is `crossCovariance v v`, computed by the same
-kernel. `covariance` stays a primitive of its own, so no stored term
-changes hash, and it prints in base units. `crossCovariance v u` is
-`transpose (crossCovariance u v)`. Two vectors with no statistical nudge
-in common give zeros, and a shared *bound* nudge contributes nothing:
-
-```
-> let e = gauss 2
-> let r = [e.0 + 2 * e.1, 3 * e.0] m       -- coefficient rows (1, 2), (3, 0)
-> let v = [e.1, e.0 - e.1] m/s             -- coefficient rows (0, 1), (1, -1)
-> crossCovariance r v
-[2, -1; 0, 3] m^2 s^-1
-> crossCovariance ([1, 2] m ±σ 1 m) ([3, 4, 5] s ±σ 1 s)
-[0, 0, 0; 0, 0, 0] m s
-```
-
-For a pair `(r, v)` the joint 6×6 has mixed units, which no homogeneous
-matrix holds. It is the record of its three blocks (§3.7). `:covariance`
-on a pair of vectors prints them, labelled by the record's fields,
-followed by the two bound boxes as a pair:
-
-```
-> :covariance (r, v)
-rr [5, 3; 3, 9] m^2
-rv [2, -1; 0, 3] m^2 s^-1
-vv [1, -1; -1, 2] m^2 s^-2
-bound box ([0, 0] m, [0, 0] m s^-1)
-```
-
-The blocks are `linalg.jointCovariance (r, v)`'s fields, computed by the
-same kernel. `:covariance` does not look the name up, so it works after
-`:unuse linalg` or with a root `jointCovariance` of the user's. Anything
-else that is not a number or a vector is refused: "covariance: a number,
-a vector, or a pair of vectors".
-
-`:budget` and `:covariance` are two projections of one nudge set: the
-budget sorts `|cᵢ|` within each kind, and the covariance sums `cᵢ cᵢᵀ`
-over the statistical kind. A correlation matrix is a trivial third.
-`covariance`, `crossCovariance` and `:covariance` are the affine
-backend's (§8.2).
-
-**Implemented in:** `Metron.Affine` (`statCoefficients`, `crossCovarianceRows`), `Metron.Eval` (`covarianceMatrix`, `runPrim`), `Metron.Numerical.Linear` (`choleskyRows`), `Metron.Scalar` (`affineCovariance`), `Metron.Prelude` (`covarianceBlocks`).
-**Tested by:** "affine" › "covariance is the square-root factor's product; cholesky inverts it"; "affine" › "cholesky and ±σ refuse a matrix that is provably not symmetric"; "affine" › "v ±σ P is a vector with covariance P, stamped like any ±"; "affine" › ":covariance separates the statistical part from the bound box"; "affine" › "propagateCov2 agrees exactly with the affine forms' own correlation".
+**Implemented in:** `Numerical.Statistics`, `Rational`, `Double`, `Prelude`.
+**Tested by:** "separate sampling foundation", "independent arithmetic and grouped rounding".
 
 ### 3.6 Points and charts: affine quantities
 
@@ -2470,19 +1521,13 @@ above degC's origin. `°C` and `°F` are the unicode spellings of `degC` and
 - Rankine and kelvin are one frame, so `491.67 degR .- 0 kelvin` is
   `273.15 K` with no `to`.
 - A chart's step and origin can be approximate. A point written on such a
-  chart carries their nudges like any other value.
+  chart carries their sampled values like any other value.
 
 **A step must be invertible.** A point prints with its step divided out
-(§3.10, F6). A chart whose step can be zero has no coordinates: every
-point on it is the origin, and `1 c == 2 c` holds. A step whose enclosure
-reaches zero is refused when the chart is used, with a message that names
-the chart:
-
-- an exact zero step: "chart c0 has no invertible coordinates: its step is
-  zero",
-- an uncertain step across zero (`step fuzz` with `unit fuzz = 0 m ± 1
-  m`): "chart collapsed has no invertible coordinates: its step's enclosure
-  reaches zero".
+(§3.10, F6). Every realized chart step must be nonzero.
+Double steps must also be finite. A failed check names the chart, for example
+"chart collapsed has no invertible coordinates: its step is zero".
+A sampled distribution is not a proof about inputs that were not realized.
 
 A chart on such a chart inherits the refusal, and the message names the
 parent. A **negative step** is allowed and reverses the chart's direction:
@@ -2515,7 +1560,7 @@ A chart can also name a parent chart, `chart antenna on site at [2, 0, 1]
 m`, and turn its axes with `by B` (§3.8).
 
 **Implemented in:** `Metron.Eval` (`runPrim`, `point`, `chartOf`, `invertibleStep`, `namedChart`, `coordinatesOn`), `Metron.Desugar` (`desugar`), `Metron.Infer` (`unifyFrame`, `decide`), `Metron.Prelude` (`stdlibSource`).
-**Tested by:** "affine" › "points: charts, .+ and .-, printing on the written chart"; "affine" › "points over vectors: frames, projection, conversion between frames"; "affine" › "points compare and have no sum"; "spaces and frames (design §3.10, part F)" › "a chart whose step may be zero is refused by name"; "spaces and frames (design §3.10, part F)" › "a negative step reverses a chart's direction".
+**Tested by:** "units"; "display units"; "spaces and frames (design §3.10, part F)"; "turnedCharts"; "movingCharts"; "standard library".
 
 ### 3.7 Mixed dimensions
 
@@ -2613,7 +1658,7 @@ inChartCov2 c p                                                 -- each block tu
 The fourth block of `P` is `transpose p.rv`. With `P = [A, B; Bᵀ, C]` and
 `Φ = [F₁₁, F₁₂; F₂₁, F₂₂]`, the block formulas are these. Each is derived by
 multiplying the blocks out, and each is checked in the tests against the
-covariance read directly off the affine forms:
+sample covariance computed directly from the transformed realizations:
 
 ```
 rr' = F₁₁ A F₁₁ᵀ + F₁₂ Bᵀ F₁₁ᵀ + F₁₁ B F₁₂ᵀ + F₁₂ C F₁₂ᵀ
@@ -2687,8 +1732,8 @@ either of these appears in real use:
 
 Then route A (§3.7.1) is the next step.
 
-**Implemented in:** `Metron.Prelude` (`covarianceData`, `covarianceBlocks`), `Metron.Affine` (`crossCovarianceRows`).
-**Tested by:** "affine" › "jointCovariance and the block filter: the types"; "affine" › "propagateCov2 agrees exactly with the affine forms' own correlation"; "affine" › "design §12: a filter step in blocks"; "turnedCharts" › "a covariance and a Cov2 block through rotateCov are R P Rᵀ".
+**Implemented in:** `Metron.Prelude` (`covarianceData`, `covarianceBlocks`), `Metron.Rational` (`crossCovarianceRows`).
+**Tested by:** "units"; "display units"; "spaces and frames (design §3.10, part F)"; "turnedCharts"; "movingCharts"; "standard library".
 
 ### 3.8 Charts: frames with an orientation
 
@@ -2716,19 +1761,11 @@ chart ecef t on eci by rotz (gmst t) spinning [0, 0, 1] * ω_e  -- moving
 The statement is `chart name params… on parent [at origin] [step unit] [by
 B [then B …]] [spinning ω]` (§3.10, F10).
 
-**Why the generator and not the matrix.** `exp` of an antisymmetric matrix
-is always a rotation, so there is nothing to check. Its inverse is
-`exp (-B)`: the *generator* is inverted exactly, by negation, while the
-matrices on either side are enclosures. (`expm (rotz (90 deg)) @ [1, 0,
-0]` prints `[3.0e-24 ± 3.8e-24, 1.000…, 0]`.) So a round trip through a
-turned chart encloses the point it started from, rather than equalling it.
-A rotation stored as a matrix of enclosures and inverted by Gaussian
-elimination is the one place where the affine arithmetic suffers (§3.3,
-`inverse`), so no chart does that. The matrix is computed once per chart value, when a
-conversion first needs it, by `expm` (§3.3). Each generator is checked
-`B + Bᵀ == 0` exactly (below), which holds for anything built with `∧` and
-for every constructor in `linalg` (§3.3 notes the one exception: an angle
-with an inexact `±` radius).
+**Why the generator and not the matrix.** The exponential of an antisymmetric
+matrix is a rotation mathematically. Its inverse uses the negated generator.
+Numerical evaluation can leave small round-trip residuals.
+The matrix is computed once per chart value when first needed.
+Each realized generator must pass the antisymmetry check.
 
 **Every other description is a library function to a bivector**, so the
 Euler, axis-angle and quaternion forms are sugar and carry their
@@ -2768,7 +1805,7 @@ syntactic and the Core is `mkChart {F} {A} parent {} {} {g₁, …} {}`, the
 empty lists being the clauses not written (§3.10, F10). Every element is
 checked antisymmetric. The inverse is the list reversed with each element
 negated, so nothing needs a matrix logarithm or an orthogonality check on
-enclosures. The chart keeps its rotation `R = expm B₁ · expm B₂ · …`
+rounded matrices. The chart keeps its rotation `R = expm B₁ · expm B₂ · …`
 beside the generators, computed once per chart value when first used.
 
 **Conversion.** `p to c` gives `p`'s coordinates on chart `c`: from its own
@@ -2820,7 +1857,7 @@ rotation from the space's base, so that no conversion walks the tree:
 
 ```
 R_abs = R_parent_abs · expm B₁ · expm B₂ · …          -- I for a root; a chart with no by has its parent's
-R_abs⁻¹ = … · expm (−B₂) · expm (−B₁) · R_parent_abs⁻¹  -- from the generators, never by inverting an enclosure
+R_abs⁻¹ = … · expm (−B₂) · expm (−B₁) · R_parent_abs⁻¹  -- from the generators
 o_abs = o_parent_abs + R_parent_abs · a               -- a: the amount the origin is given at, along the parent's axes
 ```
 
@@ -2833,13 +1870,10 @@ eci at [7000, 0, 0] km by rotz (90 deg)`, lvlh's x axis is eci's y:
 
 - `[1, 0, 0] lvlh to eci` prints `[7000000.0000000000000…,
   1.0000000000000000000…, 0] eci`.
-- `[7000000, 1, 0] eci to lvlh` prints `[1.0000000000000000000…, 3.0e-24 ±
-  3.8e-24, 0] lvlh`.
+- `[7000000, 1, 0] eci to lvlh` prints approximately `[1, 0, 0] lvlh`.
 
-A round trip encloses the point it started from, with bounds under `4 ×
-10⁻²⁴` for one level of turning and `3 × 10⁻²³` for two. Check a round trip
-with `bound` or an enclosure test, never with `==`, which can answer
-"cannot decide".
+Numerical round trips can leave small residuals. Compare those residuals
+against an explicit tolerance appropriate to the arithmetic and scale.
 
 **Displacements are along a frame's axes.** A point is held in its frame's
 coordinates, so `p .- q` for two points on one frame is the difference of
@@ -2847,7 +1881,7 @@ their coordinates, exact, along the frame's axes. `[1, 2, 3] lvlh .- [0, 5,
 0] lvlh` is `[1, -3, 3] m`, a `Vec lvlh m`, and `q .+ (p .- q)` is `p`.
 Re-expressed along another chart's axes, a displacement turns by the
 rotations alone: `([1, 2, 3] lvlh .- [0, 5, 0] lvlh) from lvlh to eci`
-encloses `[3, 1, 3] m` (§3.10, F10).
+approximates `[3, 1, 3] m` (§3.10, F10).
 
 **Tensors of higher rank.** `rotationOf c` (a primitive) is `R_abs`, whose
 columns are `c`'s axes along the space's base axes. It is exactly the
@@ -2857,8 +1891,7 @@ chart.
 
 - `v to c`, with `v` along the base axes, is `Rᵀ v`.
 - `v from c to eci`, with `v` along `c`'s axes, is `R v`.
-- `R` is orthogonal, so the transpose of an entrywise enclosure of it is an
-  entrywise enclosure of `R⁻¹`.
+- Mathematically `R⁻¹ = Rᵀ`. Numerical matrices approximate this identity.
 - A covariance turns as `R P Rᵀ`: `linalg.rotateCov (rotationOf c) p`.
   `inChartCov2 c p` does each block of a `Cov2` (§3.7) so, since a state's
   rotation is `R` on positions and velocities alike.
@@ -2957,7 +1990,7 @@ Three primitives read these fields, each along the space's base axes
 
 The first two are over three axes, and exactly zero when nothing here or
 above spins. `R_abs⁻¹` is `v to c`: `R` is orthogonal, so the transpose of
-an entrywise enclosure of it encloses its inverse.
+its transpose approximates its inverse.
 
 **States, in `astro`.** `astro` is not used by default, so its field labels
 never meet a user's (`:use astro` first):
@@ -2997,14 +2030,14 @@ of an amount from the base is the owner's to decide (§11).
 **What the tests check.** The tests check physics, not the formulas echoed:
 
 - A body fixed on `spinner t1`, with inertial velocity `ω × r` computed in
-  the test, has `velocityIn` enclosing `0`. `stateFrom` gives it `7000 km ·
+  the test, has `velocityIn` numerically close to `0`. `stateFrom` gives it `7000 km ·
   w · [−sin θ, cos θ, 0]`, computed by hand. A body at rest in the parent
   turns backwards on the chart.
-- `stateFrom` then `velocityIn`, and the position read back, enclose what
+- `stateFrom` then `velocityIn`, and the position read back, recover, to numerical precision, what
   went in, on a chart turned, offset and spinning under a spinning parent.
 - A body fixed on `spinner` at `t1` and at `t1 + 1 ms`: the forward
   difference of its positions differs from the velocity `stateFrom` gives
-  by `3.6460579499999995e-8 ± 2.9e-23` of the speed, which is `ω δt / 2`,
+  by approximately `3.64605795e-8` of the speed, which is `ω δt / 2`,
   the centripetal term.
 - Two levels: a station under the spinning chart, turned and offset, has
   spin `ω` and origin velocity `ω × (R_p a)` by hand. A body fixed at the
@@ -3017,16 +2050,10 @@ of an amount from the base is the owner's to decide (§11).
 **Open.** Nothing checks that a declared spin is the derivative of the
 rotation it goes with (§10).
 
-**Uncertainty passes through.** An uncertain spin rate, `7.2921159e-5 rad/s
-± 1e-10 rad/s`, gives a body 7000 km out a velocity with a bound of `7e-4
-m/s`, and one 14000 km out twice that. `gmst t` with an uncertain `t` gives
-an enclosure for the angle, so `R` has affine entries and `R @ r` carries
-the chart's uncertainty, correlated across components as always (§3.4). No
-part of this design is about error: it inherits §3.2. With `chart t30 on
-eci by rotz (30 deg ± 0.001 rad)`, `[1000, 0, 0] t30 to eci` prints
-`[866.03 ± 0.53, 500.00 ± 0.87, 0] eci`. The norm of its amount from the
-origin, `1000` whatever the angle, prints `1000.00000 ± 0.00054 m`: the
-first-order terms cancel.
+**Sampling passes through.** A sampled spin rate changes each realized velocity.
+For a body at a fixed radius, doubling that radius doubles the velocity deviation.
+Sampled angles give correlated coordinate components through the same rotation.
+The norm of a rotated vector remains constant up to numerical residuals.
 
 **Charts are affine, and curvilinear coordinates are functions.** Polar and
 spherical coordinates are not charts. The map is nonlinear, its
@@ -3034,7 +2061,7 @@ coordinates have mixed dimensions (`r` in metres, the angles in radians),
 and differences of polar coordinates are not displacements. A `Point` on
 such a chart breaks the law that `.-` exists to guarantee. They are
 ordinary functions to a record of amounts, `toPolar v = Polar {r = norm v,
-theta = atan2 v.1 v.0, …}`. The affine arithmetic linearises them, so
+theta = atan2 v.1 v.0, …}`. Sampling evaluates them, so
 `crossCovariance` of the result's components is the Jacobian-propagated
 covariance with no extra machinery (§3.4, §3.7). Range, azimuth and
 elevation from a station are `to` the station's chart, then such a
@@ -3080,7 +2107,7 @@ dimensions, and wait for route A (§3.7.1).
 - **`mkRoot` and `mkChart`** (§3.10, F10) build it from its clauses, each a
   list of none or one, the generators any number. Each generator is a
   dimensionless `Mat n n` over the chart's own axes. It is checked `B + Bᵀ
-  == 0` exactly, entry by entry as `Bⱼᵢ == -Bᵢⱼ` on the affine forms. An
+  == 0` exactly, entry by entry as `Bⱼᵢ == -Bᵢⱼ` in every realization. An
   approximate angle times an exact bivector passes. A sum `Bᵢⱼ + Bⱼᵢ` does
   not, since slack never cancels. A generator that fails is refused when
   the chart is used: "the generator of a chart must be antisymmetric: a
@@ -3114,8 +2141,8 @@ dimensions, and wait for route A (§3.7.1).
 with an origin, and `p to lvlh` returns a `Point lvlh` whose differences
 are `Vec lvlh m`.
 
-**Implemented in:** `Metron.Eval` (`runPrim`, `chartOf`, `chartRoute`, `chartFrame`, `chartMotion`, `narrowChart`, `takesArguments`, `rotateVector`, `cross3`), `Metron.Desugar` (`desugar`, `refuseMoving`, `movingChart`, `chartResolution`), `Metron.Parser` (`chartStatement`), `Metron.Pretty` (`renderTermUnits`), `Metron.Prelude` (`stateStatements`, `algebra`), `Metron.Numerical.Linear` (`matrixExp`).
-**Tested by:** "turnedCharts"; "movingCharts"; "rotations"; "affine" › "charts with a parent: the translated tree, to and .- through it"; "affine" › "chart declarations: user charts, :view and :edit read back as written"; "store" › "a chart's parent and generator survive a reload".
+**Implemented in:** `Metron.Eval` (`runPrim`, `chartOf`, `chartRoute`, `chartFrame`, `chartMotion`, `narrowChart`, `takesArguments`, `rotateVector`, `cross3`), `Metron.Desugar` (`desugar`, `refuseMoving`, `movingChart`, `chartResolution`), `Metron.Parser` (`chartStatement`), `Metron.Pretty` (`renderTermUnits`), `Metron.Prelude` (`stateStatements`, `algebra`), `Metron.Numerical.Rational` (`matrixExp`).
+**Tested by:** "units"; "display units"; "spaces and frames (design §3.10, part F)"; "turnedCharts"; "movingCharts"; "standard library".
 
 ### 3.9 Axis sets: named positions and index types
 
@@ -3148,7 +2175,7 @@ decisions, each with the rules that hold:
    **Decided.** The identity lives in the content, not in the name.
    Without a stamp, two charts with the same body share a hash, and a
    stored value's type comes from its Core alone. A frame carried on the
-   name is then lost the moment a value is stored. As with the owner stamp of a `±`
+   name is then lost the moment a value is stored. As with the owner stamp of a `sample`
    measurement (§3.2.4), the name enters the content:
    - Entering a chart with `by` or `spinning`, or a vector space, mints a
      nominal type with no parameters and one constructor with no fields,
@@ -3233,8 +2260,7 @@ decisions, each with the rules that hold:
    - `:type e` is the type of `it`, a named value, so `:type off` prints
      `Vec 3 m` while `:ls off` prints its signature, `off : forall (a : 3).
      Vec a m`.
-   - `e1`, `e2` and `e3` are anonymous where they are used. `noise` stays
-     anonymous.
+   - `e1`, `e2` and `e3` are anonymous where they are used.
    - An anonymous value that meets a named one is the unifier's axes error
      with a hint: `[1, 2, 3] lvlh .+ offset` is refused with "expected Vec
      lvlh m, got Vec 3 m: the axes of lvlh against anonymous axes; give it
@@ -4283,7 +3309,7 @@ a type that its implementation cannot handle (core.md §9).
 
 `contract i j`, `permute [p0, …, pk-1]` and `slice k i` work at any rank. Their
 positions are part of the type, as a projection's position is (§4.1). So the
-desugarer insists on literals, as it does for `noise n`:
+desugarer insists on literals, as it does for an exponent:
 
 - Each index of `contract` is a literal natural, and the two are distinct.
 - `permute`'s argument is a literal vector that is a permutation of `0 ..
@@ -4350,8 +3376,8 @@ neg abs     : Tensor s d -> Tensor s d
 to          : Tensor s d -> Unit d -> Tensor s d         -- a display unit (3.2.12, 3.10 U6); toChart and toAxes for a chart, below
 scale       : Tensor s 1 -> Unit d -> Tensor s d         -- the quantity rule after a unit: 3 km, [1, 0, 0] (km/h) (2.6, 3.10 U4)
 unit        : Num d -> Unit d                            -- internal unit construction (3.10 U7)
-x ± e, x ±σ e : Tensor s d -> Num d -> Tensor s d        -- or e of x's shape and dimension; one nudge per component (3.4)
-v ±σ P      : Vec n d -> Mat n n (d^2) -> Vec n d       -- a vector with covariance P (3.5)
+normal uniform : Num d -> Num d -> Distribution d
+sample         : Distribution d -> Num d
 sqrt        : Num (d^2) -> Num d
 floor ceil round : Num -> Num
 sin cos tan : Num rad -> Num
@@ -4360,12 +3386,9 @@ sinh cosh tanh exp log : Num -> Num
 atan2       : Num d -> Num d -> Num rad
 pi          : Num
 e ^ n       : Num d -> Num (d^n)            -- a special form: n an integer literal
-noise n     : Vec n                         -- a special form: n a natural literal; bound nudges
-gauss n     : Vec n                         -- a special form: n a natural literal; statistical nudges
 v.i         : Tensor (n + i + 1 : s) d -> Tensor s d   -- a special form: i a literal position (2.10, 4.1)
-mid bound sd : Tensor s d -> Tensor s d     -- per component: the midpoint, Σ_bound |cᵢ| + slack, √(Σ_stat cᵢ²) (3.2.9)
-errorOf nextUp : Tensor s d -> Tensor s d   -- the double backend's (8.2)
-digitsOf    : Tensor s d -> Tensor s        -- the double backend's (8.2)
+mid sd      : Tensor s d -> Tensor s d       -- empirical input statistics
+nextUp      : Tensor s d -> Tensor s d   -- the double backend's (8.2)
 ulps        : Num d -> Num d -> Num         eps : Num
 fma         : Num d1 -> Num d2 -> Num (d1*d2) -> Num (d1*d2)
 isNaN isInfinite : Num d -> Bool
@@ -4374,8 +3397,8 @@ transpose   : Mat n·a m·b d -> Mat m·b n·a d
 inverse     : Mat n·a n·b d -> Mat n·b n·a (1/d)
 det         : Mat n·a n·b -> Num                        -- dimensionless only, any n (4.6)
 cholesky    : Mat n·a n·b (d^2) -> Mat n·a n·b d
-covariance  : Vec n·a d -> Mat n·a n·a (d^2)            -- Σ cᵢcᵢᵀ over the statistical nudges (3.5)
-crossCovariance : Vec n·a d1 -> Vec m·b d2 -> Mat n·a m·b (d1*d2)   -- over the statistical nudges both share (3.5, 3.7)
+covariance  : Vec n·a d -> Mat n·a n·a (d^2)            -- empirical covariance of input realizations (3.5)
+crossCovariance : Vec n·a d1 -> Vec m·b d2 -> Mat n·a m·b (d1*d2)   -- over paired input realizations (3.5, 3.7)
 expm        : Mat n·a n·a -> Mat n·a n·a                -- the matrix exponential, dimensionless (3.3)
 transformBy : Mat n·_ n·_ -> Tensor s d -> Tensor s d   -- R along every axis; every length of s must be n, checked at run time; anonymous axes (3.3, 3.9)
 vmap        : (Num d1 -> Num d2) -> Tensor s d1 -> Tensor s d2
@@ -4421,14 +3444,8 @@ write 1 rad or 45 deg: expected Num rad, got Num m: dimensions differ by
 rad/m". `atan2` accepts any one dimension for its two arguments. The
 hyperbolic functions, `exp` and `log` take plain numbers.
 
-The uncertainty operators type their right operand by its shape. A scalar
-must have the value's dimension ("the uncertainty must have the dimension of
-the value"). A tensor must have the value's shape and dimension. Under `±σ`
-on a vector, an `n×n` matrix of the dimension squared is a covariance ("a
-covariance must be an n×n matrix of the value's dimension squared"). Under
-`±`, a matrix on a vector is refused: "a covariance matrix goes with ±σ, not
-±: a bound has no covariance". `noise n` with `n` past `2^40` is refused where
-it is written: "a tensor has at most 2^40 components".
+Distribution constructors take deterministic scalar parameters of matching
+dimension. `sample` returns a number of that dimension (§3.2.5).
 
 `transformBy` is the one primitive with a run-time shape check. Its argument
 can have any rank, but every length must be the matrix's `n`: a shape `[n, n,
@@ -4549,7 +3566,7 @@ names included.
   constrains its amounts, as in `(s : Space (Vec 3 m)) (c : s)` (§3.10, F4).
 
 **Implemented in:** `Metron.Infer` (`generalise`, `quantify`, `settleReadings`), `Metron.Resolve` (`withReadings`), `Metron.Primitive.Types` (`primScheme`).
-**Tested by:** "types"; "affine"; "spaces and frames (design §3.10, part F)"; "type annotations".
+**Tested by:** "units"; "display units"; "spaces and frames (design §3.10, part F)"; "turnedCharts"; "movingCharts"; "standard library".
 
 ### 4.7 Error reporting
 
@@ -4576,9 +3593,9 @@ reported at that point, before any arithmetic runs:
 no `Int` versus `Double` distinction anywhere in the language.
 
 **What remains dynamic.** Only value-dependent failures survive to run time:
-division by zero (or by an enclosure that contains zero), `sqrt` or `log` of a
+rational division by zero, `sqrt` or `log` of a
 range that reaches zero or below, an undecidable comparison, `inverse` of a
-possibly singular enclosure, `transformBy` of a tensor with another length
+singular rational matrix, `transformBy` of a tensor with another length
 (§4.3), a chart whose step is not invertible (§3.6), a resource limit (§8.1),
 and non-termination. None of these is a type error, and the type system
 cannot remove them without dependent types.
@@ -4880,8 +3897,7 @@ Term n ::= Var (Fin n)                -- bound variable
          | Con con [Term n]           -- a saturated data constructor
          | Case (Term n) [Alt n]      -- one alternative per constructor, canonical order, lazy in the bodies
          | Pow (Term n) Integer       -- e ^ n
-         | Noise Kind Label Integer   -- noise n / gauss n
-         | Uncertain Kind Label (Term n) (Term n) -- x ± err / x ±σ err; a node, so :view shows it
+         | Sample Label (Term n)      -- a labelled input distribution
          | Pack [Term n]              -- [a, b, c]: stack k tensors of shape s into shape k : s
          | Proj (Term n) Int          -- t.i, i a literal position: peel the first length
          | Cycle (Vec k hint) (Vec k (Term (k + n)))  -- k mutually recursive bodies
@@ -4893,7 +3909,7 @@ Label  ::= Owner path | Tag label | Axes path | SpaceLabel path | FrameLabel pat
 
 A `Ref`'s hint is the name the author wrote. Hashing ignores it, and the
 storage encoding keeps it (§6.1, §7.4), so `:view` shows the author's names and
-a unit is decided by the name used (§3.2.12). A `Noise` or `Uncertain` node's
+a unit is decided by the name used (§3.2.12). A `Sample` node's
 label is its owner stamp or its `#tag` (§3.2.4). The desugarer writes only
 `Owner` and `Tag` on terms. `Axes`, `SpaceLabel` and `FrameLabel` stamp the
 types that chart and space declarations mint (§3.9, §3.10, F9).
@@ -4992,8 +4008,7 @@ TTerm n ::= TVr (Fin n)
           | TCon con type [TTerm n]               -- at its result type (Nil alone fixes no element type)
           | TCase (TTerm n) type [TAlt n]         -- at its result type
           | TPow (TTerm n) Integer
-          | TNoise Kind Label Integer
-          | TUncertain Kind Label (TTerm n) (TTerm n)
+          | TSample Label (TTerm n)
           | TPack axis type [TTerm n]             -- the element type, kept with no elements; the axes of the new position
           | TProj (TTerm n) Int
           | TTyLam var kind (TTerm n)             -- abstraction over a type, length, shape, dimension, axis, frame or space
@@ -5068,8 +4083,7 @@ the SHA-256 of the encoding, displayed as a base32hex prefix: `#a3f9k`.
 | 0x06 | `App f a` | `f`, `a` |
 | 0x07 | `Let e b` | `e`, `b` |
 | 0x09 | `Pow t n` | `t`, sint `n` |
-| 0x0A | `Noise k l n` | one byte kind (0 bound, 1 stat), label, varint `n` |
-| 0x0B | `Uncertain k l x err` | one byte kind, label, `x`, `err` |
+| 0x14 | `Sample l distribution` | label, distribution term |
 | 0x0C | `Pack ts` | varint count, each `t` |
 | 0x0E | `Cycle ts` | varint count, each `t` |
 | 0x0F | `Proj t i` | `t`, varint `i` |
@@ -5342,7 +4356,7 @@ value with `:update --no-upgrade` leaves every existing function on the old
 
 **Re-stamping.** Relabelling never changes a hash, with one exception. Two
 kinds of label are stamped with their full path: a definition whose term
-carries an owner stamp (a `±`, `±σ`, `noise` or `gauss` written in it,
+carries an owner stamp (a `sample` written in it,
 §3.2.4), and a nominal type (§2.3). `:rename` and `:move` of such a label,
 alone or as part of a namespace, re-stamp it with the new path and hash it
 again. It then has the hash that its text gets when it is entered under
@@ -5445,22 +4459,17 @@ Namespaces (7.6, 7.7)
                    else the session's
 :stdlib upgrade    take the shipped standard library's newer definitions (7.7)
 
-Values
-:exact expr        the raw rational, or the midpoint and the nudge list (3.2.10)
-:budget expr       the error budget (3.2.6)
-:covariance expr   the covariance (or variance) of the statistical nudges, and the bound box (3.5)
-
 Session
-:backend [affine | double]  name the backend, or switch to one (8.2)
-:set               list the settings
-:set precision n   significant digits printed; working precision is n + 4 (3.2.8)
-:set sigma k       confidence multiplier for comparisons on statistical values (3.2.9)
-:set nonlinear p   percent of the first-order σ that a second-order statistical term may reach
-                   before a value is marked non-linear (3.2)
-:set unicode on|off print with unicode spellings (2.8); off is the default
-:set samples n | seed n | rounding nearest|random | cores k
-                   the double backend's copies (8.2)
-:set memory|steps|depth|digits|components|outcomes n | time s|off
+ :set              list the controls
+:set arithmetic rational|double
+:set propagation montecarlo
+:set precision n   rational approximation and display precision
+:set unicode on|off
+:set samples n | seed n | cores k
+:set roundingAnalysis off|stochastic
+:set roundingSamples r
+
+:set memory|steps|depth|digits|components|outcomes:set memory|steps|depth|digits|components|outcomes n | time s|off
                    the resource limits (8.1)
 :prefer [unit]     print values of the unit's dimension in it (3.2.12); alone, list the preferences
 :unprefer unit     remove that preference
@@ -5476,17 +4485,12 @@ Session
 :quit              also :q
 ```
 
-`:set` alone lists, in this order: `precision`, `sigma`, `unicode`,
-`nonlinear`, `samples`, `seed`, `rounding`, `cores`, then the limits
-`memory`, `steps`, `depth`, `digits`, `components`, `outcomes` and `time`.
-The defaults are `precision 20`, `sigma 3`, `unicode off`, `nonlinear 1`,
-`samples 0`, `seed 1` and `rounding random`. `cores` starts at the
-machine's logical core count (§8.2), and §8.1 gives the limits' defaults.
-`metron --set NAME VALUE` changes any of them at the start (§7.4).
-The list has one source (`Metron.Driver.settingValues`): completion after
-`:set` offers its names in the same order. Each default a backend reads
-(`sigma`, `nonlinear`, `samples`, `seed`, `rounding`) has one definition,
-`Metron.Scalar.settingsAt`, from which the session takes its own.
+`:set` lists precision, unicode, samples, seed, arithmetic, propagation,
+roundingAnalysis, roundingSamples and cores, followed by resource limits.
+Defaults are specified in §8.2.1. Library sessions use one core.
+The executable uses the machine's logical core count.
+`metron --set NAME VALUE` changes a control at startup.
+Completion and printed controls share `Driver.settingValues`.
 
 **Editing in place.** `:edit` is a round trip through a text editor. It
 has three forms, and they work alike:
@@ -5529,7 +4533,7 @@ The steps:
      `namespace` block is a removal and an addition, because a label is
      its full path.
    - *Unchanged*: everything else. The same text under the same path gives
-     the same hash. This holds also for a `±` definition and a nominal
+     the same hash. This holds also for a `sample` definition and a nominal
      type, since their owner stamp is the full path (§3.2.4).
 
    A definition outside the scope that the file defines is added or
@@ -5583,7 +4587,7 @@ codebase, it prints the export. In one-shot mode the note goes to stderr,
 so the source stays pasteable.
 
 **Unicode output.** With `:set unicode on`, printed values, `:type`,
-`:view`, `:edit`, `:exact`, `:budget`, `:covariance` and the `:prefer`
+`:view`, `:edit` and the `:prefer`
 message use these spellings from the table in §2.8. Nothing else changes,
 except the echo below.
 
@@ -5598,36 +4602,26 @@ except the echo below.
 `forall` and names such as `pi` and `deg` keep their ASCII spelling. `∀`
 reads as `forall` but is not printed. `√` is not printed for `sqrt`,
 because `√` is a prefix operator and `sqrt` an application, which bind
-differently. `π` and `°` are names, not syntax. `·`, `∧`, `⊙`, `⊘`, `±`
-and `±σ` print in unicode in both modes. A power whose base does not end
+differently. `π` and `°` are names, not syntax. `·`, `∧`, `⊙` and `⊘` print in unicode in both modes. A power whose base does not end
 in an atom keeps its caret, since a superscript must be glued to an atom.
 Every unicode form lexes to the same tokens as its ASCII form, a
 superscript standing for its caret, so output reads back either way.
 Error messages, `:core` and `:lint` stay in ASCII.
 
-**The echo.** With `:set unicode on`, a statement line (not a `:` command)
-that has a unicode spelling is first echoed in it, on a note line of its
-own that starts `  ≡ `. For example, `2 +-s 0.1` prints `  ≡ 2 ±σ 0.1`,
-then its value. The echo re-spells the tokens as they were typed, at their
-spans, and keeps every other character, spacing and comments included.
-`+-s` `+-` `->` `\` `<=` `>=` `/=` `||` `@` `><` `/\` `.*` `./` and the
-composition `.` become `±σ` `±` `→` `λ` `≤` `≥` `≠` `∨` `·` `×` `∧` `⊙`
-`⊘` `∘`. A caret power with an integer literal exponent, glued to an atom,
-becomes a superscript: `x^-1` is `x⁻¹`, and `x ^ 2` keeps its caret. Names
-keep their spelling (`sqrt`, `pi`, `deg`), and so do `*`, `/` and `&&`,
-for the reasons above. The echo lexes to the same tokens as the line. A
-line with nothing to re-spell, a line that fails, and a file read by
-`:load` are not echoed. The echo is a note to the reader, not output.
+**The echo.** With `:set unicode on`, statement lines with an alternative
+unicode spelling are echoed before evaluation. For example, `2^3` echoes
+as `2³`. The echo preserves spacing and comments outside replaced tokens.
+Commands, files and lines with no alternative spelling are not echoed.
+The echo lexes to the same tokens as the input.
 
 **The last result.** After an expression statement evaluates, `it` names
 that expression for later expressions and for the inspection commands.
 `1 + 2` then `it * 2` prints `6`, `:type it` gives its type, `:view it`
-prints `it = 1 + 2`, and `:exact`, `:budget`, `:covariance`, `:core`,
+prints `it = 1 + 2`, and `:core`,
 `:hash` and `:lint` take it as they take a definition. On a line with
 several expressions, each one is `it` for the next. `it` is the
 expression, not its printed value. It is hashed as a definition is, so a
-`±` in it is the same nudge every time it is used, and `:exact it` labels
-that nudge `it`. An input that fails leaves the previous `it`. Before the
+`sample` in it preserves the same latent input every time it is used. An input that fails leaves the previous `it`. Before the
 first expression, `it` is an unknown name. `it` is local to the session
 (§7.5): `:ls`, `:edit`, `:alias` and `:dependents` do not see it.
 
@@ -5652,7 +4646,7 @@ list many candidates.
 
 **Unicode by name.** A backslash, a name, then TAB enters a character, as
 in Julia: `\mu` gives `μ`. When the typed name is a whole entry, the REPL
-replaces it, so `\pm` gives `±` although `\pms` exists. Otherwise TAB
+replaces it, so `\prime` gives `′`. Otherwise TAB
 lists the entries that start with it. The table is in `Metron.Unicode`:
 
 | Names | Result |
@@ -5662,7 +4656,6 @@ lists the entries that start with it. The table is in `Metron.Unicode`:
 | `\micro` `\ohm` | `μ` `Ω`, the forms the lexer folds `µ` and `Ω` to |
 | `\to` `\otimes` `\cdot` `\times` `\odot` `\oslash` `\div` | `→` `⊗` `·` `×` `⊙` `⊘` `÷` |
 | `\le` `\ge` `\ne` `\or` `\neg` `\wedge` `\star` `\circ` `\sqrt` | `≤` `≥` `≠` `∨` `¬` `∧` `⋆` `∘` `√` |
-| `\pm` `\pms` | `±` `±σ` |
 | `\deg` `\degC` `\degF` `\prime` `\dprime` | `°` `°C` `°F` `′` `″` |
 | `\^0` … `\^9` `\^-` | `⁰` … `⁹` `⁻` |
 | `\_0` … `\_9` | `₀` … `₉`, inside identifiers |
@@ -5741,7 +4734,7 @@ input goes on when:
 - a `(`, `[` or `{` is not closed
 - its last token cannot end an input: `=`, `->`, `\`, `|`, `,`, `;`, a
   backtick, `√`, an infix operator (`+ - * / ^ == /= < <= > >= && || : .
-  ∘` and the others of §2.5), `±` or `±σ`, or a keyword other than `true`
+  ∘` and the others of §2.5), or a keyword other than `true`
   and `false` (`of`, `where`, `in`, `then`, `else` and the rest)
 - a line ends in `of` or `where`. The entries of that block follow on
   indented lines, and the input goes on until a blank line.
@@ -5792,7 +4785,7 @@ editor does not redraw an entry that contains a newline, so the lines are
 not joined into one entry.
 
 **Implemented in:** `Metron.Command` (`commandDescriptions`, `commandHelp`), `Metron.Driver` (`feed`, `feedFile`, `setSetting`, `settingValues`, `settingNames`), `Metron.Limits` (`limitSettings`), `Metron.Edit` (`editRequest`, `applyEdit`, `editorNote`), `Metron.Repl` (`complete`, `continuation`, `needsMore`, `classify`, `paint`, `highlight`, `echoInput`), `Metron.Unicode` (`completions`, `lookupName`), `Metron.Pretty` (`respell`). The editor, `:store`, `:colour`, `:load` and the history file are in `src/Main.hs`.
-**Tested by:** "repl"; ":edit, the editor round trip"; "unicode echo"; "it, the last result"; "codebase" › ":edit prints a definition as source", ":ls lists names with their types, filtered by glob, kind or type query"; "standard library" › ":ls lists a unit with a type that reads back: one of it (design §3.10, U9)"; "backends (design §8.2)" › ":set samples, seed and rounding, and --set" › "the backend's defaults are the session's: seed 1, as :set shows"; "display units" › ":set unicode prints the unicode spellings, which read back".
+**Tested by:** "repl"; ":edit, the editor round trip"; "unicode echo"; "it, the last result"; "codebase" › ":edit prints a definition as source", ":ls lists names with their types, filtered by glob, kind or type query"; "standard library" › ":ls lists a unit with a type that reads back: one of it (design §3.10, U9)"; "independent arithmetic and grouped rounding".
 
 ### 7.4 CLI and persistence
 
@@ -5804,7 +4797,6 @@ metron -i                  the REPL loop on stdin, line by line, with each line 
 metron --codebase DIR …    use an explicit store
 metron --no-codebase …     run in memory, seeded with the library
 metron --set NAME VALUE …  start with a setting changed, as :set NAME VALUE (any number of times)
-metron --backend NAME …    start under a backend, as :backend NAME (8.2)
 metron --merge OTHER       merge the store at OTHER into this one, leaving OTHER as it is
 ```
 
@@ -5934,12 +4926,12 @@ These things do not round-trip, for these reasons:
 - A definition that refers to a version no name points at (after `:update
   --no-upgrade` and an `:unname`) cannot be written as source, so the
   export refuses and names it.
-- A definition with a `±` and a nominal type are stamped with their full
+- A definition with a `sample` and a nominal type are stamped with their full
   path (§3.2.4, §2.3). `:rename` and `:move` keep the stamp up to date by
   re-hashing (§7.2), but a definition whose stamp does not match its path
   (a second label on it) gives a new hash when its export is entered again.
 - Two labels on one reference export as two definitions. They hash alike
-  only when the body declares no `±` and is not recursive, because the
+  only when the body declares no `sample` and is not recursive, because the
   second refers to the first by name instead of being a member of its
   cycle.
 - A type or constructor that a definition uses but no label names prints
@@ -6055,7 +5047,7 @@ A name is a dotted path, `orbital.kepler.period`, and nothing else
 changes: a namespace is a prefix on a label. Terms, hashes and the store
 do not see it, since a `Ref` carries only a hash and, in the storage
 encoding, the name as written (the full path it resolved to). The one
-exception is the owner stamp of a `±` definition or a nominal type, which
+exception is the owner stamp of a `sample` definition or a nominal type, which
 is its full path (below). Moving `period` under `orbital` is a relabelling
 (§7.2), so history keeps the old name and nothing is hashed again, unless
 `period` is stamped. Types, constructors and fields are labels too and
@@ -6154,9 +5146,8 @@ print their fields so.
 
 **Stamps see the namespace.** A definition's declared uncertainties are
 labelled (§3.2.4) with its full path, and a nominal type is stamped (§2.3)
-with its full path. So `lab.offset = 1 ± 0.1` and `field.offset = 1 ±
-0.1` are two terms and two measurements, `lab.offset - field.offset`
-carries both nudges, and `a.Body` and `b.Body` with the same fields are
+with its full path. So `lab.offset = sample (normal 1 0.1)` and `field.offset = sample (normal 1 0.1)` are two terms and two measurements, `lab.offset - field.offset`
+carries both sampled inputs, and `a.Body` and `b.Body` with the same fields are
 two types. Everything else is the same term wherever it is written: `let q
 = 1 m` has one hash at the root and in any block. The cost: renaming or
 moving a stamped definition hashes it again, which `:rename` and `:move`
@@ -6242,7 +5233,7 @@ The standard library lives in the codebase like everything else.
 - **A definition is the term it is written as,** wherever it lives:
   `si.N`, `time.min` and `std.map` are the terms that `N`, `min` and `map`
   are at the root, and `si.km`, written `kilo * 1 metre`, has its own. A
-  definition with a `±` is stamped with its full path (§3.2.4). So
+  definition with a `sample` is stamped with its full path (§3.2.4). So
   `astro.G`, the bodies of `astro.iers2010` and `astro.wgs84.earth` (its
   J2), and the solvers of `astro.kepler`, which declare their truncation
   error, have hashes of their own too.
@@ -6400,7 +5391,7 @@ the choice.
 
   `:use astro.wgs84` then makes `earth` the WGS84 Earth. Defining
   constants are exact, and measured ones carry their published
-  uncertainty with `±σ`. No set is used by default.
+  uncertainty with normal distributions. No set is used by default.
 - **A body is a record:** `data Body = Body {mu :: Num (m^3/s^2), radius
   :: Num m, flattening :: Num, j2 :: Num, rate :: Num (rad/s)}`, with an
   exact zero where a source gives nothing. Every function that needs a
@@ -6420,12 +5411,8 @@ the choice.
   - analytic propagation, by advancing the mean anomaly, and the J2
     secular rates: the node, the perigee, and the sun-synchronous
     inclination
-- **An iterative solver's result is rigorous.** After a fixed number of
-  Newton steps from a good starter, the solver adds its truncation error
-  as a declared bound. For Kepler's equation `f(E) = E − e sin E − M`,
-  `f' ≥ 1 − e > 0`, so `|E − E*| ≤ |f(E)| / (1 − e)`. A result is
-  therefore as rigorous as any other, and printing shows how converged it
-  is.
+- **Solvers evaluate every realization.** Fixed Newton iterations propagate
+  sampled inputs. Tests check residuals and published examples.
 - **`astro.maneuver`:** Hohmann, bi-elliptic, plane change, combined plane
   change and phasing, returning `Transfer` records.
 - **The root `astro`** holds the units `AU`, `pc` and `ly`, `G`, the
@@ -6452,25 +5439,25 @@ block's labels in its top namespace, `namespace astro (91 names)`, and
 `:ls astro` lists them by their path under it, `wgs84.earth : Body`.
 
 **The constants**, each cited beside it in `Metron.Prelude`. A defining
-constant is exact. A measured one carries its published uncertainty with
-`±σ`, read as a standard uncertainty where the source does not say. A
+constant is exact. A measured one uses a normal distribution with its published
+standard uncertainty. The table gives mean and standard deviation as a pair. A
 field that a source does not define is an exact zero.
 
 | set | body | value | source |
 |---|---|---|---|
-| `astro` | `G` | `6.67430e-11 ±σ 1.5e-15 m³ kg⁻¹ s⁻²` | CODATA 2018 = 2022 (NIST) |
+| `astro` | `G` | `6.67430e-11, sd 1.5e-15 m³ kg⁻¹ s⁻²` | CODATA 2018 = 2022 (NIST) |
 | `wgs84` | `earth.mu` | `3986004.418e8 m³/s²`, exact (defining; eq. 3-3 quotes 1σ `0.008e8`) | NIMA TR8350.2 3rd ed., eq. 3-3, Table 3.1 |
 | | `earth.radius` | `6378137 m` | TR8350.2 eq. 3-1, Table 3.1 |
 | | `earth.flattening` | `1 / 298.257223563` | TR8350.2 eq. 3-2, Table 3.1 |
-| | `earth.j2` | `−√5 C̄20`, `C̄20 = −0.484165371736e-3 ±σ 0.35610635e-10` (tide-free, 1986.0) | EGM96, NASA/TP-1998-206861 App. C; TR8350.2 eq. 7-1, Table 5.1 |
+| | `earth.j2` | `−√5 C̄20`, `C̄20 = −0.484165371736e-3, sd 0.35610635e-10` (tide-free, 1986.0) | EGM96, NASA/TP-1998-206861 App. C; TR8350.2 eq. 7-1, Table 5.1 |
 | | `earth.rate` | `7292115e-11 rad/s` | TR8350.2 eq. 3-6, Table 3.1 |
-| `iers2010` | `earth.mu` | `3.986004418e14 ±σ 8e5 m³/s²` (TCG) | IERS TN36 Table 1.1 |
-| | `earth.radius` | `6378136.6 ±σ 0.1 m` (zero tide) | TN36 Table 1.1 |
-| | `earth.flattening` | `1 / (298.25642 ±σ 0.00001)` (zero tide) | TN36 Table 1.1 |
-| | `earth.j2` | `1.0826359e-3 ±σ 1e-10` (zero tide) | TN36 Table 1.1 |
+| `iers2010` | `earth.mu` | `3.986004418e14, sd 8e5 m³/s²` (TCG) | IERS TN36 Table 1.1 |
+| | `earth.radius` | `6378136.6, sd 0.1 m` (zero tide) | TN36 Table 1.1 |
+| | `earth.flattening` | `1 / (298.25642, sd 0.00001)` (zero tide) | TN36 Table 1.1 |
+| | `earth.j2` | `1.0826359e-3, sd 1e-10` (zero tide) | TN36 Table 1.1 |
 | | `earth.rate` | `7.292115e-5 rad/s`, exact (Table 1.1 has none) | TN36 Table 1.2 (GRS80 nominal) |
-| | `moon.mu` | `(0.0123000371 ±σ 4e-10) × earth.mu`; other fields 0 | TN36 Table 1.1, the Moon-Earth mass ratio |
-| | `sun.mu` | `1.32712442099e20 ±σ 1e10 m³/s²` (TCB) | TN36 Table 1.1 |
+| | `moon.mu` | `(0.0123000371, sd 4e-10) × earth.mu`; other fields 0 | TN36 Table 1.1, the Moon-Earth mass ratio |
+| | `sun.mu` | `1.32712442099e20, sd 1e10 m³/s²` (TCB) | TN36 Table 1.1 |
 | | `sun.j2` | `2.0e-7`, exact (adopted for DE421); radius, flattening, rate 0 | TN36 Table 1.1 |
 | `iau2015` | `earth` | `mu = 3.986004e14 m³/s²`, `radius = 6.3781e6 m`, `flattening = (6.3781e6 − 6.3568e6) / 6.3781e6` (derived from R_e, R_p); j2, rate 0 | IAU 2015 Resolution B3 |
 | | `sun` | `mu = 1.3271244e20 m³/s²`, `radius = 6.957e8 m`; others 0 | Resolution B3 |
@@ -6478,39 +5465,16 @@ field that a source does not define is an exact zero.
 | `de440` | `mu` (km³/s², TDB, exact: no σ published) | `sun 132712440041.279419`, `mercury 22031.868551`, `venus 324858.592`, `earth 398600.435507`, `moon 4902.800118`, `mars 42828.375816`, `jupiter 126712764.1`, `saturn 37940584.8418`, `uranus 5794556.4`, `neptune 6836527.10058`, `pluto 975.5` (Mars to Pluto: the systems) | Park et al. 2021, AJ 161:105, Table 2 |
 | | radius, j2 | `earth 6378.1366 km, 1.08262539e-3`; `moon 1738 km, 2.03214360135e-4`; `sun 696000 km, 0.219613915165298248e-6`; others 0; no flattening or rate | `header.440` (RE, J2E, AM, J2M, ASUN, J2SUN) |
 
-**The solvers.** `meanToEccentric` and `meanToHyperbolic` work in four
-steps:
+**The solvers.** Elliptic and hyperbolic Kepler solvers perform twelve Newton
+steps per realization. Their starters are `M + e sin M` and
+`asinh (M / (e − 1))`. The parabola uses Barker's closed form.
+The result carries all sampled input realizations. No hard residual bound
+is attached. Tests compare published examples and inverse-equation residuals.
 
-1. They iterate Newton's method on midpoints (`mid`) for ten steps, from
-   `M + e sin M` (elliptic) or `asinh (M / (e − 1))` (hyperbolic).
-   Iterating on midpoints keeps the intermediate iterates' nudges, which
-   mean nothing, out of the result.
-2. They take one Newton step on the values themselves, so the result
-   carries the inputs' uncertainty to first order.
-3. They bound the residual `|f(E)|` by the residual at the midpoints (its
-   midpoint and bound radius) plus twice the bound radius of the residual
-   on the values. This is rigorous, since the first lies in the second's
-   enclosure. They do not take `mid` of the residual on the values: for a
-   `±σ` input, that residual's first order cancels, so it is marked
-   non-linear (§3.2) and `mid` refuses it.
-4. They add `±` the bound `|f(E)| / (1 − e)` (`/ (e − 1)` for the
-   hyperbola), with `e` taken at the far end of its enclosure, so the
-   bound is exact.
-
-`mid` refuses a value marked non-linear (§3.2.9), so a solver given such
-an input fails. The parabola is closed form (Barker, `B = c − 1/c`).
-Vallado Ex. 2-1, `meanToEccentric 0.4 (235.4 deg) to deg`, gives
-`220.51207476752206740… deg`, with a bound below `1e-22 rad`.
-
-**`fromState`'s cases** are decided by comparison with zero: circular when
-the eccentricity vector is zero, equatorial when the node vector is. A
-value too uncertain to decide is an error ("cannot decide comparison").
-So the circular cases are decided from exact states, and the equatorial
-ones from states whose node vector is exactly zero, as `toState` gives for
-`i = 0`, since `sin 0` is exact. A circular orbit's state from `toState`
-is an enclosure, its eccentricity vector zero only within it, and
-`fromState` refuses it. **Open.** Whether a tolerance decides these cases
-instead (§11). The record keeps its shape in each case:
+**`fromState`'s cases** compare each realized eccentricity and node vector
+with zero. Approximation can make a mathematically circular orbit slightly
+eccentric. The code does not apply an implicit tolerance.
+The record keeps its shape in each case:
 
 - circular: `argp = 0`, and `nu` is the argument of latitude
 - equatorial: `raan = 0`, and `argp` is the longitude of periapsis
@@ -6519,8 +5483,7 @@ instead (§11). The record keeps its shape in each case:
 Angles are in `[0, 2π)`, as Vallado gives them, through `fullAngle`,
 `π + atan2 (−y) (−x)` with an exact zero on the positive x axis. A
 hyperbola's anomalies are in `(−π, π)`. `toState` writes the perifocal
-axes in sines and cosines, not through `euler313`, because `expm` refuses
-statistical inputs (§3.3).
+axes directly in sines and cosines.
 
 **`maneuver`'s** burns are signed (after less before), and a `Transfer`
 has three, `dv3 = 0` for two-burn transfers. A namespace cannot have two
@@ -6548,8 +5511,7 @@ internal errors.
   and elementwise arithmetic is a zip over the buffer. A component that
   fails to evaluate is a failing element, so an error surfaces only when
   that component is used. The buffer is boxed because its elements are
-  scalars of the backend (§8.2): exact rationals or affine forms under
-  `affine`.
+  scalars of the backend (§8.2): rational or double values with optional input and rounding realizations.
 - **Type forms are erased**, except where a value's runtime shape or
   dimension comes from a type alone: the element type of an empty tensor
   literal, and the instantiated type of `vmap`, `vzipWith` and `timap`,
@@ -6614,16 +5576,12 @@ internal errors.
   elaborating it on demand, and evaluates it in the empty environment,
   memoised per session. A definition's value is shared by every reference
   to it in one evaluation.
-- **Parameters, not globals.** Working precision `p`, the compaction
-  threshold, the comparison policy and the limits are evaluation
-  parameters (`Config`), passed down, never global state.
-- **Elementary functions** are evaluated at working precision by argument
-  reduction and series summed in fixed point, with the truncation bound
-  and every rounding added to the operation's fresh nudge (§3.2.2,
-  §3.2.8).
-- **Linear algebra** on affine magnitudes uses Gaussian elimination with
-  pivots whose enclosure excludes zero. `inverse` uses scalar affine
-  operations and per-entry settling, as described in §3.4.
+- **Parameters, not globals.** Arithmetic, sampling, precision and resource
+  limits are evaluation parameters passed through `Config`.
+- **Elementary functions.** Rational kernels use precision-controlled
+  approximations. Double kernels use libm and optional diagnostic perturbations.
+- **Linear algebra.** Scalar implementations provide per-realization matrix
+  kernels. Pivoting never discards a sampled input.
 
 **Open.** A compiler from Typed Core, with explicit dimension and length
 arguments telling it static shapes (§10).
@@ -6649,7 +5607,7 @@ property of the result.
 | `steps` | 10⁸ | evaluation steps per path of an expression: every reduction counts against the path it is on (steps per path, below) | `error: the evaluation took more than 100000000 steps (`:set steps`)` |
 | `depth` | 10⁵ | nesting: one level for each value something waits for (an operand, a scrutinee, the function of a call, a thunk when forced). A call in tail position is no deeper. | `error: the evaluation nested more than 100000 calls deep (`:set depth`)` |
 | `digits` | 10⁵ | a number's magnitude, its decimal exponent either way: `log₁₀` of its size from the leading bits of its numerator and denominator. Checked *before* computing where the size can be predicted: a power from its exponent (`n · log₁₀ |x|`), a literal in the lexer from its exponent, an exponential (`exp`, `sinh`, `cosh`) from its argument. Checked *after* every result of `+ − * /`, `outer` and `dot`. | `the literal would have more than 100000 digits (`:set digits`)`, `error: the power would have more than 100000 digits (`:set digits`)`, `… zeros after the point` for a small one |
-| `components` | 10⁷ | a tensor's components, where a tensor is built: `noise` and `gauss`, a stack of tensors, `outer`, `dot`, a matrix from a vector. A length that a type or a literal names has the fixed bound 2⁴⁰ instead, so that a definition checks the same in every session. A list's length is not known until it is walked, so `steps` and `memory` bound a list. | `error: the result would have 16000000 components, more than 10000000 (`:set components`)` |
+| `components` | 10⁷ | a tensor's components, where a tensor is built: literal tensors, a stack of tensors, `outer`, `dot`, a matrix from a vector. A length that a type or a literal names has the fixed bound 2⁴⁰ instead, so that a definition checks the same in every session. A list's length is not known until it is walked, so `steps` and `memory` bound a list. | `error: the result would have 16000000 components, more than 10000000 (`:set components`)` |
 | `outcomes` | 1000 | the options of one mixture under the double backend's samples (§8.2.6), when it is made and when it is printed | `the value would have more than 1000 outcomes`, `the value has more than 1000 outcomes` when printed |
 | `time` | off | wall-clock seconds per input (a line at the prompt, a `-f` file, a `:load`), by `System.Timeout` around the input | `error: the input took more than 2 seconds (`:set time`)` |
 
@@ -6666,7 +5624,7 @@ Some details of where a limit applies:
 - The executable links with `-rtsopts`. `--set memory` supersedes `+RTS
   -M`.
 - A literal is checked against the session's `digits` at the prompt, in
-  files, and in `:type`, `:exact` and the other commands that evaluate.
+  files, and in `:type`, `:view` and the other commands that evaluate.
   `:edit` and `:prefer` parse with the default `digits`.
 - A Haskell stack overflow is caught too and named `depth` ("the
   evaluation nested too deeply"), but the stack is heap, so `memory`
@@ -6689,53 +5647,26 @@ each call its own. A limit reached is a `Left`, an `EvalError` like any
 other, so `feed` stays pure and the tests see it. Only `memory` and `time`
 need `IO`, in `runLimited`.
 
-**Steps per path.** **Decided.** Under Monte Carlo a branch point splits
-the copies into groups, each evaluating its own alternative (§8.2.5).
-`steps` counts along each copy's path, not per batch, so that an input is
-accepted or refused alike at every `:set cores`:
+**Combined work and path budgets.** **Decided.** Before execution, the compiler
+divides `steps` by the planned number of realizations, including the ordinary
+baseline and every rounding repetition. It refuses a grid larger than the
+step budget. Each branch path then uses this conservative per-realization
+budget. Groups begin at their parent's count; a join takes the largest group
+count. Work shared before a split is charged on every continuing path.
+This can refuse an evaluation that would fit a precise total-work counter.
 
-- a group's evaluation starts from its parent path's count at the split,
-  so the work shared before the split counts once for each path that
-  continues from it.
-- the limit applies to every path's own count, the nominal path's and each
-  split group's.
-- at the join, where the groups' results are put back together, the parent
-  path continues from the largest of its groups' counts, so the work after
-  the join is on every path through it.
-- a copy's path is the same however the copies are batched, so a path's
-  count, and so acceptance, do not depend on K. A batch whose copies all
-  take one alternative does not split, and its one path takes the same
-  steps as that alternative's group where they split.
+The grid is also limited to one million realizations and to `components`.
+Input-only double batches use stable global indices; grouped rounding currently
+runs as one bounded grid. `cores` does not change those coordinates.
+The `memory` and `time` limits remain independent safeguards.
 
-A `Limits.Context` carries its path's counter, the root's being the
-budget's own. `enter` starts a group's counter at its parent's count, and
-`Eval.perOption` enters every group of a split before any of them
-evaluates, so a group never starts from a sibling's work. `spend` counts on
-the context the term's evaluation was made in, so a thunk counts on the
-path that made it, whoever forces it. `within`, which forces a group's part
-of a recombined value, raises the parent's count to the group's after. A
-path is not a batch: the total work of one evaluation is bounded by its
-paths times the limit, at most (N + 1) · `steps` with N copies.
+**Open.** Lazy values made before a split can be forced by different groups.
+Their accounting can depend on the forcing order near a step limit. A shared
+total-work model and chunked grouped execution need a separate design.
 
-**Open.** A value made before a split and forced by a group counts on the
-parent's path when it is forced, after the groups before it in the split.
-With three or more groups, which of those a batch has depends on K, so
-such an input near the limit can be accepted at one K and refused at
-another. A part of a recombined value forced after the join counts on its
-group's path, not where it is read (§10).
-
-**The defaults, and why.** The test suite (about 700 tests) needs fewer
-than 3·10⁵ steps and 300 levels of nesting in any one expression, the
-tutorial fewer than 3·10⁴ and 50, and the largest magnitudes the suite
-writes are beyond `10^±60`. The evaluator takes about 18 million steps a
-second, so `steps` at 10⁸ stops a runaway in about 5 s with room for 300
-times the suite's largest expression. The cost is that a fold over ten
-million list elements needs `:set steps 1e9`. `depth` at 10⁵ is about
-50 MB of stack and stops a runaway recursion in a fraction of a second.
-`digits` at 10⁵ is far past any physical quantity, and below what makes
-arithmetic slow. `components` at 10⁷ lets the suite's 3000 × 3000 outer
-product (0.8 GB of lazy elements) fit the 4 GB heap. `memory` at 4 GB is
-about four times the suite's peak.
+**Defaults.** `steps` is 10⁸, `depth` is 10⁵, `digits` is 10⁵,
+`components` is 10⁷ and `memory` is 4 GB. These are resource ceilings,
+not accuracy guarantees or expected running times.
 
 **Examples.** Each runs at the defaults and fails at once with its limit,
 except where noted:
@@ -6747,8 +5678,6 @@ the literal would have more than 100000 digits (`:set digits`)
 error: the power would have more than 100000 digits (`:set digits`)
 > exp 1000000
 error: the exponential would have more than 100000 digits (`:set digits`)
-> (outer (noise 4000) (noise 4000)).0.0
-error: the result would have 16000000 components, more than 10000000 (`:set components`)
 > let g n = if n == 0 then 0 else 1 + g (n - 1)
 > g 1000000
 error: the evaluation nested more than 100000 calls deep (`:set depth`)
@@ -6759,717 +5688,127 @@ error: the evaluation took more than 100000000 steps (`:set steps`)
 1000001
 ```
 
-**What the limits do not stop.**
-
-- *An exact value's size.* Lengths are held by the precision (§3.2.8), but
-  `Σ xᵏ/k!` with exact terms pays each step for the `k log k` digits of
-  `k!`, which `digits` bounds.
-- *A chaotic iteration's enclosure grows until it is useless.* The
-  logistic map at working precision is meaningful for about 100 steps at
-  precision 20, then its enclosure covers more than `[0, 1]`, its square
-  diverges, and `digits` stops it. That is the rigorous answer.
-- *Many independent nudges.* Each costs about 2 KB, so `norm (gauss
-  1000000)` holds about 1.5 GB, and `noise 9000000`, within `components`,
-  reaches the 4 GB heap and stops at `memory`.
-- *A list's length.* `components` counts tensors only.
-- *A list kept whole by design.* `length (reverse (range 0 1e6))` keeps
-  the list and stops at `memory` under a small heap.
+**Limits and numerical reliability.** Resource limits bound work and storage.
+They do not certify numerical accuracy. Chaotic iterations can be sensitive
+to small perturbations while remaining finite.
+Large exact rationals, retained lists and sample grids can exhaust memory.
+The component limit counts tensors. Steps and memory also constrain lazy lists.
 
 **Implemented in:** `Metron.Limits` (`defaultLimits`, `setLimit`, `parseCount`, `limitSettings`, `newBudget`, `spend`, `nested`, `enter`, `within`, `reach`, `log10Abs`, `beyond`, `runLimited`, `applyMemory`, `limitHeap`), `Metron.Eval` (`perOption`, `settle`), `Metron.Compile` (`runtimeWith`), `Metron.Driver` (`setSetting`, `startSettings`).
-**Tested by:** "limits (design §8.1)" › "settings", "steps", "depth", "digits", "memory", "time", "constant memory"; "end to end" › "a tensor past the components limit is refused when built"; "backends (design §8.2)" › ":set cores: the copies in parallel batches" › "steps counts each path: accepted alike at every K", "a split near the limit: accepted or refused alike at K = 1, 2 and 4", "work shared before a split is on each path that forces it", "the work after a join is on every path through it".
-
-### 8.2 Backends
-
-**Decided (future implementation).** Separate `arithmetic` (`rational` or
-`double`) from `propagation` (initially `montecarlo` only), with `samples`
-controlling statistical sampling. Sampling declared uncertainty is separate
-from floating-point rounding error. See [Monte Carlo first](montecarlo-first.md)
-for the agreed direction and open precision/reporting decisions. The
-implementation described below remains in the pre-refactor snapshot.
-
-**Decided.** One Typed Core, several evaluators of its scalars. A
-**backend** is the scalar arithmetic and the built-ins that belong to it.
-Everything else is shared: tensors, units and dimensions (checked
-statically anyway), charts, data types, closures, limits, the store and
-hashes. A stored definition names no backend, and the same term runs under
-any backend that has the built-ins it uses.
-
-`Metron.Scalar` holds the class a backend implements, `Scalar s`:
-
-- its arithmetic, with the names and shapes of the `Metron.Affine`
-  functions, and a `Settings` (working precision, comparison policy,
-  samples, seed, rounding) where those take the precision.
-- its linear-algebra kernels (`determinantM`, `invertM`, `matrixExpM`,
-  `choleskyM`).
-- the few facts the shared code asks of a number: `literal`, `exactly`
-  (for index positions and the zero offsets of a chart route), `sizeOf`
-  (for the `digits` limit), `stepProblem` (for a chart's step) and
-  `hintFactor` (for a display unit).
-- `noiseM` and `uncertainM` for the uncertainty forms of Core, and
-  `scatterM` to put copies back together (§8.2.5).
-- `own`, a table of the backend's own built-ins by name, each described by
-  its shape (componentwise, a covariance, a test, a constant, numbers to a
-  number), so that the evaluator supplies the tensors, dimensions and
-  display units.
-
-It is a class and not a record of functions because the scalar type
-determines the backend: a value of one backend can never meet an operation
-of another, and the evaluator, the printer and the tests name a backend by
-a type. Values, charts, closures and runtimes take the scalar as a
-parameter (`ValueOf s`, `ChartOf s`, `RuntimeOf s`). `Value`, `Chart`,
-`Thunk` and `Runtime` are the affine backend's. Display units keep exact
-magnitudes as their factors under every backend. The printer's numbers go
-through the `Display` class in `Metron.Pretty`. The evaluator is
-specialised for each backend (`SPECIALIZE`), which keeps the hot path fast:
-the `steps` runaway `f 0` takes about 6 s and a million-step counting loop
-under a second.
-
-**Choosing.** `:backend` names the current backend, `:backend double`
-switches, and `metron --backend double` starts under one, as `--set` does.
-An unknown backend is refused. The built-ins only one backend has are
-listed in `Metron.Scalar.backendOwn`:
-
-- affine: `±`, `±σ`, `noise`, `gauss`, `mid`, `sd`, `bound`, `covariance`
-  and `crossCovariance` (they read or make uncertainty, and under double
-  they give only zeros).
-- double: `errorOf`, `digitsOf`, `ulps`, `eps`, `nextUp`, `fma`, `isNaN`,
-  `isInfinite`.
-
-`:exact`, `:budget` and `:covariance` are the affine backend's commands and
-are refused under double, for example ":budget is the affine backend's; the
-double backend does not have it (:backend affine)".
-
-**Implemented in:** `Metron.Scalar` (`Scalar`, `backendOwn`, `ownerOf`, `backendName`, `backendNamed`, `settingsAt`), `Metron.Driver` (`startBackend`), `Metron.Pretty` (`Display`).
-**Tested by:** "backends (design §8.2)" › ":backend chooses the evaluator of the scalars".
-
-#### 8.2.1 The affine backend
-
-`:backend affine` is the default. It is the evaluator of §3.2: rationals
-with affine error forms, rigorous bounds and σ. Its own built-ins are the
-ones that read or make uncertainty (§8.2). Precision, compaction, the
-non-linear mark and the comparison policy are as §3.2 states. It never
-batches and has no samples, so `:set samples`, `seed`, `rounding` and
-`cores` do not change what it computes.
-
-**Implemented in:** `Metron.Scalar` (`instance Scalar Magnitude`, `affineCovariance`), `Metron.Affine`.
-**Tested by:** "affine"; "numerical review regressions" (uncertain widths, inverse corner containment, alternation and Cholesky domains); "backends (design §8.2)" › ":backend chooses the evaluator of the scalars" › "the same expression under each".
-
-#### 8.2.2 The double backend: IEEE arithmetic and the running bound
-
-**Decided.** `:backend double` evaluates scalars in Haskell `Double`, in
-the operation order of the formula as it is written in Haskell, so a
-result is the result a ported formula gives. It follows IEEE 754, since
-the point is to run as Haskell does:
-
-- A literal is parsed as an exact rational, as always, and rounded to the
-  nearest double where it enters. A literal beyond the largest double is
-  infinite.
-- `1/0` is `Infinity`, `0/0` and `sqrt (-1)` are `NaN`, and overflow is
-  infinite, not an error. Underflow is gradual.
-- Every operation is GHC's `Double` operation on the values, so the
-  results equal GHC's for the same formula in the same order. `x ^ n` makes
-  the multiplications of base's `^` (repeated squaring), and a negative
-  power is the reciprocal, as `^^`. GHC's rewrite rules for a literal `x ^
-  4` or `x ^ 5` fire only in optimised Haskell, so a ported literal power
-  can differ in its last bit.
-- `floor`, `ceil` and `round` are Haskell's (`round` to even), on a finite
-  value.
-- The IEEE result decides every comparison. `NaN` compares false, and `/=`
-  is true for it.
-- A number that is not finite remembers where the first NaN or infinity
-  came from, as the operation and its operands (`1 / 0`, `sqrt (-2)`),
-  since Typed Core has no source spans to name.
-- `precision` does not apply.
-
-Each scalar carries its round-to-nearest IEEE result, which is the value
-shown, the value a ported formula computes, and the value that alone
-decides every `if` and comparison, so a run takes the branches Haskell
-takes. **Decided.** What else it carries is the choice of `:set samples
-N`: under `samples 0`, the default, a running error bound. Under `samples
-N > 0`, N copies (§8.2.3).
-
-**The running bound** (Wilkinson and Higham's running error analysis) is
-one extra double per value. It bounds the distance from the result to the
-exact value of the same formula on the exact literals, under the standard
-model of floating point. It is guaranteed under that model, pessimistic,
-with additional propagation work beyond plain doubles:
-
-- a literal's bound is its rounding, `|d − r|`, exactly, rounded up.
-- `x ± y` adds the bounds. `x · y` adds `|x|e_y + |y|e_x + e_x e_y`. `x /
-  y` adds `(e_x|y| + |x|e_y) / (|y|(|y| − e_y))`, unbounded when `|y| ≤
-  e_y`.
-- each then adds its own rounding, `u·|z| + 2⁻¹⁰⁷⁴` with `u = 2⁻⁵³`,
-  unless an error-free transformation (TwoSum, or a fused multiply-add for
-  a product or a quotient) proves the result exact. A product or a
-  quotient's FMA residual can itself underflow. **Decided.** A zero
-  residual is checked with exact rational arithmetic before treating it
-  as exact, including for stochastic neighbour selection. The square-root
-  direction has the same fallback. `fma` includes an absolute subnormal
-  rounding allowance.
-- a library function propagates its operand's interval. A monotone one
-  (`exp`, `log`, `sqrt`, `sinh`, `tanh`, `atan`, `asin`, `acos`, and `tan`
-  between poles) takes the larger change at the interval's ends, each
-  end's own library error included. `cosh` does the same with its minimum
-  at 0. `sin` and `cos` take `|h|·|f′(x)| + h²/2`, at most 2. `atan2`
-  takes `(e_x + e_y)/r_min`, at most 2π, and 2π across the branch cut. An
-  interval that leaves the domain, or reaches a pole, is unbounded.
-- a library function then adds its own error in units in the last place
-  of its result (`ulp(z) ≤ 2u|z|`): `sqrt` ½ (correctly rounded by IEEE
-  754), `exp`, `log`, `sin`, `cos`, `atan`, `asin`, `acos` 1, `tan`,
-  `sinh`, `cosh`, `tanh`, `atan2` 2. glibc does not round these correctly,
-  and these figures are an assumption about the library: the one place
-  the bound is not guaranteed by the model alone.
-- the bound, computed in floating point, is widened by a relative `2⁻⁴⁸`
-  and `4·2⁻¹⁰⁷⁴`, more than its own few roundings can lose.
-
-**Decided.** Basic propagation for addition, multiplication, division and
-FMA is computed exactly on the finite double inputs and bounds, then
-converted outward. This prevents intermediate overflow and underflow
-from silently erasing an error. `atan2` uses a lower radius based on
-`max(abs x, abs y)` rather than unscaled squares. These changes do not
-certify the platform's transcendental implementation.
-
-**Open.** Measure or certify the library's error figures. glibc's nine-ulp
-test threshold is not a universal accuracy guarantee (§10).
-
-**Decided.** Double determinants use the division-free Berkowitz
-characteristic-polynomial recurrence (O(n^4)), preserving bound and copy
-arithmetic without nominal pivot branches. Inversion chooses pivots
-separately for each copy, using its global copy number for rounding.
-Cholesky enforces its positive-definite contract for all copies.
-
-**Open.** `:trace`: the porting tool is to run an expression under
-`double`, shadowed by `affine` (the method of Herbgrind), and report each
-operation's local error in ulps and its amplification, naming by source
-span the few operations that lose the most. How the shadow follows a
-`double` run that has gone to `NaN` or infinity, or takes the other branch
-of an `if` that the exact value does not take, is undecided (§10).
-
-**Its built-ins** are the same under every setting, so the check before
-running depends on the backend alone for them (§8.2.9):
-
-- `errorOf x`, the absolute error estimate, elementwise, in `x`'s
-  dimension: the bound under `samples 0`, the nominal-to-mean displacement
-  plus the mean interval width under `samples N`.
-- `digitsOf x`, the significant digits it implies, `−log₁₀(e/|x|)`, from 0
-  to `log₁₀ 2⁵³ ≈ 15.95`. A check such as `digitsOf r < 10` is written once
-  and runs either way.
-- `ulps a b`, how many doubles lie from `a` to `b`, for checks such as
-  `ulps r expected <= 4`. The size of one step is `nextUp x - x`.
-- `eps`, `2⁻⁵²`, the gap from 1 to the next double.
-- `nextUp x`, a function of the double, whose error is `x`'s.
-- `fma a b c`, with one rounding.
-- `isNaN` and `isInfinite`, decided on the nominal value only.
-
-```
-> :backend double
-> 0.1 + 0.2
-0.30000000000000004 ± 5.0e-17 (bound)
-> 1/0
-Infinity (the first infinity came from 1 / 0)
-> sqrt (-2)
-NaN (the first NaN came from sqrt (-2))
-> 0.5 * 4
-2
-> 2 m * 3
-6 m
-> digitsOf (0.1 + 0.2)
-15.77849851113532
-```
-
-**Implemented in:** `Metron.Double` (`instance Scalar Dbl`, `libmUlps`, `ulpsOf`, `ulpsBetween`, `digitsOfDbl`).
-**Tested by:** "backends (design §8.2)" › "results equal GHC's Double", "IEEE 754: infinities, NaN and overflow are values", "a literal is rounded to the nearest double where it enters", "printing labels the kind of estimate", "the running bound contains the true error"; "numerical review regressions" (exact-rational extreme grid, determinant permutation oracle, per-copy inverse pivots, scaled statistics, sample-mean intervals and extreme `asinh`).
-
-#### 8.2.3 Samples: stochastic rounding
-
-**Decided.** Under `:set samples N`, for `N > 0`, each number carries N
-copies computed in lockstep. Each operation on each copy rounds the exact
-result to the double below or above it with equal probability: stochastic
-arithmetic, the CESTAC method behind CADNA (N = 3 is its usual choice).
-The side comes from the same error-free transformations as the running
-bound (a fused multiply-add through exact rationals for `fma`). A library
-function's copy moves one unit in the last place up or down. A literal's
-copies are its two neighbouring doubles when it has two. The copies'
-spread estimates the significant digits that survive: realistic, since
-rounding errors partly cancel as they do in practice, and statistical
-rather than guaranteed, at about N times the cost in one pass.
-
-- **The sample-mean interval** has width `τ·s/√N`: the copies' sample deviation scaled by
-  Student's t at 97.5% for `N − 1` degrees of freedom (a table to 30, then
-  its expansion about the normal).
-  **Decided.** This interval is printed around the sample mean, separately
-  from the nominal IEEE result. `errorOf` estimates nominal accuracy by
-  `abs(nominal - mean) + τ·s/√N`; `digitsOf` uses that same allowance.
-  These are conditional statistical diagnostics, not enclosure guarantees.
-  The interval also includes rounding of the displayed mean, checked
-  against the exact rational mean of the finite copies. Sample means
-  and deviations use scaled, compensated arithmetic to avoid squaring
-  unscaled extreme values.
-  More samples refine the mean estimate, not the nominal execution.
-  Coin reuse and equal-probability directed rounding do not themselves
-  establish unbiasedness or the independence assumptions of a Student interval.
-- **The coin** for each rounding is a hash (SplitMix's finaliser) of the
-  seed, the copy's global number, the operation and its operands, so an
-  estimate does not depend on the order in which lazy values are forced.
-- **`:set samples`** takes 0, or 2 to 100000. One copy has no spread, so
-  `:set samples 1` is refused: "samples is 0 (a running error bound) or
-  from 2 to 100000 copies". The upper limit, 10⁵, serves Monte Carlo
-  (§8.2.4). CESTAC's 3 is enough for rounding alone.
-- **`:set seed`** defaults to 1. The same input under the same settings
-  gives the same estimate.
-- **`:set rounding nearest | random`**, default `random` (§8.2.4). Under
-  `samples 0` it has no effect.
-- The copies' mean is taken about the first copy, `c₀ + Σ(cᵢ − c₀)/N`, so
-  copies that agree give a spread of exactly 0.
-- `samples`, `seed` and `rounding`, like `precision`, are session settings:
-  they change what a stored function computes, never its hash. `--set`
-  takes each of them, in order, and refuses what `:set` refuses.
-
-Few copies can all agree by chance, and the value then prints as exact.
-That is the method's known weakness at small N: at three samples,
-
-```
-> :set samples 3
-> 0.1 + 0.2 + 0.3 + 0.4 + 0.7 - 1.7
-0 ± 6.4e-16 (estimate, 3 samples)
-```
-
-at seed 1, and `0` at seed 3.
-
-**Implemented in:** `Metron.Double` (`instance Scalar Dbl`, `studentT`, `Spread`), `Metron.Driver` (`setSetting`, `startSettings`).
-**Tested by:** "backends (design §8.2)" › "samples N: copies under random rounding", ":set samples, seed and rounding, and --set".
-
-#### 8.2.4 Monte Carlo: declared σ is sampled
-
-**Decided.** Under `samples N > 0`, a declared standard uncertainty is
-drawn in each copy, not refused. `x ±σ s` is `x + |s|·z` in each copy, `z`
-a standard normal, and `gauss` is drawn likewise. This is the GUM's
-Supplement 1 method, and it is the answer for a value that `affine` marks
-non-linear (§3.2): the copies give a skewed sample's real spread instead of
-a refusal.
-
-- **The shown value** is still the IEEE result at the nominal inputs, what
-  a ported formula computes. The copies measure the spread.
-- **Identity.** A draw is keyed by the nudge's identity (§3.2.4), the copy
-  and `:set seed`. The key of an unknown is the first eight bytes of the
-  SHA-256 that names the same nudge under `affine` (`Affine.originId`:
-  kind, owner stamp, path, component and midpoint, the midpoint here being
-  `x`'s IEEE value, or the label alone for `#label`), one key per declared
-  component. So the same unknown has the same draw wherever it appears in
-  a copy, `x - x` is exactly 0 in every copy, and a labelled unknown is
-  one draw wherever its label appears. `|s|` sizes the nudge as under
-  affine, so a label reused with a negative `s` is not anti-correlated.
-- **The generator** is Box–Muller on two uniforms. From the key, the seed
-  and the copy number, SplitMix's finaliser gives a base word, then two
-  words by finalising `base + 1` and `base + 2`. Each gives a uniform `u =
-  (⌊w / 2¹¹⌋ + 1)·2⁻⁵³` in `(0, 1]`, so `log u₁` is finite, and `z =
-  √(−2 ln u₁)·cos(2π u₂)`. Only the cosine of the pair is used, so a draw
-  depends on its key, seed and copy only: not on order, and not on how
-  many other unknowns there are. The largest `|z|` it can give is
-  `√(2·53 ln 2) ≈ 8.6`, far beyond anything 10⁵ samples resolve.
-- **Arithmetic.** A unit unknown is a number whose value is 0 and whose
-  copies are standard normal draws. `x ±σ e` is then `x + |e|·z` by the
-  backend's own `+` and `*`, so the shown value is `x`'s IEEE value, and
-  the sum and the product round as the copies do. The form `v ±σ P`, which
-  goes through `gauss` and Cholesky (§3.5), gets correlated draws.
-- **Rounding.** With `:set rounding random`, the default, each copy also
-  rounds randomly (CESTAC), so the spread is input uncertainty and
-  rounding together, the realistic total for a ported formula. With
-  `nearest` the copies differ only in their draws: pure Monte Carlo, the
-  fair comparison with affine's σ.
-- **What a number's copies spread by** (`Metron.Double.Spread`): rounding
-  alone, or draws as well. A draw carries draws. A literal's and `pi`'s
-  copies do not. An operation's result carries draws when any operand's
-  do (`x + (0.1 + 0.2)` does, `0.1 + 0.2` does not), so `x - x` carries
-  them, all zero. `mid` and `sd` give numbers known exactly, which carry
-  none. Merged batches keep the flag.
-- **`mid` and `sd`** are the copies' mean and their deviation with `N −
-  1`, each a number known exactly. A number with no copies under samples
-  (an exact constant) has its value as its mean and 0 as its deviation.
-  Under `samples 0`, where no copies exist, they are refused (§8.2.9).
-- **`errorOf` and `digitsOf`** measure rounding, so they refuse a number
-  whose copies carry draws, at run time, since the check before running
-  cannot see draws: "`errorOf` measures rounding: its copies carry
-  declared σ; read `sd`". With rounding alone they are as in §8.2.2.
-- **A bound has no distribution.** Sampling `±` uniformly is an
-  assumption the language makes nowhere else, so `±` stays refused
-  under `double`, and so does `noise`, which makes a bound unknown (`x ±
-  e` is `x + e * noise 1`): drawing it as a normal lets a bound in as
-  a σ. A computation that mixes `±` and `±σ` runs under `affine`.
-
-Checked against `affine`: the orbital period `2π√(a³/(G·M))` with
-CODATA's `astro.G` and `M = 5.9722e24 kg ±σ 6e20 kg`, at 10⁴ copies
-rounding to nearest, has `sd` within five standard errors of affine's
-first-order σ. `n * n` for `n = 0 ±σ 1`, which affine marks non-linear and
-refuses `sd` of, has mean and deviation within five standard errors of 1
-and √2.
-
-```
-> :backend double
-> :set samples 1000
-> let x = 1 ±σ 0.1
-> x
-1 (Monte Carlo: mean 1.0020, sd 0.0989, 1000 samples)
-> errorOf x
-error: `errorOf` measures rounding: its copies carry declared σ; read `sd`
-> let n = 0 ±σ 1
-> n * n
-0 (Monte Carlo: mean 0.971, sd 1.461, 1000 samples)
-> x - x
-0 (Monte Carlo: mean 0, sd 0, 1000 samples)
-```
-
-**Open.** `samplesOf`, a built-in that returns the raw copies, and Monte
-Carlo quantiles (§10).
-
-**Implemented in:** `Metron.Double` (`instance Scalar Dbl`: `noiseM`, `uncertainM`, `Spread`), `Metron.Affine` (`originId`), `Metron.Scalar` (`sampledOwn`).
-**Tested by:** "backends (design §8.2)" › "declared σ is sampled: Monte Carlo under double".
-
-#### 8.2.5 Branches under copies
-
-**Decided.** Under `samples N`, a branch point whose copies choose
-different alternatives reports a table, and a sample that carries draws
-follows its own branch.
-
-**A table at each branch point.** An `if` or `case` whose copies
-choose different alternatives reports a table after the value, one row per
-alternative, counting the copies whose own scrutinee selects it, with the
-IEEE result's row marked:
-
-```
-> :backend double
-> :set samples 1000
-> let x = 1 ±σ 0.1
-> if x > 0.9 then 1 else 2
-1 (Monte Carlo: mean 1.144, sd 0.3513, 1000 samples)
-note: the branch at `if x > 0.9` goes both ways across 1000 samples (by the declared uncertainty):
-  then   856   ← taken (the nominal branch)
-  else   144
-```
-
-- The rows are a Core `case`'s constructors. Surface patterns compile to
-  cases on constructors, so a list case lists `{}` and `y : ys`, and an
-  `if` and a `case` on `Bool`, which are the same Core, both list `then`
-  and `else`.
-- The header names the cause, `(lost in rounding)` or `(by the declared
-  uncertainty)`. It says `k evaluations × N samples` when the branch point
-  is reached k > 1 times. It ends with `; D had left the evaluated path at
-  an earlier branch point` when D > 0: D is k·N less the copies counted,
-  plus the counted copies that a nominal branch took along against their
-  own scrutinee, inside an alternative reached so (the context carries
-  them, so it follows control, not data) or decided by a short circuit
-  that skipped their own second operand.
-- The table is a `note:` where the copies split, since the sample is
-  right, and a `warning:` otherwise, since the branch is numerically
-  unstable.
-- A comparison is just a condition, so `/=` reads as written, and a row of
-  0 is a plain 0. `Metron.Branch` finds the `case` by its site in the
-  input's or the definition's Core and prints its scrutinee as source.
-- Every `case` evaluated under `samples N` notes a reach (`Limits.reach`),
-  with or without copies of its own, so each copy is counted wherever it
-  reaches one, in whichever batch: the copies are counted by their own
-  alternative, and only those of the group being forced. A batch keeps a
-  record per site. Batches merge by sum, and a point's evaluations are the
-  most times any one copy reached it, kept per set of copies. Branch points
-  print in the order the nominal path first reached them, so the tables
-  are identical for every `cores`.
-- Under the running bound (`samples 0`) nothing has a table, and a stable
-  branch has none.
-
-**How a copy's alternative is known.** A constructor value (`VCon`)
-carries a `Choice`: nothing, or, when the copies differ by rounding alone,
-each copy's own constructor beside the nominal one. A comparison (`<`,
-`<=`, `>`, `>=`, `==`, `/=`) gives each copy its own result. `not`, `&&`
-and `||` combine them copy by copy, and `==` on tensors, points and data
-does so over every component, every one evaluated. Where the copies carry
-draws and differ, among themselves or from the nominal result, the
-condition is a mixture instead (§8.2.6), so a `case` on it splits. A case
-result that recombines, and a mixture's options, say what each copy has.
-A value built without copies (a literal list, a tuple) has nothing of its
-own, and a `case` on it does not split.
-
-**Rounding alone does not split.** With copies that differ only by
-rounding, the nominal branch is what a ported formula takes, so every copy
-follows it, and the table is the warning that the branch is unstable:
-
-```
-> :set samples 3
-> let y = 0.1 + 0.2
-> if y == 0.3 then 1 else 2
-2
-warning: the branch at `if y == 0.3` goes both ways across 3 samples (lost in rounding):
-  then   1
-  else   2   ← taken (the nominal branch)
-```
-
-**Monte Carlo follows each sample's own branch.** When the copies carry
-draws of a declared σ, they are samples of the inputs, and a sample that
-takes the other branch computes the other branch's formula. Following the
-nominal branch with every copy gives the wrong distribution: `if x >
-0.9 then 1 else 2` with `x = 1 ±σ 0.1` is 1 with probability about 0.84
-and 2 with about 0.16. So the copies split: each alternative is evaluated
-with the group of copies that selects it, in lockstep, and the results are
-put back together copy by copy, the nominal value coming from the nominal
-branch. Groups split again at later branch points.
-
-- **A group** is evaluated with `Config.group`, its copies' global numbers
-  (so draws and roundings are keyed as before), and a `Limits.Context` of
-  its own, on the nominal path or off it. Its environment and charts are
-  narrowed to it lazily (`Eval.narrow`). A closure keeps the environment it
-  was made with and one narrowing from it, and a second narrowing is
-  composed with the first (`Eval.andThen`), with the narrowed environment
-  made once, lazily, for all its applications. A definition the batch
-  shares is narrowed from the batch's copies where it is referenced.
-  Neither grows a chain through a loop that splits at every step.
-- **Which groups run.** An option with copies is evaluated, and the
-  nominal one on the nominal path even with none, for the nominal value.
-  No alternative that no copy selects is evaluated.
-- **Recombination** (`Eval.recombine`). The groups' results are forced to
-  their constructors, nominal first, each for its own copies, and put back
-  together. Numbers, tensors, units and points go copy by copy
-  (`Scalar.scatterM`: the nominal value from the nominal group, a NaN off
-  the nominal path, the copies carrying draws). Data of one constructor
-  recombines field by field, lazily. Different constructors, or
-  functions, make a mixture (§8.2.6).
-- **A split in tail position is a tail call.** **Decided.** A `case` that
-  splits, reached in tail position, does not put its groups together. It
-  returns them, unevaluated, as a split (`VSplit`, which never leaves
-  `Metron.Eval`), and the evaluator's tail calls pass it on. Whatever waits
-  for the value puts it together (`Eval.settle`): an operand, a scrutinee,
-  a thunk, the primitives, a definition's value, the top of the
-  evaluation. Putting it together forces the groups in turn, nominal
-  first, from a worklist: a group whose result is itself a split gives its
-  groups in its place. So a loop whose condition carries draws, each group
-  going on with its own iterations, is forced group after group and put
-  together once, not one inside another. The order the groups are forced
-  in, and so the tables, are those of putting each split together where
-  it is. Forcing a group's part counts no level of `depth`: a batch whose
-  copies agree does not split, so a level there makes `depth` differ
-  by K. A split whose value something waits for (`1 + g (n + 1)`) nests
-  as any such call does.
-- **Steps.** Splitting evaluates an alternative once per group, and
-  `steps` counts each group's evaluation on its own path (§8.1, steps per
-  path).
-
-For example, `count n = if n * x > 100000 then n else count (n + 1)` with
-`x = 1 ±σ 0.1` at 100 samples gives each copy the first `n` with `n · x >
-10⁵` in its own doubles, up to about 1.4·10⁵ steps, under the default
-`depth` and in constant memory.
-
-**Open.** The limits of branch tables (a value shared around a split, control-based "left the path" counts, the memory of stopped groups in a loop, NaN off the nominal path) and a readable summary for a branch point inside a loop are listed in §10.1.
-
-**Implemented in:** `Metron.Remark` (`pend`, `remarksOf`, `tables`), `Metron.Limits` (`reach`, `enter`, `within`), `Metron.Branch` (`tableLines`), `Metron.Eval` (`narrow`, `andThen`, `perOption`, `recombine`, `settle`), `Metron.Scalar` (`scatterM`).
-**Tested by:** "backends (design §8.2)" › "the table at a branch point", "splitting: each sample follows its own branch", "samples N: copies under random rounding"; "limits (design §8.1)" › "depth" › "a tail call through a split is no deeper (design §8.2)", "a loop through a split runs in a 1 MB Haskell stack (design §8.2)", "a case that splits in tail position passes its split on, in a 128 kB stack (design §8.2)", "a split whose value something waits for nests"; "limits (design §8.1)" › "constant memory" › "a loop whose condition carries draws, each sample stopping at its own step".
-
-#### 8.2.6 Mixtures
-
-**Decided.** When the groups of a split give different constructors, the
-result is a **mixture**: a value whose options are groups of copies, each
-with its own value (`VMixture`). An option is a set of global copy numbers
-with its value, never a number.
-
-- **Options are grouped by outcome**, not by path, so two paths that give
-  `Pos` merge into one option.
-- **Operations.** `case`, application, type application, `not`, `&&`,
-  `||`, `==` and `/=` run once per option, their other operands narrowed
-  to it (`Eval.perOption`). Two mixtures combine by pairing copies by
-  their global number, so the groups are the intersections, and empty ones
-  are dropped. A `case` on a mixture sends each option down its own
-  alternative, and numbers always recombine, so `case classify x of Neg
-  -> -1; Pos -> 1` is one numeric sample with the true mean. A primitive
-  on charts or lists refuses a mixture: "an operation on a value whose
-  samples have different outcomes (a mixture): only `case`, application
-  and the conditions split one".
-- **The limit.** A mixture keeps at most `:set outcomes` options (§8.1,
-  default 1000). Past it, the evaluation stops with "the value would have
-  more than 1000 outcomes", and printing more outcomes than that stops
-  with "the value has more than 1000 outcomes".
-- **Nothing is forced down the nominal branch**, so no value carries a
-  mark, and `mid` and `sd` never refuse for this reason.
-- **A field of an outcome that nothing reads is never evaluated.**
-- **Printing.** A mixture prints its nominal value, then a table. Each
-  outcome is the value's structure with `_` for each number, a record by
-  its constructor alone. Each row gives its samples and share, and each
-  number of the outcome by its path (a record's field by name, any other
-  by place) with its own cluster's mean and sd in its unit
-  (`Double.clusterNote`). The table shows the ten commonest outcomes, then
-  `and k others`, and marks the nominal one `← nominal`.
-
-```
-> :backend double
-> :set samples 10000
-> :set rounding nearest
-> let x = 0.05 ±σ 0.1
-> data Sign = Neg | Pos
-> let classify v = if v < 0 then Neg else Pos
-> classify x
-Pos (Monte Carlo over 10000 samples, 2 outcomes):
-  outcome   samples   share
-  Pos          6861   68.6%   ← nominal
-  Neg          3139   31.4%
-note: the branch at `if v < 0` goes both ways across 10000 samples (by the declared uncertainty):
-  then   3139
-  else   6861   ← taken (the nominal branch)
-> case classify x of Neg -> -1; Pos -> 1
-1 (Monte Carlo: mean 0.3722, sd 0.9282, 10000 samples)
-```
-
-`Neg` has probability Φ(−0.5) = 30.85%, and the numeric sample's mean is
-near `1 − 2p = 0.383`. The second input also prints the tables of its two
-branch points. An outcome with numbers shows each number's own cluster,
-for example `Hit Impact  8430  84.3%  0.arrival: mean 13.02877 s, …` for
-`data Shot = Hit Impact | Miss` with `Impact` a record.
-
-**Implemented in:** `Metron.Eval` (`Mixture`, `Option`, `perOption`, `recombine`), `Metron.Pretty` (`renderValue`), `Metron.Double` (`clusterNote`), `Metron.Batch` (`merged`).
-**Tested by:** "backends (design §8.2)" › "mixtures of outcomes".
-
-#### 8.2.7 Parallel batches
-
-**Decided.** For `double` with `samples N > 0` only, the copies run in
-parallel batches. With `:set cores K` (default: the logical core count,
-`getNumProcessors`, since the runtime does not expose physical cores), the
-expression is evaluated K times in parallel, each evaluation carrying its
-batch of about N/K copies in lockstep. Parallelising each operation across
-copies costs a synchronisation per operation, too fine at about
-0.1 µs a copy. `affine` and `samples 0` never batch.
-
-- **A copy is a global number.** A copy's draws and roundings are keyed by
-  its number among all N, not by evaluation order, and every branch is
-  decided by the IEEE value, which every batch computes alike. The coins
-  of each operation, the copies of a literal and of `pi`, and the draws
-  all take a copy's global number.
-- **Combining.** The batches' copies are concatenated in order and the
-  statistics computed from the whole vector, so the result is a single
-  evaluation's, bit for bit, at every K. The IEEE value is computed in
-  every batch, alike, and taken from the first. Each batch forces its
-  value as the printer does, in order and up to the first error
-  (`Batch.forced`), so it makes the reductions one evaluation's printing
-  makes and no others. Mixtures merge by outcome, each outcome's copies in
-  batch order, comparing IEEE values on the nominal path only
-  (`Batch.merged`). Branch records merge by sum (§8.2.5).
-- **K is at most N/2**, so a batch always has the two copies a spread
-  needs.
-- **One evaluation instead** when the input reaches `mid`, `sd`, `errorOf`
-  or `digitsOf` (`Batch.acrossCopies`: they read across a number's copies
-  and see only their batch's. the check's memo says which an input
-  reaches), when the value holds a chart, and when the batches disagree in
-  anything but their copies. So `sd T` does not run in parallel, and `T`
-  does.
-- **Each batch** is a whole evaluation in its own thread (`async`'s
-  `forConcurrently`) with its own runtime and budget, and each of its
-  paths has the whole `steps` limit (§8.1, steps per path). The `memory`
-  limit is the process's and covers them. A batch that reaches a limit
-  fails the input with the user's limit named.
-- **The command line** starts `cores` at the machine's logical cores,
-  which `:set` lists as `cores K`, and raises the runtime's capabilities
-  to them unless `+RTS -N` chose. A library session starts at 1. `:set
-  cores` and `--set cores` take a positive count.
-- **The runtime.** The executable runs the young generation's collections
-  on one thread and the older generations' on four (`-with-rtsopts=-qg1
-  -qn4`), since GHC's parallel collector on many capabilities slowed the
-  affine backend by about a quarter.
-
-**Open.** `exactly`, which asks whether a number's copies spread at all
-(an index position must be exact), sees only its batch's copies. A small
-batch can agree by chance where all N do not, so an index can be
-accepted batched and refused at K = 1 (§10).
-
-**Implemented in:** `Metron.Batch` (`batchesOf`, `acrossCopies`, `forced`, `merged`, `failure`), `Metron.Compile` (`batchedValue`, `evalBatchedAs`), `Metron.Limits` (`runLimited`).
-**Tested by:** "backends (design §8.2)" › ":set cores: the copies in parallel batches"; "backends (design §8.2)" › "splitting: each sample follows its own branch" › "1, 2 and 4 cores give the same copies, bit for bit"; "backends (design §8.2)" › "mixtures of outcomes" › "1, 2 and 4 cores give the same mixtures, and the batches merge".
-
-#### 8.2.8 Printing under double
-
-- **A value with rounding alone** prints the shortest digits that read
-  back, written as Metron writes numbers (scientific outside `[10⁻⁴,
-  10¹⁵)`). With a running bound it adds `± e` rounded upward and `(bound)`.
-  With stochastic copies it shows a separate `(stochastic: mean … ± …,
-  N samples)` interval around their mean. An exact value prints alone.
-- **A display unit** divides the value and scales the estimate exactly,
-  so `2 m * 3` prints `6 m`.
-- **A NaN or an infinity** prints with its origin: `NaN (the first NaN
-  came from sqrt (-2))`.
-- **A value whose copies carry draws** of a declared σ prints its IEEE
-  values alone, then each number's mean and deviation laid out in the
-  value's own shape and unit, never `±` the standard error of the copies'
-  mean, which describes only rounding:
-
-  ```
-  > [n, n * n, 2] * 1 m
-  [0, 0, 2] m (Monte Carlo: mean [0.017, 0.971, 2] m, sd [0.986, 1.461, 0] m, 1000 samples)
-  ```
-
-  A record or a tuple prints each field so. Each statistic is rounded to
-  the place of the second significant digit of its own standard error,
-  `s/√N` for the mean and `s/√(2(N − 1))` for the deviation, trailing zeros
-  kept, or to the shortest digits when that error is 0 or the place asks
-  for more digits than a double holds.
-- **Batches print what one evaluation prints** (§8.2.7).
-
-**Implemented in:** `Metron.Pretty` (`renderValue`, `Display`), `Metron.Double` (`clusterNote`).
-**Tested by:** "backends (design §8.2)" › "printing labels the kind of estimate", "printing under Monte Carlo: the sample beside the nominal value".
-
-#### 8.2.9 Built-ins a backend lacks are refused before running
-
-**Decided.** An input that uses, directly or through any definition it
-reaches, a built-in the current backend does not have at the current
-setting is refused before it runs, with the path that reaches it.
-
-- **What a definition needs.** Core's one walk for references
-  (`directUses`, of which `refs` and `refsWithIndex` are projections) also
-  names the backend-specific built-ins a term uses itself. What a
-  definition needs is its own set and its dependencies':
-  `needs(h) = direct(h) ∪ ⋃ needs(d)`, one union for a recursive group.
-- **Memoised forever.** A hash names an immutable term, so `needs(h)` is
-  memoised by hash in the session (`Session.needs`), extended as inputs
-  reach new hashes, and never invalidated: `:update` makes new hashes. The
-  memo holds built-in names, not backends, so a new backend, or a built-in
-  added to one, changes nothing in it.
-- **The check.** Before an expression evaluates, its own Core is walked
-  and the memo answers for its references, so the library is walked once
-  a session. Only on failure is the dependency graph searched for the path
-  the message names: "`` `orbitError` uses `sd` (through `budgetOf`),
-  which the double backend does not have ``".
-- **Per setting.** `Metron.Scalar.refusalOf` answers per backend, samples
-  and name: available, lacked, or needing samples. Under double, `±σ`,
-  `gauss`, `mid` and `sd` need `samples N > 0` (`sampledOwn`): "`` `sd`
-  needs `:set samples N` under the double backend ``", or through
-  definitions "`` `orbitError` uses `sd` (through `budgetOf`), which needs
-  `:set samples N` under the double backend ``". `±`, `noise`, `bound`,
-  `covariance` and `crossCovariance` are refused under double at every
-  setting. The double backend's built-ins are refused under affine.
-- **A direct use** gives the runtime's message, "`` `sd` is the affine
-  backend's; the double backend does not have it ``", which the evaluator
-  also gives if a backend ever meets another's built-in.
-- **Sound and conservative.** The check is sound, since every function
-  value, closure and record is built from Core in the closure, and
-  conservative, as a type check is: `if false then sd x else 0` is refused
-  under double, and so is an input that refers to a definition it never
-  calls.
-- **Not checked.** Commands that evaluate for inspection (`:exact` and the
-  others) are affine's, and `:prefer`'s units always run under affine.
-
-**What it means for the library.** Definitions that carry a declared
-uncertainty are affine's: CODATA's `G` ("`` `G` uses `±σ` ``"), the astro
-bodies' measured constants, `astro.kepler`'s solvers (which use `mid`,
-`bound` and `±` to keep their enclosures honest) and
-`linalg.jointCovariance`. Under double they are refused, as intended,
-except that a definition whose only such built-ins are `±σ`, `gauss`, `mid`
-and `sd`, such as `G`, runs once samples are set. A double port of the
-others is a separate decision.
-
-**Implemented in:** `Metron.Needs` (`needsOf`, `reachedBy`, `checkBackend`), `Metron.Core` (`directUses`), `Metron.Scalar` (`refusalOf`, `sampledOwn`, `refusal`, `needsSamples`, `lacks`).
-**Tested by:** "backends (design §8.2)" › "built-ins a backend lacks are refused before running"; "backends (design §8.2)" › ":backend chooses the evaluator of the scalars" › "the declared σ, gauss, mid and sd need samples under double", "the double backend's are refused under affine"; "backends (design §8.2)" › "declared σ is sampled: Monte Carlo under double" › "the definitions that were refused run once samples are set".
+**Tested by:** "limits (design §8.1)" › "settings", "steps", "depth", "digits", "memory", "time", "constant memory"; "end to end" › "a tensor past the components limit is refused when built"; "independent arithmetic and grouped rounding".
+
+### 8.2 Arithmetic and propagation
+
+**Decided.** One Typed Core runs through a scalar interface. `Rat` implements
+rational arithmetic and `Dbl` implements IEEE double arithmetic.
+Tensors, charts, closures, data, type inference and the store remain shared.
+Definitions do not name an arithmetic backend.
+
+#### 8.2.1 Configuration
+
+| Control | Values | Default |
+|---|---|---|
+| `:set arithmetic` | `rational`, `double` | `double` |
+| `:set propagation` | `montecarlo` | `montecarlo` |
+| `:set samples` | 1–100000 input realizations | 10000 |
+| `:set roundingAnalysis` | `off`, `stochastic` | `off` |
+| `:set roundingSamples` | 2–1000 repetitions per input | 8 |
+| `:set seed` | integer | 1 |
+
+The CLI accepts these controls through `--set NAME VALUE`.
+Rational arithmetic rejects stochastic rounding analysis.
+Changing arithmetic does not change stored term hashes.
+
+#### 8.2.2 Ordinary arithmetic
+
+Ordinary double results use nearest rounding and preserve operation order.
+Rational coefficients remain exact under rational operations (§3.2.8).
+Sampling does not add an error enclosure to either representation.
+
+#### 8.2.3 Grouped stochastic rounding
+
+For input realization i, evaluate one ordinary result Y_i and R diagnostic
+results Z_ij. Each group stores [Y_i, Z_i0, …, Z_i(R−1)].
+Without sampled inputs, evaluate one baseline and R diagnostic repetitions.
+With analysis off, allocate no diagnostic repetitions.
+
+The random key includes independent input and repetition indices.
+Changing R preserves existing indexed repetitions. Changing R or toggling
+analysis preserves all ordinary input results.
+
+Basic arithmetic selects adjacent representable neighbors using exact residual
+checks, including subnormal cases. Elementary libm functions use a random
+one-ulp perturbation heuristic. This is CESTAC-inspired analysis, not a proof
+of accuracy or CADNA conformance. Distribution generation and parameter
+evaluation are excluded and the report states that exclusion.
+
+#### 8.2.4 Input statistics
+
+Only Y_i contributes to input statistics. Never pool Z_ij into the input sample.
+For each input, compute the sample variance s_i² of its diagnostic repetitions.
+Report sqrt(mean_i(s_i²)) as typical rounding spread and
+sqrt(mean_ij((Z_ij−Y_i)²)) as RMS baseline displacement.
+Agreement prints “no variation observed”, not “exact”.
+
+#### 8.2.5 Branches
+
+Ordinary inputs and diagnostic repetitions follow their own branches.
+Branch tables report ordinary-input visits and diagnostic visits separately.
+They count visits, including repeated visits through recursion.
+Reading a shared expression reuses its computed realizations.
+Numerical pivoting and matrix exponential scaling run per realization.
+
+#### 8.2.6 Exceptional and mixed outcomes
+
+NaN and infinity remain explicit. Numeric summaries that require finite data
+report that they are unavailable when nonfinite values occur.
+Domain failures in rational arithmetic fail the evaluation explicitly.
+The implementation does not silently discard failed runs or summarize survivors.
+
+Different result constructors produce an ordinary-input outcome table.
+Diagnostic constructor counts appear separately. Conditional numeric rounding
+summaries for mixed constructors are unavailable.
+`mid`, `sd` and covariance reject rounding analysis of reductions.
+
+#### 8.2.7 Batching and resources
+
+**Decided.** Input-only double execution retains bounded parallel batches.
+Grouped rounding execution initially uses one bounded grid. Rational execution
+is serial. The `cores` setting cannot change results or reports.
+The run count must fit both one million and the configured component limit.
+Each path receives the total steps budget divided by the number of runs.
+This conservative accounting prevents diagnostic work from bypassing the limit.
+The memory and time limits cover the entire evaluation.
+
+#### 8.2.8 Display and units
+
+Input and rounding summaries retain output units and tensor shapes.
+Changing a display unit scales every realization consistently.
+A sampled outcome interval describes simulated outcomes, not confidence in the mean.
+No report claims a hard numerical bound or significant digits.
+
+#### 8.2.9 Capabilities
+
+Double arithmetic provides `eps`, `nextUp`, `ulps`, `fma`,
+`isNaN` and `isInfinite`. Rational arithmetic rejects these format-specific
+operations. Both support distributions and input statistics.
+Unsupported capabilities fail explicitly rather than switching arithmetic.
+
+**Implemented in:** `Scalar`, `Rational`, `Double`, `Eval`, `Compile`,
+`Batch`, `Branch`, `Remark`, `Driver`, `Pretty`, `Numerical.SamplePlan`.
+**Tested by:** "independent arithmetic and grouped rounding",
+"separate sampling foundation", "limits (design §8.1)", "numerical review regressions".
 
 ## 9. Module layout and libraries
 
 The library code is in `lib/`, the executable in `src/` and the tests in `test/`, as [style.md](style.md) requires. [overview.md](overview.md) §5 maps every module to its job and its design section. This section states the rules that the layout keeps.
 
 - **The pipeline's order.** The stages run lexer, parser, desugarer, resolution, inference, lint and evaluation (§1.4). The evaluator (`Metron.Eval`) does not import the session or command modules. `Metron.Compile`, which checks and evaluates one expression for a session, and the session modules (`Metron.Driver`, `Metron.Edit`, `Metron.Source`, `Metron.Session.*`, `Metron.Repl`) sit above the pipeline.
-- **The numerical modules stand alone.** `Metron.Numerical.Approx`, `Metron.Numerical.Linear` (over `Metron.Affine`'s magnitudes), `Metron.Affine` and `Metron.Double` import neither the evaluator nor the session types.
+- **The numerical modules stand alone.** `Metron.Numerical.Approx`, `Metron.Numerical.Rational` (over `Metron.Rational`'s magnitudes), `Metron.Rational` and `Metron.Double` import neither the evaluator nor the session types.
 - **Hash-level code sits low.** `Metron.Type.Base` and `Metron.Encode` sit below `Metron.Builtin`, which needs the hashes of the built-in declarations, and below `Metron.Type` and `Metron.Hash`.
 - **The executable is thin.** `src/Main.hs` parses the command line (§7.4), opens the store and runs `Metron.Driver.feed` under the limits (§8.1). It sets the starting `cores` to the machine's logical core count. Everything the tests reach is in the library, including the REPL's completion, colour and continuation rules (`Metron.Repl`).
 - **One C file.** `cbits/limits.c` sets the runtime's maximum heap while the program runs, for the `memory` limit (§8.1).
-- **Runtime options.** The executable is built with `-threaded` and runs the young generation's collections on one thread and the older generations' on four (`-with-rtsopts=-qg1 -qn4`). With every core collecting in parallel, the affine backend is about a quarter slower. The test suite runs with `-T`, so that it can measure its own memory (§8.1).
+- **Runtime options.** The executable is built with `-threaded` and runs the young generation's collections on one thread and the older generations' on four (`-with-rtsopts=-qg1 -qn4`). With every core collecting in parallel, the number of collection threads affects performance. The test suite runs with `-T`, so that it can measure its own memory (§8.1).
 
 **Libraries.** The library depends on `async`, `base`, `bytestring`, `containers`, `cryptohash-sha256`, `directory`, `filepath`, `megaparsec`, `mtl`, `parser-combinators`, `text`, `time`, `transformers`, `unicode-transforms` and `vector`. The executable adds `haskeline` and `process`. The tests use `tasty`, `tasty-hunit`, `tasty-quickcheck` and `QuickCheck`.
 
@@ -7483,12 +5822,12 @@ The library code is in `lib/`, the executable in `src/` and the tests in `test/`
 - Inference is deterministic.
 - Evaluating a linted term never reports an internal error.
 
-Seeds that once failed are replayed by name, so that they cannot fail again unseen. Other properties check the arithmetic: a product of enclosures encloses every product of their points, the elementary functions enclose their true values, a printed dimension reads back as itself, and the double backend's running bound contains the true error (§8.2).
+Regression seeds are replayed by name. Independent tests check rational approximation kernels, IEEE residuals, dimensions, source identity and separate sample summaries.
 
-**Performance.** An interpreter over rational-midpoint affine forms handles a Kepler solve, or a few thousand steps of a numerical integrator, interactively. The evaluator takes about 18 million steps a second (§8.1). Long propagations wait for compilation (§10).
+**Performance.** Input and diagnostic costs depend on run counts and arithmetic. The removal plan records measurements for the current implementation.
 
 **Implemented in:** `src/Main.hs`; `cbits/limits.c`; `metron.cabal`.
-**Tested by:** "properties" › "blind programs", "typed programs", "replayed seeds"; "affine"; "dimension syntax"; "backends (design §8.2)" › "the running bound contains the true error".
+**Tested by:** "properties" › "blind programs", "typed programs", "replayed seeds"; "rational approximation kernels"; "dimension syntax"; "independent arithmetic and grouped rounding".
 
 ## 10. Roadmap
 
@@ -7496,22 +5835,12 @@ This is the one list of pending work. Everything built is described in its own s
 
 ### 10.1 Numbers and error
 
-- **Signed second-order terms** (Open, §3.2). The non-linear mark carries the sizes of second-order statistical terms, and sizes add, so a chain of operations overstates the mark where signed terms partly cancel: `atan2` at 45° with σ a thirtieth of the radius reads 13% for a true term of 2.4%. Carrying signed second-order coefficients, a quadratic form in the nudges, is the general fix. It also lets `ε²` cancel as `ε` does, so that `G * m` with `m = iau2015.earth.mu / G` is unmarked and `n*n == n*n` is decided. Lifting a function as its own primitive, as `tan`, `tanh` and `asin` are, is the fix where one function matters.
-- **`expm` with statistical inputs** (Open, §3.3). `expm` refuses a statistical input, because its bounded series does not propagate a statistical remainder. This also refuses a chart rotation with a `±σ` angle, and it is why `astro.kepler.toState` does not use `euler313`.
-- **Matrix work over the generic scalar type** (Open, §3.3, §3.5, §8.2). The matrix kernels (`determinantM`, `invertM`, `matrixExpM`, `choleskyM`) are methods of `Scalar`. Pending:
-  - A closed-form exponential of a bivector, by Givens rotations and Rodrigues' formula, for both backends.
-  - Sparse chains of rotations, so that a chart's sequence of turns costs a few plane rotations, not full matrix products.
-  - Paterson–Stockmeyer or a Padé approximant for a general `expm`. A 3 × 3 `expm` with uncertain entries takes 13 s at precision 200, about a hundred matrix products of forms with up to 64 nudges, and Paterson–Stockmeyer needs about `2√K` products instead of `K`.
-  - The rule that a kernel reads one triangle of a matrix only when the symmetry is structural (built that way), not merely checked entry by entry.
-- **The affine fused dot product** (Open, §3.3, §3.4). A sum of products (`dot`, `@`, `contract` over a product) linearised as one operation, with one fresh nudge for the whole sum instead of one per product.
-- **Refining an undecided comparison** (Open, §3.2.9). Re-evaluate the comparison at a higher working precision. It can tighten the bound radius, never the σ. It cuts across the evaluator's architecture, and lazy precision (§11) is one way to do it.
-- **A ball-plus-zonotope enclosure** (Open, §3.4). A radial bound, "known to 10 m in any direction", is over-approximated by up to √3 at the corners of the box that per-component `±` gives.
-- **Monte Carlo quantiles and `samplesOf`** (Open, §8.2.4). The double backend's copies give a mean and a σ. Quantiles of the sample, and a built-in that returns the raw copies, wait for a use.
-- **Measured libm error figures** (Open, §8.2.2). The running bound assumes a figure, in units in the last place, for each library function (`Double.libmUlps`). Measure them, or take glibc's documented 9 ulps. They are the one part of the bound that the model alone does not guarantee.
-- **`:trace`** (Open, §8.2.2). Run an expression under `double`, shadowed by `affine` (the method of Herbgrind), and report each operation's local error in ulps and its amplification, naming by source span the few operations that lose the most. How the shadow follows a run that has gone to NaN or infinity, or that takes a branch the exact value would not take, is not decided.
-- **A readable branch-table summary in loops** (Open, §8.2.5). A branch point inside a loop prints one table for all its evaluations. A summary that shows how the copies leave the loop is wanted. The related limits of §8.2.5 stay with it: a value shared around a split counts the copies of the group that first forces it, "left the evaluated path" follows control, a loop whose samples stop at many different steps keeps each stopped group's environment to the end (about 350 MB for 10⁴ samples over 10⁴ steps), and off the nominal path a recombined number's IEEE value is NaN, so an index position refuses it.
-- **Steps per path with three or more groups** (Open, §8.1). A value made before a split and forced by a group counts on the parent's path when it is forced. With three or more groups, which groups come first in a batch depends on K, so an input near the limit can be accepted at one K and refused at another. A part of a recombined value forced after the join counts on its group's path, not where it is read.
-- **`exactly` under batches** (Open, §8.2.7). An index position asks whether a number's copies spread, and a batch sees only its own copies, so an index can be accepted batched and refused at K = 1. Rare, and not seen.
+- **Open.** Chunk grouped rounding grids while preserving indexed randomness,
+  branch reports and reduction order.
+- **Open.** Specify diagnostic accessors and rounding analysis of reductions.
+- **Open.** Add hierarchical distributions and explicit resampling semantics.
+- **Open.** Improve matrix kernels with Padé approximants and sparse rotation chains.
+- **Open.** Add conditional numeric summaries for mixed constructors.
 
 ### 10.2 Types and Core
 
@@ -7541,7 +5870,7 @@ This is the one list of pending work. Everything built is described in its own s
 - **The second `astro` build** (Designed, §7.7). Time: TAI and GPS charts, leap seconds, GMST and the Earth rotation angle, and the function from TT to UTC over a leap-second table. Frames: `GCRS`, a moving `ecef`, ENU and SEZ, perifocal, LVLH and RSW. Geodesy: WGS84 geodetic coordinates, azimuth, elevation and range. Then Lambert. UT1 and TAI are not modelled until then. The Earth chart is the owner's decision (§11).
 - **The atomic mass unit `u`** (Open, §7.7). Not shipped.
 - **A `brick` front end** (Designed, §7.3). `metron --tui` beside the line REPL: the unicode echo live as you type, completion as a popup, multi-line editing, and room for panes (a `:ls` sidebar, the error excerpt beside the input). It is built on the same `Metron.Repl` logic, so the two never drift. The line REPL stays the default and the only front end for piped scripts and tests. `brick` and `vty` come in through `build-depends`.
-- **Recreating the owner's store** (Open, §7.4). A store of an older format is refused, not migrated. The owner's store is to be recreated at format 12 from its export, and the export checked to read back to the same labels.
+- **Recreating the owner's store** (Open, §7.4). A store of an older format is refused, not migrated. The owner's store is to be recreated at format 13 from explicitly rewritten source, and the export checked to read back to the same labels.
 
 ## 11. Open questions
 
@@ -7549,20 +5878,10 @@ These need the owner's decision. Each names the section with its context.
 
 ### 11.1 Numbers and error
 
-- **Lazy precision** (§3.2.8, §8.1). A value is computed once at the session's working precision `p`. Instead, a value can be a lazy, shared list of ever-better approximations, each element exactly what the evaluator gives at that precision, an affine form at `p₀`, `2·p₀`, `4·p₀`, …. A consumer (printing to n digits, a comparison, `floor`) walks the list until the value is good enough, and every other consumer of the same node shares the levels already forced.
-  - A leaf whose terms are exact (the series of `exp 1`, Newton's iterates for `sqrt 2`) resumes where it stopped.
-  - A function of an approximated input advances in plateaus. At one approximation of its input, its own series can only reach the error the input brings (`|f′(y)|·err_y`). Going further pulls the input's next level and computes again. An addition formula (`exp y′ = exp y · exp δ`, `sin (y + δ)`, …) makes each new level a cheap correction, not a restart.
-  - Affine forms within each level keep what plain intervals lose: named nudges, so `x - x` is exactly 0, the budget and σ. They also tell a consumer when to stop: walk on while the width is rounding, and stop at once when it is a declared `±` or `±σ`, which no precision shrinks.
-  - The cost is bookkeeping and memory, the levels a node keeps while it is alive, paid only where a consumer asks for more than `p`. A `max precision` limit (§8.1) caps the walk, since equal values never separate.
-  - The simpler alternative is Ziv's strategy (Arb, MPFR): re-evaluate the whole term at doubling precision. It costs at most about twice the final run, but it shares nothing between consumers that want different accuracy and never resumes a leaf.
-- **Comparison operators beyond `<` and `==`** (§3.2.9). Possible: `<?` and `=?` ("consistent with", at `k` sigma for statistical nudges), tolerance equality `a ≈ b within t`, and enclosure containment. `mid`, `bound` and `sd` let a user write any policy, so each can be tried as a library definition before it earns an operator. A three-valued boolean that flows into `if` is ruled out.
-- **The default `sigma`** (§3.2.9): 3 (99.7%), or 5 to match the physics convention for discovery?
-- **The compaction threshold** (§3.2.7): is 64 right, and should `:set` expose it?
-- **The output marker** (§3.2.10): `…` for both "exact but cut short" and "approximate", or two marks, say `0.333…` and `~0.8414…`?
-- **`floor`, `ceil` and `round` on quantities** (§4.3): as rink allows, or only on dimensionless values?
-- **`±` in a function called twice with the same arguments** (§3.2.4): one shared nudge (the rule: "same inputs, same measurement") or two independent ones ("measure twice")?
-- **`==` on data stops at the first unequal field?** (§4.2). `==` on data evaluates every field, so `Pair 1 (2 ± 0.1) == Pair 2 2` says "cannot decide" where false was knowable. Tensors, tuples and lists do the same.
-- **Double ports of the affine library** (§8.2.9). The `astro.kepler` solvers (they use `mid`, `bound` and `±`), `linalg.jointCovariance` and the measured bodies are affine's. Whether to write double versions is a separate decision.
+- **Open.** Choose an API for new input distributions and their parameter validation.
+- **Open.** Decide whether `floor`, `ceil` and `round` should accept dimensioned quantities.
+- **Open.** Specify a representation for failed individual runs before adding survivor statistics.
+- **Open.** Decide whether a future precision-refinement interface is useful beyond explicit rational precision.
 
 ### 11.2 Types
 
@@ -7580,7 +5899,7 @@ These need the owner's decision. Each names the section with its context.
 - **An Earth chart** (§3.8). None is shipped. An Earth-fixed chart honest at the kilometre level needs precession and nutation (the equinox of date has moved about 0.36° from J2000's by 2026, some 40 km at the equator), polar motion, and UT1 rather than UTC. §12.5 defines a simple one for illustration, with its accuracy stated.
 - **`GCRS` and `eci` in the library** (§3.8). None is shipped. A user's `space GCRS = Vec 3 m` and `chart eci on GCRS` are a space and a root like any other.
 - **`astro.State` and points** (§3.8, F10). `State` holds its position as an amount from the space's base origin. Should it hold a point on a frame instead? With today's `State`, F10's `lvlh` origin is written `(s.pos - originOf (ecef s.epoch)) to (ecef s.epoch)`.
-- **`fromState`'s cases by tolerance** (§7.7). The circular and equatorial cases are decided by an exact comparison with zero, so `fromState` refuses the state of a circular orbit that `toState` produced, which is an enclosure. Should a tolerance decide them?
+- **`fromState`'s cases by tolerance** (§7.7). Numerical residuals can classify a circular orbit as slightly eccentric. Should an explicit user-selected tolerance decide these cases?
 
 ### 11.4 Codebase and REPL
 
@@ -7600,211 +5919,71 @@ These need the owner's decision. Each names the section with its context.
 
 These sessions show the pieces working together on the owner's orbital-mechanics use. The first two are copied from a run of `metron --no-codebase -i` and print what is shown, except the hashes, which depend on the build's standard library. The last three are the test suite's own sessions: each test checks every output shown, so they stay true.
 
-### 12.1 Constants, functions and the error budget
+### 12.1 Constants, functions and sampling
 
-The precision is 6, for short lines. The constants live in `astro`, which a seeded codebase does not use by default (§7.7), so the session starts by storing that use.
-
-```
-> :set precision 6
-> :use astro
-stored use astro
-> let mu = iers2010.earth.mu
-> :type mu
-Num (m^3/s^2)
-> mu
-398600441800000 ±σ 800000 m^3 s^-2
-> let period a = 2 * pi * sqrt (a^3 / mu)
-> :type period
-forall d. Num (d^2/m) -> Num (s*d^3/m^3)
-> period (7000 km) to min
-97.141943967 ±σ 9.7e-8 (bound 5.7e-9) min
-> :budget period (7000 km)
-5828.5166380 ±σ 5.8e-6 (bound 3.4e-7) s
-  kind   source               contribution  share
-  σ      iers2010.earth @0.0  5.8e-6 s      100% of σ²
-  bound  mul                  1.8e-7 s      51% of bound
-  bound  recip                1.3e-7 s      39% of bound
-  bound  pi                   1.9e-8 s      6% of bound
-  bound  sqrt                 1.5e-8 s      4% of bound
-> let vis_viva r a = sqrt (mu * (2 / r - 1 / a))
-> vis_viva (7000 km) (7000 km) to km/s
-7.5460532900 ±σ 7.6e-9 (bound 1.1e-10) km s^-1
-> kepler.period iers2010.earth (7000 km) to min
-97.141943967 ±σ 9.7e-8 (bound 5.7e-9) min
+```text
+:set samples 1000
+use astro
+use astro.kepler
+use astro.iers2010
+let radius = 7000 km
+period earth radius to min
+sd (period earth radius) to s
 ```
 
-The σ is the IERS's published uncertainty of the Earth's GM (IERS TN36 Table 1.1), and the budget names it. The bound parts are the arithmetic's own approximation error. `period`'s inferred type is as general as its body allows, and a signature narrows it: `period :: Num m -> Num s` (§4.8). The library's `kepler.period` takes the body whose constants it uses (§7.7).
-
-```
-> let rotz t = [cos t, -(sin t), 0; sin t, cos t, 0; 0, 0, 1]
-> :type rotz
-forall (a : 3) (b : 3). Num rad -> Mat a b
-> rotz (90 deg) @ [1, 0, 0] km
-[-5.1e-12 ± 5.1e-12, 1.00000…, 0] km
-> let t = 45 deg ± 0.001 rad in rotz t @ [1, 0, 0] km
-[0.70711 ± 0.00071, 0.70711 ± 0.00071, 0] km
-> let t = 45 deg ± 0.001 rad in norm (rotz t @ [1, 0, 0] km)
-1.00000… km
-> let x = 5 ± 0.1 in x - x
-0
-```
-
-A literal's axes come from its use, so `rotz` is over any two three-axis sets (§3.9). The first component of the turned vector is an enclosure of `cos (π/2)`. Under an uncertain angle both components carry the same nudge with opposite signs, so the norm's first-order terms cancel and its error is far below the printed digits (§3.4). The library's `linalg.rotz` gives the generator instead, for `expm` and charts (§3.3).
+The input statistics describe the declared distributions of physical constants.
+They do not include a guaranteed floating-point or solver error bound.
 
 ### 12.2 A new published constant
 
-When the IERS publishes a new GM, the set's definition is entered again at its own path, and `:update` moves every dependent that still checks (§7.5). A root `let earth` would only shadow the library's (§7.6).
-
-```
-> :add
-added mu
-added period
-added vis_viva
-added rotz
-> namespace astro.iers2010
-…   let earth = astro.Body {mu = (3.986004418e14 ±σ 4e5) * 1 m^3/s^2, radius = 6378136.6 m ±σ 0.1 m, flattening = 1 / (298.25642 ±σ 0.00001), j2 = 1.0826359e-3 ±σ 1e-10, rate = 7.292115e-5 rad/s}
-…
-> :update
-updated iers2010.earth #fcchm -> #7av1v
-upgraded iers2010.moon #9ggm8 -> #lbqd8
-upgraded mu #2sjnp -> #3aq2m
-upgraded period #b7t9h -> #mmf6u
-upgraded vis_viva #i531n -> #8v3f6
-> :history mu
-#3aq2m  (current)
-#2sjnp
-> mu
-398600441800000 ±σ 400000 m^3 s^-2
-```
-
-Every dependent moved because each still checks against the new `earth`. `iers2010.moon` moved too, since its GM is a ratio of the Earth's. The report has one line per definition, and history keeps the old versions. A dependent that stopped checking would stay on the old `earth`, `:view` would show the stale reference, and `:todo` would list it until its author ran `:upgrade astro.iers2010.earth`. Nothing changes silently.
+Definitions retain their content-addressed dependencies. Update a chosen body's
+declaration, accept it with `:update`, and inspect affected definitions with
+`:todo`. Historical references still identify their original dependencies.
+A changed sample owner also changes its source identity.
 
 ### 12.3 A filter step in blocks
 
-One step of a Kalman filter on the state `(r, v)`, with the joint covariance as the blocks of §3.7.2. The lines are the test case "design §12: a filter step in blocks", at the default precision. Everything here is exact, since `±σ` puts the uncertainty in the nudge coefficients and the filter is linear in them. The `…` marks an exact value cut short (§3.2.10).
-
-A position known to 1 km and a velocity known to 1 m/s, both standard uncertainties, then the position 10 s on. `r1` and `v0` share the velocity's nudges, so their cross-covariance block is `10 s × (1 m/s)² = 10 m²/s` on each axis. The position's variance is `(1 km)² + (10 s × 1 m/s)²`:
-
-```
-> let eye = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-> let r0 = [7000, 0, 0] km ±σ 1 km
-> let v0 = [0, 7.5, 0] km/s ±σ 1 m/s
-> let r1 = r0 + v0 * (10 s)
-> let p1 = jointCovariance (r1, v0)
-> p1.rv
-[1e-5, 0, 0; 0, 1e-5, 0; 0, 0, 1e-5] km^2 s^-1
-> :covariance (r1, v0)
-rr [1.0001, 0, 0; 0, 1.0001, 0; 0, 0, 1.0001] km^2
-rv [1e-5, 0, 0; 0, 1e-5, 0; 0, 0, 1e-5] km^2 s^-1
-vv [1e-6, 0, 0; 0, 1e-6, 0; 0, 0, 1e-6] km^2 s^-2
-bound box ([0, 0, 0] km, [0, 0, 0] km s^-1)
+```text
+use linalg
+let x = sample (normal (7000 km) (1 km))
+let y = sample (normal (0 km) (1 km))
+let z = sample (normal (0 km) (1 km))
+let vx = sample (normal (0 km/s) (1 m/s))
+let vy = sample (normal (7.5 km/s) (1 m/s))
+let vz = sample (normal (0 km/s) (1 m/s))
+let r0 = [x, y, z]
+let v0 = [vx, vy, vz]
+let r1 = r0 + 10 s * v0
+jointCovariance (r1, v0)
 ```
 
-Propagation over 60 s with the constant-velocity `Φ = [I, Δt I; 0, I]`. The zero block has the dimension of `Φ_vr`, `s^-1`. The block result equals the covariance of the propagated state read off its nudges, and the position's variance is `(1 km)² + (70 s × 1 m/s)²`:
-
-```
-> let dt = 60 s
-> let phi = (eye, dt * eye, [0, 0, 0; 0, 0, 0; 0, 0, 0] s^-1, eye)
-> let p2 = propagateCov2 phi p1
-> p2 == jointCovariance (r1 + v0 * dt, v0)
-true
-> p2.rr
-[1.0049, 0, 0; 0, 1.0049, 0; 0, 0, 1.0049] km^2
-> p2.rv
-[7e-5, 0, 0; 0, 7e-5, 0; 0, 0, 7e-5] km^2 s^-1
-```
-
-A range measurement along x with a 10 m standard uncertainty: `H_r` is a `Mat 1 3`, `H_v` a zero `Mat 1 3 s`, and `R` a `Mat 1 1 (m^2)`. Then the innovation covariance, the gain (a dimensionless `K_r` and a `K_v` in `s^-1`), and the updated blocks:
-
-```
-> let h_r = [[1, 0, 0]]
-> let h_v = [[0, 0, 0]] s
-> let r_meas = [[(10 m)^2]]
-> let s_innov = innovationCov2 h_r h_v p2 r_meas
-> s_innov
-[[1005000]] m^2
-> let k = gain2 h_r h_v p2 (inverse s_innov)
-> k
-([0.99990049751243781094…; 0; 0], [6.9651741293532338308…e-5; 0; 0] s^-1)
-> let p3 = updateCov2 k h_r h_v p2
-> p3.rr to m^2
-[99.990049751243781094…, 0, 0; 0, 1004900, 0; 0, 0, 1004900] m^2
-> p3.rv to m^2/s
-[0.0069651741293532338308…, 0, 0; 0, 70, 0; 0, 0, 70] m^2 s^-1
-> p3.vv to m^2/s^2
-[0.99512437810945273631…, 0, 0; 0, 1, 0; 0, 0, 1] m^2 s^-2
-> transpose p2.rv - snd k @ (h_r @ p2.rr + h_v @ transpose p2.rv) == transpose p3.rv
-true
-```
-
-The x variance falls from `1004900 m²` to `1004900 · 100 / 1005000 ≈ 99.99 m²`. The y and z blocks do not change. The velocity's x variance falls too, through the correlation that the propagation built. The last line checks the block the record does not keep: the lower-left block of `(I − K H) P`, computed directly, is exactly the transpose of `rv`.
+The blocks are empirical covariances of paired samples.
+Independent latent inputs can have nonzero empirical cross-covariance.
 
 ### 12.4 A perifocal chart
 
-An orbit's perifocal frame is eci turned by the 3-1-3 sequence of the node, the inclination and the argument of periapsis (§3.8). The lines are the test case "design §12: a perifocal chart", at the default precision. Ω = 30°, i = 45°, ω = 60°, and the chart's step is the kilometre:
-
-```
-> space GCRS = Vec 3 m
-> chart eci on GCRS
-> chart pf on eci step km by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
-> :view pf
+```text
+space Flight = Vec 3 m
+chart eci on Flight
 chart pf on eci step km by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)
-> let rp = [7000, 0, 0] pf
-> rp to eci
-[887785.38831025442775…, 5462310.6012293745031…, 4286607.0498705616718…] eci
-> (rp to eci) to pf
-[6999.9999999999999999…, -1.3e-20 ± 8.9e-20, 6e-21 ± 2.3e-20] pf
+[7000, 0, 0] pf to eci
 ```
 
-Periapsis lies on the perifocal x axis, 7000 km out. In eci it is 7000 km times the first column of `euler313 (30 deg) (45 deg) (60 deg)`. Read back on `pf`, by the generators negated in reverse order, it encloses `[7000, 0, 0]`: the zero components come back as enclosures of zero. So a round trip is tested with `bound`, not `==`.
-
-The velocity at periapsis is along the perifocal y axis. The literal takes `pf`'s axes, `Vec pf (km/s)`, and `from pf to eci` turns it onto eci's axes, which are the space's base axes, a `Vec GCRS (m/s)`, by the rotation alone (§3.10, F10). A covariance known along the perifocal axes (radial 1 km, along-track 2 km, normal 3 km) turns the same way, as `R P Rᵀ`, by `rotateCov` with `pf`'s rotation, a `Mat GCRS pf`. It is written in place: a value named by `let` is anonymous until it is given a frame (§3.9, decision 5), and `rotateCov` would refuse it as a frame mix-up, with a hint.
-
-```
-> let vp = [0, 7.5, 0] km/s from pf to eci
-> vp to km/s
-[-6.9508252147247766082…, -0.95119863033241545830…, 2.6516504294495532165…] km s^-1
-> rotateCov (rotationOf pf) ([[1, 0, 0], [0, 4, 0], [0, 0, 9]] km^2) to km^2
-[4.5767451288348659649…, -1.3794313182928119555…, 1.0170048711651340350…; -1.3794313182928119555…, 4.0482548711651340350…, -3.5986214154904359879…; 1.0170048711651340350…, -3.5986214154904359879…, 5.3749999999999999999…] km^2
-> rp.0
-7000 km
-```
-
-The trace is still 14 km², as a rotation keeps it. A point is held in its frame's coordinates (§3.10, F6), so a coordinate of a point on a turned chart is an amount along that chart's own axis, the step applied: `rp.0` is exactly `7000 km`.
+The point carries its frame. Explicit conversion rotates and translates coordinates.
+Round trips can leave small numerical residuals.
 
 ### 12.5 A spinning Earth
 
-A ground station turns with the Earth, and its velocity in eci is the Earth's rotation alone (§3.8). The library ships no Earth chart (§3.8, §10), so the session defines a simple one for illustration only. It ignores precession, nutation, polar motion and UT1 − UTC, and it puts the station on a sphere, so its positions are off by tens of kilometres. Precession alone, about 0.36° since J2000 by 2026, moves a point on the equator about 40 km. The sphere puts this station about 25 km from its WGS84 place (`[3980.7, 0, 4966.8] km` for latitude 51.4769° at sea level).
-
-The angle is a linear GMST from J2000.0 (Meeus, *Astronomical Algorithms*, without the T² and T³ terms of the IAU 1982 expression), and the spin is the same rate, so the two agree by construction. At 2026 Jan 1 0h UT1 the angle is 100.6608323° modulo 360°, 0.094″ short of the IAU 1982 GMST (Aoki et al. 1982, A&A 105, 359), 100.6608585°, which the test checks. The lines are the test case "design §12: a spinning Earth, for illustration", at the default precision:
-
-```
-> space GCRS = Vec 3 m
-> chart eci on GCRS
-> let gmst t = 280.46061837 deg + 360.98564736629 deg / day * (t .- 0 J2000)
-> chart earth t on eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg/day
-> :view earth
-chart earth t on eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg / day
-> chart greenwich t on (earth t) at [3972.5, 0, 4990] km
-> let t26 = 9496.5 J2000
-> [0, 0, 0] (greenwich t26) from (greenwich t26) to eci
-[-734892.0553385001942 ± 3e-13, 3903932.6219852148939…, 4990000] eci
-> :use astro
-stored use astro
-> let st = stateFrom (greenwich t26) t26 ([0, 0, 0] m) ([0, 0, 0] m/s)
-> st.vel to m/s
-[-284.67928970827302009…, -53.589180086727794658 ± 2.2e-17, 0] m s^-1
-> velocityIn (greenwich st.epoch) st
-[0, 0, 0] m s^-1
-> velocityIn (greenwich t26) (State {epoch = t26, pos = st.pos, vel = [0, 0, 0] m/s})
-[0.00000000000000000 ± 4e-17, -289.67930235205722039…, 0] m s^-1
+```text
+space Flight = Vec 3 m
+chart eci on Flight
+chart earth t on eci by rotz (7.292115e-5 rad/s * t) spinning [0, 0, 7.292115e-5] rad/s
+[6378137, 0, 0] (earth (100 s)) to eci
 ```
 
-`greenwich` is a moving chart under a moving chart: its time is passed to `earth`, its parent. A point on it converts from the configuration named with `from`, never the one it was written with (§3.10, F7). So `[0, 0, 0] (greenwich t26) to eci` is refused: "greenwich takes arguments: write [0, 0, 0] (greenwich t26) from (greenwich …) to eci".
+A moving chart's spin contributes to velocity transformations.
+Input distributions can describe uncertain angles or spin rates.
+The runtime evaluates the complete transformation for each realization.
 
-`st` is a `State J2000 GCRS`. Its epoch is a `Point J2000`, and its position is a `Vec GCRS m`, an amount from the space's base origin along its base axes. A state is typed by its epoch's frame and its space's base axes, whatever chart it was made from (§3.8). `velocityIn (greenwich t26) st` is a `Vec earth (m/s)`, since a translated chart shares its parent's axes, and `earth t` has one frame and one axis set, `earth`'s, for every `t`.
-
-At that epoch the station is at right ascension 100.66° in eci, 3972.5 km from the axis. `stateFrom` gives it `ω × r`, 289.68 m/s eastward (`7.2921158553e-5 s⁻¹ × 3972.5 km`), and no velocity of its own. Read back on its own chart, it is at rest. A body at rest in eci that passes the station moves west on the station's chart at the same speed: the transport terms, `−v_o − ω × (p − o)` turned onto the chart's axes, are all of its velocity there.
-
-**Implemented in:** the whole pipeline. The sessions exercise `Metron.Affine` (§3.2), `Metron.Prelude` (`stdlibSource`) for the library's astro and linalg namespaces (§7.7), `Metron.Update` (`propagateNamed`, §7.5) and `Metron.Eval` (charts, §3.8).
-**Tested by:** "affine" › "design §12: a filter step in blocks"; "turnedCharts" › "design §12: a perifocal chart"; "movingCharts" › "design §12: a spinning Earth, for illustration". §12.1 and §12.2 are checked by hand against a run.
+**Implemented in:** `Prelude`, `Eval`, `Rational`, `Double`, `Update`.
+**Tested by:** "astro (design §7.7)", "movingCharts", "rotations".

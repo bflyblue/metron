@@ -48,8 +48,6 @@ completions =
     , ("lnot", "¬")
     , ("wedge", "∧")
     , ("star", "⋆")
-    , ("pm", "±")
-    , ("pms", "±σ")
     , ("sqrt", "√")
     , ("circ", "∘")
     ]

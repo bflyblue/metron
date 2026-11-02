@@ -23,8 +23,7 @@ module Metron.TCore (
     TCon,
     TCase,
     TPow,
-    TNoise,
-    TUncertain,
+    TSample,
     TPack,
     TProj,
     TTyLam,
@@ -60,6 +59,7 @@ import Data.Text qualified as T (
   unwords,
  )
 import Metron.Builtin (
+  distributionHash,
   pattern BoolT,
   pattern ConsC,
   pattern FalseC,
@@ -75,7 +75,6 @@ import Metron.Core (
   Label,
   Lit (..),
   Nat (..),
-  NudgeKind (..),
   Plus,
   Vec (..),
   finToInt,
@@ -150,8 +149,7 @@ data TTerm (n :: Nat) where
   -- | A case at its result type.
   TCase :: TTerm n -> Type -> [TAlt n] -> TTerm n
   TPow :: TTerm n -> Integer -> TTerm n
-  TNoise :: NudgeKind -> Label -> Integer -> TTerm n
-  TUncertain :: NudgeKind -> Label -> TTerm n -> TTerm n -> TTerm n
+  TSample :: Label -> TTerm n -> TTerm n
   {- | A stack of tensors of the given element type, along the axes its new
   leading position has. The element type is kept even with no elements,
   where nothing else says what the stack holds (design §3.3).
@@ -193,8 +191,7 @@ pattern TLam h ty body <- TLamWith h ty body _
   , TCon
   , TCase
   , TPow
-  , TNoise
-  , TUncertain
+  , TSample
   , TPack
   , TProj
   , TTyLam
@@ -220,8 +217,7 @@ freeIndices = go 0
     TCon _ _ args -> foldMap (go d) args
     TCase s _ alts -> go d s <> foldMap (\(TAlt _ bs b) -> go (d + vecLength bs) b) alts
     TPow t _ -> go d t
-    TNoise{} -> IntSet.empty
-    TUncertain _ _ a b -> go d a <> go d b
+    TSample _ a -> go d a
     TPack _ _ ts -> foldMap (go d) ts
     TProj t _ -> go d t
     TTyLam _ _ b -> go d b
@@ -404,19 +400,11 @@ lint look ctx = \case
       -- A power of a number (design §4.3).
       TTensor SNil d -> mono (numD (dimPow n d))
       _ -> Left "power of a non-number"
-  TNoise _ _ k -> mono (vecT (LLit (fromIntegral k)))
-  TUncertain _ _ x e -> do
+  TSample _ x -> do
     tx <- monoOf x
-    te <- monoOf e
-    case (tx, te) of
-      (TTensor _ d, TTensor SNil d') | d == d' -> mono tx
-      (TTensor _ _, _) | tx == te -> mono tx
-      -- A covariance pairs the value's axes with themselves.
-      (TTensor (SCons n a SNil) d, TTensor (SCons n' a' (SCons n'' a'' SNil)) d2)
-        | (n, a) == (n', a'), (n, a) == (n'', a''), d2 == dimPow 2 d -> mono tx
-      _ ->
-        Left
-          "± needs a tensor and an uncertainty of its dimension: scalar, of its shape, or its covariance matrix"
+    case tx of
+      TData h [ADim d] | h == distributionHash -> mono (numD d)
+      _ -> Left "sample needs a scalar distribution"
   TPack ax ty ts -> do
     tys <- mapM monoOf ts
     case ty of
@@ -617,16 +605,7 @@ renderTTerm namer = go 0
             ctx' = vecAppend names ctx
          in patternText c (vecToList names) <> " -> " <> go 0 ctx' b
     TPow b n -> paren (prec > 9) (go 10 ctx b <> "^" <> T.pack (show n))
-    TNoise Bound l k -> "noise " <> T.pack (show k) <> renderLabel l
-    TNoise Stat l k -> "gauss " <> T.pack (show k) <> renderLabel l
-    TUncertain k l x e ->
-      paren
-        (prec > 5)
-        ( go 6 ctx x
-            <> (if k == Bound then " ± " else " ±σ ")
-            <> go 6 ctx e
-            <> renderLabel l
-        )
+    TSample l x -> paren (prec > 10) ("sample " <> go 11 ctx x <> renderLabel l)
     TPack _ _ ts -> "[" <> T.intercalate ", " (map (go 0 ctx) ts) <> "]"
     TProj b i -> go 11 ctx b <> "." <> T.pack (show i)
     -- Axis variables print in a scheme's forall only (design §3.9): in

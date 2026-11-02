@@ -90,7 +90,7 @@ turns @b@ toward @a@, so @rotz θ@ is @θ (e2 ∧ e1)@ and the right-hand rule
 holds. @dual v = ε \@ v@ is the inverse of @⋆@ and @b ∧ a = dual (b × a)@,
 so a bivector built from a computed vector is formed as the dual of one
 vector, angle and all: every entry is then exactly the negation of its
-partner, even when the vector is an enclosure, and @B + Bᵀ@ is exactly
+partner, in every sampled realization, and @B + Bᵀ@ is exactly
 zero. @euler313@ is the composed matrix, for @\@@ and @transformBy@; a
 chart is turned by the sequence itself, @by rotz Ω then rotx i then rotz
 ω@ (design §3.8). A vector along a chart's axes is read along another's
@@ -338,7 +338,7 @@ wgs84 =
       ( T.unwords
           [ "astro.Body {mu = 3986004.418e8 m^3/s^2, radius = 6378137 m,"
           , "flattening = 1 / 298.257223563,"
-          , "j2 = sqrt 5 * (0.484165371736e-3 ±σ 0.35610635e-10),"
+          , "j2 = sqrt 5 * sample (normal 0.484165371736e-3 0.35610635e-10),"
           , "rate = 7292115e-11 rad/s}"
           ]
       )
@@ -367,24 +367,24 @@ iers2010 =
     : [ Let
           "earth"
           ( T.unwords
-              [ "astro.Body {mu = (3.986004418e14 ±σ 8e5) * 1 m^3/s^2,"
-              , "radius = (6378136.6 ±σ 0.1) * 1 m,"
-              , "flattening = 1 / (298.25642 ±σ 0.00001),"
-              , "j2 = 1.0826359e-3 ±σ 1e-10,"
+              [ "astro.Body {mu = sample (normal 3.986004418e14 8e5) * 1 m^3/s^2,"
+              , "radius = sample (normal 6378136.6 0.1) * 1 m,"
+              , "flattening = 1 / sample (normal 298.25642 0.00001),"
+              , "j2 = sample (normal 1.0826359e-3 1e-10),"
               , "rate = 7.292115e-5 rad/s}"
               ]
           )
       , Let
           "moon"
           ( T.unwords
-              [ "astro.Body {mu = (0.0123000371 ±σ 4e-10) * earth.mu,"
+              [ "astro.Body {mu = sample (normal 0.0123000371 4e-10) * earth.mu,"
               , "radius = 0 m, flattening = 0, j2 = 0, rate = 0 rad/s}"
               ]
           )
       , Let
           "sun"
           ( T.unwords
-              [ "astro.Body {mu = (1.32712442099e20 ±σ 1e10) * 1 m^3/s^2,"
+              [ "astro.Body {mu = sample (normal 1.32712442099e20 1e10) * 1 m^3/s^2,"
               , "radius = 0 m, flattening = 0, j2 = 2.0e-7, rate = 0 rad/s}"
               ]
           )
@@ -481,21 +481,10 @@ special cases keep the record's shape: a circular orbit has @argp = 0@
 and @nu@ the argument of latitude; an equatorial one has @raan = 0@ and
 @argp@ the longitude of periapsis; a circular equatorial one has both
 zero and @nu@ the true longitude. A case is decided by comparison with
-zero, so a value too uncertain to decide is an error, and every angle
-comes from @atan2@. @fromState@ gives angles in [0, 2π), as Vallado
-does; an angle at the cut, near zero and uncertain, is an error.
-
-The solvers (design §7.7) iterate Newton's method on midpoints, from a
-starter, for a fixed number of steps, then take one step on the values
-themselves, so that the result carries the inputs' uncertainty to first
-order, and declare the truncation error as a bound: for Kepler's
-equation @f(E) = E − e sin E − M@, @f' ≥ 1 − e@, so @|E − E*| ≤ |f(E)| /
-(1 − e)@, and for the hyperbola @f' ≥ e − 1@. @|f(E)|@ is bounded by the
-residual at the midpoints and twice the bound radius of the residual on
-the values, never by the latter's midpoint: on a @±σ@ input its first
-order cancels, so it is second order and marked non-linear (design
-§3.2), and its midpoint is no mean. The parabola is solved in closed
-form (Barker).
+zero for each realization. Every angle comes from @atan2@.
+Numerical residuals can classify a circular orbit as slightly eccentric.
+The solvers perform twelve Newton steps on each realization. They do not
+attach truncation bounds. The parabola uses Barker's closed form.
 -}
 kepler :: [Statement]
 kepler =
@@ -523,8 +512,8 @@ kepler =
     Let
       "fullAngle"
       ( T.unwords
-          [ "\\y x -> if mid y == 0 * mid y && bound y == 0 * bound y"
-          , "&& sd y == 0 * sd y && x > 0 * x"
+          [ "\\y x -> if y == 0 * y"
+          , "&& x > 0 * x"
           , "then 0 rad else pi * 1 rad + atan2 (-y) (-x)"
           ]
       )
@@ -590,17 +579,10 @@ kepler =
     Let "newtonE" "\\e m x -> x - (x - e * sin x * 1 rad - m) / (1 - e * cos x)"
   , Let
       "newtonStepsE"
-      "\\k e m x -> if k == 0 then x else newtonStepsE (k - 1) e m (mid (newtonE e m x))"
+      "\\k e m x -> if k == 0 then x else newtonStepsE (k - 1) e m (newtonE e m x)"
   , Let
       "meanToEccentric"
-      ( T.unwords
-          [ "\\e m -> let em = mid e in let mm = mid m in"
-          , "let x = newtonE e m (newtonStepsE 10 em mm (mm + em * sin mm * 1 rad)) in"
-          , "let r = x - e * sin x * 1 rad - m in"
-          , "let r0 = mid x - em * sin (mid x) * 1 rad - mm in"
-          , "x ± (abs (mid r0) + bound r0 + 2 * bound r) / (1 - (mid e + bound e))"
-          ]
-      )
+      "\\e m -> newtonStepsE 12 e m (m + e * sin m * 1 rad)"
   , -- Hyperbolic: Newton from asinh (M / (e - 1)), which is not below the
     -- root for M > 0, where f is convex.
     Let
@@ -608,17 +590,10 @@ kepler =
       "\\e m x -> x - (e * sinh (x / 1 rad) * 1 rad - x - m) / (e * cosh (x / 1 rad) - 1)"
   , Let
       "newtonStepsH"
-      "\\k e m x -> if k == 0 then x else newtonStepsH (k - 1) e m (mid (newtonH e m x))"
+      "\\k e m x -> if k == 0 then x else newtonStepsH (k - 1) e m (newtonH e m x)"
   , Let
       "meanToHyperbolic"
-      ( T.unwords
-          [ "\\e m -> let em = mid e in let mm = mid m in"
-          , "let x = newtonH e m (newtonStepsH 10 em mm (asinh (mm / (em - 1) / 1 rad) * 1 rad)) in"
-          , "let r = e * sinh (x / 1 rad) * 1 rad - x - m in"
-          , "let r0 = em * sinh (mid x / 1 rad) * 1 rad - mid x - mm in"
-          , "x ± (abs (mid r0) + bound r0 + 2 * bound r) / (mid e - bound e - 1)"
-          ]
-      )
+      "\\e m -> newtonStepsH 12 e m (asinh (m / (e - 1) / 1 rad) * 1 rad)"
   , -- Parabolic: B + B³/3 = M in closed form, B = c − 1/c with
     -- c³ = 3M/2 + √(1 + 9M²/4) (Vallado algorithm 3, Barker's equation).
     Let
@@ -756,7 +731,10 @@ them gives the same hashes. Naming them changes only how they print:
 -}
 builtinData :: [Statement]
 builtinData =
-  [ Data "structural data Bool = False | True" ["Bool", "False", "True"]
+  [ Data
+      "structural data Distribution d = Normal (Num d) (Num d) | Uniform (Num d) (Num d)"
+      ["Distribution", "Normal", "Uniform"]
+  , Data "structural data Bool = False | True" ["Bool", "False", "True"]
   , Data "structural data Pair a b = Pair a b" ["Pair"]
   , Data "structural data List a = Nil | Cons a (List a)" ["List", "Nil", "Cons"]
   ]
@@ -832,7 +810,7 @@ stdlibLayout =
       , -- CODATA 2018, unchanged in CODATA 2022: 6.674 30(15) × 10⁻¹¹
         -- m³ kg⁻¹ s⁻², a standard uncertainty (NIST, physics.nist.gov,
         -- "Newtonian constant of gravitation").
-        Let "G" "(6.67430e-11 ±σ 1.5e-15) * 1 m^3 kg^-1 s^-2"
+        Let "G" "sample (normal 6.67430e-11 1.5e-15) * 1 m^3 kg^-1 s^-2"
       ]
         ++ stateStatements
         ++ [Data bodyData ["Body", "mu", "radius", "flattening", "j2", "rate"]]

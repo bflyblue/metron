@@ -193,7 +193,7 @@ storeTests =
             [ "let speed = 5 km / h"
             , ":prefer kPa"
             , "unit furlong = 201.168 m"
-            , "let r = 10 mm ± 0.01 mm #batch7"
+            , "let r = sample (normal (10 mm) (0.01 mm)) #batch7"
             , "let even n = if n == 0 then true else odd (n - 1); let odd n = if n == 0 then false else even (n - 1)"
             , "unit mmHg = 133.322 Pa"
             , "space ISA = Num Pa"
@@ -235,10 +235,10 @@ storeTests =
               "#av4qv  (current)"
             , "#01d73"
             , "201.168 m"
-            , "0 mm"
+            , "0 mm (Monte Carlo: mean 0 mm, sd 0 mm, outcome 95% [0 mm, 0 mm], 32 input samples)"
             , "true"
             , "false"
-            , "r = 10 mm ± 0.01 mm #batch7"
+            , "r = sample (normal (10 mm) (0.01 mm)) #batch7"
             , "101.325 kPa"
             ]
     , testCase
@@ -258,8 +258,8 @@ storeTests =
           loaded.codebase.units @?= s.codebase.units
           loaded.codebase.charts @?= s.codebase.charts
           loaded.codebase.uses @?= [S.Use u Nothing | u <- stdlibDefaultUses]
-          linesIn loaded ["d", "astro.G"]
-            @?= Right ["3 km", "6.67430e-11 ±σ 1.5e-15 m^3 kg^-1 s^-2"]
+          linesIn loaded ["d", "sd astro.G > 0 m^3/kg/s^2"]
+            @?= Right ["3 km", "true"]
           -- The seed is at time 0, before the user's lines.
           ls <- T.lines <$> TIO.readFile (dir </> "names.log")
           all (\u -> ("0 use " <> u) `elem` ls) stdlibDefaultUses
@@ -274,21 +274,16 @@ storeTests =
           notes @?= []
           linesIn
             loaded
-            [ "let p = jointCovariance ([1, 2] m ±σ 1 m, [3, 4] s ±σ 1 s)"
+            [ "let p = Cov2 {rr = [1, 0; 0, 1] m^2, rv = [0, 0; 0, 0] m*s, vv = [1, 0; 0, 1] s^2}"
             , "p.rr"
             , "p.rv"
             , "p {rv = p.rv}"
-            , ":covariance ([1, 2] m ±σ 1 m, [3, 4] s ±σ 1 s)"
             , ":ls --types"
             ]
             @?= withBuiltinTypes
               ( [ "[1, 0; 0, 1] m^2"
                 , "[0, 0; 0, 0] m s"
                 , "Cov2 {rr = [1, 0; 0, 1] m^2, rv = [0, 0; 0, 0] m s, vv = [1, 0; 0, 1] s^2}"
-                , "rr [1, 0; 0, 1] m^2"
-                , "rv [0, 0; 0, 0] m s"
-                , "vv [1, 0; 0, 1] s^2"
-                , "bound box ([0, 0] m, [0, 0] s)"
                 ]
                   ++ astroTypes
                   ++ [ "data Cov2 n d d1 = Cov2 {rr :: Mat n n (d^2), rv :: Mat n n (d*d1), vv :: Mat n n (d1^2)}"
@@ -451,7 +446,7 @@ storeTests =
           case opened of
             Left err ->
               err
-                @?= T.pack dir <> ": this codebase is format 10; this metron opens format 12"
+                @?= T.pack dir <> ": this codebase is format 10; this metron opens format 13"
             Right _ -> assertFailure "opened a store of another format"
           snapshot dir >>= (@?= before)
           listDirectory dir >>= (@?= entries) . sort
@@ -459,7 +454,7 @@ storeTests =
         _ <- persistLines dir ["let x = 1", ":add"]
         readFile (dir </> "format")
           >>= (@?= "metron codebase " <> show formatVersion <> "\n")
-        formatVersion @?= 12
+        formatVersion @?= 13
         before <- snapshot dir
         (loaded, notes) <- reload dir
         notes @?= []
@@ -636,7 +631,7 @@ storeTests =
           writeFile (root </> "future" </> "format") "metron codebase 99\n"
           refused
             (root </> "future")
-            "this codebase is format 99; this metron opens format 12"
+            "this codebase is format 99; this metron opens format 13"
           readFile (root </> "future" </> "format") >>= (@?= "metron codebase 99\n")
     ]
  where
@@ -964,7 +959,7 @@ editTests =
     , testCase "(l) a +- definition entered again under its path keeps its hash" $ do
         s <- editSession
         file <- editFileOf s ["orbital.jitter"]
-        ("let jitter = 2 ± 0.5" `T.isInfixOf` file) @? T.unpack file
+        ("let jitter = sample (normal 2 0.5)" `T.isInfixOf` file) @? T.unpack file
         (s', outs) <- edited (EditName "orbital.jitter") file s
         outs @?= ["nothing changed"]
         lookupName "orbital.jitter" s'.codebase

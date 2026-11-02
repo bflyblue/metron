@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Replace affine and hard-bound propagation with rational/double arithmetic
+  and explicit `sample (normal mean sd)` or `sample (uniform lo hi)` inputs.
+  Remove the old uncertainty operators, backend controls and bound APIs.
+  Display-unit factors use rational coefficients; input generation uses
+  rational uniform and Box–Muller kernels.
+- Add `arithmetic`, `propagation`, `samples`, `roundingAnalysis` and
+  `roundingSamples` controls. Optional stochastic rounding runs reuse each
+  input draw. Input statistics and rounding diagnostics are reported
+  separately; neither claims a hard bound. Ordinary results remain unchanged
+  when rounding analysis is enabled. Grouped execution uses a bounded grid;
+  input-only double evaluation retains parallel batching.
+- Hash-affecting: `Sample` has a new canonical Core encoding, and the seeded
+  codebase includes the structural `Distribution` type and its constructors.
+  Store format is now 13; recreate stores rather than loading format 12.
+  Rewritten measured constants, orbital solvers and angle normalization also
+  change standard-library hashes and hashes of dependent definitions.
+  There are no compatibility aliases or store migrations.
+
+### Earlier review changes (preserved by pre-montecarlo-refactor-2026-11-02)
+
 - Remaining numerical-review fixes (R2–R4, R6–R8, R10–R14): uncertain
   widths propagate through multiplication; range-safe double bounds and
   stochastic residual checks include subnormals; determinants preserve

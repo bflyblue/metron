@@ -257,7 +257,7 @@ dataTests =
         -- Uncertain fields compare as numbers do.
         runLinesP
           [ "data Shape = Circle (Num m)"
-          , "let c = Circle (1 m ± 1 mm)"
+          , "let c = Circle (sample (uniform (0.999 m) (1.001 m)))"
           , "c == c"
           , "c == Circle (2 m)"
           ]

@@ -4,7 +4,7 @@ writes it back, in one table, so that printed source parses to the term
 it was printed from.
 
 The operators that are not one primitive are not here: the cross product
-@×@ (a library function), @±@ (an 'Metron.Core.Uncertain' node), @:@ (a
+@×@ (a library function), @:@ (a
 constructor), composition, juxtaposition, backticks, and @on@ and @from …
 to@ (conversions the desugarer builds). The parser and the printer treat
 each of those by hand.

@@ -90,7 +90,10 @@ import Metron.Core (
   vecMapIndexed,
  )
 import Metron.Dimension (Spelling (..))
-import Metron.Eval (Config (limits, nonlinear, samples, unicode))
+import Metron.Eval (
+  Config (inputSampling, limits, rounding, roundingSamples, unicode),
+  totalRuns,
+ )
 import Metron.Limits (Limits (outcomes))
 import Metron.NameResolution (
   LabelKind (TypeLabel),
@@ -105,6 +108,7 @@ import Metron.Pretty (
   renderParamsUnits,
   renderTermUnits,
  )
+import Metron.Scalar (Rounding (RoundRandom))
 import Metron.Session.Names (namespaceArg)
 import Metron.Session.Types (Session (codebase, scratch))
 import Metron.Syntax qualified as S (
@@ -276,8 +280,9 @@ printerFor cfg scope cb =
     , fieldNames = \h i arity -> map (fmap S.lastSegment) (fieldNamesOf h i arity cb)
     , spelling = spellingOf cfg
     , unitName = shortestName scope cb
-    , nonlinear = cfg.nonlinear
-    , samples = cfg.samples
+    , samples = totalRuns cfg
+    , roundingRuns = if cfg.rounding == RoundRandom then cfg.roundingSamples else 0
+    , samplingInputs = cfg.inputSampling
     , outcomes = cfg.limits.outcomes
     , typeNames = nameTypes scope cb
     }

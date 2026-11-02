@@ -10,7 +10,7 @@ module Limits (Measured, measure, limitTests) where
 
 import Control.Exception (bracket_, evaluate)
 import Control.Monad (join)
-import Data.List (isPrefixOf)
+import Data.List (isInfixOf)
 import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Stats (GCDetails (..), RTSStats (..), getRTSStats)
@@ -47,7 +47,11 @@ limitTests m =
 -- Running sessions -------------------------------------------------------------------
 
 seeded :: Session
-seeded = either (error . T.unpack) id seededSession
+seeded =
+  either
+    (error . T.unpack)
+    id
+    (seededSession >>= fmap fst . (`feed` ":set arithmetic rational"))
 
 -- | Lines fed in turn to a seeded session; the outputs, or the first error.
 run :: [Text] -> Either Text [Text]
@@ -169,7 +173,7 @@ depthTests =
           ( drawn 10
               <> ["let count n = if n * x > 1000 then n else count (n + 1)", "count 0"]
           ) of
-          Right outs -> any ("1001 (Monte Carlo" `T.isPrefixOf`) outs @? show outs
+          Right outs -> any ("(Monte Carlo" `T.isInfixOf`) outs @? show outs
           Left err -> assertFailure (T.unpack err)
     , testCase "a loop through a split runs in a 1 MB Haskell stack (design §8.2)"
         -- The built metron, under the smallest stack it starts in with room
@@ -189,16 +193,17 @@ depthTests =
                   metron
                   ["+RTS", "-K1m", "-RTS", "--no-codebase", "-i"]
                   ( unlines
-                      [ ":backend double"
+                      [ ":set arithmetic double"
+                      , ":set steps 1e12"
                       , ":set samples 100"
                       , ":set cores 1"
-                      , "let x = 1 ±σ 0.1"
+                      , "let x = sample (normal 1 0.1)"
                       , "let count n = if n * x > 200000 then n else count (n + 1)"
                       , "count 0"
                       ]
                   )
               (code, err) @?= (ExitSuccess, "")
-              any ("200001 (Monte Carlo" `isPrefixOf`) (lines out) @? out
+              any ("(Monte Carlo" `isInfixOf`) (lines out) @? out
     , testCase
         "a case that splits in tail position passes its split on, in a 128 kB stack (design §8.2)"
         -- The built metron on a stored codebase, which it loads in a stack
@@ -223,16 +228,17 @@ depthTests =
                   metron
                   ["+RTS", "-K128k", "-RTS", "--codebase", dir, "-i"]
                   ( unlines
-                      [ ":backend double"
+                      [ ":set arithmetic double"
+                      , ":set steps 1e12"
                       , ":set samples 3000"
                       , ":set cores 1"
-                      , "let x = 1 ±σ 0.05"
+                      , "let x = sample (normal 1 0.05)"
                       , "let count n = if n * x > 20000 then n else count (n + 1)"
                       , "count 16000"
                       ]
                   )
               (code, err) @?= (ExitSuccess, "")
-              any ("20001 (Monte Carlo" `isPrefixOf`) (lines out) @? out
+              any ("(Monte Carlo" `isInfixOf`) (lines out) @? out
     , testCase "a split whose value something waits for nests"
         $ refused
           "the evaluation nested more than 1000 calls deep (`:set depth`)"
@@ -242,10 +248,11 @@ depthTests =
   -- 2000 samples of a declared σ, under a depth limit.
   drawn :: Int -> [Text]
   drawn d =
-    [ ":backend double"
+    [ ":set arithmetic double"
+    , ":set steps 1e12"
     , ":set samples 2000"
     , ":set depth " <> T.pack (show d)
-    , "let x = 1 ±σ 0.1"
+    , "let x = sample (normal 1 0.1)"
     ]
 
 -- Digits -----------------------------------------------------------------------------
@@ -395,15 +402,15 @@ leakPrograms =
   , -- Exact while its rationals are short, then at working precision
     -- (design §3.2.8): once 13 s for twenty steps, its digits doubling.
 
-    ( "the exact logistic map, at working precision after its first steps"
+    ( "the logistic map under double arithmetic"
     ,
-      [ ":set precision 200"
+      [ ":set arithmetic double"
       , "let iter x k = if k == 0 then x else iter (x * (1 - x) * 37/10) (k - 1)"
       , "iter (1/3) 250"
       ]
     , \case
         Right [out] ->
-          T.isPrefixOf "0.92481968045107953044160642097568835177392693028574" out
+          T.isPrefixOf "0.8971174884453541" out
             @? T.unpack out
         other -> assertFailure (show other)
     )
@@ -413,14 +420,15 @@ leakPrograms =
 
     ( "a loop whose condition carries draws, each sample stopping at its own step"
     ,
-      [ ":backend double"
+      [ ":set arithmetic double"
+      , ":set steps 1e12"
       , ":set samples 100"
-      , "let x = 1 ±σ 0.1"
+      , "let x = sample (normal 1 0.1)"
       , "let count n = if n * x > 100000 then n else count (n + 1)"
       , "count 0"
       ]
     , \case
-        Right outs -> any ("100001 (Monte Carlo" `T.isPrefixOf`) outs @? show outs
+        Right outs -> any ("(Monte Carlo" `T.isInfixOf`) outs @? show outs
         Left err -> assertFailure (T.unpack err)
     )
   ,

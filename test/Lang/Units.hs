@@ -262,7 +262,7 @@ partUTests =
             other -> assertFailure (show other)
     , testCase "implicit one preserves uncertainty and chart axes" $ do
         runLinesP
-          [ "unit measured = 1 m ± 0.01 m"
+          [ "unit measured = sample (normal (1 m) (0.01 m))"
           , "(5 * measured) == 5 * (1 measured)"
           , "space Lengths = Vec 3 m"
           , "chart frame on Lengths"
@@ -375,8 +375,8 @@ unitTests =
             Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err
             Right v -> assertFailure (show v)
     , testCase "an uncertainty must share the value's dimension"
-        $ case evalText "3 m ± 1 s" of
-          Left err -> T.isInfixOf "dimension of the value" err @? T.unpack err
+        $ case evalText "sample (normal (3 m) (1 s))" of
+          Left err -> T.isInfixOf "dimensions differ" err @? T.unpack err
           Right v -> assertFailure (show v)
     , testCase "to keeps the value for now"
         $ evalText "(3 m) to m" @?= Right ["3 m"]
@@ -403,12 +403,13 @@ displayTests =
         runLinesP [":set"]
           @?= Right
             ( [ "precision 20"
-              , "sigma 3"
               , "unicode off"
-              , "nonlinear 1"
-              , "samples 0"
+              , "samples 32"
               , "seed 1"
-              , "rounding random"
+              , "arithmetic rational"
+              , "propagation montecarlo"
+              , "roundingAnalysis off"
+              , "roundingSamples 8"
               , "cores 1"
               ]
                 ++ limits
@@ -416,22 +417,24 @@ displayTests =
         runLinesP [":set unicode on", ":set", ":set unicode off", ":set"]
           @?= Right
             ( [ "precision 20"
-              , "sigma 3"
               , "unicode on"
-              , "nonlinear 1"
-              , "samples 0"
+              , "samples 32"
               , "seed 1"
-              , "rounding random"
+              , "arithmetic rational"
+              , "propagation montecarlo"
+              , "roundingAnalysis off"
+              , "roundingSamples 8"
               , "cores 1"
               ]
                 ++ limits
                 ++ [ "precision 20"
-                   , "sigma 3"
                    , "unicode off"
-                   , "nonlinear 1"
-                   , "samples 0"
+                   , "samples 32"
                    , "seed 1"
-                   , "rounding random"
+                   , "arithmetic rational"
+                   , "propagation montecarlo"
+                   , "roundingAnalysis off"
+                   , "roundingSamples 8"
                    , "cores 1"
                    ]
                 ++ limits

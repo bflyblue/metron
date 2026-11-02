@@ -55,12 +55,28 @@ tableLines ::
   Codebase ->
   (Hash, Term Z) ->
   Int ->
+  Int ->
   Table ->
   [Text]
-tableLines spelling namer named cb (inputHash, input) samples t =
+tableLines spelling namer named cb (inputHash, input) samples rounds t =
   case branchAt spelling namer named =<< termAt cb (inputHash, input) t.site of
     Nothing -> []
-    Just b -> header b : map (row b) (rowsOf b)
+    Just b
+      | rounds > 0 ->
+          ( "note: branch visits at `"
+              <> b.heading
+              <> "` (ordinary inputs / stochastic rounding repetitions):"
+          )
+            : [ "  "
+                  <> label
+                  <> "   "
+                  <> tshow (IntMap.findWithDefault 0 k t.inputRows)
+                  <> " / "
+                  <> tshow
+                    (IntMap.findWithDefault 0 k t.rows - IntMap.findWithDefault 0 k t.inputRows)
+              | (k, label) <- rowsOf b
+              ]
+      | otherwise -> header b : map (row b) (rowsOf b)
  where
   header b =
     (if t.split then "note: " else "warning: ")

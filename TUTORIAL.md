@@ -18,6 +18,13 @@ This opens the interactive calculator without a saved database. Enter the exampl
 
 Blocks marked `text` contain Metron input unless they are introduced as output. Blocks marked `sh` contain shell commands. Definitions normally produce no output, while expressions print their results.
 
+These examples use rational arithmetic to keep fractions exact. Select it first:
+
+```text
+:set arithmetic rational
+```
+
+Elementary functions still require numerical approximation.
 Continue in the same session through sections 2–8. Section 9 starts a separate session with a saved database.
 
 Useful commands include:
@@ -120,70 +127,91 @@ For a calculated number, attach a unit with multiplication, as in `(2 + 3) * km`
 
 ## 3. Follow measurement uncertainty
 
-A measurement bound gives a range that contains the value. Here, a board has a measured length of 2 meters with a bound of 0.01 meters:
+Describe a measurement with a probability distribution. A normal distribution
+uses a mean and a standard deviation. The standard deviation describes spread,
+not a guaranteed maximum error.
 
 ```text
-let boardLength = (2 ± 0.01) * m
-let boardWidth = (1 ± 0.005) * m
+:set samples 1000
+let boardLength = sample (normal (2 m) (0.01 m))
+let boardWidth = sample (normal (1 m) (0.005 m))
 let perimeter = 2 * (boardLength + boardWidth)
 perimeter
+mid perimeter
+sd perimeter
 ```
 
-The result is:
+Metron evaluates the formula for 1,000 input realizations. The report gives an
+empirical mean, sample standard deviation and central 95% outcome interval.
+The mean is near 6 m and the standard deviation is near 0.0224 m.
+These estimates vary with the seed and sample count.
+The outcome interval describes simulated measurements, not confidence in the mean.
+
+### Keep shared measurements shared
 
 ```text
-6.00 ± 0.03 m
+boardLength == boardLength
+sd (boardLength - boardLength)
 ```
 
-The `±` operator declares a bound. You can type `+-` instead. Parentheses group the uncertain number before multiplication attaches the unit.
+The results are `true` and `0 m`. Both uses refer to the same sampled input.
+Two separate sample declarations have independent latent draws.
+A sample site inside a function reuses its latent draw across calls.
+Use distinct sample sites when you need independent inputs.
 
-### See where the bound comes from
-
-An error budget lists the contributions to an uncertain result. Ask Metron for the perimeter's budget:
+A uniform distribution is useful when your measurement model assigns equal
+probability across an interval:
 
 ```text
-:budget perimeter
+let clearance = sample (uniform (0.9 mm) (1.1 mm))
+clearance
 ```
 
-The length contributes `0.02 m`, and the width contributes `0.01 m`. Metron reports these as approximately 67% and 33% of the total bound. This helps you decide which measurement needs improvement.
+Distribution parameters must be deterministic scalars with matching dimensions.
+You cannot pass another sampled value as a distribution parameter.
+Build correlated quantities from shared sampled inputs instead.
 
-Repeated use of one uncertain value retains its shared error:
-
-```text
-boardLength - boardLength
-```
-
-The result is exactly `0 m`. Both occurrences refer to the same measurement, so their errors cancel. This differs from subtracting two independent measurements with similar printed ranges.
-
-### Distinguish a bound from statistical uncertainty
-
-Statistical uncertainty describes spread rather than a guaranteed range. Metron uses `±σ` for standard uncertainty, with `+-s` as its ASCII spelling. Do not interpret one standard uncertainty as a hard limit.
+### Measure correlation
 
 ```text
-let reading = (10 ±σ 0.2) * m
+let reading = sample (normal (10 m) (0.2 m))
 let doubled = 2 * reading
-doubled
 sd doubled
+covariance [reading, doubled]
 ```
 
-The results are `20.0 ±σ 0.4 m` and `0.4 m`. The function `sd` extracts the standard uncertainty. Doubling a reading doubles its standard uncertainty too.
+The standard deviation is near 0.4 m. The covariance matrix is near
+`[0.04, 0.08; 0.08, 0.16] m^2`.
+Metron calculates these statistics from paired input realizations, with denominator N−1.
 
-Covariance measures how two uncertain values vary together. Inspect the original reading and its doubled value:
+### Explore floating-point sensitivity separately
+
+Stochastic rounding repeats a double calculation with perturbed rounding choices.
+It measures sensitivity to that perturbation model.
 
 ```text
-:covariance [reading, doubled]
+:set arithmetic double
+:set roundingAnalysis stochastic
+:set roundingSamples 8
+(1e16 + 1) - 1e16
 ```
 
-Metron prints:
+The ordinary double result is 0. Diagnostic repetitions can produce different
+results, such as 2. The report separates their spread from their displacement
+relative to the ordinary result. Neither value is a guaranteed numerical bound.
+
+For sampled inputs, Metron fixes each input realization across its rounding
+repetitions. Only ordinary runs contribute to the input statistics.
+Distribution generation and parameter evaluation are excluded from the diagnostic.
+Elementary functions use a one-ulp perturbation heuristic.
+Sample reductions such as `sd` reject rounding analysis.
+
+Return to the arithmetic used by the remaining examples:
 
 ```text
-covariance [0.04, 0.08; 0.08, 0.16] m^2
-bound box [0, 0] m
+:set roundingAnalysis off
+:set arithmetic rational
 ```
-
-The nonzero off-diagonal entries show that these values share uncertainty. They are not independent measurements.
-
-Statistical propagation uses a first-order approximation. Nonlinear calculations can exceed that approximation's limits, and Metron can mark results or refuse uncertainty summaries. Its error tracking does not replace a measurement model or establish that your declared bounds are correct.
 
 ## 4. Work with vectors and matrices
 
@@ -356,7 +384,7 @@ chart turned on room by rotz (90 deg)
 [1, 0, 0] turned to room
 ```
 
-The result is approximately `[0, 1, 0] room`. Rotation calculations can print tiny error bounds near zero and an ellipsis near one. Those values reflect numerical approximation, not an extra physical displacement.
+The result is approximately `[0, 1, 0] room`. Rotation calculations can print tiny residuals near zero. Those values reflect numerical approximation.
 
 Now convert a displacement between the same axes:
 
@@ -414,7 +442,7 @@ let paceLabel ride = if averageSpeed ride > 20 km/h then Brisk else Steady
 paceLabel morning
 ```
 
-The result is `Brisk`. The `if` expression chooses a value based on a condition. A comparison involving uncertainty can be undecidable if its possible values cross the boundary.
+The result is `Brisk`. The `if` expression chooses a value based on a condition. With sampled inputs, each realization takes its own branch. A result with different constructors prints an outcome table.
 
 Use `case` to calculate a result for each named choice:
 
@@ -488,18 +516,19 @@ The angle from the closest point of the orbit grows from about 92° to `127.1943
 
 ```text
 meanToEccentric 0.4 (235.4 deg) to deg
-bound (meanToEccentric 0.4 (235.4 deg))
+let ea = meanToEccentric 0.4 (235.4 deg)
+eccentricToMean 0.4 ea - 235.4 deg
 ```
 
-The first result is `220.51207476752206740… deg`. Every printed digit is correct. The bound is `3.0886579188079114749…e-23 deg`.
+The first result is approximately 220.512074767522 degrees. The second expression checks the solver's residual. A small residual is useful evidence, but it does not certify every displayed digit.
 
 A measured input passes its uncertainty through the solver:
 
 ```text
-meanToEccentric 0.4 ((235.4 ±σ 0.01) * 1 deg) to deg
+meanToEccentric 0.4 (sample (normal (235.4 deg) (0.01 deg))) to deg
 ```
 
-The result is `220.5121 ±σ 0.0077 deg`.
+The sample mean is near 220.5121 degrees and the standard deviation is near 0.0077 degrees.
 
 ### Plan a transfer
 
@@ -683,7 +712,7 @@ A bare hash searches the stored definitions without requiring a name:
 
 This also gives `30 min`. A prefix must identify one definition, or Metron reports the ambiguity and shows the full matching hashes. A bare hash that refers to a recursive function group needs a member suffix, such as `#dlcnc.0`, because the hash names the whole group; `:hash` prints it with the suffix. A named reference such as `fact#dlcnc` needs no suffix.
 
-When passing a bare hash as a function argument, put it in parentheses, as in `f (#hash)`. This distinguishes the reference from a trailing measurement label such as `5 ± 1 #sensor`. A glued `name#hash` is always a version reference, so separate measurement labels from preceding names with whitespace.
+When passing a bare hash as a function argument, put it in parentheses, as in `f (#hash)`. This distinguishes the reference from a trailing measurement label such as `sample (normal 5 1) #sensor`. A glued `name#hash` is always a version reference, so separate measurement labels from preceding names with whitespace.
 
 These expressions select the old content when they are resolved. A saved definition made with them still participates in the normal upgrade rules. Selecting a version does not create a permanent exemption from `:upgrade` or `:update`.
 

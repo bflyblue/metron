@@ -22,6 +22,9 @@ how a name prints.
 -}
 module Metron.Builtin (
   -- * The declarations
+  distributionDef,
+  distributionHash,
+  distributionT,
   boolDef,
   pairDef,
   listDef,
@@ -79,12 +82,12 @@ import Data.Map.Strict qualified as Map (
 import Data.Text (Text)
 import Data.Text qualified as T (pack)
 import Metron.Core (ConRef (..), Hash, Label (..))
-import Metron.Dimension (Dim)
+import Metron.Dimension (Dim, dimVar)
 import Metron.Encode (hashTypeDef)
 import Metron.Type.Base (
-  Arg (AType),
+  Arg (ADim, AType),
   Axis (AAnon, ANamed),
-  Kind (KType),
+  Kind (KDim, KType),
   Len (LLit),
   Shape (SCons, SNil),
   Space (Space),
@@ -96,6 +99,22 @@ import Metron.Type.Base (
  )
 
 -- The declarations ----------------------------------------------------------------
+
+-- | Scalar distributions with dimensioned parameters.
+distributionDef :: TypeDef
+distributionDef =
+  TypeDef
+    [(0, KDim)]
+    [ [TTensor SNil (dimVar 0), TTensor SNil (dimVar 0)]
+    , [TTensor SNil (dimVar 0), TTensor SNil (dimVar 0)]
+    ]
+    structuralLabel
+
+distributionHash :: Hash
+distributionHash = hashTypeDef distributionDef
+
+distributionT :: Dim -> Type
+distributionT d = TData distributionHash [ADim d]
 
 -- | @structural data Bool = False | True@: @False@ is constructor 0.
 boolDef :: TypeDef
@@ -223,6 +242,7 @@ mintedPath def = case def.label of
 -- | The built-in declarations by hash: what every type lookup knows.
 builtinDefs :: Hash -> Maybe TypeDef
 builtinDefs h
+  | h == distributionHash = Just distributionDef
   | h == boolHash = Just boolDef
   | h == listHash = Just listDef
   | Just k <- tupleArity h = Just (tupleDef k)

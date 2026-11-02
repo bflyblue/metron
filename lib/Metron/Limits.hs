@@ -300,6 +300,7 @@ dupable, since the nominal path's count is taken once; the arguments make
 every call its own.
 -}
 reach ::
+  Int ->
   Budget ->
   Context ->
   Site ->
@@ -309,7 +310,7 @@ reach ::
   IntSet ->
   Maybe (VU.Vector Int) ->
   IntSet
-reach b ctx site taken cause split left alts = unsafePerformIO $ withForeignPtr b.counters $ \p -> do
+reach rounds b ctx site taken cause split left alts = unsafePerformIO $ withForeignPtr b.counters $ \p -> do
   n <- peekElemOff p 2
   when ctx.nominal (pokeElemOff p 2 (n + 1))
   group <- readIORef b.current
@@ -328,6 +329,18 @@ reach b ctx site taken cause split left alts = unsafePerformIO $ withForeignPtr 
                 zip [0 ..] (VU.toList (alternativeCounts (maybe as (VU.backpermute as) places)))
             , k > 0
             ]
+      selected =
+        maybe
+          (VU.replicate size taken)
+          (\as -> maybe as (VU.backpermute as) places)
+          alts
+      inputRows =
+        IntMap.fromListWith
+          (+)
+          [ (a, 1)
+          | (g, a) <- VU.toList (VU.zip globals selected)
+          , g `mod` (rounds + 1) == 0
+          ]
       off = IntSet.union ctx.departed left
       already
         | IntSet.null off = 0
@@ -347,6 +360,7 @@ reach b ctx site taken cause split left alts = unsafePerformIO $ withForeignPtr 
             { order = (n, if ctx.nominal then 0 else 1)
             , nominal = if ctx.nominal then Just taken else Nothing
             , cause
+            , inputRows
             , rows
             , departed = already
             , split

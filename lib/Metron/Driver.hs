@@ -1,5 +1,3 @@
-{-# LANGUAGE PatternSynonyms #-}
-
 {- | Runs source text through the whole pipeline for the CLI and the tests
 (design §7.3, §7.5).
 
@@ -14,7 +12,6 @@ module Metron.Driver (
   LastExpr (..),
   emptySession,
   seededSession,
-  startBackend,
   startSettings,
   setSetting,
   settingNames,
@@ -34,7 +31,6 @@ module Metron.Driver (
 
 import Control.Applicative ((<|>))
 import Control.Monad (foldM)
-import Data.Bifunctor (first)
 import Data.Containers.ListUtils (nubOrd)
 import Data.Either (fromRight)
 import Data.List (partition, sortOn)
@@ -81,9 +77,7 @@ import Data.Text qualified as T (
   unwords,
   words,
  )
-import Data.Vector qualified as V (fromList, take, toList)
-import Metron.Affine (Collapsed (..), Magnitude (..), addM, collapse)
-import Metron.Builtin (frameDefMoving, pairC, pattern TupleC)
+import Metron.Builtin (frameDefMoving)
 import Metron.Codebase (
   Codebase (
     conNames,
@@ -134,8 +128,6 @@ import Metron.Compile (
   CheckedExpr (CheckedExpr),
   checkExpr,
   evalExpr,
-  evalValue,
-  renderEvalError,
   renderResolveErrorWith,
  )
 import Metron.Core (
@@ -147,7 +139,7 @@ import Metron.Core (
   vecLength,
  )
 import Metron.Desugar (DesugarError (UnknownName))
-import Metron.Dimension (dimMul, dimPow, renderDimIn)
+import Metron.Dimension (renderDimIn)
 import Metron.Edit (
   EditRequest (..),
   EditScope (..),
@@ -158,11 +150,7 @@ import Metron.Edit (
  )
 import Metron.Eval (
   Config (..),
-  EvalError (Internal),
-  ValueOf (VData, VTensor),
-  covarianceMatrix,
   defaultConfig,
-  precisionOf,
  )
 import Metron.Hash (hashTerm)
 import Metron.Infer qualified as I (
@@ -185,23 +173,15 @@ import Metron.NameResolution (
 import Metron.Parser (parseExprWithin, parseProgramWithin, parseType)
 import Metron.Prelude (isLibraryPath, stdlibCodebase)
 import Metron.Pretty (
-  Printer (refName),
-  displayParts,
-  renderBudget,
-  renderExact,
-  renderRough,
-  renderValue,
-  renderValueWith,
   respell,
  )
 import Metron.Resolve (processGroup, typeLookupFor)
 import Metron.Resolve.Error (ResolveError (Desugar), renderResolveError)
 import Metron.Scalar (
   Backend (..),
+  Rounding (..),
   backendName,
   backendNamed,
-  roundingName,
-  roundingNamed,
  )
 import Metron.Session.Names (
   argPath,
@@ -227,8 +207,6 @@ import Metron.Source (
   exportRequest,
   exportSource,
   nameTypes,
-  printerFor,
-  refNamer,
   signatureLine,
   spellingOf,
   upgradeReport,
@@ -266,7 +244,6 @@ import Metron.Type (
   varArg,
  )
 import Metron.Type.Syntax (queryScheme)
-import Metron.UnitHint (UnitHint (pinned), hintPow, hintProduct)
 import Metron.Update (
   Propagation (Propagation, codebase, skipped, upgraded),
   Restamped (codebase, terms, types),
@@ -280,18 +257,6 @@ entered by domain as one group and added, with its six stored default
 @use@s, as a new codebase starts and as @--no-codebase@ runs. Fails only if
 the library itself does not check, which is a build error.
 -}
-
-{- | A session under the named backend (design §8.2), as @:backend NAME@
-leaves it: what @metron --backend NAME@ starts with.
--}
-startBackend :: Text -> Session -> Either Text Session
-startBackend name session = case backendNamed name of
-  Just b -> Right session{config = session.config{backend = b}}
-  Nothing -> Left (noBackend name)
-
-noBackend :: Text -> Text
-noBackend name = "no backend " <> name <> "; the backends are affine and double"
-
 seededSession :: Either Text Session
 seededSession = do
   cb <- stdlibCodebase
@@ -432,12 +397,16 @@ after @:set@ ('settingNames').
 settingValues :: Config -> [(Text, Text)]
 settingValues cfg =
   [ ("precision", tshow cfg.precision)
-  , ("sigma", tshow cfg.sigma)
   , ("unicode", if cfg.unicode then "on" else "off")
-  , ("nonlinear", T.pack (show (round (100 * cfg.nonlinear) :: Integer)))
   , ("samples", tshow cfg.samples)
   , ("seed", tshow cfg.seed)
-  , ("rounding", roundingName cfg.rounding)
+  , ("arithmetic", backendName cfg.backend)
+  , ("propagation", "montecarlo")
+  ,
+    ( "roundingAnalysis"
+    , if cfg.rounding == RoundRandom then "stochastic" else "off"
+    )
+  , ("roundingSamples", tshow cfg.roundingSamples)
   , ("cores", tshow cfg.cores)
   ]
     ++ limitSettings cfg.limits
@@ -454,23 +423,28 @@ such setting.
 -}
 setSetting :: Text -> Text -> Config -> Maybe (Either Text Config)
 setSetting name value cfg = case name of
-  -- The double backend's estimate (design §8.2): 0 is the running bound,
-  -- N ≥ 2 copies; one copy has no spread, and Monte Carlo needs many.
-  "samples" ->
-    Just $ case natural of
-      Just k
-        | k == 0 || (k >= 2 && k <= maxSamples) -> Right cfg{samples = k}
-      _ ->
-        Left
-          "samples is 0 (a running error bound) or from 2 to 100000 copies"
-  "seed" -> Just (count (\k -> cfg{seed = k}) "seed must be a non-negative integer")
-  "rounding" ->
+  "arithmetic" -> Just $ case backendNamed value of
+    Just b
+      | b == RationalBackend && cfg.rounding == RoundRandom ->
+          Left "stochastic rounding analysis requires double arithmetic"
+      | otherwise -> Right cfg{backend = b}
+    Nothing -> Left "arithmetic is rational or double"
+  "propagation" ->
     Just
-      ( maybe
-          (Left "rounding is nearest or random")
-          (\r -> Right cfg{rounding = r})
-          (roundingNamed value)
-      )
+      $ if value == "montecarlo" then Right cfg else Left "propagation is montecarlo"
+  "samples" -> Just $ case natural of
+    Just k | k >= 1 && k <= maxSamples -> Right cfg{samples = k}
+    _ -> Left "samples must be from 1 to 100000"
+  "seed" -> Just (count (\k -> cfg{seed = k}) "seed must be a non-negative integer")
+  "roundingAnalysis" -> Just $ case value of
+    "off" -> Right cfg{rounding = RoundNearest}
+    "stochastic"
+      | cfg.backend == DoubleBackend -> Right cfg{rounding = RoundRandom}
+      | otherwise -> Left "stochastic rounding analysis requires double arithmetic"
+    _ -> Left "roundingAnalysis is off or stochastic"
+  "roundingSamples" -> Just $ case natural of
+    Just k | k >= 2 && k <= 1000 -> Right cfg{roundingSamples = k}
+    _ -> Left "roundingSamples must be from 2 to 1000"
   -- How many evaluations carry the copies in parallel (design §8.2).
   "cores" ->
     Just $ case natural of
@@ -479,30 +453,6 @@ setSetting name value cfg = case name of
   "precision" ->
     Just
       (count (\k -> cfg{precision = k}) "precision must be a non-negative integer")
-  "sigma" -> Just (count (\k -> cfg{sigma = k}) "sigma must be a non-negative integer")
-  -- The threshold, in percent of the first-order σ, over which a value is
-  -- marked non-linear (design §3.2).
-  "nonlinear" ->
-    Just
-      ( count
-          ( \k ->
-              Config
-                { precision = cfg.precision
-                , sigma = cfg.sigma
-                , unicode = cfg.unicode
-                , nonlinear = fromIntegral k / 100
-                , limits = cfg.limits
-                , backend = cfg.backend
-                , samples = cfg.samples
-                , seed = cfg.seed
-                , rounding = cfg.rounding
-                , cores = cfg.cores
-                , batch = cfg.batch
-                , group = cfg.group
-                }
-          )
-          "nonlinear must be a non-negative integer, a percentage"
-      )
   -- Output spelling (design §2.8, §7.3).
   "unicode" -> Just $ case value of
     "on" -> Right cfg{unicode = True}
@@ -583,90 +533,6 @@ command session src = \case
               , staging = removePreference text cb
               }
       else Left ("no preference " <> text <> "; :prefer lists them")
-  -- The evaluator of the scalars (design §8.2). A stored term names no
-  -- backend, so switching changes no hash, only what the next input runs on.
-  ["backend"] -> keep (Right [backendName cfg.backend])
-  ["backend", name] -> (,[]) <$> startBackend name session
-  -- The commands that read uncertainty are the affine backend's.
-  (c : _)
-    | cfg.backend /= AffineBackend
-    , c `elem` ["exact", "budget", "covariance"] ->
-        Left
-          ( ":"
-              <> c
-              <> " is the affine backend's; the "
-              <> backendName cfg.backend
-              <> " backend does not have it (:backend affine)"
-          )
-  -- The raw magnitudes (design §3.2.10): midpoint, nudges, slack.
-  ("exact" : rest) -> keep $ do
-    (h, v) <- evalOf rest
-    (: []) <$> printedWith h (map (renderExact (inputNamer h) cfg.precision)) v
-  -- The error budget (design §3.2.6) of a scalar, or of the sum of a
-  -- tensor's components.
-  ("budget" : rest) -> keep $ do
-    (h, v) <- evalOf rest
-    case displayParts (inputPrinter h) cfg.precision session.preferred v of
-      Right (_, xs, units) ->
-        pure
-          ( renderBudget
-              (inputNamer h)
-              cfg.precision
-              cfg.nonlinear
-              units
-              (foldr (addM (precisionOf cfg)) (Exact 0) xs)
-          )
-      Left (Internal _) -> Left "budget: not a number"
-      Left err -> Left (renderEvalError err)
-  -- The covariance view (design §3.5): Σ cᵢcᵢᵀ over the statistical nudges of
-  -- a vector, with the bound radii beside it as a bias box. A pair of
-  -- vectors (r, v) prints its joint covariance as the three blocks of
-  -- linalg.jointCovariance, rr, rv and vv (design §3.7), and both boxes.
-  ("covariance" : rest) -> keep $ do
-    (h, v) <- evalOf rest
-    let shown =
-          first renderEvalError
-            . renderValue (inputPrinter h) cfg.precision session.preferred
-        rough = printedWith h (map renderRough)
-        components buf = first renderEvalError (sequence (V.toList buf))
-        unpinned = fmap (\hh -> hh{pinned = False})
-        -- One vector's bound radii, in its own shape and unit.
-        boundsOf dims d hint xs = VTensor dims d hint (V.fromList [Right (Exact (collapse x).bound) | x <- xs])
-        vectorOf = \case
-          Right (VTensor [n] d hint buf) -> Just (n, d, hint, buf)
-          _ -> Nothing
-    case v of
-      VTensor dims d hint buf | length dims <= 1 -> do
-        xs <- components buf
-        let covHint = unpinned (hintPow (precisionOf cfg) 2 =<< hint)
-            covValue = covarianceMatrix cfg (dimPow 2 d) covHint xs xs
-            scalarVar = case covValue of
-              VTensor _ d' h' cs -> VTensor [] d' h' (V.take 1 cs)
-              other -> other
-        covText <- shown (if null dims then scalarVar else covValue)
-        boundText <- rough (boundsOf dims d hint xs)
-        pure
-          [ (if null dims then "variance " else "covariance ") <> covText
-          , (if null dims then "bound " else "bound box ") <> boundText
-          ]
-      VData (TupleC 2) [a, b]
-        | Just (n1, d1, h1, buf1) <- vectorOf a
-        , Just (n2, d2, h2, buf2) <- vectorOf b -> do
-            xs <- components buf1
-            ys <- components buf2
-            let p = precisionOf cfg
-                block d hh = covarianceMatrix cfg d (unpinned hh)
-            rr <- shown (block (dimPow 2 d1) (hintPow p 2 =<< h1) xs xs)
-            rv <- shown (block (dimMul d1 d2) (hintProduct p h1 h2) xs ys)
-            vv <- shown (block (dimPow 2 d2) (hintPow p 2 =<< h2) ys ys)
-            boxes <-
-              rough
-                ( VData
-                    pairC
-                    [Right (boundsOf [n1] d1 h1 xs), Right (boundsOf [n2] d2 h2 ys)]
-                )
-            pure ["rr " <> rr, "rv " <> rv, "vv " <> vv, "bound box " <> boxes]
-      _ -> Left "covariance: a number, a vector, or a pair of vectors"
   ["add"] -> add session
   ["update"] -> update True session
   ["update", "--no-upgrade"] -> update False session
@@ -889,17 +755,6 @@ command session src = \case
   keep = fmap (session,)
   short = shortestName scope
   tshow = T.pack . show
-  evalOf rest = do
-    e <- parseExprWithin cfg.limits.digits (T.unwords rest)
-    evalValue cfg scope ecb (T.unwords rest) e
-  -- Nudges declared in the expression itself are labelled "input".
-  inputNamer h h' i written = if h' == h then "input" else refNamer scope ecb h' i written
-  inputPrinter h = (printerFor cfg scope ecb){refName = inputNamer h}
-  -- The input's value with its numbers printed by a view's own function,
-  -- an evaluation error as its message.
-  printedWith h numbers =
-    first renderEvalError
-      . renderValueWith (inputPrinter h) cfg.precision session.preferred numbers
   preferenceOf = preferenceHint cfg cb
   commit cb' outs = Right (session{codebase = cb', staging = cb'}, outs)
   -- What a relabelling re-hashed (design §7.2): the stamped definitions and

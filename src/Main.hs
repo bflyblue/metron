@@ -39,7 +39,7 @@ the store at OTHER into that codebase and exits.
 @--set NAME VALUE@, any number of times, starts the session with a
 setting changed as @:set NAME VALUE@ would: a resource limit (design §8.1),
 @samples@, @seed@ or @rounding@ (design §8.2), or any other @:set@ takes.
-@--backend NAME@ starts it under a backend, as @:backend NAME@ would (design §8.2): @affine@ or @double@.
+@--set arithmetic rational|double@ selects scalar arithmetic (design §8.2).
 -}
 main :: IO ()
 main = do
@@ -62,7 +62,7 @@ main = do
   usage = do
     hPutStrLn
       stderr
-      "usage: metron [--codebase DIR | --no-codebase] [--set NAME VALUE]… [--backend NAME] ['expr' | -f file | -i]\n\
+      "usage: metron [--codebase DIR | --no-codebase] [--set NAME VALUE]… ['expr' | -f file | -i]\n\
       \       metron [--codebase DIR] --merge OTHER"
     exitFailure
 
@@ -72,8 +72,6 @@ data Options = Options
   , mergeFrom :: Maybe FilePath
   , settings :: [(Text, Text)]
   -- ^ settings to change at the start, in order
-  , startBackend :: Maybe Text
-  -- ^ the backend to start under (design §8.2)
   }
 
 options :: [String] -> (Options, [String])
@@ -87,9 +85,8 @@ options args =
     "--merge" : d : more -> let (o, r) = go more in (o{mergeFrom = Just d}, r)
     "--set" : n : v : more ->
       let (o, r) = go more in (o{settings = (T.pack n, T.pack v) : o.settings}, r)
-    "--backend" : b : more -> let (o, r) = go more in (o{startBackend = Just (T.pack b)}, r)
     a : more -> let (o, r) = go more in (o, a : r)
-    [] -> (Options Nothing False Nothing [] Nothing, [])
+    [] -> (Options Nothing False Nothing [], [])
 
 {- | Merge the store at OTHER into this codebase (design §7.4) and say what
 came across. OTHER is only read, and a store of an older format is
@@ -126,15 +123,7 @@ startSession opts = do
       $ startSettings opts.settings live.session.config{cores}
   applyMemory cfg.limits
   let limited = live.session{config = cfg}
-  -- The backend, as :backend chooses it (design §8.2).
-  chosen <- case opts.startBackend of
-    Nothing -> pure limited
-    Just b ->
-      either
-        (\err -> TIO.hPutStrLn stderr ("--backend: " <> err) >> exitFailure)
-        pure
-        $ startBackend b limited
-  pure live{session = chosen}
+  pure live{session = limited}
 
 {- | The cores the double backend's batches run on (design §8.2, @:set
 cores@): the machine's logical cores (@getNumProcessors@; the runtime

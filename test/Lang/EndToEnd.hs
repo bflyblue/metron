@@ -4,7 +4,7 @@ module Lang.EndToEnd (
   soundnessTests,
 ) where
 
-import Data.Text qualified as T (isInfixOf, unpack)
+import Data.Text qualified as T (intercalate, isInfixOf, unpack)
 import Lang.Common (
   desugarText,
   evalP,
@@ -99,37 +99,28 @@ endToEndTests =
               Left err ->
                 T.isInfixOf "a tensor has at most 2^40 components" err @? T.unpack err
               Right out -> assertFailure (show out)
-        refused "noise 18446744073709551616"
         refused "[1, 2].18446744073709551616"
         refused "contract 0 18446744073709551616 [1, 2; 3, 4]"
         refused "slice 0 18446744073709551616 [1, 2; 3, 4]"
         refused "f :: Vec 18446744073709551616 -> Num\nlet f v = 1"
         refused "g :: forall (a : 18446744073709551616). Vec a -> Vec a\nlet g v = v"
     , testCase "a tensor past the components limit is refused when built" $ do
-        let refused src = case evalText src of
-              Left err ->
-                T.isInfixOf "more than 10000000 (`:set components`)" err @? T.unpack err
+        let vector n = "[" <> T.intercalate ", " (replicate n "1") <> "]"
+            refused src = case runLines [":set components 100", src] of
+              Left err -> T.isInfixOf "more than 100" err @? T.unpack err
               Right out -> assertFailure (show out)
-        refused "gauss 10000001"
-        -- a product of tensors each within the limit can exceed it
-        refused "let v = noise 4000 in outer v v"
-        refused "let v = noise 4000 in wedge v v"
-        refused "let v = noise 4000 in dot (outer v [1]) (outer [1] v)"
-        evalText "let v = noise 3000 in (outer v v).1.2" @?= Right ["0 ± 1"]
-        -- the limit is a setting, and a stack of tensors counts too
-        case runLines [":set components 100", "noise 101"] of
-          Left err -> T.isInfixOf "101 components, more than 100" err @? T.unpack err
-          Right out -> assertFailure (show out)
-        case runLines [":set components 100", "[noise 50, noise 50, noise 50]"] of
-          Left err -> T.isInfixOf "150 components, more than 100" err @? T.unpack err
-          Right out -> assertFailure (show out)
+        refused (vector 101)
+        refused ("let v = " <> vector 11 <> " in outer v v")
+        refused ("let v = " <> vector 11 <> " in wedge v v")
+        refused ("let v = " <> vector 11 <> " in dot (outer v [1]) (outer [1] v)")
+        refused ("[" <> T.intercalate ", " (replicate 3 (vector 50)) <> "]")
         runLines
           [ ":set components 100"
-          , "(noise 100).99"
+          , "(" <> vector 100 <> ").99"
           , ":set components 150"
-          , "(noise 101).100"
+          , "(" <> vector 101 <> ").100"
           ]
-          @?= Right ["0 ± 1", "0 ± 1"]
+          @?= Right ["1", "1"]
     , testCase "an empty tensor takes its element type from context" $ do
         -- an ascription
         evalText "([] :: Vec 0 m)" @?= Right ["[] m"]
@@ -170,18 +161,19 @@ endToEndTests =
           evalText "(vzipWith (\\a b -> a / b) [1, 1] [0, 2]).1" @?= Right ["0.5"]
           evalText "(timap (\\i x -> 1 / x) [0, 2]).1" @?= Right ["0.5"]
           -- empty: the function's dimension, not the input's
-          evalText "vmap (\\x -> x * m) (noise 0)" @?= Right ["[] m"]
-          evalText "let e = vmap (\\x -> x * m) (noise 0) in dot e e" @?= Right ["0 m^2"]
+          evalText "vmap (\\x -> x * m) ([] :: Vec 0)" @?= Right ["[] m"]
+          evalText "let e = vmap (\\x -> x * m) ([] :: Vec 0) in dot e e"
+            @?= Right ["0 m^2"]
           evalText "vzipWith (\\a b -> a * b) ([] :: Vec 0 m) ([] :: Vec 0 s)"
             @?= Right ["[] m s"]
-          evalText "timap (\\i x -> x * m) (noise 0)" @?= Right ["[] m"]
+          evalText "timap (\\i x -> x * m) ([] :: Vec 0)" @?= Right ["[] m"]
           -- inside a polymorphic function, the caller's dimension
           runLines
             [ "let f g xs = vmap g xs"
-            , "dot (f (\\x -> x * m) (noise 0)) (f (\\x -> x * s) (noise 0))"
+            , "dot (f (\\x -> x * m) ([] :: Vec 0)) (f (\\x -> x * s) ([] :: Vec 0))"
             ]
             @?= Right ["0 m s"]
-          runLines ["let h v = vmap (\\x -> x * 1 kg) v", "h (noise 0)"]
+          runLines ["let h v = vmap (\\x -> x * 1 kg) v", "h ([] :: Vec 0)"]
             @?= Right ["[] kg"]
     ]
 

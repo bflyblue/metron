@@ -139,12 +139,13 @@ replTests =
         -- Every setting, in the order :set lists them; once only three.
         replacements seeded ":set "
           @?= [ "precision"
-              , "sigma"
               , "unicode"
-              , "nonlinear"
               , "samples"
               , "seed"
-              , "rounding"
+              , "arithmetic"
+              , "propagation"
+              , "roundingAnalysis"
+              , "roundingSamples"
               , "cores"
               , "memory"
               , "steps"
@@ -159,7 +160,7 @@ replTests =
           map (T.takeWhile (/= ' ')) ls @?= settingNames
         -- Each is a setting :set takes.
         [n | n <- settingNames, isNothing (setSetting n "" defaultConfig)] @?= []
-        replacements seeded ":set rounding n" @?= ["nearest"]
+        replacements seeded ":set roundingAnalysis s" @?= ["stochastic"]
         replacements seeded ":set unicode o" @?= ["on", "off"]
         replacements seeded ":colour of" @?= ["off"]
         R.completions seeded (reverse ":set ") "un"
@@ -222,8 +223,8 @@ replTests =
     , testCase "a backslash name completes from the unicode table only" $ do
         completeAt seeded "2 \\mu"
           @?= Just (reverse "2 ", [R.Completion "\x03BC" "\x03BC" False])
-        replacements seeded "3 m \\pm" @?= ["±"]
-        replacements seeded "3 m \\pms" @?= ["±σ"]
+        replacements seeded "3 m \\pm" @?= []
+        replacements seeded "3 m \\pms" @?= []
         replacements seeded "(\\Omega" @?= ["\x03A9"]
         completeAt seeded "m\\^2" @?= Just ("m", [R.Completion "²" "²" False])
         replacements seeded "s\\^-" @?= ["⁻"]
@@ -239,8 +240,8 @@ replTests =
           | (name, u) <- U.completions
           ]
     , testCase "unicode lookup prefers an exact name" $ do
-        U.lookupName "pm" @?= Just "±"
-        map fst (U.matching "pm") @?= ["pm"]
+        U.lookupName "pm" @?= Nothing
+        map fst (U.matching "pm") @?= []
         map fst (U.matching "pr") @?= ["prime"]
     , testCase "classify: errors, notes, signatures, values" $ do
         let block = "error at 1:5\n  3 m + 2 s\n      ^^^\n  cannot add a length to a time"
@@ -304,7 +305,7 @@ replTests =
           , "λx →"
           , "f ∘"
           , "f ."
-          , "3 m ±"
+          , "sample (normal (3 m)"
           , "if c then"
           , "let x = 1;"
           , "a `dot`"

@@ -111,7 +111,7 @@ import Metron.Desugar (
 import Metron.Driver (
   EditRequest (EditOpen),
   EditScope,
-  Session (codebase, staging),
+  Session (codebase, config, staging),
   applyEdit,
   editRequest,
   emptySession,
@@ -120,10 +120,11 @@ import Metron.Driver (
   seededSession,
  )
 import Metron.Eval (
+  Config (..),
   RuntimeOf (Runtime),
-  defaultConfig,
   evalClosed,
  )
+import Metron.Eval qualified as E
 import Metron.Infer (TypeError (..), elaborateClosed)
 import Metron.Lexer (Located (value), Token, tokenize)
 import Metron.Limits (defaultLimits, newBudget, rootContext)
@@ -133,7 +134,7 @@ import Metron.Repl qualified as R (
   Completion (replacement),
   complete,
  )
-import Metron.Scalar (Members (Range))
+import Metron.Scalar (Backend (RationalBackend), Members (Range))
 import Metron.Store (
   Seed,
   loadStore,
@@ -187,9 +188,9 @@ import Metron.TCore (
     TPow,
     TPrimApp,
     TProj,
+    TSample,
     TTyApp,
-    TTyLam,
-    TUncertain
+    TTyLam
   ),
   lintClosed,
  )
@@ -372,13 +373,13 @@ desugarText src = do
 -- End to end ------------------------------------------------------------------
 
 evalText :: Text -> Either Text [Text]
-evalText src = snd <$> feed emptySession src
+evalText src = snd <$> feed emptySession{config = defaultConfig} src
 
 -- Codebase, scratch and versioning -------------------------------------------------
 
 -- | Feed inputs one at a time, as REPL lines, collecting all output.
 runLines :: [Text] -> Either Text [Text]
-runLines = go emptySession []
+runLines = go emptySession{config = defaultConfig} []
  where
   go _ acc [] = Right (concat (reverse acc))
   go s acc (l : ls) = do
@@ -413,7 +414,7 @@ encloses tol e t =
     <> e
     <> ") - ("
     <> t
-    <> ") in vmap (\\x -> if abs (mid x) <= bound x && bound x <= "
+    <> ") in vmap (\\x -> if abs x <= "
     <> tol
     <> " then 0 else 1) d == vmap (\\x -> 0) d"
 
@@ -458,7 +459,7 @@ annotations = \case
       : annotations s
       ++ concat [map snd (vecToList bs) ++ annotations b | TAlt _ bs b <- alts]
   TPow b _ -> annotations b
-  TUncertain _ _ x e -> annotations x ++ annotations e
+  TSample _ x -> annotations x
   TPack _ _ ts -> concatMap annotations ts
   TProj t _ -> annotations t
   TTyLam _ _ b -> annotations b
@@ -471,7 +472,7 @@ annotations = \case
 default uses stored.
 -}
 seeded :: Session
-seeded = either (error . T.unpack) id seededSession
+seeded = (either (error . T.unpack) id seededSession){config = defaultConfig}
 
 {- | An input in a seeded session after @:use@ of some of the library's
 namespaces that are not used by default (@astro@, @physics@), without the
@@ -543,7 +544,9 @@ reload dir = do
     ( either
         (error . T.unpack)
         id
-        (refreshPreferences emptySession{codebase = cb, staging = cb})
+        ( refreshPreferences
+            emptySession{codebase = cb, staging = cb, config = defaultConfig}
+        )
     , notes
     )
 
@@ -627,7 +630,7 @@ editScript =
       , "  let x = 3"
       , "  let y = x + 1"
       , "  let spare = 42"
-      , "  let jitter = 2 +- 0.5"
+      , "  let jitter = sample (normal 2 0.5)"
       , "  let even n = if n == 0 then true else odd (n - 1)"
       , "  let odd n = if n == 0 then false else even (n - 1)"
       , "namespace mechanics"
@@ -671,6 +674,9 @@ builtinTypeListing =
   [ "structural data Bool = False | True"
   , "False : Bool"
   , "True : Bool"
+  , "structural data Distribution d = Normal (Num d) (Num d) | Uniform (Num d) (Num d)"
+  , "Normal : forall d. Num d -> Num d -> Distribution d"
+  , "Uniform : forall d. Num d -> Num d -> Distribution d"
   , "structural data List a = Nil | Cons a (List a)"
   , "Nil : forall a. {a}"
   , "Cons : forall a. a -> {a} -> {a}"
@@ -714,3 +720,7 @@ shapeDecl = "data Shape = Circle (Num m) | Rect (Num m) (Num m)"
 -- | A function by cases on 'shapeDecl'.
 shapeArea :: Text
 shapeArea = "let area s = case s of Circle r -> pi * r^2; Rect w h -> w * h"
+
+-- Exact arithmetic keeps structural language tests independent of IEEE rounding.
+defaultConfig :: Config
+defaultConfig = E.defaultConfig{backend = RationalBackend, samples = 32}

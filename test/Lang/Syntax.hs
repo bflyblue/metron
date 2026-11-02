@@ -31,7 +31,6 @@ import Lang.Common (
  )
 import Metron.Core (
   Nat (Z),
-  NudgeKind (Bound, Stat),
   Term (App, Lam, Let, PrimApp, Ref),
   alphaEq,
  )
@@ -54,7 +53,6 @@ import Metron.Lexer (
     TKw,
     TLambda,
     TOp,
-    TPlusMinus,
     TSep,
     TSup,
     TWild
@@ -75,7 +73,6 @@ import Metron.Syntax qualified as S (
     On,
     Outer,
     PSub,
-    PlusMinus,
     Scale,
     Sub,
     To
@@ -136,19 +133,9 @@ lexerTests =
             , TIdent "not"
             , TKw KFalse
             ]
-    , testCase "plus-minus spellings"
-        $ toks "a ± 1 ±σ 2 +- 3 +-s 4"
-          @?= Right
-            [ TIdent "a"
-            , TPlusMinus Bound
-            , L.TNum 1
-            , TPlusMinus Stat
-            , L.TNum 2
-            , TPlusMinus Bound
-            , L.TNum 3
-            , TPlusMinus Stat
-            , L.TNum 4
-            ]
+    , testCase "removed uncertainty spellings are rejected"
+        $ map (either (const True) (const False) . toks) ["a ± 1", "a ±σ 1"]
+          @?= [True, True]
     , testCase "glued superscripts"
         $ toks "m² s⁻² x³"
           @?= Right [TIdent "m", TSup 2, TIdent "s", TSup (-2), TIdent "x", TSup 3]
@@ -331,9 +318,8 @@ parserTests =
         case evalText "[[1, 0], [1]]" of
           Left err -> T.isInfixOf "same shape" err @? T.unpack err
           Right v -> assertFailure (show v)
-    , testCase "sqrt prefix and ± operators"
-        $ parseShape "√x ± 1"
-          @?= Right (O (S.PlusMinus Bound) (A (V "sqrt") (V "x")) (N 1))
+    , testCase "sqrt prefix"
+        $ parseShape "√x" @?= Right (A (V "sqrt") (V "x"))
     , testCase "to has the lowest precedence"
         $ parseShape "5 km / h to m / s"
           @?= Right
@@ -469,9 +455,9 @@ respellTests =
   testGroup
     "unicode echo"
     [ testCase "an input line in its unicode spelling" $ do
-        respell "2 +-s 0.1 * 3 km/h" @?= Just "2 ±σ 0.1 * 3 km/h"
+        respell "sample (normal 2 0.1) * 3 km/h" @?= Nothing
         respell "\\x -> x^2 <= 4" @?= Just "λx → x² ≤ 4"
-        respell "1 +- 0.1" @?= Just "1 ± 0.1"
+        respell "sample (uniform 0.9 1.1)" @?= Nothing
         respell "u >< v @ w" @?= Just "u × v · w"
         respell "a /\\ b .* c ./ d" @?= Just "a ∧ b ⊙ c ⊘ d"
         respell "f . g" @?= Just "f ∘ g"
@@ -494,7 +480,7 @@ respellTests =
         respell "x^ 2" @?= Nothing
     , testCase "spans are kept when lengths differ" $ do
         respell "a <= b && c >= d" @?= Just "a ≤ b && c ≥ d"
-        respell "\\x y -> x^-2 <= y +-s 1 -> 2" @?= Just "λx y → x⁻² ≤ y ±σ 1 → 2"
+        respell "\\x y -> x^-2 <= y + 1 -> 2" @?= Just "λx y → x⁻² ≤ y + 1 → 2"
         respell "(\\x -> x)   >=   y -- a comment -> here"
           @?= Just "(λx → x)   ≥   y -- a comment -> here"
         -- a tab counts as the lexer counts it
@@ -502,12 +488,12 @@ respellTests =
         -- `f\x` must not become the identifier `fλx`
         respell "f\\x -> x" @?= Just "f\\x → x"
     , testCase ":set unicode on echoes statement lines" $ do
-        runLinesP [":set unicode on", "2 +-s 0.1"]
-          @?= Right ["  ≡ 2 ±σ 0.1", "2.0 ±σ 0.1"]
+        runLinesP [":set unicode on", "2^3"]
+          @?= Right ["  ≡ 2³", "8"]
         runLinesP [":set unicode on", "let f x = x^2", "f 3"]
           @?= Right ["  ≡ let f x = x²", "9"]
         -- nothing to respell, a command, or unicode off: no echo
         runLinesP [":set unicode on", "1 + 2"] @?= Right ["3"]
         runLinesP [":set unicode on", ":type \\x -> x"] @?= Right ["forall a. a → a"]
-        runLinesP ["2 +-s 0.1"] @?= Right ["2.0 ±σ 0.1"]
+        runLinesP ["2^3"] @?= Right ["8"]
     ]

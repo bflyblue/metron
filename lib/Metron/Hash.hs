@@ -55,7 +55,6 @@ import Metron.Core (
   Label (..),
   Lit (LTensor),
   Nat (..),
-  NudgeKind (..),
   Plus,
   SomeVec (SomeVec),
   Term (..),
@@ -152,9 +151,7 @@ enc ph hint depth = \case
         <> varint (fromIntegral (vecLength hs))
         <> foldMap hint (vecToList hs)
         <> enc ph hint (depth + vecLength hs) b
-  Noise k l n -> word8 0x0A <> kind k <> label l <> varint n
-  Uncertain k l x e ->
-    word8 0x0B <> kind k <> label l <> enc ph hint depth x <> enc ph hint depth e
+  Sample l x -> word8 0x14 <> label l <> enc ph hint depth x
   Pack ts ->
     word8 0x0C
       <> varint (fromIntegral (length ts))
@@ -167,9 +164,6 @@ enc ph hint depth = \case
           <> foldMap (enc ph hint (depth + k)) (vecToList bodies)
   Proj t i -> word8 0x0F <> enc ph hint depth t <> varint (fromIntegral i)
  where
-  kind = \case
-    Bound -> word8 0
-    Stat -> word8 1
   label = \case
     Owner t -> word8 0 <> text t
     Tag t -> word8 1 <> text t
@@ -305,13 +299,6 @@ decRational = do
     then failDec "zero denominator"
     else pure (num % den)
 
-decKind :: Dec NudgeKind
-decKind =
-  byte >>= \case
-    0 -> pure Bound
-    1 -> pure Stat
-    k -> failDec ("unknown nudge kind " <> T.pack (show k))
-
 decLabel :: Dec Label
 decLabel =
   byte >>= \case
@@ -359,8 +346,7 @@ term d =
     0x06 -> App <$> sub <*> sub
     0x07 -> Let <$> decHint <*> sub <*> term (DS d)
     0x09 -> Pow <$> sub <*> decSint
-    0x0A -> Noise <$> decKind <*> decLabel <*> decVarint
-    0x0B -> Uncertain <$> decKind <*> decLabel <*> sub <*> sub
+    0x14 -> Sample <$> decLabel <*> sub
     0x0C -> Pack <$> decItems sub
     0x0E -> do
       hints <- decItems decHint

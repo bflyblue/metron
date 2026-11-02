@@ -10,6 +10,8 @@ import Metron.Dimension (BaseDim (..))
 
 primArity :: Text -> Maybe Int
 primArity = \case
+  "normal" -> Just 2
+  "uniform" -> Just 2
   "add" -> Just 2
   "sub" -> Just 2
   "outer" -> Just 2
@@ -31,7 +33,7 @@ primArity = \case
   "ceil" -> Just 1
   "round" -> Just 1
   -- Known to the desugarer and type checker now; implemented in the
-  -- evaluator with affine arithmetic and linear algebra (roadmap 3 and 4).
+  -- scalar evaluator and linear algebra kernels.
   "sqrt" -> Just 1
   "sin" -> Just 1
   "cos" -> Just 1
@@ -99,13 +101,10 @@ primArity = \case
   "cholesky" -> Just 1
   "covariance" -> Just 1
   "crossCovariance" -> Just 2
-  -- The parts of an enclosure (design §3.2.9), to write a comparison policy.
+  -- Statistics over ordinary input realizations (design §3.2.9).
   "mid" -> Just 1
-  "bound" -> Just 1
   "sd" -> Just 1
   -- The double backend's own (design §8.2).
-  "errorOf" -> Just 1
-  "digitsOf" -> Just 1
   "nextUp" -> Just 1
   "ulps" -> Just 2
   "eps" -> Just 0

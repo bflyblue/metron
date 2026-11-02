@@ -91,7 +91,6 @@ import Metron.Core (
   Label (Owner, Tag),
   Lit (..),
   Nat (Z),
-  NudgeKind (Bound, Stat),
   Plus,
   SomeVec (SomeVec),
   Term (
@@ -101,13 +100,12 @@ import Metron.Core (
     Lam,
     Let,
     Lit,
-    Noise,
     Pack,
     Pow,
     PrimApp,
     Proj,
     Ref,
-    Uncertain,
+    Sample,
     Var
   ),
   Vec (..),
@@ -574,10 +572,6 @@ desugar path ctx e = do
       if grouped /= e
         then desugar path ctx grouped
         else case op of
-          S.PlusMinus k ->
-            asks (Uncertain k . (.owner))
-              <*> desugar (0 : path) ctx a
-              <*> desugar (1 : path) ctx b
           -- An amount to a display unit, a point to another chart, or an
           -- amount along a chart's axes; which, the types say when the
           -- spelling does not (design §3.10, U6, F10). A chart with
@@ -730,7 +724,7 @@ desugar path ctx e = do
           failWith
             ( BadSpecialForm
                 inner.span
-                ("a #label must follow ±, ±σ, noise or gauss; `#" <> l <> "` labels nothing here")
+                ("a #label must follow sample; `#" <> l <> "` labels nothing here")
             )
     S.Vec es -> do
       elems <- zipWithM (\i a -> desugar (i : path) ctx a) [0 ..] es
@@ -887,36 +881,6 @@ headApp path ctx hd x args = case lookupCtx x ctx of
               hd.span
               ("`" <> x <> "` is a field; write it after a value, as in r." <> x)
           )
-      -- noise n and gauss n take a literal count (design §3.2.5): the
-      -- number of nudges is part of the type.
-      Nothing
-        | Just k <- lookup x [("noise", Bound), ("gauss", Stat)] -> case args of
-            [a]
-              | S.Num n <- a.node
-              , denominator n == 1
-              , n >= 0
-              , numerator n > lengthLimit ->
-                  failWith
-                    ( BadSpecialForm
-                        a.span
-                        ( x
-                            <> " "
-                            <> T.pack (show (numerator n))
-                            <> ": a tensor has at most "
-                            <> "2^40"
-                            <> " components"
-                        )
-                    )
-              | S.Num n <- a.node
-              , denominator n == 1
-              , n >= 0 ->
-                  asks (\r -> Noise k r.owner (numerator n))
-            _ ->
-              failWith
-                ( BadSpecialForm
-                    hd.span
-                    (x <> " takes one argument, a literal natural number: the count of nudges")
-                )
       -- contract i j, permute [p…] and slice k i take literal index
       -- positions (design §4.2): like a projection's, the positions are part
       -- of the type. The tensor argument may be left off (eta), the
@@ -1082,12 +1046,7 @@ surface names of the uncertainty operators (design §2.9).
 -}
 specialForm :: Label -> Text -> Maybe (Int, Builder)
 specialForm l = \case
-  "within" ->
-    Just
-      (2, Builder (\case [a, b] -> Uncertain Bound l a b; _ -> error "within: arity"))
-  "sigma" ->
-    Just
-      (2, Builder (\case [a, b] -> Uncertain Stat l a b; _ -> error "sigma: arity"))
+  "sample" -> Just (1, Builder (\case [a] -> Sample l a; _ -> error "sample: arity"))
   p -> (,Builder (PrimApp p)) <$> primArity p
 
 saturated :: Path -> Ctx n -> ([Term n] -> Term n) -> [S.Expr] -> M (Term n)
@@ -1140,10 +1099,10 @@ and so can take a @#label@.
 -}
 declaresUncertainty :: S.Expr -> Bool
 declaresUncertainty e = case e.node of
-  S.BinOp (S.PlusMinus _) _ _ -> True
   S.Labelled _ inner -> declaresUncertainty inner
   _ -> case spine e of
-    (hd, _ : _) | S.Var x <- hd.node -> x `elem` ["noise", "gauss", "within", "sigma"]
+    (hd, _ : _)
+      | S.Var x <- hd.node -> x == "sample"
     _ -> False
 
 -- Units (design §3.10) -------------------------------------------------------------

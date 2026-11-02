@@ -39,8 +39,7 @@ import Metron.Core (
   Hash (Hash),
   Label (Owner),
   Lit (LTensor),
-  NudgeKind (Bound),
-  Term (Lam, Let, Lit, Noise, Ref, Var),
+  Term (Lam, Let, Lit, Ref, Var),
   showHash,
  )
 import Metron.Dimension (DimAtom (Base), dimFromAtoms, dimOne)
@@ -383,7 +382,12 @@ axisSlotTests =
   testGroup
     "axis slots"
     [ testCase "a named axis set does not unify with anonymous axes"
-        $ typed (prim2 "add" (ref lvlhV) (Noise Bound (Owner "") 3))
+        $ typed
+          ( prim2
+              "add"
+              (ref lvlhV)
+              (Let "anonymous" (Lit (LTensor ([3], [1, 2, 3]))) (Var FZ))
+          )
           @?= Left
             ( "expected Vec "
                 <> showHash lvlh
@@ -399,7 +403,7 @@ axisSlotTests =
           ( Let
               "off"
               (Lit (LTensor ([3], [1, 2, 3])))
-              (prim2 "add" (Var FZ) (Noise Bound (Owner "") 3))
+              (prim2 "add" (Var FZ) (Let "anonymous" (Lit (LTensor ([3], [1, 2, 3]))) (Var FZ)))
           )
           @?= Right [Forall [] (TTensor (pos (LLit 3) AAnon SNil) dimOne)]
     , testCase "two named axis sets do not unify"
@@ -559,7 +563,7 @@ partFTests =
         runLinesP
           [ "space Review = Vec 3 m"
           , "chart root on Review"
-          , "chart parent on root by rotz (30 deg ± 0.1 rad)"
+          , "chart parent on root by rotz (sample (normal (30 deg) (0.1 rad)))"
           , "chart a on parent at [1, 0, 0] m"
           , "chart b on parent at [2, 0, 0] m"
           , "([0, 0, 0] a to b) == [-1, 0, 0] b"
@@ -584,8 +588,8 @@ partFTests =
     , testCase "a chart whose step may be zero is refused by name" $ do
         let session =
               [ "unit zero = 0 m"
-              , "unit fuzz = 0 m ± 1 m"
-              , "unit wobble = 1 m ± 2 m"
+              , "unit fuzz = sample (uniform (0 m) (0 m))"
+              , "unit wobble = sample (uniform (0 m) (0 m))"
               , "unit two = 2 m"
               , "space Length = Num m"
               , "chart origin on Length"
@@ -600,10 +604,10 @@ partFTests =
           @?= Left "error: chart collapsed has no invertible coordinates: its step is zero"
         refused "1 fuzzy"
           @?= Left
-            "error: chart fuzzy has no invertible coordinates: its step's enclosure reaches zero"
+            "error: chart fuzzy has no invertible coordinates: its step is zero"
         refused "1 wide"
           @?= Left
-            "error: chart wide has no invertible coordinates: its step's enclosure reaches zero"
+            "error: chart wide has no invertible coordinates: its step is zero"
         -- a chart on it inherits the refusal, which names the culprit
         refused "1 under"
           @?= Left "error: chart collapsed has no invertible coordinates: its step is zero"
@@ -992,7 +996,7 @@ partFTests =
                  , -- at two configurations: a new quantity, the frame's motion
                    -- between them included, about ω R δt
                    "let moved = (a from e1 to eci) .- (a from e0 to eci)"
-                 , "let dist = mid (norm (mid moved) / 1 m)"
+                 , "let dist = norm moved / 1 m"
                  , "dist > 400 && dist < 500"
                  ]
           )

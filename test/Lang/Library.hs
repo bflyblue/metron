@@ -220,7 +220,7 @@ stdlibTests =
           outs -> assertFailure (show outs)
         expecting
           ( runLinesP
-              [ "let G = (6.67430e-11 ±σ 1.5e-15) * 1 m^3 kg^-1 s^-2"
+              [ "let G = sample (normal 6.67430e-11 1.5e-15) * 1 m^3 kg^-1 s^-2"
               , ":add"
               , ":hash G"
               , ":hash astro.G"
@@ -446,8 +446,8 @@ stdlibTests =
             any ("updated astro.G " `T.isPrefixOf`) outs @? "G updated"
             ("kept physics.c (yours)" `elem` outs) @? "c kept"
             any ("upgraded twice " `T.isPrefixOf`) outs @? "twice upgraded"
-            linesIn' s ["physics.c", "astro.gone", "twice", "1 si.km"]
-              @?= Right ["5", "3", "1.33486e-10 ±σ 3e-15 m^3 kg^-1 s^-2", "1 si.km"]
+            linesIn' s ["physics.c", "astro.gone", "twice == astro.G * 2", "1 si.km"]
+              @?= Right ["5", "3", "true", "1 si.km"]
             -- A library type comes with its constructor and field labels.
             ("added data linalg.Cov2" `elem` outs) @? "Cov2 added"
             ("added linalg.jointCovariance" `elem` outs) @? "jointCovariance added"
@@ -458,7 +458,7 @@ stdlibTests =
               -- A field is found through a use, as a bare name is.
               [ ":use linalg"
               , ":use si"
-              , "(jointCovariance ([1, 2] m ±σ 1 m, [3, 4] m ±σ 1 m)).rv"
+              , "(Cov2 {rr = [1, 0; 0, 1] m^2, rv = [0, 0; 0, 0] m^2, vv = [1, 0; 0, 1] m^2}).rv"
               , "2 newton"
               ]
               @?= Right ["stored use linalg", "stored use si", "[0, 0; 0, 0] m^2", "2 newton"]
@@ -486,7 +486,13 @@ stdlibTests =
             last outs @?= "renamed `q` to `r`"
           expecting
             ( runLinesP
-                ["let a = 1 ± 0.1", "let b = a * 2", ":add", ":rename a c", "b", ":todo"]
+                [ "let a = sample (normal 1 0.1)"
+                , "let b = a * 2"
+                , ":add"
+                , ":rename a c"
+                , "b == 2 * c"
+                , ":todo"
+                ]
             )
             $ \outs -> do
               case drop 2 outs of
@@ -494,12 +500,16 @@ stdlibTests =
                   renamed @?= "renamed `a` to `c`"
                   ("re-hashed c #" `T.isPrefixOf` rehashed) @? T.unpack rehashed
                   ("upgraded b #" `T.isPrefixOf` upgraded) @? T.unpack upgraded
-                  rest @?= ["2.0 ± 0.2", "nothing to do"]
+                  rest @?= ["true", "nothing to do"]
                 other -> assertFailure (show other)
-          hashOf ["let a = 1 ± 0.1", ":add", ":rename a c"] "c"
-            @?= hashOf ["let c = 1 ± 0.1", ":add"] "c"
+          hashOf ["let a = sample (normal 1 0.1)", ":add", ":rename a c"] "c"
+            @?= hashOf ["let c = sample (normal 1 0.1)", ":add"] "c"
           -- A namespace moved: each stamped member re-hashed, as if entered there.
-          let lab = [multiline ["namespace lab", "  let x = 1 ± 0.1", "  let y = x + 1"], ":add"]
+          let lab =
+                [ multiline
+                    ["namespace lab", "  let x = sample (normal 1 0.1)", "  let y = x + 1"]
+                , ":add"
+                ]
           expecting (runLinesP (lab ++ [":rename lab field"])) $ \outs ->
             map (T.takeWhile (/= '#')) (lastN 3 outs)
               @?= [ "renamed the 2 labels under `lab` to `field`"
@@ -507,7 +517,9 @@ stdlibTests =
                   , "re-hashed field.y "
                   ]
           hashOf (lab ++ [":move lab.x field"]) "field.x"
-            @?= hashOf [multiline ["namespace field", "  let x = 1 ± 0.1"], ":add"] "field.x"
+            @?= hashOf
+              [multiline ["namespace field", "  let x = sample (normal 1 0.1)"], ":add"]
+              "field.x"
           -- The library's G: its dependents follow it.
           expecting
             ( runLinesP

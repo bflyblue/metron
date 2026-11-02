@@ -40,6 +40,7 @@ The result is `5000 m`. The executable is called `metron`, so an installed copy 
 Suppose you cycle 12 kilometers in 30 minutes. Enter these lines in the interactive calculator:
 
 ```text
+:set arithmetic rational
 let distance = 12 km
 let duration = 30 min
 let speed = distance / duration
@@ -64,25 +65,28 @@ travelTime (18 km) speed to min
 
 The result is `45 min`. Use `let` to define a value or function. Put a quantity in parentheses when passing it to a function, as in `(18 km)`.
 
-Now suppose the measured distance has an error bound of 0.1 kilometers:
+Now describe the distance as a normally distributed measurement, with a standard deviation of 0.1 kilometers:
 
 ```text
-let measuredDistance = (12 ± 0.1) * km
+let measuredDistance = sample (normal (12 km) (0.1 km))
 measuredDistance / duration to km/h
 ```
 
-The result is `24.0 ± 0.2 km h^-1`. Here, `±` declares a bound, and the duration remains exact. You can type `+-` instead of `±`.
+The sample mean is near 24 km/h and the sample standard deviation is near 0.2 km/h.
+The report describes simulated outcomes. It does not give a guaranteed error bound.
 
 ## What Metron keeps track of
 
 Metron carries more information than a number alone:
 
 - Units and dimensions: It rejects `1 m + 1 s` because length and time cannot be added.
-- Exact arithmetic: Fractions stay exact where possible. For example, `1 / 3 + 1 / 6` gives `0.5`.
-- Uncertainty: It tracks declared bounds and numerical approximation error. It also supports statistical uncertainty separately, using a first-order approximation with limits on nonlinear calculations.
+- Arithmetic: Choose rational or double arithmetic. Rational fractions stay exact. For example, `1 / 3 + 1 / 6` gives `0.5`.
+- Uncertainty: Explicit normal and uniform inputs propagate through complete calculations using Monte Carlo sampling. Optional stochastic rounding analysis on doubles reports numerical sensitivity separately.
 - Tensors: These are arrays of numbers, including vectors and matrices. They carry units too. For example, `[3, 4] m + [1, 2] m` gives `[4, 6] m`.
 - Charts: These describe coordinate systems, including origins and rotated axes. They distinguish points from changes, so temperature scales and physical frames follow different rules from ordinary unit multiplication.
 - Saved definitions: Definitions have identities based on their contents and dependencies. This supports history and explicit updates to related formulas.
+
+Double arithmetic is the default. Use `:set arithmetic rational` for exact rational operations. Rational elementary functions use numerical approximations.
 
 For a basic chart conversion, try `20 degC to degF`. The result is `68 degF`. Adding two Celsius temperature points is rejected, because their zero point is an offset rather than an absolute origin.
 

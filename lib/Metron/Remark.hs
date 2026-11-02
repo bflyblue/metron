@@ -62,6 +62,7 @@ data Reach = Reach
   on the nominal path
   -}
   , cause :: Cause
+  , inputRows :: IntMap Int
   , rows :: IntMap Int
   -- ^ copies, by the alternative their own scrutinee selects
   , departed :: Int
@@ -81,6 +82,7 @@ can say how many times the point was reached.
 -}
 data Pending = Pending
   { first :: !(Int, Int)
+  , inputRows :: !(IntMap Int)
   , rows :: !(IntMap Int)
   , taken :: !(IntMap Int)
   , departed :: !Int
@@ -98,6 +100,7 @@ pend site r = Map.insertWith after site this
   after new old =
     Pending
       { first = min old.first new.first
+      , inputRows = IntMap.unionWith (+) old.inputRows new.inputRows
       , rows = IntMap.unionWith (+) old.rows new.rows
       , taken = IntMap.unionWith (+) old.taken new.taken
       , departed = old.departed + new.departed
@@ -115,6 +118,7 @@ pend site r = Map.insertWith after site this
   this =
     Pending
       { first = r.order
+      , inputRows = r.inputRows
       , rows = r.rows
       , taken = maybe IntMap.empty (`IntMap.singleton` 1) r.nominal
       , departed = r.departed
@@ -139,6 +143,7 @@ copies; the rest are sums.
 -}
 data Tally = Tally
   { first :: (Int, Int)
+  , inputRows :: IntMap Int
   , rows :: IntMap Int
   , taken :: IntMap Int
   , departed :: Int
@@ -154,6 +159,7 @@ instance Semigroup Remarks where
     merge x y =
       Tally
         { first = min x.first y.first
+        , inputRows = IntMap.unionWith (+) x.inputRows y.inputRows
         , rows = IntMap.unionWith (+) x.rows y.rows
         , taken = IntMap.unionWith max x.taken y.taken
         , departed = x.departed + y.departed
@@ -173,6 +179,7 @@ remarksOf = Remarks . Map.map done
   done p =
     Tally
       { first = p.first
+      , inputRows = p.inputRows
       , rows = p.rows
       , taken = p.taken
       , departed = p.departed
@@ -192,6 +199,7 @@ all the copies: what its table says.
 -}
 data Table = Table
   { site :: Site
+  , inputRows :: IntMap Int
   , rows :: IntMap Int
   -- ^ copies by the alternative their own scrutinee selects; an absent one is 0
   , taken :: IntMap Int
@@ -219,6 +227,7 @@ tables (Remarks m) =
   table s t =
     Table
       { site = s
+      , inputRows = t.inputRows
       , rows = t.rows
       , taken = t.taken
       , evaluations = t.evaluations

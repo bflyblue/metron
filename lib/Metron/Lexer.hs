@@ -37,7 +37,7 @@ import Data.Text qualified as T (
  )
 import Data.Text.Normalize (NormalizationMode (NFC), normalize)
 import Data.Void (Void)
-import Metron.Core (NudgeKind (..), lengthLimit)
+import Metron.Core (lengthLimit)
 import Metron.Limits (Limit (Digits), Limits (..), defaultLimits, limitHint)
 import Metron.Syntax (Pos (..), Span (..))
 import Text.Megaparsec (
@@ -100,8 +100,6 @@ data Token
     matrix product @\@@ in an expression and a product in a dimension.
     -}
     TOp Text
-  | -- | @±@ or @±σ@.
-    TPlusMinus NudgeKind
   | TLambda
   | TArrow
   | TEquals
@@ -344,11 +342,7 @@ isSuperscriptDigit = (`elem` ("⁰¹²³⁴⁵⁶⁷⁸⁹" :: String))
 symbol :: Lexer Token
 symbol =
   choice
-    [ string "±σ" $> TPlusMinus Stat
-    , string "+-s" $> TPlusMinus Stat
-    , string "±" $> TPlusMinus Bound
-    , string "+-" $> TPlusMinus Bound
-    , string "->" $> TArrow
+    [ string "->" $> TArrow
     , string "→" $> TArrow
     , string "==" $> TOp "=="
     , string "/=" $> TOp "/="
@@ -616,8 +610,6 @@ showToken = \case
   TIdent n -> n
   TKw k -> T.toLower (T.drop 1 (T.pack (show k)))
   TOp o -> o
-  TPlusMinus Bound -> "±"
-  TPlusMinus Stat -> "±σ"
   TLambda -> "\\"
   TArrow -> "->"
   TEquals -> "="

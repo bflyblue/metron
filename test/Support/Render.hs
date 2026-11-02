@@ -5,9 +5,9 @@ import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector qualified as V
-import Metron.Affine
 import Metron.Builtin
 import Metron.Eval
+import Metron.Rational (Rat (..))
 import Metron.Type (conText)
 
 {- | A plain rendering for tests. Forces every element. Exact magnitudes
@@ -36,13 +36,7 @@ render = \case
   -- The affine backend has no copies, so never a mixture.
   VMixture _ -> Right "<mixture>"
  where
-  magnitude = \case
-    Exact r -> frac r
-    m ->
-      let c = collapse m
-       in tshow (fromRational c.mid :: Double)
-            <> "±"
-            <> tshow (fromRational (c.bound + sigmaOf 6 c) :: Double)
+  magnitude = frac . (.value)
   frac r
     | denominator r == 1 = tshow (numerator r)
     | otherwise = tshow (numerator r) <> "/" <> tshow (denominator r)

@@ -22,10 +22,9 @@ import Data.Map.Strict qualified as Map (
   lookup,
  )
 import Data.Maybe (fromMaybe, listToMaybe)
-import Data.Set qualified as Set (disjoint)
+import Data.Set qualified as Set (disjoint, member)
 import Data.Text (Text)
 import Data.Text qualified as T (intercalate, pack)
-import Metron.Affine (Magnitude)
 import Metron.Batch (acrossCopies, batchesOf, failure, forced, merged)
 import Metron.Branch (tableLines)
 import Metron.Check (
@@ -51,7 +50,7 @@ import Metron.Desugar (
  )
 import Metron.Double (Dbl)
 import Metron.Eval (
-  Config (backend, batch, cores, limits, precision, samples),
+  Config (..),
   EvalError (..),
   RuntimeOf (..),
   Value,
@@ -60,6 +59,7 @@ import Metron.Eval (
   evalAt,
   evalDefinition,
   neededAtRuntime,
+  totalRuns,
  )
 import Metron.Hash (hashTerm)
 import Metron.Infer qualified as I (
@@ -68,10 +68,18 @@ import Metron.Infer qualified as I (
   readingsOf,
   rewriteReadings,
  )
-import Metron.Limits (limitHint, newBudget, remarksAfter, rootContext)
+import Metron.Limits (
+  Limits (components, steps),
+  limitHint,
+  newBudget,
+  remarksAfter,
+  rootContext,
+ )
 import Metron.NameResolution (resolverFor)
-import Metron.Needs (Needs, checkBackend, reachedBy)
+import Metron.Needs (Needs, checkBackend, noNeeds, reachedBy)
+import Metron.Numerical.SamplePlan qualified as Plan
 import Metron.Pretty (Display, renderValue)
+import Metron.Rational (Rat)
 import Metron.Remark (Remarks, tables)
 import Metron.Resolve (
   annotationsWith,
@@ -80,7 +88,12 @@ import Metron.Resolve (
   withHint,
  )
 import Metron.Resolve.Error (ResolveError (..), renderResolveError)
-import Metron.Scalar (Backend (..), Batch (..), Scalar)
+import Metron.Scalar (
+  Backend (..),
+  Batch (..),
+  Rounding (..),
+  Scalar (backendOf),
+ )
 import Metron.Session.Types (LastExpr (..))
 import Metron.Source (nameTypes, printerFor, refNamer, spellingOf)
 import Metron.Strictness (signatureAt, signatures, strictify)
@@ -140,8 +153,9 @@ evalExpr ::
   Text ->
   S.Expr ->
   Either Text (Text, LastExpr, Needs)
-evalExpr cfg prefs scope cb memo src e = do
+evalExpr initial prefs scope cb memo src e = do
   (h, typed, le) <- prepared scope cb src e
+  cfg <- configured initial cb le.term
   -- Refused before running if it reaches a built-in the backend lacks (design §8.2).
   let (verdict, memo') =
         checkBackend
@@ -153,12 +167,14 @@ evalExpr cfg prefs scope cb memo src e = do
           le.term
   either (Left . ("error: " <>)) Right verdict
   out <- case cfg.backend of
-    AffineBackend -> evalShown @Magnitude cfg prefs scope cb (h, le.term) typed
+    RationalBackend -> evalShown @Rat cfg prefs scope cb (h, le.term) typed
     DoubleBackend
       -- The copies in parallel batches (design §8.2), unless the input reads
       -- across them or its batches do not merge.
-      | cfg.samples > 0
-      , length (batchesOf cfg.samples cfg.cores) > 1
+      | cfg.rounding == RoundNearest
+      , cfg.inputSampling
+      , totalRuns cfg > 1
+      , length (batchesOf (totalRuns cfg) cfg.cores) > 1
       , Set.disjoint (fst (reachedBy cb.terms memo' le.term)) acrossCopies
       , Just batched <- batchedValue cfg cb h typed ->
           either
@@ -206,6 +222,7 @@ withTables cfg scope cb input out remarks =
               cb
               input
               cfg.samples
+              (if cfg.rounding == RoundRandom then cfg.roundingSamples else 0)
           )
           (tables remarks)
     )
@@ -214,7 +231,7 @@ withTables cfg scope cb input out remarks =
 batches (design §8.2, "Metron.Batch"), each batch in its own thread and
 its own runtime, then merged, with the batches' warnings combined, or
 the error they fail with together ('failure'). Each path in a batch has
-the whole @steps@ limit (design §8.1). 'Nothing' when the batches do not merge, and the input
+the per-realization @steps@ budget (design §8.1). 'Nothing' when the batches do not merge, and the input
 should run as one evaluation.
 -}
 batchedValue ::
@@ -227,7 +244,7 @@ batchedValue cfg cb h typed = unsafePerformIO $ do
   -- A heap overflow or a timeout reaches this thread, and forConcurrently
   -- stops the batches; the further overflows they cause while stopping are
   -- taken in by runLimited.
-  results <- forConcurrently (batchesOf cfg.samples cfg.cores) $ \b -> do
+  results <- forConcurrently (batchesOf (totalRuns cfg) cfg.cores) $ \b -> do
     let cfg' = cfg{batch = Just b}
         (rt, prepare) = runtimeWith @Dbl cfg' cb
     case evalAt cfg' rt h (prepare typed) of
@@ -239,7 +256,7 @@ batchedValue cfg cb h typed = unsafePerformIO $ do
   pure $ case sequence results of
     Left _ -> Left <$> failure results
     Right batches -> do
-      v <- merged (zip (batchesOf cfg.samples cfg.cores) (map fst batches))
+      v <- merged (zip (batchesOf (totalRuns cfg) cfg.cores) (map fst batches))
       -- Each comparison's copies counted over all the batches.
       Just (Right (v, foldMap snd batches))
 {-# NOINLINE batchedValue #-}
@@ -255,8 +272,9 @@ evalBatchedAs ::
   Text ->
   S.Expr ->
   Either Text (Maybe (Either EvalError (ValueOf Dbl)))
-evalBatchedAs cfg scope cb src e = do
-  (h, typed, _) <- prepared scope cb src e
+evalBatchedAs initial scope cb src e = do
+  (h, typed, le) <- prepared scope cb src e
+  cfg <- configured initial cb le.term
   Right (fmap fst <$> batchedValue cfg cb h typed)
 
 {- | Evaluate under the backend of the scalar type and print, with a line
@@ -286,7 +304,7 @@ evalShown cfg prefs scope cb input@(h, _) typed = do
 
 {- | Evaluate an expression. An expression typed at the prompt belongs to no
 definition; its own hash stands in as the site of any @±@ in it (design
-§3.2.4), so re-evaluating the same text gives the same nudges.
+§3.2.4), so re-evaluating the same text gives the same input draws.
 -}
 evalValue ::
   Config -> S.Scope -> Codebase -> Text -> S.Expr -> Either Text (Hash, Value)
@@ -302,8 +320,9 @@ evalValueAs ::
   Text ->
   S.Expr ->
   Either Text (Hash, ValueOf s)
-evalValueAs cfg scope cb src e = do
-  (h, typed, _) <- prepared scope cb src e
+evalValueAs initial scope cb src e = do
+  (h, typed, le) <- prepared scope cb src e
+  cfg <- configured initial{backend = backendOf @s} cb le.term
   let (rt, prepare) = runtimeWith @s cfg cb
   (h,) <$> either (Left . renderEvalError) Right (evalAt cfg rt h (prepare typed))
 
@@ -315,8 +334,13 @@ evalChecked ::
   Text ->
   S.Expr ->
   Either Text (Hash, Value, LastExpr)
-evalChecked cfg scope cb src e = do
+evalChecked initial scope cb src e = do
   (h, typed, le) <- prepared scope cb src e
+  cfg <-
+    configured
+      initial{backend = RationalBackend, rounding = RoundNearest}
+      cb
+      le.term
   v <-
     let (rt, prepare) = runtimeWith cfg cb
      in either (Left . renderEvalError) Right (evalAt cfg rt h (prepare typed))
@@ -326,6 +350,30 @@ evalChecked cfg scope cb src e = do
 what it leaves as @it@. A value whose shape or dimension nothing fixes is
 refused here.
 -}
+
+-- | Validate the entire grid before allocating any sample arrays.
+configured :: Config -> Codebase -> Term Z -> Either Text Config
+configured cfg cb term = do
+  if cfg.backend == RationalBackend && cfg.rounding == RoundRandom
+    then Left "stochastic rounding analysis requires double arithmetic"
+    else Right ()
+  let sampled = Set.member "sample" (fst (reachedBy cb.terms noNeeds term))
+      r = if cfg.rounding == RoundRandom then cfg.roundingSamples else 0
+  plan <-
+    Plan.makePlan
+      (min 1000000 (toInteger cfg.limits.components))
+      sampled
+      cfg.samples
+      r
+  if plan.runCount > cfg.limits.steps
+    then Left "combined input and rounding runs exceed the steps limit"
+    else
+      Right
+        cfg
+          { inputSampling = sampled
+          , limits = cfg.limits{steps = cfg.limits.steps `div` plan.runCount}
+          }
+
 prepared ::
   S.Scope -> Codebase -> Text -> S.Expr -> Either Text (Hash, TTerm Z, LastExpr)
 prepared scope cb src e = do
@@ -463,7 +511,6 @@ renderEvalError :: EvalError -> Text
 renderEvalError = \case
   DivideByZero -> "error: division by zero"
   Domain msg -> "error: " <> msg
-  Undecided msg -> "error: cannot decide " <> msg
   Internal msg -> "internal error: " <> msg
   UnknownRef h -> "error: unknown reference " <> showHash h
   BadCycleIndex i -> "error: bad cycle index " <> T.pack (show i)

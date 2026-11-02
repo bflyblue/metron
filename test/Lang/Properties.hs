@@ -14,7 +14,6 @@ import Metron.Builtin (pattern BoolT, pattern ListT, pattern TupleT)
 import Metron.Core (
   Alt (Alt),
   Nat (Z),
-  NudgeKind (Bound),
   Term (App, Case, Con, Lam, Let, Pack, Pow, PrimApp, Proj),
   Vec (VNil),
   alphaEq,
@@ -84,7 +83,6 @@ import Metron.Syntax qualified as S (
     Ne,
     Or,
     Outer,
-    PlusMinus,
     Sub
   ),
   Pos (Pos),
@@ -102,9 +100,9 @@ import Metron.TCore (
     TPow,
     TPrimApp,
     TProj,
+    TSample,
     TTyApp,
-    TTyLam,
-    TUncertain
+    TTyLam
   ),
   lintClosed,
  )
@@ -240,7 +238,6 @@ genExpr scope size
         , S.Ge
         , S.And
         , S.Or
-        , S.PlusMinus Bound
         ]
     mk <$> (S.BinOp op <$> sub <*> sub)
 
@@ -533,7 +530,7 @@ polyLets = \case
   TCase s _ alts -> polyLets s + sum [polyLets b | TAlt _ _ b <- alts]
   TPrimApp _ _ as -> sum (map polyLets as)
   TPow b _ -> polyLets b
-  TUncertain _ _ x e -> polyLets x + polyLets e
+  TSample _ x -> polyLets x
   TPack _ _ ts -> sum (map polyLets ts)
   TProj t _ -> polyLets t
   TTyLam _ _ b -> polyLets b

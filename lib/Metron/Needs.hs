@@ -43,7 +43,7 @@ noNeeds = Needs Map.empty
 
 -- | A term's references and its own backend-specific built-ins.
 direct :: Term n -> (Set (Hash, Maybe Int), Set Text)
-direct = directUses (isJust . ownerOf)
+direct = directUses (\name -> name == "sample" || isJust (ownerOf name))
 
 {- | What a definition needs, and the memo with it, and with what its
 dependencies need, recorded. A hash with no term here is not recorded:

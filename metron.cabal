@@ -3,7 +3,8 @@ name:            metron
 version:         0.1.0.0
 synopsis:        A pure, unit-aware, content-addressed calculator language
 description:     A calculator language with SI dimensions, tensors, coordinate
-                 charts, uncertainty tracking, and content-addressed definitions.
+                 charts, Monte Carlo sampling, independent rounding diagnostics,
+                 and content-addressed definitions.
 homepage:        https://github.com/bflyblue/metron
 bug-reports:     https://github.com/bflyblue/metron/issues
 license:         MIT
@@ -14,7 +15,7 @@ maintainer:      shaun.sharples@gmail.com
 category:        Language
 build-type:      Simple
 extra-source-files: cbits/limits.c
-extra-doc-files: CHANGELOG.md README.md TUTORIAL.md doc/core.md doc/design.md doc/style.md
+extra-doc-files: CHANGELOG.md README.md TUTORIAL.md doc/core.md doc/design.md doc/style.md doc/overview.md doc/montecarlo-first.md doc/montecarlo-removal-plan.md
 
 source-repository head
   type:          git
@@ -33,7 +34,6 @@ library
   import:          common
   hs-source-dirs:  lib
   exposed-modules:
-    , Metron.Affine
     , Metron.Command
     , Metron.Edit
     , Metron.Session.Preferences
@@ -46,8 +46,13 @@ library
     , Metron.NameResolution
     , Metron.Resolve.Error
     , Metron.UnitHint
-    , Metron.Numerical.Linear
     , Metron.Numerical.Approx
+    , Metron.Numerical.Error
+    , Metron.Numerical.Identity
+    , Metron.Numerical.Rational
+    , Metron.Numerical.Sampling
+    , Metron.Numerical.SamplePlan
+    , Metron.Numerical.Statistics
     , Metron.Type.Match
     , Metron.Primitive.Types
     , Metron.Primitive
@@ -60,6 +65,7 @@ library
     , Metron.Fixity
     , Metron.Dimension
     , Metron.Double
+    , Metron.Rational
     , Metron.Encode
     , Metron.Driver
     , Metron.Eval
@@ -105,7 +111,7 @@ executable metron
   import:         common
   main-is:        Main.hs
   hs-source-dirs: src
-  ghc-options:    -O -threaded -feager-blackholing -rtsopts "-with-rtsopts=-qg1 -qn4"
+  ghc-options:    -threaded -feager-blackholing -rtsopts "-with-rtsopts=-qg1 -qn4"
   build-depends:
     , base ^>=4.21.0.0
     , directory
@@ -126,7 +132,6 @@ test-suite metron-test
     , Backend
     , Astro
     , Gen
-    , Lang.Affine
     , Lang.Charts
     , Lang.Codebase
     , Lang.Common
@@ -146,6 +151,7 @@ test-suite metron-test
     , Operators
     , Precision
     , Review
+    , Sampling
     , Support.ExactApprox
     , Support.References
     , Support.Render

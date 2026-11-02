@@ -23,14 +23,9 @@ import Control.Monad (foldM)
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
-import Metron.Affine (
-  Magnitude (Exact),
-  Precision,
-  midpoint,
-  mulM,
-  powM,
- )
 import Metron.Dimension (Dim, dimMul, dimOne, dimPow)
+import Metron.Numerical.Approx (Precision)
+import Metron.Numerical.Rational qualified as R
 
 -- | A factor of a display unit: a declared unit by reference, or a base unit.
 data UnitAtom
@@ -47,13 +42,13 @@ for the hint to be used).
 and magnitude of a single power of it.
 -}
 data UnitFactor = UnitFactor
-  {atom :: UnitAtom, power :: Integer, unitDim :: Dim, unitFactor :: Magnitude}
+  {atom :: UnitAtom, power :: Integer, unitDim :: Dim, unitFactor :: Rational}
   deriving stock (Eq, Show)
 
 data UnitHint = UnitHint
   { atoms :: [UnitFactor]
   -- ^ in order of first appearance, so @V A@ prints as written
-  , factor :: Magnitude
+  , factor :: Rational
   -- ^ the product of the atoms
   , dim :: Dim
   -- ^ the product of the atoms
@@ -73,7 +68,7 @@ is its expression as written (design §3.10, U8), so @km/m@ stays @km/m@
 until a quantity of it is taken.
 -}
 mkHintAs :: HintMode -> Precision -> [UnitFactor] -> Maybe UnitHint
-mkHintAs cancelling p factors = do
+mkHintAs cancelling _ factors = do
   let kept =
         filter
           ((/= 0) . (.power))
@@ -83,10 +78,10 @@ mkHintAs cancelling p factors = do
       ( \acc u ->
           either
             (const Nothing)
-            (Just . mulM p acc)
-            (powM p u.unitFactor u.power)
+            (Just . (acc *))
+            (R.power u.unitFactor u.power)
       )
-      (Exact 1)
+      1
       kept
   pure
     ( UnitHint
@@ -155,7 +150,7 @@ The choice is made when the result is: a choice left in a thunk would keep
 both hints, and a sum in a loop every hint before it.
 -}
 smallerUnit :: UnitHint -> UnitHint -> Maybe UnitHint
-smallerUnit a b = if midpoint b.factor < midpoint a.factor then Just b else Just a
+smallerUnit a b = if b.factor < a.factor then Just b else Just a
 
 {- | Display preferences (design §3.2.12): a unit per exact dimension, used
 for a value whose own unit was not chosen with @to@.

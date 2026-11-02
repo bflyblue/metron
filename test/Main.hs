@@ -2,7 +2,6 @@ module Main (main) where
 
 import Astro (astroTests)
 import Backend (backendTests)
-import Lang.Affine (affineTests)
 import Lang.Charts (
   movingChartTests,
   rotationTests,
@@ -43,6 +42,7 @@ import Limits (limitTests, measure)
 import Operators (operatorTests)
 import Precision (precisionTests)
 import Review (reviewTests)
+import Sampling (samplingTests)
 import Test.Tasty (
   defaultMain,
   localOption,
@@ -64,6 +64,7 @@ main = do
     $ testGroup
       "metron"
       [ coreTests
+      , samplingTests
       , traversalTests
       , evalTests
       , tcoreTests
@@ -90,7 +91,6 @@ main = do
       , lintRegressionTests
       , preludeTests
       , displayTests
-      , affineTests
       , storeTests
       , dataTests
       , itTests

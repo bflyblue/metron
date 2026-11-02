@@ -4,6 +4,12 @@ Status: **Open.** This is a proposal, not an adopted specification.
 Date: 2026-11-02. Source: review worktree at `5160cd1`, including the uncommitted numerical repairs.
 No implementation changes accompany this proposal.
 
+The later adopted [sampling design](montecarlo-first.md) removes affine
+propagation and hard running bounds. Its implementation is a separate
+prerequisite workstream. References below to affine coefficient behaviour
+explain the original motivation, not a requirement to retain that backend.
+The structural type proposal remains open.
+
 ## Recommendation
 
 Replace `TTensor Shape Dim` with `TAmount Structure Dim`.

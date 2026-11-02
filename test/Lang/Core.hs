@@ -41,7 +41,6 @@ import Metron.Core (
   Label (Owner),
   Lit (LTensor),
   Nat (S, Z),
-  NudgeKind (Bound),
   Term (
     App,
     Cycle,
@@ -52,7 +51,7 @@ import Metron.Core (
     PrimApp,
     Proj,
     Ref,
-    Uncertain
+    Sample
   ),
   Vec (VCons, VNil),
   alphaEq,
@@ -248,7 +247,7 @@ evalTests =
            in run defs (Ref (h "c") (Just 3) "")
                 @?= Left "type error: reference to a cycle member that does not exist"
     , testCase "a zero-width ± is exact"
-        $ runClosed (Uncertain Bound (Owner "") (num 1) (num 0)) @?= Right "1"
+        $ runClosed (Sample (Owner "") (PrimApp "uniform" [num 1, num 1])) @?= Right "1"
     ]
 
 -- Typed Core ---------------------------------------------------------------------

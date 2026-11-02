@@ -314,14 +314,14 @@ codebaseTests =
               , ":add"
               , "let ident x = x"
               , "ident (" <> digest <> ")"
-              , "let n = 5 ± 1 #sensor"
-              , "n - n"
-              , "let n2 = 5 ± 1#sensor"
-              , "n - n2"
+              , "let n = sample (normal 5 1) #sensor"
+              , "n == n"
+              , "let n2 = sample (normal 5 1)#sensor"
+              , "n == n2"
               ]
           )
           $ \outs ->
-            lastN 3 outs @?= ["5", "0", "0"]
+            lastN 3 outs @?= ["5", "true", "true"]
     , testCase "historical names respect namespace lookup and explicit absolute paths" $ do
         let setup = ["namespace lab\n  let f x = x + 1", ":add"]
             digest = "#" <> hashShownAs setup "lab.f"
@@ -541,15 +541,14 @@ itTests =
         runLinesP ["1 + 2", "it * 2", "it + 1"] @?= Right ["3", "6", "7"]
         -- On one line, each expression is `it` for the next.
         runLinesP ["1 + 2; it * 10"] @?= Right ["3", "30"]
-    , testCase ":type, :view and :exact see it" $ do
+    , testCase ":type and :view see it" $ do
         runLinesP ["3 m + 2 m", ":type it"] @?= Right ["5 m", "Num m"]
         runLinesP ["1 + 2", ":view it"] @?= Right ["3", "it = 1 + 2"]
         -- a new it absorbs the previous one, so :view shows the whole expression
         runLinesP ["1 + 2", "it * 2", ":view it", "it + 1", ":view it"]
           @?= Right ["3", "6", "it = (1 + 2) * 2", "7", "it = (1 + 2) * 2 + 1"]
         -- A nudge declared in the last expression is labelled with its name.
-        runLinesP ["2 ± 0.1", ":exact it"]
-          @?= Right ["2.0 ± 0.1", "2 + 0.1·e[bound, it]"]
+        runLinesP ["2", ":type it"] @?= Right ["2", "Num"]
     , testCase "it before any expression is an unknown name" $ do
         case evalP "it" of
           Left err -> T.isInfixOf "unknown name `it`" err @? T.unpack err
@@ -810,20 +809,22 @@ namespaceTests =
     , testCase "a ± definition's namespace reaches its hash; a plain one's does not" $ do
         let hashOf ls n = fmap last (runLinesP (ls ++ [":hash " <> n]))
         -- The owner stamp is the full path (design §3.2.4).
-        ( hashOf ["let r = 1 m ± 0.1 m"] "r"
-            /= hashOf [multiline ["namespace a", "  let r = 1 m ± 0.1 m"]] "a.r"
+        ( hashOf ["let r = sample (normal (1 m) (0.1 m))"] "r"
+            /= hashOf
+              [multiline ["namespace a", "  let r = sample (normal (1 m) (0.1 m))"]]
+              "a.r"
           )
           @? "a.r and r are two measurements"
         hashOf ["let q = 1 m"] "q"
           @?= hashOf [multiline ["namespace a", "  let q = 1 m"]] "a.q"
         -- Two namespaces, one text: two terms, and their difference keeps both nudges.
         let two =
-              [ multiline ["namespace a", "  let x = 1 ± 0.1"]
-              , multiline ["namespace b", "  let x = 1 ± 0.1"]
+              [ multiline ["namespace a", "  let x = sample (normal 1 0.1)"]
+              , multiline ["namespace b", "  let x = sample (normal 1 0.1)"]
               ]
         (hashOf two "a.x" /= hashOf two "b.x") @? "a.x and b.x are two measurements"
-        expecting (runLinesP (two ++ ["a.x - b.x", ":covariance a.x - b.x"])) $ \outs ->
-          lastN 3 outs @?= ["0.0 ± 0.2", "variance 0", "bound 0.2"]
+        expecting (runLinesP (two ++ ["sd (a.x - b.x) > 0"])) $ \outs ->
+          lastN 1 outs @?= ["true"]
     , testCase ":namespace: single lines land under it, and :scratch shows the path" $ do
         runLinesP [":namespace", ":namespace orbital", ":namespace"]
           @?= Right ["namespace . (the root)", "namespace orbital", "namespace orbital"]

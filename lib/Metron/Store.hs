@@ -3,7 +3,7 @@
 A store is a directory:
 
 @
-format          "metron codebase 12", the 'formatVersion'
+format          "metron codebase 13", the 'formatVersion'
 terms\/\<hex\>    one term per file, in the storage encoding ("Metron.Hash")
 types\/\<hex\>    one declared type per file (design §6.1)
 names.log       append-only: time, then  bind name ref | unname name | unit name | chart name | prefer text | unprefer text | type name hex | con name hex.i | field name hex.i.j | use path [as alias] | unuse path [as alias] | sig name type | unsig name
@@ -165,7 +165,7 @@ included. A store opens only at this format; a store of another format is
 refused with one line (design §7.4).
 -}
 formatVersion :: Int
-formatVersion = 12
+formatVersion = 13
 
 {- | The store to use: the directory given, else a @.metron@ directory found by
 walking up from the working directory, else the user store under

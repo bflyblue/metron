@@ -10,6 +10,7 @@ import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Metron.Builtin (
   boolT,
+  distributionT,
   frameDefMoving,
   isAxesDef,
   listT,
@@ -54,6 +55,8 @@ for the dimension rules.
 -}
 primScheme :: Text -> Maybe Scheme
 primScheme name = case name of
+  "normal" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) (distributionT d))))
+  "uniform" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) (distributionT d))))
   "add" -> Just (Forall [sv, dv] (TFun sd (TFun sd sd)))
   "sub" -> Just (Forall [sv, dv] (TFun sd (TFun sd sd)))
   "emul" -> Just (Forall [sv, dv, d2v] (TFun sd (TFun sd2 (TTensor s (dimMul d d2)))))
@@ -192,7 +195,7 @@ primScheme name = case name of
   -- columns may be along two axis sets of one size, as a rotation's are.
   "det" -> Just (Forall [nv, xav, xbv] (TFun (matA (n, xa) (n, xb) dimOne) numT))
   -- Covariance (design §3.5): a square-root factor, the covariance of a
-  -- vector's statistical nudges, and a vector with a given covariance.
+  -- vector's input realizations, and a vector with a given covariance.
   -- The factor keeps the rows and the columns of what it factors.
   "cholesky" ->
     Just
@@ -206,7 +209,7 @@ primScheme name = case name of
           [nv, dv, xav]
           (TFun (vecA n xa d) (matA (n, xa) (n, xa) (dimPow 2 d)))
       )
-  -- The covariance of two vectors' shared statistical nudges: a joint
+  -- The covariance of two vectors' shared input realizations: a joint
   -- covariance's off-diagonal block, in the product of their dimensions,
   -- rows along the first's axes and columns along the second's.
   "crossCovariance" ->
@@ -218,17 +221,14 @@ primScheme name = case name of
               (TFun (vecA m xb d2) (matA (n, xa) (m, xb) (dimMul d d2)))
           )
       )
-  -- The parts of an enclosure (design §3.2.9), elementwise, in the
+  -- Input sample statistics (design §3.2.9), elementwise, in the
   -- operand's dimension.
   "mid" -> Just (Forall [sv, dv] (TFun sd sd))
-  "bound" -> Just (Forall [sv, dv] (TFun sd sd))
   "sd" -> Just (Forall [sv, dv] (TFun sd sd))
   -- The double backend's own (design §8.2): its error estimate and the
   -- significant digits that leave, elementwise; the next double up; the
   -- distance between two doubles in doubles; the gap from 1 to the next;
   -- a fused multiply-add; and the two questions IEEE results raise.
-  "errorOf" -> Just (Forall [sv, dv] (TFun sd sd))
-  "digitsOf" -> Just (Forall [sv, dv] (TFun sd (TTensor s dimOne)))
   "nextUp" -> Just (Forall [sv, dv] (TFun sd sd))
   "ulps" -> Just (Forall [dv] (TFun (numD d) (TFun (numD d) numT)))
   "eps" -> mono numT

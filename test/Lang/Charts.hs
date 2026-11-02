@@ -57,7 +57,7 @@ turnedChartTests =
             [ "true"
             , "true"
             , "[7000000.0000000000000…, 1.0000000000000000000…, 0] eci"
-            , "[1.0000000000000000000…, 3.0e-24 ± 3.8e-24, 0] lvlh"
+            , "[1.0000000000000000000…, 1.6412796919477191898…e-27, 0] lvlh"
             , "[0, 0, 0] lvlh"
             ]
     , testCase
@@ -217,13 +217,13 @@ turnedChartTests =
     , testCase "an uncertain angle: the coordinates carry it, correlated" $ do
         runLinesP
           [ eciChart
-          , "chart tilt on eci by rotz (30 deg ± 0.001 rad)"
+          , "chart tilt on eci by rotz (sample (normal (30 deg) (0.001 rad)))"
           , "let v = (([1000, 0, 0] tilt to eci) .- [0, 0, 0] eci) / 1 m"
           , -- x = 1000 cos θ, y = 1000 sin θ: bounds near 0.5 and 0.87
-            "bound v.0 > 0.4 && bound v.0 < 0.6"
-          , "bound v.1 > 0.8 && bound v.1 < 0.95"
+            "sd v.0 > 0.2 && sd v.0 < 0.8"
+          , "sd v.1 > 0.4 && sd v.1 < 1.4"
           , -- the norm is 1000 whatever the angle: the first-order terms cancel
-            "bound (norm v) < bound v.0 / 100"
+            "sd (norm v) < sd v.0 / 100"
           , "abs (mid (norm v) - 1000) < 1e-3"
           , -- on its own frame the point is exact
             "[1000, 0, 0] tilt .- [0, 0, 0] tilt"
@@ -251,9 +251,9 @@ turnedChartTests =
           @?= Right
             [ "chart pf on eci step km by rotz (30 deg) then rotx (45 deg) then rotz (60 deg)"
             , "[887785.38831025442775…, 5462310.6012293745031…, 4286607.0498705616718…] eci"
-            , "[6999.9999999999999999…, -1.3e-20 ± 8.9e-20, 6e-21 ± 2.3e-20] pf"
+            , "[6999.9999999999999999…, 1.7518692732259556564…e-26, 1.1187377433658042001…e-26] pf"
             , "[-6.9508252147247766082…, -0.95119863033241545830…, 2.6516504294495532165…] km s^-1"
-            , "[4.5767451288348659649…, -1.3794313182928119555…, 1.0170048711651340350…; -1.3794313182928119555…, 4.0482548711651340350…, -3.5986214154904359879…; 1.0170048711651340350…, -3.5986214154904359879…, 5.3749999999999999999…] km^2"
+            , "[4.5767451288348659649…, -1.3794313182928119555…, 1.0170048711651340350…; -1.3794313182928119555…, 4.0482548711651340350…, -3.5986214154904359879…; 1.0170048711651340350…, -3.5986214154904359879…, 5.3750000000000000000…] km^2"
             , "7000 km"
             ]
     , testCase "a sequence-turned chart survives a reload" $ withTempStore $ \dir -> do
@@ -426,13 +426,13 @@ movingChartTests =
                    , "let fd = (seen (t1 .+ 1 ms) .- seen t1) / (1 ms)"
                    , "let v = (stateFrom (spinner t1) t1 (pc * 1 m) ([0, 0, 0] m/s)).vel"
                    , "let rel = norm (fd - v) / norm v"
-                   , "mid rel < 1e-6 && mid rel > 1e-8"
+                   , "rel < 1e-6 && rel > 1e-8"
                    , "rel"
                    , "pointOn (spinner (t1 .+ 1 ms)) pc .- pointOn (spinner t1) pc"
                    ]
             )
             @?= Right
-              ["stored use astro", "true", "3.6460579499999992e-8 ± 3.5e-23", "[0, 0, 0] m"]
+              ["stored use astro", "true", "3.6460579499999994628…e-8", "[0, 0, 0] m"]
     , testCase
         "two levels: a station under a spinning Earth, a dish spinning on the station"
         $ do
@@ -473,7 +473,7 @@ movingChartTests =
                    , "let seen t = pointOn (dish t) pc from (dish t) to eci"
                    , "let fd = (seen (t1 .+ 1 ms) .- seen (t1 .+ -1 ms)) / (2 ms)"
                    , "let v = (stateFrom (dish t1) t1 (pc * 1 m) ([0, 0, 0] m/s)).vel"
-                   , "vmap (\\x -> if abs (mid x) < 1e-11 then 0 else 1) ((fd - v) / (1 m/s)) == [0, 0, 0]"
+                   , "vmap (\\x -> if abs x < 1e-11 then 0 else 1) ((fd - v) / (1 m/s)) == [0, 0, 0]"
                    , encloses
                        "1e-25"
                        "spinOf (dish t1) * 1 s"
@@ -481,19 +481,19 @@ movingChartTests =
                    ]
             )
             @?= Right ["stored use astro", "true", "true"]
-    , testCase "an uncertain spin rate gives a velocity whose bound grows with |r|" $ do
+    , testCase "an uncertain spin rate gives a velocity whose sd grows with |r|" $ do
         runLinesP
           [ ":use astro"
           , "space GCRS = Vec 3 m"
           , "chart eci on GCRS"
-          , "let wu = 7.2921159e-5 rad/s ± 1e-10 rad/s"
+          , "let wu = sample (normal (7.2921159e-5 rad/s) (1e-10 rad/s))"
           , "let t0 = 0 unix"
           , "chart wobbly t on eci by rotz (wu * (t .- t0)) spinning [0, 0, 1] * wu"
           , "let v1 = (stateFrom (wobbly t0) t0 ([7000, 0, 0] km) ([0, 0, 0] m/s)).vel / (1 m/s)"
           , "let v2 = (stateFrom (wobbly t0) t0 ([14000, 0, 0] km) ([0, 0, 0] m/s)).vel / (1 m/s)"
           , -- 7000 km × 1e-10 s^-1 = 7e-4 m/s
-            "bound v1.1 > 6.9e-4 && bound v1.1 < 7.1e-4"
-          , "bound v2.1 / bound v1.1 > 1.99 && bound v2.1 / bound v1.1 < 2.01"
+            "sd v1.1 > 3e-4 && sd v1.1 < 1.1e-3"
+          , "sd v2.1 / sd v1.1 > 1.99 && sd v2.1 / sd v1.1 < 2.01"
           ]
           @?= Right ["stored use astro", "true", "true"]
     , testCase "a moving chart survives a reload" $ withTempStore $ \dir -> do
@@ -532,11 +532,11 @@ movingChartTests =
         runLinesP spinningEarthSession
           @?= Right
             [ "chart earth t on eci by rotz (gmst t) spinning [0, 0, 360.98564736629] deg / day"
-            , "[-734892.0553385001942 ± 3e-13, 3903932.6219852148939…, 4990000] eci"
+            , "[-734892.05533850019424…, 3903932.6219852148939…, 4990000] eci"
             , "stored use astro"
-            , "[-284.67928970827302009…, -53.589180086727794658 ± 2.2e-17, 0] m s^-1"
+            , "[-284.67928970827302009…, -53.589180086727794661…, 0] m s^-1"
             , "[0, 0, 0] m s^-1"
-            , "[0.00000000000000000 ± 4e-17, -289.67930235205722039…, 0] m s^-1"
+            , "[0, -289.67930235205722039…, 0] m s^-1"
             ]
     ]
  where
@@ -575,7 +575,7 @@ rotationTests =
     "rotations"
     [ testCase "expm of a bivector is a right-handed rotation about each axis" $ do
         evalP "expm (rotz (90 deg)) @ [1, 0, 0]"
-          @?= Right ["[3.0e-24 ± 3.8e-24, 1.0000000000000000000…, 0]"]
+          @?= Right ["[1.6412796919477191898…e-27, 1.0000000000000000000…, 0]"]
         evalP (encloses "1e-20" "expm (rotz (90 deg)) @ e1" "e2") @?= Right ["true"]
         evalP (encloses "1e-20" "expm (rotx (90 deg)) @ e2" "e3") @?= Right ["true"]
         evalP (encloses "1e-20" "expm (roty (90 deg)) @ e3" "e1") @?= Right ["true"]
@@ -624,18 +624,18 @@ rotationTests =
     , testCase "an uncertain angle carries its nudge into the entries" $ do
         -- R00 = cos θ moves at the full rate, R01 = sin θ only to second order
         evalP
-          "let b = bound (expm (rotz (90 deg ± 0.001 rad))) in b.0.0 >= 0.001 && b.0.0 <= 0.0011 && b.1.1 >= 0.001 && b.0.1 <= 1e-5 && b.2.2 == 0"
+          "let b = sd (expm (rotz (sample (normal (90 deg) (0.001 rad))))) in b.0.0 > 0.0005 && b.0.0 < 0.0015 && b.1.1 > 0.0005 && b.0.1 <= 1e-5 && b.2.2 == 0"
           @?= Right ["true"]
         -- an angle whose enclosure contains zero: nothing divides by it
         evalP
           ( encloses
               "0.0011"
-              "expm (rotz (0 rad ± 0.001 rad))"
+              "expm (rotz (sample (uniform (-0.001 rad) (0.001 rad))))"
               "[[1, 0, 0], [0, 1, 0], [0, 0, 1]]"
           )
           @?= Right ["true"]
         evalP
-          "let b = bound (expm (rotz (0 rad ± 0.001 rad))) in b.0.1 >= 0.001 && b.0.0 <= 1e-5"
+          "let b = sd (expm (rotz (sample (uniform (-0.001 rad) (0.001 rad))))) in b.0.1 > 0.0002 && b.0.1 < 0.001 && b.0.0 < 1e-5"
           @?= Right ["true"]
         evalP
           ( encloses
@@ -682,7 +682,7 @@ rotationTests =
         evalP
           ( encloses
               "0.1"
-              "expm ([[0.1, 0.2], [0.3, -0.1]] ± 0.01)"
+              "expm (vmap (\\x -> sample (uniform (x - 0.01) (x + 0.01))) [[0.1, 0.2], [0.3, -0.1]])"
               "expm [[0.1, 0.2], [0.3, -0.1]]"
           )
           @?= Right ["true"]
@@ -690,9 +690,7 @@ rotationTests =
         -- Rodrigues with the symmetric part's bound, not the slow series
         let near =
               "let x = sqrt 2 in let y = sqrt 3 in [[0, x * y, 0], [(0 - x) * y, 0, 0], [0, 0, 0]]"
-        expectError
-          (evalP ("let b = " <> near <> " in b + transpose b == 0 * b"))
-          "decide"
+        evalP ("let b = " <> near <> " in b + transpose b == 0 * b") @?= Right ["true"]
         evalP
           ( encloses
               "1e-20"
@@ -756,7 +754,8 @@ rotationTests =
           )
           @?= Right ["true"]
         -- the identity keeps every component as it was, nudges and all
-        evalP "let t = [[1, 2], [3, 4]] ± 0.1 in transformBy [[1, 0], [0, 1]] t == t"
+        evalP
+          "let t = vmap (\\x -> sample (normal x 0.1)) [[1, 2], [3, 4]] in transformBy [[1, 0], [0, 1]] t == t"
           @?= Right ["true"]
         -- a rotation of a covariance
         evalP
@@ -850,17 +849,21 @@ rotationTests =
         "every constructor's bivector is exactly antisymmetric, enclosures and all"
         $ do
           let antisymmetric b = evalP ("let b = " <> b <> " in b + transpose b == 0 * b")
-          antisymmetric "rotz (30 deg ± 0.01 rad)" @?= Right ["true"]
+          antisymmetric "rotz (sample (normal (30 deg) (0.01 rad)))" @?= Right ["true"]
           antisymmetric "axisAngle [1, 1, 1] (120 deg)" @?= Right ["true"]
-          antisymmetric "axisAngle ([1, 2, 2] ± 0.1) (40 deg ± 0.01 rad)"
+          antisymmetric
+            "axisAngle (vmap (\\x -> sample (normal x 0.1)) [1, 2, 2]) (sample (normal (40 deg) (0.01 rad)))"
             @?= Right ["true"]
           antisymmetric "rotation [1, 2, 3] [-2, 0, 1]" @?= Right ["true"]
-          antisymmetric "rotation ([1, 2, 3] ± 0.01) [-2, 0, 1]" @?= Right ["true"]
+          antisymmetric
+            "rotation (vmap (\\x -> sample (normal x 0.01)) [1, 2, 3]) [-2, 0, 1]"
+            @?= Right ["true"]
           antisymmetric "rotation e1 (-e1)" @?= Right ["true"]
     , testCase "an uncertain angle makes a bivector with nudged entries" $ do
         evalP
-          "let b = bound (rotz (90 deg ± 0.001 rad)) in b.0.1 >= 0.001 && b.1.0 >= 0.001 && b.0.0 == 0"
+          "let b = sd (rotz (sample (normal (90 deg) (0.001 rad)))) in b.0.1 > 0.0005 && b.1.0 > 0.0005 && b.0.0 == 0"
           @?= Right ["true"]
-        evalP "rotz (90 deg ± 0.001 rad)"
-          @?= Right ["[0, -1.5708 ± 0.0012, 0; 1.5708 ± 0.0012, 0, 0; 0, 0, 0]"]
+        evalP
+          "let b = rotz (sample (normal (90 deg) (0.001 rad))) in b + transpose b == 0 * b"
+          @?= Right ["true"]
     ]
